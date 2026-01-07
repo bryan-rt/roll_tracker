@@ -1,0 +1,19 @@
+version: "3.9"
+services:
+  recorder:
+    # Mount your source tree directly into /app so edits are live
+    volumes:
+      - ./recorder:/app:rw
+      - ../../data/raw/nest:/recordings
+      - ./secrets:/secrets:ro      
+    # Optional: keep the container idle so you can exec into it repeatedly
+    entrypoint:
+      - bash
+      - -lc
+      - |
+        find /app -maxdepth 1 -name '*.sh' -exec sed -i 's/\r$//' {} + -exec chmod +x {} + ;
+        sleep infinity
+    # Optional: dev-only envs
+    environment:
+      TZ: ${TZ:-America/New_York}
+      SDM_SECRETS_DIR: /secrets      

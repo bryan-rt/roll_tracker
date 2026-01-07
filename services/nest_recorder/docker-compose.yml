@@ -1,0 +1,13 @@
+version: "3.9"
+services:
+  recorder:
+    build: ./recorder
+    container_name: roll-recorder
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      TZ: ${TZ:-America/New_York}
+      SDM_SECRETS_DIR: /secrets
+    volumes:
+      - ../../data/raw/nest:/recordings
+      - ./secrets:/secrets:ro

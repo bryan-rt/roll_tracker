@@ -1,0 +1,83 @@
+{
+  "schema_version": "0.1.0",
+  "clip_id": "cam03-20260103-124000",
+  "camera_id": "cam03",
+  "input_video_path": "data/raw/nest/cam03/2026-01-03/12/cam03-20260103-124000.mp4",
+  "fps": 0.0,
+  "frame_count": 0,
+  "duration_ms": 0,
+  "pipeline_version": "dev",
+  "created_at_ms": 1767788232952,
+  "stages": {
+    "A": {
+      "items": {
+        "detections_parquet": {
+          "path": "stage_A/detections.parquet",
+          "content_type": "application/parquet",
+          "sha256": null
+        },
+        "tracklet_frames_parquet": {
+          "path": "stage_A/tracklet_frames.parquet",
+          "content_type": "application/parquet",
+          "sha256": null
+        },
+        "tracklet_summaries_parquet": {
+          "path": "stage_A/tracklet_summaries.parquet",
+          "content_type": "application/parquet",
+          "sha256": null
+        },
+        "audit_jsonl": {
+          "path": "stage_A/audit.jsonl",
+          "content_type": "application/jsonl",
+          "sha256": null
+        }
+      }
+    },
+    "B": {
+      "items": {
+        "contact_points_parquet": {
+          "path": "stage_B/contact_points.parquet",
+          "content_type": "application/parquet",
+          "sha256": null
+        },
+        "masks_dir": {
+          "path": "stage_B/masks",
+          "content_type": "inode/directory",
+          "sha256": null
+        },
+        "audit_jsonl": {
+          "path": "stage_B/audit.jsonl",
+          "content_type": "application/jsonl",
+          "sha256": null
+        }
+      }
+    },
+    "C": {
+      "items": {
+        "tag_observations_jsonl": {
+          "path": "stage_C/tag_observations.jsonl",
+          "content_type": "application/jsonl",
+          "sha256": null
+        },
+        "identity_hints_jsonl": {
+          "path": "stage_C/identity_hints.jsonl",
+          "content_type": "application/jsonl",
+          "sha256": null
+        },
+        "audit_jsonl": {
+          "path": "stage_C/audit.jsonl",
+          "content_type": "application/jsonl",
+          "sha256": null
+        }
+      }
+    }
+  },
+  "misc_artifacts": {
+    "orchestration_audit_jsonl": {
+      "path": "orchestration_audit.jsonl",
+      "content_type": "application/jsonl",
+      "sha256": null
+    }
+  },
+  "provenance": null
+}
