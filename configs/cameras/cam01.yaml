@@ -1,0 +1,24 @@
+# Camera-specific overrides for cam01
+#
+# This file overlays configs/default.yaml. Only include camera-specific
+# values here; do not duplicate defaults.
+
+camera:
+  camera_id: "cam01"
+  fps: 30
+  # Pixel-space ROI (x0, y0, x1, y1) — optional
+  roi: [0, 0, 1920, 1080]
+  # 3x3 homography matrix (identity as placeholder)
+  homography:
+    - [1.0, 0.0, 0.0]
+    - [0.0, 1.0, 0.0]
+    - [0.0, 0.0, 1.0]
+  # Optional scale metadata
+  # meters_per_pixel: null
+  # mat_width: null
+  # mat_height: null
+
+# Example stage overrides (uncomment and adjust if needed)
+# stage_A:
+#   start_dist_m: 1.5
+#   end_dist_m: 0.5

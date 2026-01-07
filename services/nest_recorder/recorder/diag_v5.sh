@@ -1,0 +1,162 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# --- config (env overridable) ---
+SEG_SECONDS="${SEG_SECONDS:-120}"         # segment length
+WINDOW_SECONDS="${WINDOW_SECONDS:-600}"   # total recording window (~10 min)
+EXT_INTERVAL="${EXT_INTERVAL_SEC:-230}"   # extend cadence (< expiry)
+CAM_ID="${CAM_ID_1:-cam1}"
+DEVICE="${DEVICE_1:?missing DEVICE_1 env}"
+
+TS="$(date +%Y%m%d-%H%M%S)"
+DIAG_DIR="/recordings/diag/$TS"
+mkdir -p "$DIAG_DIR"
+echo "[v5] writing to $DIAG_DIR"
+
+# --- access token ---
+ACCESS_TOKEN="$(/app/get_access_token.sh | tr -d '\r')"
+echo "$(printf "%s" "$ACCESS_TOKEN" | wc -c | tr -d ' ')" > "$DIAG_DIR/token_len.txt"
+
+# --- generate RTSP ---
+HTTP=$(curl -s -w '%{http_code}' -o "$DIAG_DIR/generate.json" \
+  -X POST "https://smartdevicemanagement.googleapis.com/v1/${DEVICE}:executeCommand" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"command":"sdm.devices.commands.CameraLiveStream.GenerateRtspStream","params":{}}')
+echo "$HTTP" > "$DIAG_DIR/generate_http.txt"
+if [ "$HTTP" != "200" ]; then echo "[v5] generate HTTP=$HTTP"; exit 2; fi
+
+URL="$(jq -r '.results.streamUrls.rtspUrl // empty' "$DIAG_DIR/generate.json")"
+EXT_TOKEN="$(jq -r '.results.streamExtensionToken // empty' "$DIAG_DIR/generate.json")"
+STOP_TOKEN="$(jq -r '.results.streamToken // empty' "$DIAG_DIR/generate.json")"
+printf "%s\n" "$URL"       > "$DIAG_DIR/rtsp_url.txt"
+printf "%s\n" "$EXT_TOKEN" > "$DIAG_DIR/ext_token.txt"
+printf "%s\n" "$STOP_TOKEN"> "$DIAG_DIR/stop_token.txt"
+date -u +%s > "$DIAG_DIR/generated_at_epoch.txt"
+
+if [ -z "$URL" ] || [ -z "$EXT_TOKEN" ] || [ -z "$STOP_TOKEN" ]; then
+  echo "[v5] missing URL/EXT/STOP"; exit 3
+fi
+
+# --- housekeeping on exit: stop extend loop, stop stream, kill ffmpeg if alive ---
+EXT_PID=""
+FFMPEG_PID=""
+cleanup() {
+  set +e
+  [ -n "$EXT_PID" ]    && kill "$EXT_PID" 2>/dev/null || true
+  [ -n "$FFMPEG_PID" ] && kill "$FFMPEG_PID" 2>/dev/null || true
+  if [ -n "${STOP_TOKEN:-}" ]; then
+    http=$(curl -s -w '%{http_code}' -o "$DIAG_DIR/stop.json" -X POST \
+      "https://smartdevicemanagement.googleapis.com/v1/${DEVICE}:executeCommand" \
+      -H "Authorization: Bearer $ACCESS_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d "{\"command\":\"sdm.devices.commands.CameraLiveStream.StopRtspStream\",\"params\":{\"streamToken\":\"$STOP_TOKEN\"}}")
+    echo "[v5] stop HTTP=$http (ignored if not 200)" | tee -a "$DIAG_DIR/stop_http.txt"
+  fi
+}
+trap cleanup EXIT INT TERM
+
+# --- extend loop (background) ---
+extend_loop() {
+  local fail=0
+  while kill -0 "$FFMPEG_PID" 2>/dev/null; do
+    sleep "$EXT_INTERVAL"
+    local stamp; stamp="$(date +%s)"
+    local http; http=$(curl -s -w '%{http_code}' -o "$DIAG_DIR/extend_${stamp}.json" \
+      -X POST "https://smartdevicemanagement.googleapis.com/v1/${DEVICE}:executeCommand" \
+      -H "Authorization: Bearer $ACCESS_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d "{\"command\":\"sdm.devices.commands.CameraLiveStream.ExtendRtspStream\",\"params\":{\"streamExtensionToken\":\"$EXT_TOKEN\"}}")
+    echo "$http" >> "$DIAG_DIR/extend_http.txt"
+
+    # If SDM returns a refreshed extension token, adopt it
+    local new; new="$(jq -r '.results.streamExtensionToken // empty' "$DIAG_DIR/extend_${stamp}.json" 2>/dev/null || true)"
+    [ -n "$new" ] && EXT_TOKEN="$new" && printf "%s\n" "$EXT_TOKEN" > "$DIAG_DIR/ext_token.txt"
+
+    if [ "$http" != "200" ]; then
+      fail=$((fail+1))
+      echo "[v5] extend failed (HTTP=$http) count=$fail" | tee -a "$DIAG_DIR/extend.stderr"
+      if [ "$fail" -ge 2 ]; then echo "[v5] extend failing repeatedly; letting ffmpeg run until it drops"; break; fi
+    else
+      fail=0
+    fi
+  done
+}
+# spawn after ffmpeg starts (so kill -0 works)
+
+# --- record segmented for the whole window ---
+OUT_TMPL="$DIAG_DIR/${CAM_ID}-%Y%m%d-%H%M%S.mp4"
+echo "[v5] recording ~${WINDOW_SECONDS}s in ${SEG_SECONDS}s segments to $OUT_TMPL"
+
+# --- choose segment options based on ffmpeg support ---
+# (Some builds lack -reset_timestamps on the segment muxer.)
+# --- choose segment options based on ffmpeg support ---
+SEG_OPTS=(-f segment -segment_time "$SEG_SECONDS" -strftime 1 -movflags +faststart)
+if ffmpeg -hide_banner -h muxer=segment 2>&1 | grep -qi 'reset_timestamps'; then
+  echo "[v5] segment muxer supports -reset_timestamps 1"
+  SEG_OPTS+=(-reset_timestamps 1)
+else
+  echo "[v5] segment muxer DOES NOT support -reset_timestamps; proceeding without it"
+fi
+
+# Optional: set REENCODE=1 to normalize GOP/timestamps across all builds
+if [ "${REENCODE:-1}" = "1" ]; then
+  echo "[v5] REENCODE=1 → using libx264 for clean keyframes"
+  V_OPTS=(-c:v libx264 -preset veryfast -crf 23 -g 30 -keyint_min 30)
+else
+  V_OPTS=(-c:v copy)
+fi
+
+OUT_TMPL="$DIAG_DIR/${CAM_ID}-%Y%m%d-%H%M%S.mp4"
+echo "[v5] recording ~${WINDOW_SECONDS}s in ${SEG_SECONDS}s segments to $OUT_TMPL"
+
+# ---- FFmpeg call (segmenting) ----
+ffmpeg -hide_banner -loglevel info -nostdin -y \
+  -rtsp_transport tcp \
+  -use_wallclock_as_timestamps 1 -fflags +genpts+igndts -avoid_negative_ts make_zero \
+  -analyzeduration 10M -probesize 10M \
+  -i "$URL" \
+  -map 0:v:0 -map 0:a:0 \
+  "${V_OPTS[@]}" \
+  -c:a aac -ar 48000 -ac 1 -b:a 64k \
+  -max_muxing_queue_size 1024 \
+  -t "$WINDOW_SECONDS" \
+  "${SEG_OPTS[@]}" \
+  "$OUT_TMPL" \
+  1> "$DIAG_DIR/ffmpeg.stdout" 2> "$DIAG_DIR/ffmpeg.stderr" &
+FFMPEG_PID=$!
+
+# >>> START THE EXTEND LOOP (this was missing) <<<
+extend_loop & EXT_PID=$!
+
+wait "$FFMPEG_PID" || true
+echo "[v5] ffmpeg exited with code $?"
+
+# If nothing was written, try one quick re-generate + 30s capture (debug safety net)
+if ! ls "$DIAG_DIR/${CAM_ID}-"*.mp4 >/dev/null 2>&1; then
+  echo "[v5] no segments found; trying one quick regenerate + short capture"
+  HTTP2=$(curl -s -w '%{http_code}' -o "$DIAG_DIR/generate_retry.json" \
+    -X POST "https://smartdevicemanagement.googleapis.com/v1/${DEVICE}:executeCommand" \
+    -H "Authorization: Bearer $ACCESS_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{"command":"sdm.devices.commands.CameraLiveStream.GenerateRtspStream","params":{}}')
+  echo "$HTTP2" > "$DIAG_DIR/generate_retry_http.txt"
+  if [ "$HTTP2" = "200" ]; then
+    URL="$(jq -r '.results.streamUrls.rtspUrl // empty' "$DIAG_DIR/generate_retry.json")"
+    printf "%s\n" "$URL" > "$DIAG_DIR/rtsp_url_retry.txt"
+    ffmpeg -hide_banner -loglevel info -nostdin -y \
+      -rtsp_transport tcp \
+      -use_wallclock_as_timestamps 1 -fflags +genpts+igndts -avoid_negative_ts make_zero \
+      -analyzeduration 10M -probesize 10M \
+      -i "$URL" \
+      -map 0:v:0 -map 0:a:0 \
+      -c:v copy \
+      -c:a aac -ar 48000 -ac 1 -b:a 64k \
+      -t 30 \
+      -movflags +faststart \
+      "$DIAG_DIR/${CAM_ID}-retry.mp4" \
+      1>> "$DIAG_DIR/ffmpeg.stdout" 2>> "$DIAG_DIR/ffmpeg.stderr" || true
+  fi
+fi
+
+echo "[v5] done. Artifacts: $DIAG_DIR"

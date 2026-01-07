@@ -1,0 +1,59 @@
+# Default pipeline config for roll-tracker
+
+# This file defines only safe, mechanical defaults. Stage-specific
+# thresholds should be provided by camera overrides under
+# configs/cameras/<camera_id>.yaml. All values here are optional and
+# can be overridden by camera or CLI overlay config.
+
+# Path conventions inside outputs/<clip_id>
+paths:
+  # Per-clip cache directory name (no writes happen unless stages use it)
+  cache_dir_name: "_cache"
+  # Optional debug directory name
+  debug_dir_name: "_debug"
+
+# Compute/runtime defaults
+compute:
+  device: cpu           # cpu or cuda
+  num_workers: 0        # parallel workers; 0 for inline
+  batch_size: 1         # generic batch size where applicable
+  use_sam: false        # enable SAM components if present
+  use_reid: false       # enable ReID components if present
+
+# Camera defaults (camera_id is typically provided via CLI)
+camera:
+  camera_id: cam01
+  fps: 30               # frames per second; override per camera as needed
+  # homography is not hard-coded here; managed via homography.json per camera
+  # roi, meters_per_pixel, mat dimensions can be provided in camera overrides
+  # roi: null
+  # meters_per_pixel: null
+  # mat_width: null
+  # mat_height: null
+
+# Stage configuration
+stages:
+  stage_A:
+    # Hysteresis thresholds (meters). Provide via camera config for production.
+    # If set, must satisfy: start_dist_m > end_dist_m >= 0
+    start_dist_m: null
+    end_dist_m: null
+    # Frame stride; 0/None means no skipping. 1 is a safe POC default.
+    frame_stride: 1
+
+  stage_B:
+    # Masks stage toggle; per-camera overrides can enable/disable.
+    enabled: null
+
+  stage_C:
+    # Tag extraction sampling. 0 means use all frames.
+    sample_frames_for_tags: 0
+
+  stage_D:
+    enabled: null
+
+  stage_E:
+    enabled: null
+
+  stage_F:
+    enabled: null
