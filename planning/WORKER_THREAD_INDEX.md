@@ -19,6 +19,7 @@ Use these files as the starter message for each worker chat.
 - **D4** — ReID Embeddings (masked crops) (optional) → `planning/worker_threads/D4_ReID_Embeddings_masked_crops_optional.md`
 - **D5 — MCF Birth/Death + Mat-Zone Gating** → `planning/worker_threads/D5_MCF_Birth_Death_MatZone_Gating.md`
 - **D6 — Global ILP Optimizer (Post-MCF)** → `planning/worker_threads/D6_Global_ILP_Optimizer_Post_MCF.md`
+- **D7 — Homography Calibrator Tool + F1 Interactive Preflight Wiring** → `planning/worker_threads/D7_Homography_Calibrator_Preflight_Tool.md`
 - **E1** — Match Session State Machine → `planning/worker_threads/E1_Match_Session_State_Machine.md`
 - **E2** — Gym Multi-Mat / Spatial Partitioning (optional) → `planning/worker_threads/E2_Gym_Multi_Mat_Spatial_Partitioning_optional.md`
 - **X1** — Clip Export (ffmpeg) + Crop Smoothing → `planning/worker_threads/X1_Clip_Export_ffmpeg_Crop_Smoothing.md`

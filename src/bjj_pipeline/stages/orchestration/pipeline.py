@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
+import math
 
 from bjj_pipeline.contracts.f0_manifest import (
     ClipManifest,
@@ -153,7 +154,7 @@ def _validate_homography_json(obj: Any) -> None:
         raise PipelineError("homography.json must be a JSON object")
     H = obj.get("H")
     if H is None:
-        return
+        raise PipelineError("homography.json missing required field 'H'")
     if not (isinstance(H, list) and len(H) == 3 and all(isinstance(r, list) and len(r) == 3 for r in H)):
         raise PipelineError("homography.json field 'H' must be a 3x3 list")
     for r in H:
@@ -161,7 +162,40 @@ def _validate_homography_json(obj: Any) -> None:
             if not isinstance(x, (int, float)):
                 raise PipelineError("homography.json field 'H' must contain only numbers")
 
-def ensure_homography_preflight(layout: ClipOutputLayout, *, camera_id: str, interactive: bool, config_hash: str) -> None:
+def _is_identity_homography(obj: Any, *, tol: float = 1e-6) -> bool:
+    """
+    Best-effort identity check for a homography.json payload.
+    Returns True if obj contains a numeric 3x3 'H' that is ~I.
+    """
+    if not isinstance(obj, dict):
+        return False
+    H = obj.get("H")
+    if not (isinstance(H, list) and len(H) == 3 and all(isinstance(r, list) and len(r) == 3 for r in H)):
+        return False
+    try:
+        vals = [[float(H[i][j]) for j in range(3)] for i in range(3)]
+    except Exception:
+        return False
+    I = [[1.0, 0.0, 0.0],
+         [0.0, 1.0, 0.0],
+         [0.0, 0.0, 1.0]]
+    for i in range(3):
+        for j in range(3):
+            if abs(vals[i][j] - I[i][j]) > tol:
+                return False
+    return True
+
+def _is_placeholder_homography(obj: Dict[str, Any]) -> bool:
+    """
+    Explicit placeholder marker to support tests/onboarding without 'magic' numeric heuristics.
+    """
+    src = obj.get("source")
+    if isinstance(src, dict) and src.get("type") == "placeholder_identity":
+        return True
+    return False
+
+def ensure_homography_preflight(layout: ClipOutputLayout, *, camera_id: str, interactive: bool, config_hash: str,
+                                ingest_path: Path) -> None:
     append_audit(layout, {
         "event": "homography_preflight_started",
         "timestamp": _now_ms(),
@@ -187,23 +221,51 @@ def ensure_homography_preflight(layout: ClipOutputLayout, *, camera_id: str, int
                 "error_summary": str(e),
             })
             raise
+
+        # If the file is explicitly a placeholder or (near) identity, we treat it as "needs calibration"
+        # in interactive runs, and fall through to launch the calibrator.
+        if interactive:
+            src = obj.get("source") if isinstance(obj, dict) else None
+            src_type = src.get("type") if isinstance(src, dict) else None
+            if src_type == "placeholder_identity" or _is_identity_homography(obj):
+                append_audit(layout, {
+                    "event": "homography_preflight_needs_calibration",
+                    "timestamp": _now_ms(),
+                    "clip_id": layout.clip_id,
+                    "camera_id": camera_id,
+                    "config_hash": config_hash,
+                    "reason": "placeholder_or_identity",
+                    "homography_path": str(path),
+                })
+                # proceed to interactive calibrator
+            else:
+                append_audit(layout, {
+                    "event": "homography_preflight_succeeded",
+                    "timestamp": _now_ms(),
+                    "clip_id": layout.clip_id,
+                    "camera_id": camera_id,
+                    "config_hash": config_hash,
+                })
+                return
+        else:
+            append_audit(layout, {
+                "event": "homography_preflight_succeeded",
+                "timestamp": _now_ms(),
+                "clip_id": layout.clip_id,
+                "camera_id": camera_id,
+                "config_hash": config_hash,
+            })
+            return
+
+    if not path.exists():
         append_audit(layout, {
-            "event": "homography_preflight_succeeded",
+            "event": "homography_preflight_missing",
             "timestamp": _now_ms(),
             "clip_id": layout.clip_id,
             "camera_id": camera_id,
             "config_hash": config_hash,
+            "homography_path": str(path),
         })
-        return
-
-    append_audit(layout, {
-        "event": "homography_preflight_missing",
-        "timestamp": _now_ms(),
-        "clip_id": layout.clip_id,
-        "camera_id": camera_id,
-        "config_hash": config_hash,
-        "homography_path": str(path),
-    })
 
     if not interactive:
         raise PipelineError(
@@ -211,8 +273,20 @@ def ensure_homography_preflight(layout: ClipOutputLayout, *, camera_id: str, int
             "Create this file (or run the homography calibrator) and re-run."
         )
 
-    CALIBRATOR_CMD = [sys.executable, "-m", "bjj_pipeline.tools.homography_calibrate", "--camera", camera_id]
+    # Launch interactive calibrator using the current clip as the video source.
+    # NOTE: homography_calibrate requires a subcommand (`interactive` or `import`)
+    # and interactive mode requires `--video`.
+    print(f"[roll-tracker][D7] Launching homography calibrator for {camera_id} ...")
+    CALIBRATOR_CMD = [
+        sys.executable,
+        "-m", "bjj_pipeline.tools.homography_calibrate",
+        "--camera", camera_id,
+        "interactive",
+        "--video", str(ingest_path),
+        "--mat-blueprint", str((Path("configs") / "mat_blueprint.json").resolve()),
+    ]
     subprocess.run(CALIBRATOR_CMD, check=True)
+    print(f"[roll-tracker][D7] Homography calibration complete. Continuing pipeline ...")
     if not path.exists():
         raise PipelineError(f"Homography calibrator did not create expected file: {path}")
 
@@ -450,6 +524,7 @@ def run_pipeline(ingest_path: Path, camera_id: str, config: Dict[str, Any], *,
                 camera_id=camera_id,
                 interactive=interactive,
                 config_hash=cfg_hash,
+                ingest_path=ingest_path,
             )
 
         allowed_modes = {'multipass', 'multiplex_ABC'}
@@ -572,6 +647,8 @@ def run_pipeline(ingest_path: Path, camera_id: str, config: Dict[str, Any], *,
                 "stage_key": stage_key,
                 "config_hash": cfg_hash,
             })
+            if interactive:
+                print(f"[roll-tracker] Stage {stage_letter} started ...")
 
             required_rels = required_outputs_for_stage(layout, stage_letter)
             last_success_hash = get_last_stage_success_config_hash(layout, stage_letter)
@@ -598,6 +675,8 @@ def run_pipeline(ingest_path: Path, camera_id: str, config: Dict[str, Any], *,
                     "reason": "resume_complete",
                     "durations_ms": {"stage": _now_ms() - stage_start_ts},
                 })
+                if interactive:
+                    print(f"[roll-tracker] Stage {stage_letter} skipped (resume_complete).")
                 continue
 
             inputs = _resolve_inputs_for_stage(manifest, layout, stage_letter, ingest_path)
@@ -676,6 +755,8 @@ def run_pipeline(ingest_path: Path, camera_id: str, config: Dict[str, Any], *,
                     "config_hash": cfg_hash,
                     "durations_ms": {"stage": _now_ms() - stage_start_ts},
                 })
+                if interactive:
+                    print(f"[roll-tracker] Stage {stage_letter} succeeded.")
             except Exception as e:
                 err = {
                     "event": "stage_failed",
