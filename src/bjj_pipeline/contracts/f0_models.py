@@ -18,7 +18,12 @@ from pydantic import BaseModel, Field, ConfigDict, field_validator
 # Global constants / literals
 # ----------------------------
 
-SCHEMA_VERSION_DEFAULT = "0.1.0"
+# NOTE: Schema version must be bumped whenever any canonical artifact schema
+# (including parquet column sets) changes.
+# 0.3.0 bump: allow Stage A to optionally persist lightweight masks (YOLO-seg)
+# and to persist per-frame geometry fields in parquet (u_px/v_px/x_m/y_m/...)
+# while keeping backwards compatibility (columns are optional).
+SCHEMA_VERSION_DEFAULT = "0.3.0"
 
 StageLetter = Literal["A", "B", "C", "D", "E", "F"]
 Severity = Literal["debug", "info", "warn", "error"]
@@ -137,6 +142,21 @@ class TrackletFrameRow(BaseModel):
     detection_id: str
 
     local_track_conf: Optional[float] = None
+
+    # --- Geometry (Stage A-owned)
+    # These fields are populated in Stage A during the online loop so that
+    # downstream stages can operate in mat-space without re-decoding video.
+    # Stage B may optionally produce refined geometry, but Stage A remains the
+    # canonical source for dense per-frame contact & projection signals.
+    contact_u_px: Optional[float] = None
+    contact_v_px: Optional[float] = None
+    contact_x_m: Optional[float] = None
+    contact_y_m: Optional[float] = None
+    on_mat: Optional[bool] = None
+
+    # Metadata about how the contact point was produced.
+    contact_method: Optional[str] = None  # e.g., "bbox_bottom", "yolo_mask", "sam_mask"
+    contact_confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
 
 
 class TrackletSummaryRow(BaseModel):

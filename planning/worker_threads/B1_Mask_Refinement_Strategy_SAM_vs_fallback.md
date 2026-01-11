@@ -1,3 +1,23 @@
+## Addendum — 2026-01-08 (Post-D7 / Z3 Alignment)
+
+### Refinement-Only Rule
+Stage B refines geometry produced by Stage A.
+It must never overwrite Stage A artifacts.
+
+All refinements are emitted as new canonical artifacts.
+
+### SAM Trigger Policy
+SAM execution is selective and gated by:
+- low YOLO mask quality
+- high mask overlap / entanglement
+- A2 quality flags
+- proximity-based engagement signals
+
+### Crop Upgrade Emission
+When SAM is run, Stage B may emit higher-quality crop candidates
+for ReID and AprilTag scanning.
+
+These are additive and indexed via crop_candidates.parquet.
 # B1 — Mask Refinement Strategy (SAM vs fallback)
 
 

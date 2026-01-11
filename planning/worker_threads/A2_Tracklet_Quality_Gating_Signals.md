@@ -1,3 +1,22 @@
+## Addendum — 2026-01-08 (Post-D7 / Z3 Alignment)
+
+### Role Clarification
+Stage A2 does not detect or track. It annotates Stage A tracklets
+with quality and gating signals used downstream.
+
+Examples:
+- occlusion likelihood
+- mask instability
+- excessive acceleration in mat-space
+- off-mat persistence
+
+### Multiplex Compatibility
+A2 logic must be frame-local and multiplex-compatible.
+It must not assume ownership of video IO.
+
+### Downstream Contract
+A2 outputs quality flags only.
+No geometry, crops, or embeddings are produced here.
 # A2 — Tracklet Quality & Gating Signals
 
 

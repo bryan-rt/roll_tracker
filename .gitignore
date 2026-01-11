@@ -183,3 +183,10 @@ cython_debug/
 # Media outputs (never commit videos)
 *.mp4
 *.MP4
+
+# Project archives (do not commit retained artifacts)
+archive/
+
+# Generated outputs and local data (do not commit)
+outputs/
+data/

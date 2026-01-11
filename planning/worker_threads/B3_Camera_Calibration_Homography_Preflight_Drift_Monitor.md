@@ -1,3 +1,11 @@
+## Addendum — 2026-01-10 (D7 closeout + Stage A geometry dependency)
+
+### Canonical homography path (locked by D7/F1/F2)
+configs/cameras/<camera_id>/homography.json is the canonical homography location.
+
+### Pipeline dependency update
+Stage A now depends on homography for baseline projection of per-frame contact points.
+Homography is still enforced by orchestration preflight (D7/F1). Stage A must treat it as a precondition and remain free of calibration logic.
 # B3 — Camera Calibration: Homography Preflight + Drift Monitor
 
 ## Update: Locked constraints to honor (F0 + F3)

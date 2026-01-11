@@ -1,3 +1,27 @@
+## Addendum — 2026-01-10 (Stage A baseline geometry + Stage B refinement)
+
+### Contract update (requires schema_version bump)
+Manager decision: baseline contact point + homography projection + on_mat lives in Stage A.
+
+New / updated artifacts:
+
+Stage A — Detection & Tracklets (+ Geometry)
+- detections.parquet
+- tracklet_frames.parquet
+- tracklet_summaries.parquet
+- contact_points.parquet   <-- NEW (canonical baseline geometry; full coverage)
+- audit.jsonl
+
+Stage B — Masks & Geometry Refinement (optional)
+- contact_points_refined.parquet  <-- NEW (subset overrides when SAM refinement is run)
+- stage_B/masks/*.npz (canonical mask storage; paths only)
+- audit.jsonl
+
+### Downstream rule
+Downstream stages should:
+1) load Stage A contact_points as baseline
+2) apply Stage B refined overrides when present
+This preserves the ability to skip Stage B while keeping geometry available.
 # F0 — Core Contracts & Artifact Schemas
 
 

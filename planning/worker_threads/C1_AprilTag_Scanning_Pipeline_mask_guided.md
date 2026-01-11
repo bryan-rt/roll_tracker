@@ -1,3 +1,15 @@
+## Addendum — 2026-01-08 (Crop Candidate Contract)
+
+### Input Sources
+Stage C consumes crop candidates produced by Stage A and B.
+It must not generate its own crops or read raw video frames
+except as a fallback.
+
+### Hard Evidence Policy
+AprilTag detections are treated as hard constraints.
+Stage C outputs identity_hints.jsonl only.
+
+Stage C must not perform appearance embeddings or soft matching.
 # C1 — AprilTag Scanning Pipeline (mask-guided)
 
 

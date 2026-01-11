@@ -140,6 +140,13 @@ def validate_detections_df(df: pd.DataFrame) -> None:
     if (df["detection_id"].astype(str).str.len() == 0).any():
         raise ValidationError("detections: detection_id contains empty strings")
 
+    # Optional mask references must be portable relative paths.
+    # Canonical mask blobs are file-backed (e.g., stage_A/masks/*.npz).
+    if "mask_ref" in df.columns:
+        s = df["mask_ref"].dropna().astype(str)
+        if (s.str.startswith("/") | s.str.contains(r"^[A-Za-z]:\\")).any():
+            raise ValidationError("detections: mask_ref must be a relative path, not absolute")
+
 
 def validate_tracklet_tables(tracklet_frames: pd.DataFrame, tracklet_summaries: pd.DataFrame) -> None:
     """
