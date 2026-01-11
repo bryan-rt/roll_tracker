@@ -1,3 +1,14 @@
+## Addendum — 2026-01-08 (Z3 Alignment)
+
+### Debug Artifact Ownership
+Debug visualization artifacts are owned by orchestration (Z3).
+
+Stages must not write debug videos or plots.
+
+All dev-only outputs live under:
+outputs/<clip_id>/_debug/
+
+These artifacts are non-canonical and excluded from F0 validation.
 # Z1 — Observability & Debug Artifacts
 
 

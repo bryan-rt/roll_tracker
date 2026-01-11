@@ -58,6 +58,12 @@ DETECTIONS_SPECS: List[ColSpec] = [
     ColSpec("y2", "float"),
     # optional
     ColSpec("tracklet_id", "string", required=False),
+    # Optional lightweight segmentation mask reference (Stage A YOLO-seg, Stage B SAM refinement).
+    # File-backed .npz is canonical; this stores the relative path (from outputs/<clip_id>/).
+    ColSpec("mask_ref", "string", required=False),
+    # Optional metadata about the mask producer/gates (e.g., "yolo_seg", "bbox_fallback", "sam").
+    ColSpec("mask_source", "string", required=False),
+    ColSpec("mask_quality", "float", required=False),
     ColSpec("source", "string", required=False),
     # debug intentionally excluded from Parquet (keep debug in audit.jsonl); if you really want it:
     ColSpec("debug_json", "string", required=False),
@@ -71,6 +77,17 @@ TRACKLET_FRAMES_SPECS: List[ColSpec] = [
     ColSpec("timestamp_ms", "int"),
     ColSpec("detection_id", "string"),
     ColSpec("local_track_conf", "float", required=False),
+    # Optional per-frame contact point + projection.
+    # These are produced by Stage A when homography is available (preflight-owned by D7/F1).
+    ColSpec("u_px", "float", required=False),
+    ColSpec("v_px", "float", required=False),
+    ColSpec("x_m", "float", required=False),
+    ColSpec("y_m", "float", required=False),
+    ColSpec("vx_m", "float", required=False),
+    ColSpec("vy_m", "float", required=False),
+    ColSpec("on_mat", "bool", required=False),
+    ColSpec("contact_conf", "float", required=False),
+    ColSpec("contact_method", "string", required=False),
 ]
 
 TRACKLET_SUMMARIES_SPECS: List[ColSpec] = [

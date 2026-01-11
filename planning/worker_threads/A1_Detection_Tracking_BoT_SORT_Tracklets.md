@@ -1,3 +1,66 @@
+## Addendum — 2026-01-10 (Post-Z3 + D7 + A/B Scope Lock)
+
+### Locked scope clarification (Manager decision)
+Stage A is the canonical owner of baseline geometry for every detection / tracklet-frame:
+- contact point estimation in pixel space (u,v) using bbox or YOLO mask
+- homography projection to mat-space (x_m, y_m) using configs/cameras/<camera_id>/homography.json (D7-produced)
+- on_mat classification using mat_blueprint.json
+
+Stage A must NOT implement calibration or validation logic.
+Homography presence/validity is a hard precondition enforced by orchestration preflight (D7/F1).
+
+### F0 contract note (schema bump required)
+This scope implies an F0 contract update:
+- NEW canonical artifact: stage_A/contact_points.parquet (baseline geometry; full coverage)
+
+Stage A must continue to emit the locked Stage A artifacts:
+- stage_A/detections.parquet
+- stage_A/tracklet_frames.parquet
+- stage_A/tracklet_summaries.parquet
+- stage_A/audit.jsonl
+...and in addition emit stage_A/contact_points.parquet after the F0 bump lands.
+
+### Multiplex parity requirement (Z3)
+Stage A logic must be callable in both:
+- multipass mode (stage reads raw clip, writes artifacts)
+- multiplex_ABC mode (stage participates in a shared frame iterator)
+
+Canonical outputs MUST remain identical across both modes.
+
+### Quality posture (unchanged)
+Tracklets should be high precision and allowed to break rather than guess through entanglement.
+## Addendum — 2026-01-08 (Post-D7 / Z3 Alignment)
+
+### Locked Preconditions
+Stage A assumes a valid homography exists for the camera.
+Pipeline orchestration (F1 + D7) guarantees homography preflight
+before Stage A executes. Stage A must not implement calibration,
+fallback, or validation logic.
+
+### Scope Clarification
+Stage A owns:
+- YOLO person detection (boxes + confidence)
+- MOT association (BoT-SORT)
+- Optional lightweight YOLO segmentation masks
+- Per-frame foot / ground-contact estimation
+- Homography projection of contact point → mat-space (X, Y)
+- on_mat classification using mat blueprint
+
+Stage A must not:
+- Run SAM or any expensive mask refinement
+- Decode AprilTags
+- Compute ReID embeddings
+
+### Crop Candidate Emission
+Stage A may emit curated crop candidates for downstream consumers
+(C: AprilTag, D: ReID). Crops must be selective (best-K / keyframes),
+not per-frame exhaustive.
+
+If emitted, Stage A writes:
+- image files under stage_A/crops/
+- crop_candidates.parquet index with metadata only
+
+Stage A outputs are immutable and must never be overwritten by later stages.
 # A1 — Detection & Tracking (BoT-SORT Tracklets)
 
 

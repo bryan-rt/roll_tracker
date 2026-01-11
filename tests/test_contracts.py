@@ -156,6 +156,18 @@ def test_parquet_schema_rejects_unexpected_column():
 		pq.validate_df_schema_by_key(df, "detections")
 
 
+def test_detections_mask_ref_must_be_relative():
+	df = _make_min_detections_df()
+	# relative path is ok
+	df.loc[0, "mask_ref"] = "stage_A/masks/frame_000000_det_d1.npz"
+	v.validate_detections_df(df)
+
+	# absolute path is rejected (non-portable)
+	df.loc[0, "mask_ref"] = "/tmp/frame_000000_det_d1.npz"
+	with pytest.raises(v.ValidationError):
+		v.validate_detections_df(df)
+
+
 def test_detections_invariant_rejects_bad_bbox():
 	df = _make_min_detections_df()
 	df.loc[0, "x2"] = 5.0  # x2 < x1 invalid

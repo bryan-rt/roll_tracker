@@ -1,3 +1,24 @@
+## Addendum — 2026-01-08 (Ownership Clarification)
+
+### ReID Ownership
+Stage D4 is the sole owner of ReID embedding computation.
+
+Inputs:
+- curated crop candidates from Stage A / B
+- optional refined masks
+
+Responsibilities:
+- mask erosion
+- quality filtering
+- feature bank construction
+- embedding distance computation
+
+Stage A, B, and C must not compute embeddings.
+
+### Feature Bank Policy
+Embeddings are computed on-demand and stored in a bank
+(best-K or clustered exemplars).
+Rolling averages are explicitly discouraged.
 # D4 — ReID Embeddings (masked crops) (optional)
 
 

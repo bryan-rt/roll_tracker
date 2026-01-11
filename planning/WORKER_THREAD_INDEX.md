@@ -1,3 +1,16 @@
+## Status Update — 2026-01-08
+
+Completed:
+- F0 Core Contracts
+- F1 Orchestration & CLI
+- F2 Config System
+- F3 Ingest Integration
+- Z3 Multiplexer Runner & Dev Visualization
+- D7 Homography Calibration & Preflight
+
+Ready to Start:
+- A1 Detection & Tracking
+- A2 Tracklet Quality & Gating
 # Worker Thread Index
 Use these files as the starter message for each worker chat.
 

@@ -1,3 +1,36 @@
+## Addendum — 2026-01-10 (A/B scope lock: baseline in A, refinement in B)
+
+### Updated ownership model (Manager decision)
+Baseline contact point + homography projection + on_mat is owned by Stage A.
+Stage B no longer owns "compute x/y for every frame"; instead, Stage B performs *selective refinement*:
+- only on low-quality YOLO masks and/or entanglement candidates
+- uses SAM-derived masks where invoked
+- overwrites/improves contact point estimation and/or mat-space projection on those rows
+
+### F0 contract note (schema bump alignment)
+After the F0 bump:
+- Stage A canonical artifact: stage_A/contact_points.parquet (full coverage)
+- Stage B refinement artifact: stage_B/contact_points_refined.parquet (subset / overrides)
+
+Downstream consumers (D/E/F) should default to Stage A contact_points and apply Stage B refined overrides when present.
+
+### Multiplex implication (Z3)
+Stage B should be multiplex-friendly:
+- able to receive per-frame inputs/state (detections + optional YOLO masks)
+- able to fire refinement conditionally and sparsely
+Stage B must not require full-frame SAM on every frame.
+## Addendum — 2026-01-08 (Post-D7 Alignment)
+
+### Homography Guarantee
+Stage B2 assumes homography.json exists and is valid.
+No fallback or calibration logic is permitted here.
+
+### Contact Point Semantics
+Stage B2 may emit refined contact points derived from
+SAM masks or improved geometry.
+
+Refined points must be additive artifacts and never overwrite
+Stage A contact points.
 # B2 — Contact Point Extraction + Homography
 
 

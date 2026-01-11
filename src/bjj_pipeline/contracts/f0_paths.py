@@ -45,6 +45,18 @@ class ClipOutputLayout:
     def tracklet_summaries_parquet(self) -> Path:
         return self.stage_dir("A") / "tracklet_summaries.parquet"
 
+    def stage_A_masks_dir(self) -> Path:
+        """Directory for Stage A lightweight masks (e.g., YOLO-seg).
+
+        These masks are optional. When written, each detection row may reference
+        a mask blob via detections.mask_ref (clip-relative path).
+        """
+        return self.stage_dir("A") / "masks"
+
+    def stage_A_mask_npz_path(self, frame_index: int, detection_id: str) -> Path:
+        # canonical file name
+        return self.stage_A_masks_dir() / f"frame_{frame_index:06d}_det_{detection_id}.npz"
+
     def audit_jsonl(self, stage: StageLetter) -> Path:
         return self.stage_dir(stage) / "audit.jsonl"
 
@@ -117,6 +129,10 @@ class ClipOutputLayout:
         self.masks_dir().mkdir(parents=True, exist_ok=True)
         # masks_png is optional; create only if used
         self.masks_png_dir().mkdir(parents=True, exist_ok=True)
+
+    def ensure_stage_A_mask_dirs(self) -> None:
+        # Stage A masks are optional; create only if used.
+        self.stage_A_masks_dir().mkdir(parents=True, exist_ok=True)
 
     def ensure_exports_dir(self) -> None:
         self.exports_dir().mkdir(parents=True, exist_ok=True)
