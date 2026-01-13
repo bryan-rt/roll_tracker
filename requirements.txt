@@ -1,0 +1,54 @@
+# roll_tracker curated runtime requirements (Python 3.12 target)
+# Notes:
+# - We intentionally pin NumPy 1.x to avoid Torch/NumPy ABI issues observed with NumPy 2.x.
+# - IMPORTANT: install ultralytics + boxmot with --no-deps to prevent pip from pulling opencv-python
+#   (which tends to force NumPy 2.x on macOS arm64).
+#
+# Recommended clean rebuild:
+#   rm -rf .venv && python3.12 -m venv .venv
+#   source .venv/bin/activate
+#   python -m pip install -U pip setuptools wheel
+#   python -m pip install -r requirements.txt
+#   python -m pip install --no-deps -r requirements-nodeps.txt
+#   python -m pip check
+
+# Core scientific stack
+numpy==1.26.4
+scipy==1.13.0
+pandas==2.2.2
+pyarrow==16.0.0         # parquet via pandas
+# opencv-python-headless==4.11.0.86
+opencv-python==4.11.0.86
+
+# Common runtime deps (explicit so we can install ultralytics/boxmot with --no-deps)
+requests==2.32.5
+psutil==7.2.1
+polars==1.37.0
+ultralytics-thop==2.0.18
+
+# ML stack
+torch==2.2.2            # py312-supported CPU build
+torchvision==0.17.2     # must match torch 2.2.x
+
+# Tracking deps (explicit; boxmot itself installed via requirements-nodeps.txt with --no-deps)
+click==8.3.1
+filterpy==1.4.5
+ftfy==6.3.1
+gdown==5.2.1
+lapx==0.9.4
+loguru==0.7.3
+regex==2024.11.6
+scikit-learn==1.8.0
+yacs==0.1.8
+
+# App/config
+pydantic==2.6.4
+PyYAML==6.0.1
+
+# Optional: visualization and dev tools
+matplotlib==3.10.8
+rich==13.7.1
+pytest==8.0.2
+
+# CLI / UX
+typer==0.21.1

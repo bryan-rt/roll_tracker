@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import traceback
 from typing import Any, Dict
 
 import numpy as np
@@ -11,6 +12,73 @@ from bjj_pipeline.contracts.f0_manifest import ClipManifest
 from bjj_pipeline.contracts.f0_paths import ClipOutputLayout
 from bjj_pipeline.core.frame_iterator import FrameIterator, FramePacket
 from bjj_pipeline.viz.mux_visualizer import MuxVisualizer, load_mat_blueprint
+
+
+def _cfg_get(cfg: Any, path: str, default: Any = None) -> Any:
+    """Get nested config value from dict-like or object-like config."""
+    cur: Any = cfg
+    for key in path.split("."):
+        if cur is None:
+            return default
+        if isinstance(cur, dict):
+            cur = cur.get(key, None)
+            continue
+        if hasattr(cur, key):
+            cur = getattr(cur, key)
+            continue
+        return default
+    return default if cur is None else cur
+
+
+def _load_json(path: Path) -> Dict[str, Any]:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _load_homography_matrix(cfg: Any, camera_id: str) -> np.ndarray:
+    """Load 3x3 homography matrix for camera.
+
+    D7 preflight guarantees this exists; multiplex uses the same lookup order
+    as Stage A multipass runner.
+    """
+    p = _cfg_get(cfg, "homography_path", None)
+    if p:
+        pp = Path(str(p))
+        if pp.exists():
+            j = _load_json(pp)
+            H = np.asarray(j.get("H", j.get("homography", j.get("matrix"))), dtype=np.float64)
+            return H.reshape((3, 3))
+
+    cam_dir = Path("configs") / "cameras" / camera_id
+    candidates = [
+        cam_dir / "homography.json",
+        cam_dir / "homography_pipeline.json",
+        cam_dir / "homography_from_npy.json",
+    ]
+    for pp in candidates:
+        if pp.exists():
+            j = _load_json(pp)
+            H = np.asarray(j.get("H", j.get("homography", j.get("matrix"))), dtype=np.float64)
+            return H.reshape((3, 3))
+
+    raise FileNotFoundError(f"Homography not found for camera_id={camera_id}. Tried: {candidates}")
+
+
+def _botsort_params_with_defaults(resolved_config: Dict[str, Any], params: Dict[str, Any], *, with_reid: bool) -> Dict[str, Any]:
+    """BoxMOT v16+ requires reid_weights/device/half even when with_reid=False."""
+    out = dict(params or {})
+    compute_cfg = dict((_cfg_get(resolved_config, "compute", {}) or {}))
+    device = compute_cfg.get("device", None) or "cpu"
+    half = bool(compute_cfg.get("half", False))
+    out.setdefault("device", device)
+    out.setdefault("half", half)
+    # BoxMOT still requires the key; empty string is acceptable when ReID is off.
+    reid_weights = _cfg_get(
+        resolved_config,
+        "stages.stage_A.tracker.reid_weights",
+        _cfg_get(resolved_config, "tracker.reid_weights", ""),
+    )
+    out.setdefault("reid_weights", str(reid_weights or ("" if not with_reid else "")))
+    return out
 
 
 def _write_placeholder_stage_A(layout: ClipOutputLayout, manifest: ClipManifest, *, camera_id: str, pkt0: FramePacket | None) -> None:
@@ -54,12 +122,15 @@ def _write_placeholder_stage_A(layout: ClipOutputLayout, manifest: ClipManifest,
     det.to_parquet(layout.detections_parquet())
     tf.to_parquet(layout.tracklet_frames_parquet())
     ts.to_parquet(layout.tracklet_summaries_parquet())
-    Path(layout.audit_jsonl("A")).write_text(json.dumps({
-        "event": "placeholder_stage_output",
-        "stage": "A",
-        "clip_id": manifest.clip_id,
-        "camera_id": camera_id,
-    }) + "\n", encoding="utf-8")
+    p = Path(layout.audit_jsonl("A"))
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with p.open("a", encoding="utf-8") as f:
+        f.write(json.dumps({
+            "event": "placeholder_stage_output",
+            "stage": "A",
+            "clip_id": manifest.clip_id,
+            "camera_id": camera_id,
+        }) + "\n")
 
 
 def _write_placeholder_stage_B(layout: ClipOutputLayout, manifest: ClipManifest, *, camera_id: str, pkt0: FramePacket | None) -> None:
@@ -87,12 +158,15 @@ def _write_placeholder_stage_B(layout: ClipOutputLayout, manifest: ClipManifest,
     dummy_mask = np.zeros((10, 10), dtype=np.uint8)
     np.savez_compressed(layout.mask_npz_path(frame_index=0, detection_id="d1"), mask=dummy_mask)
 
-    Path(layout.audit_jsonl("B")).write_text(json.dumps({
-        "event": "placeholder_stage_output",
-        "stage": "B",
-        "clip_id": manifest.clip_id,
-        "camera_id": camera_id,
-    }) + "\n", encoding="utf-8")
+    p = Path(layout.audit_jsonl("B"))
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with p.open("a", encoding="utf-8") as f:
+        f.write(json.dumps({
+            "event": "placeholder_stage_output",
+            "stage": "B",
+            "clip_id": manifest.clip_id,
+            "camera_id": camera_id,
+        }) + "\n")
 
 
 def _write_placeholder_stage_C(layout: ClipOutputLayout, manifest: ClipManifest, *, camera_id: str) -> None:
@@ -123,12 +197,15 @@ def _write_placeholder_stage_C(layout: ClipOutputLayout, manifest: ClipManifest,
         "frame_index": 0,
         "evidence": "placeholder",
     }) + "\n", encoding="utf-8")
-    Path(layout.audit_jsonl("C")).write_text(json.dumps({
-        "event": "placeholder_stage_output",
-        "stage": "C",
-        "clip_id": manifest.clip_id,
-        "camera_id": camera_id,
-    }) + "\n", encoding="utf-8")
+    p = Path(layout.audit_jsonl("C"))
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with p.open("a", encoding="utf-8") as f:
+        f.write(json.dumps({
+            "event": "placeholder_stage_output",
+            "stage": "C",
+            "clip_id": manifest.clip_id,
+            "camera_id": camera_id,
+        }) + "\n")
 
 
 def run_multiplex_ABC(*,
@@ -157,9 +234,138 @@ def run_multiplex_ABC(*,
 
     pkt0: FramePacket | None = None
 
+    # ------------------------------
+    # Optional REAL Stage A wiring
+    # ------------------------------
+    stage_a_enabled = "A" in letters_to_run
+    stage_a_processor = None
+    stage_a_writer = None
+    stage_a_placeholder_written = False
+    stage_a_allow_placeholder = bool(
+        _cfg_get(resolved_config, "stages.stage_A.allow_placeholder", False)
+    )
+
     if need_frames:
         it = FrameIterator(ingest_path)
         fps = it.fps or 30.0
+
+        if stage_a_enabled:
+            # Lazy imports so unit tests do not require ultralytics/boxmot.
+            try:
+                from bjj_pipeline.stages.detect_track.processor import StageAProcessor
+                from bjj_pipeline.stages.detect_track.detector import UltralyticsYoloDetector
+                from bjj_pipeline.stages.detect_track.tracker import BotSortTracker
+                from bjj_pipeline.stages.detect_track.outputs import StageAWriter
+            except Exception as e:
+                layout.ensure_dirs_for_stage("A")
+                p = Path(layout.audit_jsonl("A"))
+                p.parent.mkdir(parents=True, exist_ok=True)
+                with p.open("a", encoding="utf-8") as f:
+                    f.write(json.dumps({
+                        "event": "stage_a_real_import_failed",
+                        "stage": "A",
+                        "clip_id": manifest.clip_id,
+                        "camera_id": camera_id,
+                        "error_type": type(e).__name__,
+                        "error": str(e),
+                    }) + "\n")
+                if stage_a_allow_placeholder:
+                    _write_placeholder_stage_A(layout, manifest, camera_id=camera_id, pkt0=pkt0)
+                    stage_a_enabled = False
+                    stage_a_placeholder_written = True
+                else:
+                    raise RuntimeError(
+                        "Stage A is scheduled to run in multiplex_ABC but real dependencies could not be imported. "
+                        "Install boxmot/ultralytics (and any required backends), or set stages.stage_A.allow_placeholder=true."
+                    ) from e
+            else:
+                layout.ensure_dirs_for_stage("A")
+                H = _load_homography_matrix(resolved_config, camera_id)
+                blueprint = load_mat_blueprint(Path("configs") / "mat_blueprint.json")
+
+                stage_a_writer = StageAWriter(layout=layout, clip_id=manifest.clip_id, camera_id=camera_id)
+
+                try:
+                    model_path = str(
+                        _cfg_get(
+                            resolved_config,
+                            "stages.stage_A.detector.model_path",
+                            _cfg_get(resolved_config, "detector.model_path", "models/yolov8n.pt"),
+                        )
+                    )
+                    seg_model_path = _cfg_get(
+                        resolved_config,
+                        "stages.stage_A.detector.seg_model_path",
+                        _cfg_get(resolved_config, "detector.seg_model_path", "models/yolov8s-seg.pt"),
+                    )
+                    use_seg = bool(
+                        _cfg_get(resolved_config, "stages.stage_A.detector.use_seg", _cfg_get(resolved_config, "detector.use_seg", True))
+                    )
+                    conf = float(_cfg_get(resolved_config, "stages.stage_A.detector.conf", _cfg_get(resolved_config, "detector.conf", 0.25)))
+                    imgsz = _cfg_get(resolved_config, "stages.stage_A.detector.imgsz", _cfg_get(resolved_config, "detector.imgsz", None))
+                    device = _cfg_get(resolved_config, "stages.stage_A.detector.device", _cfg_get(resolved_config, "detector.device", None))
+
+                    detector = UltralyticsYoloDetector(
+                        model_path=model_path,
+                        seg_model_path=str(seg_model_path) if seg_model_path is not None else None,
+                        use_seg=use_seg,
+                        conf=conf,
+                        imgsz=int(imgsz) if imgsz is not None else None,
+                        device=str(device) if device is not None else None,
+                    )
+
+                    with_reid = bool(
+                        _cfg_get(
+                            resolved_config,
+                            "stages.stage_A.tracker.with_reid",
+                            _cfg_get(resolved_config, "tracker.with_reid", False),
+                        )
+                    )
+                    params = _cfg_get(
+                        resolved_config,
+                        "stages.stage_A.tracker.params",
+                        _cfg_get(resolved_config, "tracker.params", {}),
+                    )
+                    if not isinstance(params, dict):
+                        params = dict(params)
+                    params = _botsort_params_with_defaults(resolved_config, params, with_reid=with_reid)
+                    tracker = BotSortTracker(with_reid=with_reid, params=params)
+
+                    stage_a_processor = StageAProcessor(
+                        config=resolved_config,
+                        homography=H,
+                        mat_blueprint=blueprint,
+                        writer=stage_a_writer,
+                        detector=detector,
+                        tracker=tracker,
+                    )
+                except Exception as e:
+                    layout.ensure_dirs_for_stage("A")
+                    p = Path(layout.audit_jsonl("A"))
+                    p.parent.mkdir(parents=True, exist_ok=True)
+                    with p.open("a", encoding="utf-8") as f:
+                        f.write(json.dumps({
+                            "event": "stage_a_real_setup_failed",
+                            "stage": "A",
+                            "clip_id": manifest.clip_id,
+                            "camera_id": camera_id,
+                            "error_type": type(e).__name__,
+                            "error": str(e),
+                            "tracker_with_reid": bool(with_reid),
+                            "tracker_params_keys": sorted(list(params.keys())) if isinstance(params, dict) else None,
+                            "compute_device": _cfg_get(resolved_config, "compute.device", None),
+                            "compute_half": _cfg_get(resolved_config, "compute.half", None),
+                        }) + "\n")
+                    if stage_a_allow_placeholder:
+                        # If any real Stage A setup fails, optionally fall back to placeholder outputs.
+                        _write_placeholder_stage_A(layout, manifest, camera_id=camera_id, pkt0=pkt0)
+                        stage_a_enabled = False
+                        stage_a_placeholder_written = True
+                    else:
+                        raise RuntimeError(
+                            "Stage A is scheduled to run in multiplex_ABC but real Stage A setup failed. "
+                            "Fix the error (see stage_A/audit.jsonl) or set stages.stage_A.allow_placeholder=true."
+                        ) from e
 
         viz: MuxVisualizer | None = None
         ann_writer = mat_writer = None
@@ -190,15 +396,76 @@ def run_multiplex_ABC(*,
                 ann_writer.write(ann)
                 mat_writer.write(mat)
 
+            if stage_a_processor is not None and stage_a_writer is not None:
+                try:
+                    stage_a_processor.process_frame(
+                        frame_bgr=pkt.image_bgr,
+                        frame_index=int(pkt.frame_index),
+                        timestamp_ms=int(pkt.timestamp_ms),
+                    )
+                except Exception as e:
+                    # Capture full traceback so we can pinpoint the exact file:line of failure
+                    tb = traceback.format_exc()
+
+                    # Best-effort: prove which detector implementation module is actually loaded at runtime
+                    detector_mod = None
+                    detector_file = None
+                    try:
+                        detector_mod = getattr(getattr(stage_a_processor, "detector", None), "__class__", None).__module__
+                        import importlib
+                        m = importlib.import_module(detector_mod) if detector_mod else None
+                        detector_file = getattr(m, "__file__", None) if m is not None else None
+                    except Exception:
+                        detector_mod = detector_mod or None
+                        detector_file = detector_file or None
+
+                    # Make failures actionable: include frame index and input types/shapes.
+                    event = {
+                        "frame_index": int(pkt.frame_index),
+                        "timestamp_ms": int(pkt.timestamp_ms),
+                        "frame_bgr_type": str(type(pkt.image_bgr)),
+                        "frame_bgr_shape": getattr(pkt.image_bgr, "shape", None),
+                        "error_type": type(e).__name__,
+                        "error": str(e),
+                        "error_repr": repr(e),
+                        "traceback": tb,
+                        "detector_module": detector_mod,
+                        "detector_module_file": detector_file,
+                    }
+                    stage_a_writer.audit("stage_a_process_frame_failed", event)
+                    # Persist immediately so it's visible even if we crash before write_all()
+                    try:
+                        stage_a_writer.flush_audit_now()
+                    except Exception:
+                        pass
+                    raise
+
         if ann_writer is not None:
             ann_writer.close()
         if mat_writer is not None:
             mat_writer.close()
 
+        if stage_a_processor is not None and stage_a_writer is not None:
+            stage_a_writer.audit("stage_a_completed", {"n_frames": int(it.n_frames) if hasattr(it, "n_frames") else None})
+            stage_a_writer.write_all()
+
+            # Validate canonical outputs immediately (keeps resume/skip logic honest).
+            try:
+                from bjj_pipeline.contracts.f0_validate import validate_detections_df, validate_tracklet_tables
+                validate_detections_df(pd.read_parquet(layout.detections_parquet()))
+                validate_tracklet_tables(
+                    pd.read_parquet(layout.tracklet_frames_parquet()),
+                    pd.read_parquet(layout.tracklet_summaries_parquet()),
+                )
+            except Exception:
+                # Orchestration will surface validation errors later; avoid hard fail here.
+                pass
+
     # Emit placeholder canonical artifacts for any stage that is scheduled to run.
     # NOTE: These are intentionally minimal but must pass F0 validators.
     if "A" in letters_to_run:
-        _write_placeholder_stage_A(layout, manifest, camera_id=camera_id, pkt0=pkt0)
+        if stage_a_processor is None and not stage_a_placeholder_written:
+            _write_placeholder_stage_A(layout, manifest, camera_id=camera_id, pkt0=pkt0)
     if "B" in letters_to_run:
         _write_placeholder_stage_B(layout, manifest, camera_id=camera_id, pkt0=pkt0)
     if "C" in letters_to_run:

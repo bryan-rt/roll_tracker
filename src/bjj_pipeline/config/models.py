@@ -70,22 +70,83 @@ class CameraConfig(BaseModel):
 
 
 class StageAConfig(BaseModel):
-    """Stage A thresholds/toggles."""
+    """Stage A configuration (Detection + Tracklets).
+
+    Stage A owns:
+      - YOLO person detection (bboxes + confidence)
+      - Optional YOLO segmentation masks (file-backed, canonical)
+      - MOT association to produce tracklets (BoT-SORT)
+      - First-pass contact point + homography projection to (x_m, y_m)
+
+    Stage A must NOT perform homography calibration/validation (handled by preflight).
+    """
 
     model_config = ConfigDict(extra="forbid")
 
-    start_dist_m: Optional[float] = Field(default=None, description="Hysteresis start distance (meters)")
-    end_dist_m: Optional[float] = Field(default=None, description="Hysteresis end distance (meters)")
+    # Accept a mode key for compatibility with orchestration configs.
+    # Not used by the processor directly.
+    mode: Optional[str] = Field(default=None, description="Execution mode (compat)")
+
+    class DetectorConfig(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+        model_path: str = Field(default="models/yolov8n.pt", description="YOLO detection weights")
+        seg_model_path: Optional[str] = Field(
+            default=None,
+            description="Optional YOLO segmentation weights (if use_seg is true and the file exists)",
+        )
+        use_seg: bool = Field(default=False, description="Attempt to use YOLO segmentation masks")
+        conf: float = Field(default=0.25, ge=0.0, le=1.0, description="Detection confidence threshold")
+        imgsz: Optional[int] = Field(default=None, gt=0, description="Optional inference image size")
+        device: Optional[str] = Field(default=None, description="Optional detector device override")
+
+    class MaskGateConfig(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+        det_conf_min: float = Field(default=0.25, ge=0.0, le=1.0)
+        mask_quality_min: float = Field(default=0.4, ge=0.0, le=1.0)
+        min_area_frac: float = Field(default=0.10, ge=0.0, le=10.0)
+        max_area_frac: float = Field(default=1.10, gt=0.0, le=10.0)
+
+        @model_validator(mode="after")
+        def _validate_area_frac(self) -> "StageAConfig.MaskGateConfig":
+            if self.min_area_frac >= self.max_area_frac:
+                raise ValueError("min_area_frac must be < max_area_frac")
+            return self
+
+    class MasksConfig(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+        gate: "StageAConfig.MaskGateConfig" = Field(default_factory=lambda: StageAConfig.MaskGateConfig())
+
+    class PhysicsConfig(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+        audit_only: bool = Field(default=True, description="If true, physics is logged but does not gate tracking")
+        max_speed_mps: float = Field(default=8.0, gt=0.0, description="Speed threshold for physics warnings")
+
+    class TrackerConfig(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+        mode: str = Field(default="botsort", description="Tracker backend mode")
+        with_reid: bool = Field(default=False, description="Enable appearance/ReID matching where supported")
+        use_mask_bbox: bool = Field(default=True, description="Use mask-tight bbox for tracker association")
+        params: dict = Field(default_factory=dict, description="Backend-specific tracker parameters")
+        physics: "StageAConfig.PhysicsConfig" = Field(default_factory=lambda: StageAConfig.PhysicsConfig())
+
+        @field_validator("mode")
+        @classmethod
+        def _validate_mode(cls, v: str) -> str:
+            if v != "botsort":
+                raise ValueError("Only tracker.mode='botsort' is supported in this build")
+            return v
+
+    # Optional stride for POC perf (0/None means no skipping)
     frame_stride: Optional[int] = Field(default=None, ge=0, description="Frame stride; 0/None means no skipping")
 
-    @model_validator(mode="after")
-    def _validate_hysteresis(self) -> "StageAConfig":
-        if self.start_dist_m is not None and self.end_dist_m is not None:
-            if self.end_dist_m < 0:
-                raise ValueError("end_dist_m must be >= 0")
-            if not (self.start_dist_m > self.end_dist_m):
-                raise ValueError("start_dist_m must be strictly greater than end_dist_m")
-        return self
+    detector: DetectorConfig = Field(default_factory=lambda: StageAConfig.DetectorConfig())
+    masks: MasksConfig = Field(default_factory=lambda: StageAConfig.MasksConfig())
+    tracker: TrackerConfig = Field(default_factory=lambda: StageAConfig.TrackerConfig())
 
 
 class StageBConfig(BaseModel):

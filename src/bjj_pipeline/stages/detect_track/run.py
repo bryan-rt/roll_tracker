@@ -4,15 +4,23 @@ This module intentionally exposes a stable orchestration contract:
 
 	run(config: dict, inputs: dict) -> dict
 
-Slice 2 placeholder: write schema-correct empty artifacts so the pipeline can
-run end-to-end before the real detector/tracker is integrated.
+Slice 3+: real implementation (optional) using:
+	- Ultralytics YOLO (detection + optional segmentation)
+	- BoxMOT BoT-SORT (tracklet generator)
+	- StageAProcessor (per-frame deterministic engine)
+
+IMPORTANT: Unit tests should not require ultralytics/boxmot/cv2.
+Therefore this runner supports a safe "stub" mode that writes empty,
+schema-correct outputs (validator passing) unless explicitly enabled.
 """
 
 from __future__ import annotations
 
 from typing import Any, Dict
 from pathlib import Path
+import json
 
+import numpy as np
 import pandas as pd
 
 from bjj_pipeline.contracts.f0_paths import ClipOutputLayout
@@ -20,49 +28,207 @@ from bjj_pipeline.contracts.f0_validate import (
 	validate_detections_df,
 	validate_tracklet_tables,
 )
-from .outputs import empty_df_for_schema_key
+from .outputs import StageAWriter
+
+
+def _cfg_get(cfg: Any, path: str, default: Any = None) -> Any:
+	"""Get nested config value from dict-like or object-like config.
+
+	path uses dot-notation, e.g. "stage_A.mode" or "detector.model_path".
+	"""
+	cur: Any = cfg
+	for key in path.split("."):
+		if cur is None:
+			return default
+		# dict-like
+		if isinstance(cur, dict):
+			cur = cur.get(key, None)
+			continue
+		# pydantic-like or plain object
+		if hasattr(cur, key):
+			cur = getattr(cur, key)
+			continue
+		return default
+	return default if cur is None else cur
+
+
+def _load_json(path: Path) -> Dict[str, Any]:
+	return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _load_mat_blueprint(cfg: Any) -> Dict[str, Any]:
+	# Prefer explicit config value
+	p = _cfg_get(cfg, "mat_blueprint_path", None)
+	if p:
+		pp = Path(p)
+		if pp.exists():
+			return _load_json(pp)
+
+	# Default repo location
+	pp = Path("configs") / "mat_blueprint.json"
+	if pp.exists():
+		return _load_json(pp)
+
+	# Last resort: empty (processor will treat on_mat as None/False via helper)
+	return {}
+
+
+def _load_homography_matrix(cfg: Any, camera_id: str) -> np.ndarray:
+	# Prefer explicit config path
+	p = _cfg_get(cfg, "homography_path", None)
+	if p:
+		pp = Path(p)
+		if pp.exists():
+			j = _load_json(pp)
+			H = np.asarray(j.get("H", j.get("homography", j.get("matrix"))), dtype=np.float64)
+			return H.reshape((3, 3))
+
+	# Typical camera config locations
+	cam_dir = Path("configs") / "cameras" / camera_id
+	candidates = [
+		cam_dir / "homography.json",
+		cam_dir / "homography_pipeline.json",
+		cam_dir / "homography_from_npy.json",
+	]
+	for pp in candidates:
+		if pp.exists():
+			j = _load_json(pp)
+			H = np.asarray(j.get("H", j.get("homography", j.get("matrix"))), dtype=np.float64)
+			return H.reshape((3, 3))
+
+	raise FileNotFoundError(
+		f"Homography not found for camera_id={camera_id}. "
+		f"Tried config.homography_path and {candidates}."
+	)
 
 
 def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
-	"""Orchestrator entrypoint (placeholder implementation).
+	"""Orchestrator entrypoint.
 
-	Writes empty schema-correct parquet outputs for Stage A:
-	- stage_A/detections.parquet
-	- stage_A/tracklet_frames.parquet
-	- stage_A/tracklet_summaries.parquet
-	Also ensures the stage directory exists and drops a minimal audit line.
+	Always-real mode:
+	  - run YOLO + BoT-SORT via StageAProcessor
 	"""
 	layout: ClipOutputLayout = inputs["layout"]
-	stage_dir = layout.stage_dir("A")
-	stage_dir.mkdir(parents=True, exist_ok=True)
 
-	# Build empty dataframes matching canonical schemas
-	det_df = empty_df_for_schema_key("detections")
-	tf_df = empty_df_for_schema_key("tracklet_frames")
-	ts_df = empty_df_for_schema_key("tracklet_summaries")
+	camera_id = str(inputs.get("camera_id", getattr(layout, "camera_id", "cam")))
+	clip_id = str(inputs.get("clip_id", getattr(layout, "clip_id", layout.clip_root.name)))
 
-	# Write parquet outputs
+	# Ensure stage dir exists
+	layout.stage_dir("A").mkdir(parents=True, exist_ok=True)
+
+	# -----------------------------
+	# REAL MODE
+	# -----------------------------
+	# Lazy imports so tests don't require these deps
+	try:
+		from .processor import StageAProcessor
+		from .detector import UltralyticsYoloDetector
+		from .tracker import BotSortTracker
+	except Exception as e:  # pragma: no cover
+		raise RuntimeError(
+			"Stage A is configured as always-real, but required dependencies could not be imported. "
+			"Ensure ultralytics + boxmot (and any video deps) are installed."
+		) from e
+
+	# Frame iteration: prefer shared FrameIterator if provided by orchestration (Z3),
+	# otherwise open video directly (multipass).
+	frame_iter = inputs.get("frame_iterator", None)
+	if frame_iter is None:
+		try:
+			from bjj_pipeline.core.frame_iterator import FrameIterator
+		except Exception as e:  # pragma: no cover
+			raise RuntimeError("FrameIterator not available; cannot run Stage A in real mode.") from e
+
+		clip_path = inputs.get("clip_path", inputs.get("clip", None))
+		if clip_path is None:
+			raise KeyError("Stage A real mode requires inputs['clip_path'] (or inputs['clip']).")
+		frame_iter = FrameIterator(Path(str(clip_path)))
+
+	# Load homography + blueprint
+	H = _load_homography_matrix(config, camera_id)
+	mat_blueprint = inputs.get("mat_blueprint", None) or _load_mat_blueprint(config)
+
+	# Writer
+	writer = StageAWriter(layout=layout, clip_id=clip_id, camera_id=camera_id)
+
+	# Prefer structured config: stages.stage_A.detector.*
+	model_path = str(
+		_cfg_get(
+			config,
+			"stages.stage_A.detector.model_path",
+			_cfg_get(config, "detector.model_path", _cfg_get(config, "models.yolo_det", "models/yolov8n.pt")),
+		)
+	)
+	seg_model_path = _cfg_get(
+		config,
+		"stages.stage_A.detector.seg_model_path",
+		_cfg_get(config, "detector.seg_model_path", _cfg_get(config, "models.yolo_seg", None)),
+	)
+	use_seg = bool(_cfg_get(config, "stages.stage_A.detector.use_seg", _cfg_get(config, "detector.use_seg", True)))
+	conf = float(_cfg_get(config, "stages.stage_A.detector.conf", _cfg_get(config, "detector.conf", 0.25)))
+	imgsz = _cfg_get(config, "stages.stage_A.detector.imgsz", _cfg_get(config, "detector.imgsz", None))
+	device = _cfg_get(config, "stages.stage_A.detector.device", _cfg_get(config, "detector.device", None))
+
+	detector = UltralyticsYoloDetector(
+		model_path=model_path,
+		seg_model_path=str(seg_model_path) if seg_model_path is not None else None,
+		use_seg=use_seg,
+		conf=conf,
+		imgsz=int(imgsz) if imgsz is not None else None,
+		device=str(device) if device is not None else None,
+	)
+
+	# Tracker config
+	with_reid = bool(_cfg_get(config, "stages.stage_A.tracker.with_reid", _cfg_get(config, "tracker.with_reid", False)))
+	tracker_mode = str(_cfg_get(config, "stages.stage_A.tracker.mode", _cfg_get(config, "tracker.mode", "botsort"))).lower()
+	if tracker_mode != "botsort":
+		raise ValueError(f"Unsupported tracker.mode={tracker_mode!r}. Only 'botsort' is supported in Stage A.")
+	params = _cfg_get(config, "stages.stage_A.tracker.params", _cfg_get(config, "tracker.params", {}))
+	if not isinstance(params, dict):
+		params = dict(params)
+
+	tracker = BotSortTracker(with_reid=with_reid, params=params)
+
+	processor = StageAProcessor(
+		config=config,
+		homography=H,
+		mat_blueprint=mat_blueprint,
+		writer=writer,
+		detector=detector,
+		tracker=tracker,
+	)
+
+	# Iterate frames
+	n = 0
+	for frame in frame_iter:
+		# Support both iterator styles:
+		#  (frame_bgr, frame_index, timestamp_ms)
+		# or objects with attributes
+		if isinstance(frame, tuple) and len(frame) >= 3:
+			frame_bgr, frame_index, timestamp_ms = frame[0], int(frame[1]), int(frame[2])
+		else:
+			frame_bgr = frame.frame_bgr  # type: ignore[attr-defined]
+			frame_index = int(frame.frame_index)  # type: ignore[attr-defined]
+			timestamp_ms = int(frame.timestamp_ms)  # type: ignore[attr-defined]
+
+		processor.process_frame(frame_bgr=frame_bgr, frame_index=frame_index, timestamp_ms=timestamp_ms)
+		n += 1
+
+	writer.audit("stage_a_completed", {"n_frames": n})
+	res = writer.write_all()
+
+	# Validate shape/contracts (parquet schemas)
 	det_path = layout.detections_parquet()
 	tf_path = layout.tracklet_frames_parquet()
 	ts_path = layout.tracklet_summaries_parquet()
-	det_df.to_parquet(det_path)
-	tf_df.to_parquet(tf_path)
-	ts_df.to_parquet(ts_path)
-
-	# Validate shape/contracts
 	validate_detections_df(pd.read_parquet(det_path))
 	validate_tracklet_tables(pd.read_parquet(tf_path), pd.read_parquet(ts_path))
 
-	# Minimal audit to aid debugging; orchestration also appends events
-	audit_path = layout.audit_jsonl("A")
-	Path(audit_path).write_text("{}\n", encoding="utf-8")
-
-	# Returning is optional; manifest registration is done by the orchestrator
 	return {
-		"detections_parquet": layout.rel_to_clip_root(det_path),
-		"tracklet_frames_parquet": layout.rel_to_clip_root(tf_path),
-		"tracklet_summaries_parquet": layout.rel_to_clip_root(ts_path),
-		"audit_jsonl": layout.rel_to_clip_root(audit_path),
+		"detections_parquet": res.detections_ref,
+		"tracklet_frames_parquet": res.tracklet_frames_ref,
+		"tracklet_summaries_parquet": res.tracklet_summaries_ref,
+		"audit_jsonl": res.audit_ref,
 	}
 
 
