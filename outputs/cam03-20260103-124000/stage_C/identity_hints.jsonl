@@ -1,1 +1,0 @@
-{"schema_version": "0", "artifact_type": "identity_hint", "clip_id": "cam03-20260103-124000", "camera_id": "cam03", "pipeline_version": "dev", "created_at_ms": 0, "tracklet_id": "t1", "anchor_key": "tag:123", "constraint": "must_link", "confidence": 0.9, "evidence": "placeholder"}

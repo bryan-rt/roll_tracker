@@ -1,0 +1,10 @@
+# Install these with:
+#   python -m pip install --no-deps -r requirements-nodeps.txt
+#
+# Rationale:
+# Ultralytics and BoxMOT will often pull opencv-python as a dependency, which
+# then forces NumPy 2.x resolution on macOS arm64. We want opencv-python-headless
+# + NumPy 1.26.4 for Torch compatibility.
+
+ultralytics==8.3.252
+boxmot==16.0.8

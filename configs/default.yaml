@@ -34,12 +34,36 @@ camera:
 # Stage configuration
 stages:
   stage_A:
-    # Hysteresis thresholds (meters). Provide via camera config for production.
-    # If set, must satisfy: start_dist_m > end_dist_m >= 0
-    start_dist_m: null
-    end_dist_m: null
+    mode: real
     # Frame stride; 0/None means no skipping. 1 is a safe POC default.
     frame_stride: 1
+
+    detector:
+      # YOLO detection weights (required)
+      model_path: models/yolov8n.pt
+      # Optional YOLO segmentation weights. If missing at runtime, Stage A will
+      # fall back to deterministic bbox masks and emit an audit event.
+      seg_model_path: models/yolov8s-seg.pt
+      use_seg: true
+      conf: 0.25
+      imgsz: null
+      device: null
+
+    masks:
+      gate:
+        det_conf_min: 0.25
+        mask_quality_min: 0.40
+        min_area_frac: 0.10
+        max_area_frac: 1.10
+
+    tracker:
+      mode: botsort
+      with_reid: false
+      use_mask_bbox: true
+      params: {}
+      physics:
+        audit_only: true
+        max_speed_mps: 8.0
 
   stage_B:
     # Masks stage toggle; per-camera overrides can enable/disable.
