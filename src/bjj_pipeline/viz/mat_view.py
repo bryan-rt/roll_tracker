@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Iterable, Tuple
+from typing import Any, Iterable, Tuple, Dict, List, Optional
 
 import numpy as np
 import cv2
@@ -35,6 +35,10 @@ def render_mat_canvas(
     width: int = 640,
     height: int = 640,
     margin_px: int = 24,
+    points: Optional[List[Tuple[float, float, str, Optional[bool]]]] = None,
+    trails: Optional[Dict[str, List[Tuple[float, float, int]]]] = None,
+    frame_index: Optional[int] = None,
+    title: Optional[str] = None,
 ) -> np.ndarray:
     """Render a 2D mat blueprint into a fixed-size image.
 
@@ -86,4 +90,24 @@ def render_mat_canvas(
 
     # Outer border
     cv2.rectangle(img, (10, 10), (width - 10, height - 10), (0, 0, 0), 1)
+    # Optional: draw current points
+    if points:
+        for (x_m, y_m, tid, on_mat) in points:
+            u, v = to_px(float(x_m), float(y_m))
+            col = (0, 180, 0) if bool(on_mat) else (0, 0, 180)
+            cv2.circle(img, (u, v), 4, col, -1)
+            cv2.putText(img, str(tid), (u + 6, v - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
+    # Optional: draw trails
+    if trails:
+        for tid, trail in trails.items():
+            for (x_m, y_m, age) in trail:
+                u, v = to_px(float(x_m), float(y_m))
+                alpha = max(0.15, 1.0 - (float(age) / 18.0))
+                col = (int(255 * alpha), int(255 * alpha), int(0))
+                cv2.circle(img, (u, v), 3, col, -1)
+    # Optional title/frame index
+    if title:
+        cv2.putText(img, str(title), (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 1, cv2.LINE_AA)
+    elif frame_index is not None:
+        cv2.putText(img, f"frame={int(frame_index)}", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 1, cv2.LINE_AA)
     return img

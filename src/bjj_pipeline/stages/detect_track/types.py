@@ -59,3 +59,25 @@ class TrackState:
   last_x_m: float
   last_y_m: float
   last_timestamp_ms: int
+
+
+@dataclass
+class OverlayItem:
+    """Per-frame visualization payload for debug videos.
+
+    These are debug-only and are not persisted to parquet directly.
+    """
+    tracklet_id: str
+    detection_id: str
+    confidence: float
+    x1: float
+    y1: float
+    x2: float
+    y2: float
+    mask: Optional[np.ndarray] = None  # uint8 {0,1} in full-frame resolution
+    mask_source: Optional[MaskSource] = None
+    u_px: Optional[float] = None
+    v_px: Optional[float] = None
+    x_m: Optional[float] = None
+    y_m: Optional[float] = None
+    on_mat: Optional[bool] = None

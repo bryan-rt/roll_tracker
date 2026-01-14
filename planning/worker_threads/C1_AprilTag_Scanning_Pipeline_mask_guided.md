@@ -12,6 +12,45 @@ Stage C outputs identity_hints.jsonl only.
 Stage C must not perform appearance embeddings or soft matching.
 # C1 — AprilTag Scanning Pipeline (mask-guided)
 
+## Addendum — Mask Source Priority (post-A1R4, with optional B overrides)
+
+This addendum locks how C1 chooses the ROI for AprilTag scanning now that:
+- **Stage A** emits **canonical masks for every detection** (`stage_A/masks/*.npz`)
+- **Stage B** may emit **refined masks** for a sparse set of detections/frames (`stage_B/masks/*.npz`)
+
+### ROI source priority (authoritative)
+For each `(frame_index, detection_id)` being scanned:
+
+1) **Stage B refined mask** if present for that exact detection/frame  
+   - Use: `stage_B/masks/*.npz`
+   - Rationale: B exists specifically to improve mask quality during entanglement/merge-split/low-quality segments.
+
+2) **Stage A canonical mask** otherwise  
+   - Use: `stage_A/masks/*.npz`
+   - Rationale: A guarantees a valid mask for every detection (YOLO-seg if gated, bbox fallback otherwise).
+
+3) **Fallback to bbox** only if mask loading fails unexpectedly  
+   - Use bbox from `stage_A/detections.parquet` for that detection row
+   - This fallback should be rare; if it occurs, log an audit warning with counts.
+
+### Geometry usage (important clarification)
+C1 may use Stage A’s geometry for:
+- deciding *whether* to scan (e.g., on_mat, proximity heuristics, confidence thresholds)
+- optional gating (skip when athlete is off-mat, too small, etc.)
+
+But **C1 must not mutate** Stage A geometry. C1 only emits tag observations and identity hints.
+
+### Determinism & audit requirements (C1)
+When scanning, C1 must record per-attempt metadata in `stage_C/audit.jsonl`, including:
+- `roi_source`: "stage_B_mask" | "stage_A_mask" | "bbox_fallback"
+- `roi_px_area`, `roi_bbox` (optional but helpful)
+- decode results + failure reason code (e.g., "no_candidates", "low_contrast", "motion_blur")
+
+### Acceptance criteria update
+C1 is considered successful when:
+- it can scan using Stage A masks for an entire clip deterministically, and
+- when Stage B has refined masks for some frames, C1 automatically prefers them (no manual intervention),
+- and audit logs show ROI-source counts and decode attempt stats.
 
 ## Update: F0 + F3 are complete (locked constraints)
 
@@ -127,21 +166,11 @@ These are defaults; workers may propose alternatives but must align with constra
 - **Video I/O**: OpenCV for reading frames when needed; ffmpeg for export
 - **Data**: JSONL for event logs; Parquet for high-volume tables (decide in F0/F2)
 
-### Contracts & artifacts (must be defined centrally in F0)
-Workers should assume the following artifact families will exist, with exact schemas defined in F0:
-- `detections` (per-frame detections)
-- `tracklets` (tracklet spans + summaries)
-- `masks` (mask references, RLE/paths) and `contact_points` (u,v and x,y)
-- `tag_observations` (frame-level tag detections) and `identity_assignments`
-- `person_tracks` (stitched per-person timeline)
-- `match_sessions`
-- `export_manifest` / DB rows / audit logs
+### Contracts & artifacts
+Authoritative schemas live in F0; C1 consumes `stage_A`/`stage_B` masks and emits `stage_C/tag_observations.jsonl`.
 
-### Definition of “done” for a worker thread
-A worker thread is “done” only when it returns to the Manager:
-- **Design Spec** (assumptions, algorithm, edge cases, failure modes)
-- **Interface Contract** (inputs/outputs + invariants, including artifact schema deltas if any)
-- **Copilot Prompt Pack** (file-by-file prompts) and/or **Acceptance Criteria** (tests + checks)
+### Definition of done
+Follow the standard manager checklist; add unit tests validating ROI selection and decode determinism.
 
 
 ---

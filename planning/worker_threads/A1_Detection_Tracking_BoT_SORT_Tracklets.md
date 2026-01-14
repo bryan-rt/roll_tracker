@@ -63,6 +63,153 @@ If emitted, Stage A writes:
 Stage A outputs are immutable and must never be overwritten by later stages.
 # A1 — Detection & Tracking (BoT-SORT Tracklets)
 
+---
+
+## Completion Summary — A1R4
+
+**Status:** COMPLETE (A1R4 accepted)
+
+This worker is now production-ready and unblocks A2/B/C/D work.
+
+### What A1 Now Owns (as-implemented)
+Stage A is the **canonical owner** of per-frame *online* signals for every detection / tracklet, including:
+
+- Detection + tracking (YOLO + BoT-SORT) with deterministic `detection_id` and stable `tracklet_id`
+- **Canonical masks** for every detection (YOLO-seg when passing gates; bbox fallback otherwise)
+- **Contact point extraction** (mask-first with bbox fallback) with confidence
+- **Homography projection** px→meters and per-frame velocities
+- **Mat inclusion** (`on_mat`) using `mat_blueprint.json` polygon
+
+Stage A runs in **multiplex_ABC** (single-pass frame loop) and writes canonical artifacts at end-of-run, preserving determinism and F0 validation.
+
+### Canonical Outputs (authoritative)
+- `stage_A/detections.parquet`
+- `stage_A/tracklet_frames.parquet` (now includes geometry/velocity/on_mat fields per the v0.3.0 schema)
+- `stage_A/tracklet_summaries.parquet` (intentionally thin)
+- `stage_A/masks/*.npz` (canonical mask outputs)
+- `stage_A/audit.jsonl`
+
+Dev visualization remains orchestration-owned under `outputs/<clip_id>/_debug/`.
+
+### Stage B Relationship (updated)
+Stage B is now **selective** and should be invoked only for frames/detections that need refinement (entanglement/merge-split, poor mask quality, etc.). When Stage B runs, it may emit **refined masks** and **sparse geometry overrides** for affected detections/frames; it should *not* duplicate Stage A’s full-frame pass.
+
+### Accepted Non-Blocking Deferrals
+- Tracklet summaries remain minimal by design
+- Zero velocities can be real (stationary athletes)
+- Global identity stitching remains Stage D
+
+### PM Sign-off
+Stage A is complete and production-ready; artifacts validate and dev videos confirm behavior. Proceed to A2/B/C/D.
+
+## Completion Report — A1R4 (Stage A Final Wrap-Up)
+
+**Status:** ✅ COMPLETE / healthy (per A1R4 validation runs)
+
+### Executive summary
+Stage A is functionally complete and behaving as intended across its core responsibilities:
+
+- Detection + segmentation (YOLO)  
+- Mask gating + deterministic bbox fallback  
+- Local tracking / tracklet generation (BoT-SORT)  
+- Contact point extraction  
+- Homography projection to metric space  
+- Mat inclusion testing (`on_mat`)  
+- Canonical artifact emission (NPZ + parquet + audit)  
+- Debug visualization outputs (annotated + mat-view)
+
+No blocking issues remain. Remaining gaps are explicitly accepted deferrals or non-core enhancements.
+
+### 1) Detection & segmentation
+**Result:** ✅ Complete  
+**What’s implemented**
+- YOLO detection + segmentation are operational when `use_seg=true`.
+- Segmentation is attempted whenever enabled; masks are resized to full-frame resolution before leaving the detector.
+- Deterministic `detection_id` assignment per frame.
+
+**Evidence to reference**
+- `outputs/<clip_id>/stage_A/audit.jsonl`: `detector_use_seg=true`, `detector_seg_model_loaded=true`, `mask_shapes_sample=[[H,W], …]`
+- `outputs/<clip_id>/_debug/annotated.mp4`: visible segmentation overlays aligned to people
+
+### 2) Mask gating & fallback behavior
+**Result:** ✅ Complete (matches intended semantics)  
+**What’s implemented**
+- Mask quality gating uses:
+  - area fraction thresholds  
+  - detection confidence  
+- If a mask is rejected, a deterministic bbox-fallback mask is substituted.
+- Downstream stages always receive a valid mask (no “missing-mask” holes).
+
+**Evidence to reference**
+- `stage_A/audit.jsonl`: `mask_source` (expected `"yolo_seg"` in normal conditions), `mask_quality≈0.93–0.96` in recent runs  
+- Parquet outputs + annotated video show no unexpected fallback usage
+
+### 3) Tracking (BoT-SORT tracklets)
+**Result:** ✅ Complete  
+**What’s implemented**
+- Tracklet IDs (`tid`) remain stable across frames.
+- Identity continuity is preserved across typical motion/occlusion patterns.
+- Tracker receives the required per-frame inputs (no `NoneType` wiring failures).
+
+**Evidence to reference**
+- `outputs/<clip_id>/_debug/annotated.mp4`: consistent `tid` labels per person
+- `stage_A/tracklet_frames.parquet`: consistent `tracklet_id` reuse across frames
+
+### 4) Contact point extraction
+**Result:** ✅ Complete  
+**What’s implemented**
+- Contact points computed from segmentation mask when available; bbox fallback otherwise.
+- Contact confidence is recorded; pixel-space `(u_px, v_px)` is stable.
+
+**Evidence to reference**
+- `stage_A/tracklet_frames.parquet`: `contact_method="yolo_mask"` when segmentation is available; non-zero smoothly varying `(u_px, v_px)`
+
+### 5) Homography projection
+**Result:** ✅ Complete  
+**What’s implemented**
+- Homography is correctly loaded, validated, and applied.
+- Pixel coordinates project to sane metric-space `(x_m, y_m)` without scale explosions or drift.
+- Direction of homography had to be inversed for proper coordinate space conversion.
+
+**Evidence to reference**
+- `stage_A/audit.jsonl`: `homography_converted=true`
+- `stage_A/tracklet_frames.parquet`: stable plausible `(x_m, y_m)` values; velocity magnitudes now reflect realistic motion
+
+### 6) Mat inclusion (`on_mat`)
+**Result:** ✅ Complete  
+**What’s implemented**
+- `configs/mat_blueprint.json` is loaded correctly (including list-format blueprints).
+- `point_in_mat()` correctly evaluates inclusion.
+- `on_mat` aligns with visual position in debug video.
+
+**Evidence to reference**
+- `stage_A/audit.jsonl`: blueprint path and blueprint type (expected `list`)
+- `stage_A/tracklet_frames.parquet`: `on_mat=true/false` consistent with position
+
+### 7) Canonical artifact outputs
+**Result:** ✅ Complete  
+**What’s emitted**
+- **Masks:** `outputs/<clip_id>/stage_A/masks/*.npz`  
+  - If `mask_source="yolo_seg"`, NPZ contains YOLO segmentation mask  
+  - If fallback occurs, NPZ contains deterministic bbox mask
+- **Tables:**  
+  - `detections.parquet`: boxes + confidences (+ mask refs / geometry as defined by F0)  
+  - `tracklet_frames.parquet`: geometry, velocities, `on_mat`, contact point fields  
+  - `tracklet_summaries.parquet`: minimal but consistent and validator-safe
+- **Audit:** `stage_A/audit.jsonl` emits key configuration + runtime events.
+
+### 8) Visualization (non-blocking, now complete)
+**Result:** ✅ Complete  
+- `outputs/<clip_id>/_debug/annotated.mp4`: bbox, mask, `tid`, confidence overlays  
+- `outputs/<clip_id>/_debug/mat_view.mp4`: plots `(x_m, y_m)` points and trails
+
+### Accepted deferrals (explicitly non-blocking)
+- **Tracklet summaries are “thin”**: only spans + counts; richer quality scoring/aggregates deferred intentionally.  
+- **Zero velocities at times**: expected due to stationary athletes; confirmed as plausible.
+
+### Final verdict / PM-ready sign-off
+Stage A (A1R4) is **DONE**. All functional goals are met; outputs are deterministic, interpretable, and downstream-safe. Proceed to Stage B / Stage D without revisiting Stage A fundamentals, unless adding optional enhancements (summary richness, additional quality scoring).
+
 
 ## Update: F0 + F3 are complete (locked constraints)
 

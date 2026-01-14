@@ -1,6 +1,40 @@
 # C2 — Identity Registry (Voting + Conflicts)
 
 
+## Addendum — Evidence ROI & Hints Derived From A/B Masks (post-A1R4)
+
+This addendum aligns C2 with the new “mask-first” pipeline reality:
+- Stage A provides canonical masks and per-frame geometry for every detection/tracklet.
+- Stage B may provide refined masks (sparse), improving tag decode confidence during entanglements.
+
+### C2 evidence policy (locked)
+When C2 considers evidence from C1 (tag observations), it should treat the following as first-class metadata:
+- `roi_source` (B mask vs A mask vs bbox fallback)
+- any ROI quality stats (area, blur score, etc. if logged by C1)
+
+This improves conflict resolution by allowing C2 to down-weight lower-trust evidence (e.g., bbox fallback) without changing decode logic.
+
+### Hint generation remains unchanged (but add clarity)
+C2 still outputs registry decisions / voting outcomes as:
+- `stage_C/identity_hints.jsonl` (must-link / cannot-link constraints)
+
+But now we explicitly recommend:
+- If competing hints exist for the same `tracklet_id` window, prefer hints derived from `roi_source="stage_B_mask"` over `stage_A_mask`, and prefer both over `bbox_fallback`, **all else equal**.
+
+### Non-responsibility reaffirmed
+C2 must not:
+- request or trigger Stage B execution
+- alter Stage A tracklets
+- rewrite masks
+
+C2 only consumes the artifacts and emits identity constraints/hints.
+
+### Acceptance criteria update
+C2 is considered successful when:
+- it deterministically produces hints from C1 observations, and
+- it records reason codes that include ROI-source sensitivity (e.g., "prefer_refined_mask_evidence"),
+- and it remains compatible whether Stage B ran or not.
+
 ## Update: F0 + F3 are complete (locked constraints)
 
 ### F3 (Stage 0 ingest) — locked input contract
@@ -105,31 +139,14 @@ An **offline** (batch) video processing pipeline for BJJ practice footage. Input
    - Tooling target: ffmpeg (clip/crop), optional mask-based redaction, SQLite/Postgres persistence.
    - Output: mp4 clips + metadata rows + audit trails.
 
-### Canonical tool choices (POC defaults)
-These are defaults; workers may propose alternatives but must align with constraints.
-- **Tracking**: BoxMOT **BoT-SORT** (as tracklet generator)
-- **Masks**: YOLO-seg online where possible; **SAM/SAM2 offline** where higher fidelity needed
-- **AprilTags**: Python apriltag detector (library choice can be decided in C1)
-- **ReID (optional early, likely later)**: OSNet / torchreid or FastReID; ideally on masked crops
-- **Stitching**: **Min-Cost Flow** (OR-Tools min-cost flow or NetworkX as baseline)
-- **Video I/O**: OpenCV for reading frames when needed; ffmpeg for export
-- **Data**: JSONL for event logs; Parquet for high-volume tables (decide in F0/F2)
+### Tooling defaults
+Stage tooling choices are defined in their own workers (see F0 for constraints). C2 focuses on identity voting and conflict resolution.
 
-### Contracts & artifacts (must be defined centrally in F0)
-Workers should assume the following artifact families will exist, with exact schemas defined in F0:
-- `detections` (per-frame detections)
-- `tracklets` (tracklet spans + summaries)
-- `masks` (mask references, RLE/paths) and `contact_points` (u,v and x,y)
-- `tag_observations` (frame-level tag detections) and `identity_assignments`
-- `person_tracks` (stitched per-person timeline)
-- `match_sessions`
-- `export_manifest` / DB rows / audit logs
+### Contracts & artifacts
+See F0 for authoritative schemas. C2 writes `identity_registry.jsonl`, `conflicts.jsonl`, and `evidence.jsonl`; `hints.jsonl` remain non-binding suggestions to A/B.
 
-### Definition of “done” for a worker thread
-A worker thread is “done” only when it returns to the Manager:
-- **Design Spec** (assumptions, algorithm, edge cases, failure modes)
-- **Interface Contract** (inputs/outputs + invariants, including artifact schema deltas if any)
-- **Copilot Prompt Pack** (file-by-file prompts) and/or **Acceptance Criteria** (tests + checks)
+### Definition of done
+Follow the standard manager checklist; add deterministic tests for vote aggregation and conflict detection; outputs must validate via F0.
 
 
 ---
@@ -183,22 +200,7 @@ End your first response by asking me to review/approve the plan before you go de
 Also include a bullet explicitly confirming alignment with the locked F0/F3 contracts (artifacts, paths, manifest).
 
 ## Checkpoint discipline
-
-**All workers must keep the pipeline runnable end-to-end at every checkpoint.**  
-This is a non-negotiable POC constraint to prevent drift and ensure incremental validation.
-
-Minimum requirements for *any* stage/worker deliverable:
-
-- Provide a `run()` implementation that is callable by orchestration: `def run(config: dict, inputs: dict) -> dict`.
-- Ensure artifacts written match **F0** contracts and pass `roll-tracker validate`.
-- Add at least one *realistic* smoke test (pytest) that:
-  - runs the stage on a small fixture (or mocked inputs), and
-  - asserts the expected artifacts exist and validate.
-- Ensure the manager can run:
-  - `roll-tracker run --clip <path> --camera <camera_id> --to-stage <your_stage>`
-  - and receive deterministic outputs under `outputs/<clip_id>/...`.
-
-If performance becomes an issue, prefer reducing resolution / selecting fewer candidates over skipping frames at POC time.
+Follow F1’s checkpoint rules; ensure identity votes are reproducible, auditable, and artifacts validate.
 
 ## Update after Z3 completion (2026-01-07)
 Z3 introduced an **optional single-pass multiplex mode** (`multiplex_ABC`) that runs **Stages A→B→C within a shared frame loop** (video decoded once), while preserving:

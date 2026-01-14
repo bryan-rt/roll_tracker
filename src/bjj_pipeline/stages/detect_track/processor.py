@@ -5,7 +5,7 @@ import numpy as np
 
 from bjj_pipeline.stages.detect_track.detector import DetectorBackend
 from bjj_pipeline.stages.detect_track.tracker import TrackerBackend
-from bjj_pipeline.stages.detect_track.types import Detection, TrackState
+from bjj_pipeline.stages.detect_track.types import Detection, TrackState, OverlayItem
 from bjj_pipeline.stages.detect_track.quality import (
     bbox_from_mask,
     bbox_fallback_mask,
@@ -60,7 +60,7 @@ class StageAProcessor:
         *,
         config: Any,
         homography: np.ndarray,
-        mat_blueprint: Dict[str, Any],
+        mat_blueprint: Any,
         writer: StageAWriter,
         detector: DetectorBackend,
         tracker: TrackerBackend,
@@ -79,7 +79,7 @@ class StageAProcessor:
     # Public API
     # ---------------------------------------------------------
 
-    def process_frame(self, frame_bgr: np.ndarray, frame_index: int, timestamp_ms: int) -> None:
+    def process_frame(self, frame_bgr: np.ndarray, frame_index: int, timestamp_ms: int) -> list[OverlayItem]:
         if frame_bgr is None or not isinstance(frame_bgr, np.ndarray):
             raise TypeError(
                 f"StageAProcessor.process_frame expected frame_bgr np.ndarray, got {type(frame_bgr)}"
@@ -105,6 +105,57 @@ class StageAProcessor:
                 timestamp_ms=timestamp_ms,
                 frame_bgr=frame_for_detector,
             )
+
+            # Persist “seg reality” in audit.jsonl (no reliance on Python logging configuration).
+            # This makes it explicit whether we're actually getting masks back from the detector.
+            try:
+                det_class = type(self.detector).__name__
+                det_mod = getattr(type(self.detector), "__module__", None)
+                # Introspect common UltralyticsYoloDetector attributes (safe for other backends).
+                use_seg = getattr(self.detector, "use_seg", None)
+                model_path = getattr(self.detector, "model_path", None)
+                seg_model_path = getattr(self.detector, "seg_model_path", None)
+                seg_model_loaded = None
+                if hasattr(self.detector, "_seg_model"):
+                    seg_model_loaded = bool(getattr(self.detector, "_seg_model") is not None)
+
+                n_dets = int(len(dets)) if dets is not None else 0
+                n_masks_present = 0
+                mask_shapes_sample: list[list[int]] = []
+                mask_source_counts: Dict[str, int] = {}
+                for d in (dets or []):
+                    ms = getattr(d, "mask_source", None)
+                    if ms is not None:
+                        mask_source_counts[str(ms)] = int(mask_source_counts.get(str(ms), 0) + 1)
+                    m = getattr(d, "mask", None)
+                    if m is not None:
+                        n_masks_present += 1
+                        if len(mask_shapes_sample) < 3:
+                            try:
+                                mask_shapes_sample.append(list(getattr(m, "shape", ())))
+                            except Exception:
+                                pass
+
+                self.writer.audit(
+                    "stage_a_detector_result",
+                    {
+                        "frame_index": int(frame_index),
+                        "timestamp_ms": int(timestamp_ms),
+                        "detector_class": det_class,
+                        "detector_module": det_mod,
+                        "detector_use_seg": use_seg,
+                        "detector_model_path": str(model_path) if model_path is not None else None,
+                        "detector_seg_model_path": str(seg_model_path) if seg_model_path is not None else None,
+                        "detector_seg_model_loaded": seg_model_loaded,
+                        "n_dets": n_dets,
+                        "n_masks_present": int(n_masks_present),
+                        "mask_shapes_sample": mask_shapes_sample,
+                        "mask_source_counts": mask_source_counts,
+                    },
+                )
+            except Exception:
+                # Never fail the pipeline due to debug/audit bookkeeping
+                pass
         except Exception as e:
             # Evidence-grade failure context: proves what we passed into detector.infer()
             self.writer.audit(
@@ -158,6 +209,41 @@ class StageAProcessor:
                 d.mask = bbox_fallback_mask((frame_h, frame_w), bbox)
             gated.append(d)
 
+        # Post-gate visibility: are we *actually* using seg masks vs fallback masks?
+        try:
+            src_counts: Dict[str, int] = {}
+            n_has_mask = 0
+            n_fallback = 0
+            n_yolo = 0
+            for d in gated:
+                ms = getattr(d, "mask_source", None)
+                if ms is not None:
+                    src_counts[str(ms)] = int(src_counts.get(str(ms), 0) + 1)
+                if getattr(d, "mask", None) is not None:
+                    n_has_mask += 1
+                if getattr(d, "mask_source", None) == "bbox_fallback":
+                    n_fallback += 1
+                if getattr(d, "mask_source", None) == "yolo_seg":
+                    n_yolo += 1
+
+            self.writer.audit(
+                "stage_a_mask_gating_summary",
+                {
+                    "frame_index": int(frame_index),
+                    "timestamp_ms": int(timestamp_ms),
+                    "n_dets_in": int(len(dets)),
+                    "n_dets_out": int(len(gated)),
+                    "n_masks_present_out": int(n_has_mask),
+                    "n_mask_source_yolo_seg": int(n_yolo),
+                    "n_mask_source_bbox_fallback": int(n_fallback),
+                    "mask_source_counts": src_counts,
+                    "gate_min_area_frac": float(gate_cfg.get("min_area_frac", 0.10)),
+                    "gate_max_area_frac": float(gate_cfg.get("max_area_frac", 1.10)),
+                },
+            )
+        except Exception:
+            pass
+
         # 3) Tight bbox from mask (if enabled)
         use_mask_bbox = bool(
             _cfg_get(
@@ -189,6 +275,8 @@ class StageAProcessor:
 
         # Index detections by id for fast lookup
         det_by_id: Dict[str, Detection] = {d.detection_id: d for d in gated}
+
+        overlays: list[OverlayItem] = []
 
         # 5) For each tracked detection → geometry + write
         for td in tracked:
@@ -286,6 +374,27 @@ class StageAProcessor:
                 contact_conf=float(contact_conf) if contact_conf is not None else None,
                 contact_method=str(method) if method is not None else None,
             )
+
+            overlays.append(
+                OverlayItem(
+                    tracklet_id=td.tracklet_id,
+                    detection_id=det.detection_id,
+                    confidence=float(det.confidence),
+                    x1=float(det.x1),
+                    y1=float(det.y1),
+                    x2=float(det.x2),
+                    y2=float(det.y2),
+                    mask=det.mask,
+                    mask_source=det.mask_source,
+                    u_px=float(u) if u is not None else None,
+                    v_px=float(v) if v is not None else None,
+                    x_m=float(x_m) if x_m is not None else None,
+                    y_m=float(y_m) if y_m is not None else None,
+                    on_mat=bool(on_mat) if on_mat is not None else None,
+                )
+            )
+
+        return overlays
 
     def finalize(self):
         return self.writer.write_all()
