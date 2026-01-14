@@ -21,6 +21,30 @@ These are additive and indexed via crop_candidates.parquet.
 # B1 — Mask Refinement Strategy (SAM vs fallback)
 
 
+---
+
+## Addendum — Stage B is Selective Refinement (post-A1R4)
+
+This addendum aligns B1 with the **A1R4** outcome:
+
+- Stage A now emits **canonical masks for every detection** (`stage_A/masks/*.npz`), using YOLO-seg when it passes gates and bbox-mask fallback otherwise.
+- Stage B is therefore **not responsible for “masking the whole clip.”** B exists to **refine** masks only when needed (entanglement/merge-split/low-quality segments), typically via SAM/SAM2.
+
+### Updated operating model
+1. Stage A: always produce a usable mask (YOLO-seg or bbox fallback) so downstream stages are never blocked.
+2. A2: compute online signals and emit a deterministic trigger list for when refinement is worth the cost.
+3. Stage B: run SAM refinement *selectively* on triggered detections/frames and emit refined masks (plus optional geometry overrides per B2 addendum).
+
+### Key constraint
+Stage B should avoid full-video re-decode whenever practical (multiplex-friendly). Prefer:
+- consuming cached frames (if available) or
+- sampling only triggered frame indices from the original video.
+
+### Acceptance criteria update
+B1 is done when we can demonstrate:
+- a triggered refinement run that improves masks in entanglement frames
+- sparse refined mask outputs under `stage_B/masks/`
+- deterministic, auditable selection + refinement behavior
 ## Update: F0 + F3 are complete (locked constraints)
 
 ### F3 (Stage 0 ingest) — locked input contract

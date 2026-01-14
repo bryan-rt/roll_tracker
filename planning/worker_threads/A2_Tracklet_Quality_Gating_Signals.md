@@ -20,6 +20,45 @@ No geometry, crops, or embeddings are produced here.
 # A2 — Tracklet Quality & Gating Signals
 
 
+---
+
+## Addendum — Split A2 (Online) vs D0 (Offline)
+
+This addendum updates A2 based on **A1R4 completion** and the now-locked **multiplex_ABC** “online” execution model.
+
+### A2 Scope (Online, multiplex-safe)
+A2 is **online-only**: it may use *past* context (short rolling windows) but must not use future frames.
+
+A2’s purpose is to compute **quality / interaction signals** that help orchestration decide **when to invoke Stage B** (SAM refinement) and to annotate tracklets/detections with lightweight health metrics.
+
+Concretely, A2 should focus on:
+- **Entanglement / proximity scoring**: detect when two athletes are likely engaged (close distance in meters, overlapping boxes/masks, sustained contact over a rolling window).
+- **Merge/split suspicion signals**: sudden mask area changes, aspect ratio spikes, mask topology anomalies, IoU instability, duplicate track IDs near-colliding.
+- **Mask quality flags** (beyond A1’s per-frame gating): sustained low-quality segments, flicker frequency, “stringy” masks, perimeter/area heuristics.
+- **Trigger policy outputs**: a deterministic list of `(frame_index, detection_id[, tracklet_id])` candidates to send to Stage B for refinement.
+
+### What moved OUT of A2 (Offline) → new worker D0
+Any logic that uses **future context** or requires full-tracklet hindsight belongs in **D0 (offline cleanup & bank curation)**, e.g.:
+- repairing location jumps using forward/backward smoothing
+- removing tiny/junk tracklets with global thresholds
+- curating crops/mask examples for ReID banks
+- consolidating per-tracklet statistics with look-ahead
+
+### Outputs / contracts (planning-level; keep additive)
+A2 should prefer **additive, optional** artifacts so we don’t mutate A1 canonical outputs:
+- `stage_A/quality_signals.jsonl` (or `stage_A/quality_signals.parquet`) keyed by `detection_id`/`tracklet_id` + `frame_index`
+- a compact `stage_A/stage_B_triggers.jsonl` list for orchestration (deterministic ordering)
+
+If we decide to make these canonical later, we will bump F0 explicitly; until then, they are treated as stage-scoped artifacts validated by A2’s own tests.
+
+### Acceptance criteria (A2)
+- Works in multiplex mode (single-pass) with bounded memory (rolling windows)
+- Deterministic: identical inputs/config produce identical triggers
+- Includes audit counts: #flags, #triggers, top reason codes
+- Provides at least one pytest smoke test (can run CPU-only)
+
+### Relationship to Stage B
+Stage B should consume A2 triggers to run SAM **selectively** (targeted frames/detections), then emit refined masks + sparse overrides (see B1/B2 addenda).
 ## Update: F0 + F3 are complete (locked constraints)
 
 ### F3 (Stage 0 ingest) — locked input contract

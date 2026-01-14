@@ -211,7 +211,7 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 			frame_index = int(frame.frame_index)  # type: ignore[attr-defined]
 			timestamp_ms = int(frame.timestamp_ms)  # type: ignore[attr-defined]
 
-		processor.process_frame(frame_bgr=frame_bgr, frame_index=frame_index, timestamp_ms=timestamp_ms)
+		_ = processor.process_frame(frame_bgr=frame_bgr, frame_index=frame_index, timestamp_ms=timestamp_ms)
 		n += 1
 
 	writer.audit("stage_a_completed", {"n_frames": n})

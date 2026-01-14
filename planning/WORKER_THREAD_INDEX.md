@@ -1,18 +1,46 @@
-## Status Update — 2026-01-08
+## Status Update — 2026-01-14
 
 Completed:
-- F0 Core Contracts
-- F1 Orchestration & CLI
-- F2 Config System
+- F0 Core Contracts (with schema bumps through v0.3.0)
+- F1 Orchestration & CLI (incl. homography preflight wiring)
+- F2 Config System & Environment
 - F3 Ingest Integration
-- Z3 Multiplexer Runner & Dev Visualization
-- D7 Homography Calibration & Preflight
+- Z3 Multiplexer Runner & Dev Visualization (multiplex_ABC)
+- D7 Homography Calibration & Preflight Tool
+- A1 Detection & Tracking (Real Stage A: YOLO + BoT-SORT + canonical masks + geometry)
 
-Ready to Start:
-- A1 Detection & Tracking
-- A2 Tracklet Quality & Gating
+Active / Next:
+- A2 Online Quality Signals & “When to Call B” triage (multiplex-safe)
+- B1/B2 Stage B Mask + Geometry Refinement (selective, sparse overrides)
+- C1/C2 Stage C Tag scanning + Identity hints
+- D0 Offline Cleanup & Bank Curation (new: offline-only pre-D pre-processing)
+- D1–D6 Global stitching (MCF + ILP) once A/B/C stability is sufficient
 # Worker Thread Index
 Use these files as the starter message for each worker chat.
+
+## Completed Workers
+- **F0** — Core Contracts & Artifact Schemas → `planning/worker_threads/F0_Core_Contracts_Artifact_Schemas.md`
+- **F1** — Pipeline Orchestration & CLI → `planning/worker_threads/F1_Pipeline_Orchestration_CLI.md`
+- **F2** — Config System & Environment → `planning/worker_threads/F2_Config_System_Environment.md`
+- **F3** — Ingest & Docker Baseline (Nest clipper integration) → `planning/worker_threads/F3_Ingest_Docker_Baseline_Nest_clipper_integration.md`
+- **Z3** — Single-pass multiplexer runner & dev visualization → `planning/worker_threads/Z3_Single_pass_Multiplexer_Runner_and_Dev_Visualization.md`
+- **D7** — Homography calibrator & preflight tool → `planning/worker_threads/D7_Homography_Calibrator_Preflight_Tool_WITH_COMPLETION.md`
+
+## Active / Upcoming Workers
+- **A1** — Detection & tracking (BoT-SORT tracklets) → `planning/worker_threads/A1_Detection_Tracking_BoT_SORT_Tracklets.md`
+- **A2** — Tracklet quality gating signals → `planning/worker_threads/A2_Tracklet_Quality_Gating_Signals.md`
+- **B1** — Mask refinement strategy (SAM vs fallback) → `planning/worker_threads/B1_Mask_Refinement_Strategy_SAM_vs_fallback.md`
+- **B2** — Contact point extraction & homography projection → `planning/worker_threads/B2_Contact_Point_Extraction_Homography.md`
+- **B3** — Camera calibration & drift monitor → `planning/worker_threads/B3_Camera_Calibration_Homography_Preflight_Drift_Monitor.md`
+- **C1** — AprilTag scanning pipeline → `planning/worker_threads/C1_AprilTag_Scanning_Pipeline_mask_guided.md`
+- **C2** — Identity registry voting/conflicts → `planning/worker_threads/C2_Identity_Registry_Voting_Conflicts.md`
+- **D1** — MCF graph model → `planning/worker_threads/D1_MCF_Graph_Model_Nodes_Edges.md`
+- **D2** — MCF cost function & constraints → `planning/worker_threads/D2_MCF_Cost_Function_Constraints.md`
+- **D3** — MCF solver implementation plan → `planning/worker_threads/D3_MCF_Solver_Implementation_Plan.md`
+- **D4** — ReID embeddings (masked crops optional) → `planning/worker_threads/D4_ReID_Embeddings_masked_crops_optional.md`
+- **D5** — MCF birth/death + mat zone gating → `planning/worker_threads/D5_MCF_Birth_Death_MatZone_Gating.md`
+- **D6** — Global ILP optimizer post-MCF → `planning/worker_threads/D6_Global_ILP_Optimizer_Post_MCF.md`
+- **E1** — Match session state machine → `planning/worker_threads/E1_Match_Session_State_Machine.md`
 
 ## Threads
 - **F0** — Core Contracts & Artifact Schemas → `planning/worker_threads/F0_Core_Contracts_Artifact_Schemas.md`

@@ -10,11 +10,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import logging
 from typing import Optional, Protocol, Sequence, Tuple
 
 import numpy as np
 
 from bjj_pipeline.stages.detect_track.types import Detection, MaskSource
+
+logger = logging.getLogger(__name__)
 
 
 class DetectorBackend(Protocol):
@@ -43,6 +46,28 @@ def _as_uint8_mask(mask: np.ndarray) -> np.ndarray:
 		return (mask > 0.5).astype(np.uint8)
 	# ints
 	return (mask > 0).astype(np.uint8)
+
+def _resize_mask_to_frame(mask_u8: np.ndarray, frame_h: int, frame_w: int) -> np.ndarray:
+	"""Resize a mask to full-frame resolution using nearest-neighbor.
+
+	Ultralytics segmentation masks often come back at the model inference resolution (e.g. 384x640),
+	while our geometry / gating code expects masks aligned to the original frame (e.g. 720x1280).
+	"""
+	if mask_u8.shape[0] == frame_h and mask_u8.shape[1] == frame_w:
+		return mask_u8
+
+	# Prefer OpenCV when available (fast + deterministic).
+	try:
+		import cv2  # type: ignore
+		resized = cv2.resize(mask_u8, (int(frame_w), int(frame_h)), interpolation=cv2.INTER_NEAREST)
+		return (resized > 0).astype(np.uint8)
+	except Exception:
+		# Pure-numpy nearest-neighbor fallback
+		h0, w0 = mask_u8.shape[:2]
+		# Map output pixel centers back to input indices
+		ys = (np.linspace(0, h0 - 1, frame_h)).astype(np.int32)
+		xs = (np.linspace(0, w0 - 1, frame_w)).astype(np.int32)
+		return mask_u8[ys[:, None], xs[None, :]].astype(np.uint8)
 
 
 class UltralyticsYoloDetector(DetectorBackend):
@@ -82,20 +107,45 @@ class UltralyticsYoloDetector(DetectorBackend):
 			self._model = YOLO(self.model_path)
 
 		if self.use_seg and self._seg_model is None:
-			if not self.seg_model_path:
-				# seg requested but no weights path; stay None and allow fallback later
+			# "Always try" segmentation: attempt explicit seg_model_path first, then a derived
+			# "<model_stem>-seg.pt" path (common Ultralytics naming), then gracefully fall back.
+			candidates: list[Path] = []
+			if self.seg_model_path:
+				candidates.append(Path(self.seg_model_path))
+			# Derive from detection model weights, e.g. yolov8n.pt -> yolov8n-seg.pt
+			try:
+				mp = Path(self.model_path)
+				if mp.suffix.lower() == ".pt":
+					candidates.append(mp.with_name(mp.stem + "-seg.pt"))
+			except Exception:
+				pass
+
+			seg_path = None
+			for c in candidates:
+				try:
+					if c and c.exists():
+						seg_path = c
+						break
+				except Exception:
+					continue
+
+			if seg_path is None:
+				# No seg weights found; keep _seg_model=None and let infer() fall back to bbox.
+				logger.warning(
+					"YOLO segmentation requested but seg weights not found; falling back to bbox-only detection. "
+					"model_path=%s seg_model_path=%s",
+					self.model_path,
+					self.seg_model_path,
+				)
 				return
-			p = Path(self.seg_model_path)
-			if not p.exists():
-				# seg requested but file missing; stay None and allow fallback later
-				return
+
 			try:
 				from ultralytics import YOLO  # type: ignore
 			except Exception as e:  # pragma: no cover
 				raise RuntimeError(
 					"Ultralytics is not installed. Install 'ultralytics' to use YOLO segmentation."
 				) from e
-			self._seg_model = YOLO(str(p))
+			self._seg_model = YOLO(str(seg_path))
 
 	def infer(
 		self,
@@ -119,7 +169,11 @@ class UltralyticsYoloDetector(DetectorBackend):
 
 		self._lazy_load_models()
 
+		frame_h = int(frame_bgr.shape[0])
+		frame_w = int(frame_bgr.shape[1])
+
 		# Use segmentation model if available; else detection model
+		using_seg_model = bool(self.use_seg and self._seg_model is not None)
 		model = self._seg_model if (self.use_seg and self._seg_model is not None) else self._model
 		if model is None:  # pragma: no cover
 			raise RuntimeError("YOLO model failed to load")
@@ -136,6 +190,30 @@ class UltralyticsYoloDetector(DetectorBackend):
 			return []
 
 		r0 = results[0]
+
+		# Evidence-grade debug: prove whether masks are present on this result.
+		# (This will tell us if we're truly running a seg model and getting masks back.)
+		try:
+			m = getattr(r0, "masks", None)
+			has_masks = bool(m is not None and getattr(m, "data", None) is not None)
+			mask_shape = None
+			if has_masks:
+				mask_shape = tuple(getattr(m.data, "shape", ()))
+			logger.info(
+				"YOLO infer: clip=%s cam=%s frame=%d seg_requested=%s seg_model_loaded=%s using_seg_model=%s has_masks=%s masks_shape=%s model_path=%s seg_model_path=%s",
+				clip_id,
+				camera_id,
+				int(frame_index),
+				bool(self.use_seg),
+				bool(self._seg_model is not None),
+				bool(using_seg_model),
+				bool(has_masks),
+				mask_shape,
+				str(self.model_path),
+				str(self.seg_model_path),
+			)
+		except Exception:
+			pass
 		boxes = getattr(r0, "boxes", None)
 		if boxes is None or boxes.xyxy is None:
 			return []
@@ -165,6 +243,7 @@ class UltralyticsYoloDetector(DetectorBackend):
 			mask = None
 			if masks_full is not None and i < masks_full.shape[0]:
 				mask = _as_uint8_mask(masks_full[i])
+				mask = _resize_mask_to_frame(mask, frame_h, frame_w)
 			dets.append((x1, y1, x2, y2, c, mask))
 
 		# deterministic ordering before assigning IDs

@@ -34,19 +34,66 @@ def _load_json(path: Path) -> Dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _homography_to_img_to_mat(h: np.ndarray, payload: Dict[str, Any] | None = None) -> np.ndarray:
+    """Return an image->mat homography.
+
+    Repo homography.json currently stores H that maps mat/world -> image pixels
+    (validated by its correspondences). Stage A needs image pixels -> mat/world.
+    We choose direction using correspondences when available, otherwise invert.
+    """
+    H = np.asarray(h, dtype=np.float64).reshape((3, 3))
+
+    # If correspondences are present, select direction with evidence (lower reprojection error).
+    if payload and isinstance(payload, dict):
+        corr = payload.get("correspondences") or {}
+        ip = corr.get("image_points_px")
+        mp = corr.get("mat_points")
+        if isinstance(ip, list) and isinstance(mp, list) and ip and mp:
+            try:
+                u, v = float(ip[0][0]), float(ip[0][1])
+                x, y = float(mp[0][0]), float(mp[0][1])
+
+                p_img = np.array([u, v, 1.0], dtype=np.float64)
+                p_mat = np.array([x, y, 1.0], dtype=np.float64)
+
+                def _apply(M: np.ndarray, p: np.ndarray) -> np.ndarray:
+                    q = M @ p
+                    return q[:2] / q[2]
+
+                # If H is mat->img, H@mat should match image point.
+                pred_img = _apply(H, p_mat)
+                err_mat_to_img = float(np.linalg.norm(pred_img - p_img[:2]))
+
+                # If H is img->mat, H@img should match mat point.
+                pred_mat = _apply(H, p_img)
+                err_img_to_mat = float(np.linalg.norm(pred_mat - p_mat[:2]))
+
+                # If H behaves like mat->img (small err in that direction), invert for Stage A.
+                if err_mat_to_img <= err_img_to_mat:
+                    return np.linalg.inv(H)
+                # Otherwise H already looks like img->mat.
+                return H
+            except Exception:
+                pass
+
+    # Conservative default: invert (consistent with current cam03 payloads).
+    return np.linalg.inv(H)
+
+
 def _load_homography_matrix(cfg: Any, camera_id: str) -> np.ndarray:
     """Load 3x3 homography matrix for camera.
 
-    D7 preflight guarantees this exists; multiplex uses the same lookup order
-    as Stage A multipass runner.
+    D7 preflight guarantees this exists and is valid. For Stage A geometry, we require
+    an image(px)->mat/world transform. Repo homography.json currently stores mat->image,
+    so we convert to image->mat here (with a correspondence-based direction check).
     """
     p = _cfg_get(cfg, "homography_path", None)
     if p:
         pp = Path(str(p))
         if pp.exists():
             j = _load_json(pp)
-            H = np.asarray(j.get("H", j.get("homography", j.get("matrix"))), dtype=np.float64)
-            return H.reshape((3, 3))
+            H_raw = np.asarray(j.get("H", j.get("homography", j.get("matrix"))), dtype=np.float64)
+            return _homography_to_img_to_mat(H_raw, j)
 
     cam_dir = Path("configs") / "cameras" / camera_id
     candidates = [
@@ -57,8 +104,8 @@ def _load_homography_matrix(cfg: Any, camera_id: str) -> np.ndarray:
     for pp in candidates:
         if pp.exists():
             j = _load_json(pp)
-            H = np.asarray(j.get("H", j.get("homography", j.get("matrix"))), dtype=np.float64)
-            return H.reshape((3, 3))
+            H_raw = np.asarray(j.get("H", j.get("homography", j.get("matrix"))), dtype=np.float64)
+            return _homography_to_img_to_mat(H_raw, j)
 
     raise FileNotFoundError(f"Homography not found for camera_id={camera_id}. Tried: {candidates}")
 
@@ -285,6 +332,16 @@ def run_multiplex_ABC(*,
 
                 stage_a_writer = StageAWriter(layout=layout, clip_id=manifest.clip_id, camera_id=camera_id)
 
+                stage_a_writer.audit(
+                    "stage_a_setup",
+                    {
+                        "homography_converted": True,
+                        "mat_blueprint_path": str(Path("configs") / "mat_blueprint.json"),
+                        "mat_blueprint_type": str(type(blueprint)),
+                        "mat_blueprint_len": (len(blueprint) if hasattr(blueprint, "__len__") else None),
+                    },
+                )
+
                 try:
                     model_path = str(
                         _cfg_get(
@@ -296,11 +353,17 @@ def run_multiplex_ABC(*,
                     seg_model_path = _cfg_get(
                         resolved_config,
                         "stages.stage_A.detector.seg_model_path",
-                        _cfg_get(resolved_config, "detector.seg_model_path", "models/yolov8s-seg.pt"),
+                        _cfg_get(resolved_config, "detector.seg_model_path", None),
                     )
-                    use_seg = bool(
-                        _cfg_get(resolved_config, "stages.stage_A.detector.use_seg", _cfg_get(resolved_config, "detector.use_seg", True))
+                    use_seg_cfg = _cfg_get(
+                        resolved_config,
+                        "stages.stage_A.detector.use_seg",
+                        _cfg_get(resolved_config, "detector.use_seg", None),
                     )
+                    # Checkpoint policy: always attempt YOLO segmentation when possible.
+                    use_seg = True if use_seg_cfg is None else bool(use_seg_cfg)
+                    if use_seg_cfg is False:
+                        stage_a_writer.audit("stage_a_use_seg_overridden_true", {"configured_use_seg": False})
                     conf = float(_cfg_get(resolved_config, "stages.stage_A.detector.conf", _cfg_get(resolved_config, "detector.conf", 0.25)))
                     imgsz = _cfg_get(resolved_config, "stages.stage_A.detector.imgsz", _cfg_get(resolved_config, "detector.imgsz", None))
                     device = _cfg_get(resolved_config, "stages.stage_A.detector.device", _cfg_get(resolved_config, "detector.device", None))
@@ -391,18 +454,18 @@ def run_multiplex_ABC(*,
                         mat_blueprint=blueprint,
                     )
                     ann_writer, mat_writer = viz.open()
-            if visualize and viz is not None and ann_writer is not None and mat_writer is not None:
-                ann, mat = viz.render_frame(pkt.image_bgr, pkt.frame_index)
-                ann_writer.write(ann)
-                mat_writer.write(mat)
 
             if stage_a_processor is not None and stage_a_writer is not None:
                 try:
-                    stage_a_processor.process_frame(
+                    overlays = stage_a_processor.process_frame(
                         frame_bgr=pkt.image_bgr,
                         frame_index=int(pkt.frame_index),
                         timestamp_ms=int(pkt.timestamp_ms),
                     )
+                    if visualize and viz is not None and ann_writer is not None and mat_writer is not None:
+                        ann, mat = viz.render_frame(pkt.image_bgr, pkt.frame_index, overlays=overlays)
+                        ann_writer.write(ann)
+                        mat_writer.write(mat)
                 except Exception as e:
                     # Capture full traceback so we can pinpoint the exact file:line of failure
                     tb = traceback.format_exc()
