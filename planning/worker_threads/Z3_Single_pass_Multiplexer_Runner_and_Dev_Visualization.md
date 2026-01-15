@@ -1,7 +1,8 @@
 # Z3 — Single-pass Multiplexer Runner + Dev Visualization
 
 ### Purpose
-Refactor the runtime architecture so **Stages A→B→C** can be executed in a **single pass over frames** (shared `FrameIterator`) while still:
+**POC note:** Stage B (SAM refinement) is currently **deferred**. Z3 preserves the extension point, but the current target is `multiplex_AC` (A + C).
+Refactor the runtime architecture so **Stages A and C** can be executed in a **single pass over frames** (shared `FrameIterator`) while still:
 - Writing **separate, F0-locked artifacts** per stage (`stage_A/*`, `stage_B/*`, `stage_C/*`)
 - Keeping the **F1 stage `run(config, inputs)->dict` contract**
 - Preserving **resume/skip semantics** (F1) and **config hashing + audits** (F2)
@@ -12,11 +13,16 @@ Add a **developer visualization switch** that outputs:
 
 This worker owns the architecture + implementation plan (and optionally the code if time allows), and must not change F0 schemas without a manager-approved version bump.
 
+### Non-goal
+Offline stages (D/E/X) do **not** participate in the multiplex runner. Multiplex exists to share the expensive *video decode / frame iteration* loop. D/E are artifact-driven; X may reopen video later for targeted rendering, but is not part of multiplex.
+
 ### Why we want this
 Running A then re-reading the video for B then re-reading for C is correct but expensive and slows iteration. A single-pass “multiplexer”:
 - Speeds up iteration (especially for mask generation + tag scanning)
 - Allows smarter cadence decisions (e.g., run SAM only when needed)
 - Keeps artifacts modular and stage-owned (still write stage outputs exactly as F0 defines)
+
+**POC refinement:** with B deferred, Z3’s immediate value is single-pass **A + C** (tracking + tag scanning) with dev visualization. B remains an optional extension point only.
 
 ### Non-goals / constraints (hard)
 - **Do not** collapse A/B/C outputs into a single mega-artifact.
@@ -39,6 +45,9 @@ Add an optional orchestration mode, e.g.
 - `roll-tracker run ... --mode multipass` (default / current)
 - `roll-tracker run ... --mode multiplex_ABC`
 
+**POC target (Jan 2026):**
+- `roll-tracker run ... --mode multiplex_AC`
+
 The multiplexer runs inside orchestration, not as a standalone stage, to avoid forcing F0 schema changes.
 
 **Key idea:** the orchestrator still “runs stages” A/B/C, but the “run” implementations for these stages can optionally accept a `FrameIterator` handle in `inputs` (an object, not serialized) when orchestrator is in multiplexer mode.
@@ -56,6 +65,8 @@ This can be implemented as:
 - `StageBProcessor.on_frame(frame, stageA_state)` → yields masks/contact_points
 - `StageCProcessor.on_frame(frame, stageA_state, stageB_state)` → yields tag observations / identity hints
 
+**POC simplification:** Stage C must be able to run without Stage B state. When B is deferred, `stageB_state` is absent and C operates on Stage A-derived ROIs.
+
 Writers manage:
 - Parquet row buffers / chunked writes
 - mask `.npz` files
@@ -68,15 +79,17 @@ The multiplexer enables safe cadence without breaking tracking:
 - ReID embedding extraction can be event-driven (e.g., stable track windows)
 - AprilTag scanning can be gated by “tag ROI quality” events
 
+**POC update:** Tag decode cadence/backoff/ramp-up is owned by **C0**. Z3 only provides the plumbing to call C processors per frame and to pass shared frame data.
+
 Cadence must be explicit in config and audited (F2/F1), so reruns are comparable.
 
 ---
 
 ## Developer visualization (“--visualize”) requirements
 When enabled (dev-only), produce:
-1) `outputs/<clip_id>/stage_A/_debug/annotated.mp4`  
+1) `outputs/<clip_id>/_debug/annotated.mp4`  
    - overlays: bbox, track_id, conf, and whichever masks are available (YOLO mask always; SAM mask only if computed)
-2) `outputs/<clip_id>/stage_B/_debug/mat_view.mp4` (or `stage_C/_debug` if tags drive it)
+2) `outputs/<clip_id>/_debug/mat_view.mp4`
    - plots: mat blueprint in world coords + per-tid (x,y) points + labels
 
 Implementation notes:
@@ -109,7 +122,8 @@ Then ask me to confirm the proposed boundaries before you write code.
 - COMPLETE
 
 ### Implemented Goals (Slice 2)
-- **Single-pass multiplexer execution (A/B/C):** Orchestration supports `--mode multiplex_ABC`; video is decoded once via a shared `FrameIterator`; stages A/B/C run within the multiplexer window and emit separate, F0-locked artifacts under `stage_A/`, `stage_B/`, `stage_C/`. Multipass remains the default and is preserved for offline stages and parity validation.
+- **Single-pass multiplexer execution (A/B/C):** Orchestration supports `--mode multiplex_ABC`; video is decoded once via a shared `FrameIterator`; stages A/B/C can run within the multiplexer window and emit separate, F0-locked artifacts under `stage_A/`, `stage_B/`, `stage_C/`. Multipass remains the default and is preserved for offline stages and parity validation.
++ **POC target:** `--mode multiplex_AC` is the preferred mode while Stage B is deferred. `multiplex_ABC` remains supported as an architectural capability, but B must not be required for a valid run.
 - **Strict separation of orchestration vs stage logic:** Z3 owns wiring (iterator lifetime, run-plan decisions, state access, artifact registration). No detection/masking/tag-decoding logic was changed; A/B/C workers retain ownership of compute semantics.
 - **State provider abstraction:** Supports windows like “A skipped, B runs” and “A+B skipped, C runs”. State may come from existing on-disk artifacts (multipass parity) or in-memory results produced earlier in the same multiplex run. This layer is architectural only (no stage-specific logic).
 - **Developer visualization:** Enabled via `--visualize` (dev-only, non-canonical). Writes `outputs/<clip_id>/_debug/annotated.mp4` and `outputs/<clip_id>/_debug/mat_view.mp4`. Visualization runs per frame after A/B/C, consuming available outputs. `mat_view.mp4` renders `configs/mat_blueprint.json` and is confirmed working. Visualization code imports only when `--visualize` is enabled.
@@ -118,7 +132,7 @@ Then ask me to confirm the proposed boundaries before you write code.
 - **CLI + docs alignment:** CLI help reflects actual debug output locations. Z3 design decisions and constraints are locked into this document.
 
 ### Locked Decisions (Must Respect)
-- **Multiplex vs Multipass:** Multiplex is the execution model for online stages (A/B/C). Multipass remains supported and is expected to continue for offline stages (D/E/F) until explicitly migrated.
+- **Multiplex vs Multipass:** Multiplex is the execution model for online stages. **POC target is A + C (`multiplex_AC`).** Multipass remains supported and is expected to continue for offline stages (D/E/F) until explicitly migrated.
 - **Stage ownership boundaries:** Z3 must not implement/refactor A/B/C compute logic. A/B/C workers own processors and writers; Z3 only wires them together.
 - **Artifact contracts:** F0 schemas remain unchanged. Each stage continues to emit its own canonical artifacts. Debug videos are explicitly non-canonical.
 - **Debug visualization location:** All dev visualization output lives under `outputs/<clip_id>/_debug/`. No stage-specific `_debug/` folders are used for mux output.
@@ -149,6 +163,12 @@ Then ask me to confirm the proposed boundaries before you write code.
    - Migrate Stage A/B/C compute into processor/writer form
    - Extend multiplex to offline stages only if justified
    - Parity testing between multipass and multiplex outputs
+
+### POC Handoff Note (Jan 2026)
+When running the A+C→D proof-of-concept:
+- prefer `--mode multiplex_AC`
+- ensure C’s ROI policy uses expanded bbox ROIs (do not hard-clip to YOLO masks)
+- ensure C0 owns cadence/backoff/ramp-up decisions; Z3 is plumbing only
 
 ### Kickoff Prompt for Next Worker (Post-Z3)
 - **Assumptions:**

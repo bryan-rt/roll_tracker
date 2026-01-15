@@ -1,5 +1,30 @@
 # C2 — Identity Registry (Voting + Conflicts)
 
+## Addendum — 2026-01-14 (POC update: C online in multiplex_AC; bbox-expanded ROI; Stage B deferred; outputs must match F0)
+
+### Hybrid pipeline execution model (locked for POC)
+We are using a **single pipeline** with two phases:
+- **Phase 1 (online decode pass):** `multiplex_AC` runs **Stage A + Stage C** in a single shared frame loop (decode once).
+- **Phase 2 (offline artifact pass):** `D → E → X` runs sequentially (artifact-driven; no multiplex).
+
+### Stage B status (locked)
+Stage B (refined masks / SAM) is **DEFERRED for the POC**. C2 must remain fully functional using C1 observations derived from Stage A-only ROIs.
+
+### ROI metadata policy (updated)
+C1’s ROI source policy is now:
+- primary: `roi_source="bbox_expanded"`
+- optional hints: `stage_A_mask_hint` and (future) `stage_B_mask_hint`
+
+C2 must treat ROI source and ROI quality stats as first-class evidence metadata for weighting / tie-breaking.
+
+### Output contract correction (must align with F0)
+F0 lists canonical C-stage outputs as:
+- `stage_C/tag_observations.jsonl`
+- `stage_C/identity_hints.jsonl` (must-link / cannot-link constraints)
+- `stage_C/audit.jsonl`
+
+Any additional files (e.g., `identity_registry.jsonl`, `conflicts.jsonl`, `evidence.jsonl`) must be treated as **non-canonical dev artifacts** unless/until F0 is explicitly bumped.
+
 
 ## Addendum — Evidence ROI & Hints Derived From A/B Masks (post-A1R4)
 
@@ -19,7 +44,13 @@ C2 still outputs registry decisions / voting outcomes as:
 - `stage_C/identity_hints.jsonl` (must-link / cannot-link constraints)
 
 But now we explicitly recommend:
-- If competing hints exist for the same `tracklet_id` window, prefer hints derived from `roi_source="stage_B_mask"` over `stage_A_mask`, and prefer both over `bbox_fallback`, **all else equal**.
+- If competing hints exist for the same `tracklet_id` window, prefer hints derived from:
+   - `roi_source="bbox_expanded"` (POC default; strongest because it is the primary decode ROI)
+   - then `roi_source="stage_A_mask_hint"`
+   - then (future) `roi_source="stage_B_mask_hint"` *(Stage B deferred for POC)*
+   - and prefer all over `roi_source="bbox_only"` / `bbox_fallback`, **all else equal**.
+
+> Note: if/when Stage B returns, its masks are still treated as **hints** for ROI quality, not as hard crop boundaries; evidence weighting should reflect improved quality metrics, not merely the presence of a refined mask.
 
 ### Non-responsibility reaffirmed
 C2 must not:
@@ -34,6 +65,8 @@ C2 is considered successful when:
 - it deterministically produces hints from C1 observations, and
 - it records reason codes that include ROI-source sensitivity (e.g., "prefer_refined_mask_evidence"),
 - and it remains compatible whether Stage B ran or not.
+
+**POC update:** Success must be demonstrable with Stage A-only observations (`bbox_expanded` ROIs) and without any Stage B artifacts.
 
 ## Update: F0 + F3 are complete (locked constraints)
 
@@ -119,12 +152,13 @@ An **offline** (batch) video processing pipeline for BJJ practice footage. Input
    - Output: frame-level detections + short, high-precision **tracklets** (intentionally allowed to break).
 
 2) **Stage B — Masks + contact point + homography (offline refinement)**
-   - Tooling target: SAM/SAM2 offline refinement (or fallback masks) + OpenCV.
-   - Output: mask references + stable “ground contact point” per frame + projected ground-plane coordinates.
+   - **DEFERRED for POC.**
+   - Tooling target (future): SAM/SAM2 offline refinement (or fallback masks) + OpenCV.
+   - Output (future): refined masks + sparse overrides where needed.
 
 3) **Stage C — Identity anchoring (AprilTag scanning + registry)**
-   - Tooling target: AprilTag detection applied inside mask ROI + voting registry.
-   - Output: tag observations (frame-level) + stable identity assignments + conflicts.
+   - Tooling target: AprilTag detection applied inside **expanded bbox ROI** + voting registry.
+   - Output: tag observations (frame-level) + identity hints/constraints for Stage D.
 
 4) **Stage D — Global stitching (Min-Cost Flow)**
    - Tooling target: MCF solver (start with OR-Tools or NetworkX; optimize later).
@@ -144,6 +178,8 @@ Stage tooling choices are defined in their own workers (see F0 for constraints).
 
 ### Contracts & artifacts
 See F0 for authoritative schemas. C2 writes `identity_registry.jsonl`, `conflicts.jsonl`, and `evidence.jsonl`; `hints.jsonl` remain non-binding suggestions to A/B.
+
+> **Correction:** C2’s canonical outputs must remain limited to the F0-locked artifacts (`tag_observations.jsonl`, `identity_hints.jsonl`, `audit.jsonl`). Any additional “registry/conflict/evidence” files are dev-only unless F0 is bumped.
 
 ### Definition of done
 Follow the standard manager checklist; add deterministic tests for vote aggregation and conflict detection; outputs must validate via F0.
@@ -221,3 +257,5 @@ Z3 introduced an **optional single-pass multiplex mode** (`multiplex_ABC`) that 
 ### Interface expectations (keep flexible, but follow intent)
 - If you introduce a per-frame API (recommended for A/B/C), keep it behind the stage module so orchestration can call it in multiplex mode.
 - Ensure stage outputs can still be produced in multipass mode by reading upstream artifacts from disk (parity requirement until multipass is retired).
+
+> **POC update:** current target multiplex mode is `multiplex_AC` (A + C). This does not change C2’s artifact-driven logic; it should remain able to run as part of multiplex (in-memory event ingestion) or as a multipass stage (reading `tag_observations.jsonl` from disk).

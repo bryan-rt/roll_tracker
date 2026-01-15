@@ -23,10 +23,11 @@ Stage A — Detection & Tracklets (must write):
 - `stage_A/detections.parquet`
 - `stage_A/tracklet_frames.parquet`
 - `stage_A/tracklet_summaries.parquet`
+- `stage_A/contact_points.parquet` (baseline geometry; full coverage)
 - `stage_A/audit.jsonl`
 
-Stage B — Masks & Geometry:
-- `stage_B/contact_points.parquet`
+Stage B — Masks & Geometry (optional / deferred for current POC):
+- `stage_B/contact_points_refined.parquet` (subset overrides only, when B runs)
 - `stage_B/masks/*.npz` (canonical mask storage; referenced by relative path)
 - `stage_B/audit.jsonl`
 
@@ -67,6 +68,11 @@ Stages must:
 - A working ingest service under `services/nest_recorder/` that writes 2.5-min clips to `data/raw/nest/...` following the locked contract.
 - OAuth refresh is currently failing (`invalid_grant`) but is isolated to credentials and **does not block downstream processing** using simulated clips.
 
+### Clarification: ingest vs processing phases
+- Ingest is strictly **Stage 0** and is **not part of multiplex execution**.
+- Ingest outputs are immutable inputs to processing; no processing artifacts are written during ingest.
+- Processing pipelines (multiplex_AC + offline D/E/X) assume ingest has already completed successfully.
+
 ### Your job
 - Treat ingest as **Stage 0** and define the integration boundary into the processing pipeline:
   - What metadata must be produced (camera_id, timestamps, duration, fps if known)
@@ -75,11 +81,27 @@ Stages must:
   - naming, compose patterns, mounts, logging, secrets handling
   - how future `services/processor/` container should be shaped
 
+### POC alignment notes
+- Ingest does **not** need to know about:
+  - multiplex vs multipass execution
+  - Stage B enablement / deferral
+  - downstream artifact schemas beyond clip identity
+- Ingest must, however, preserve:
+  - deterministic filenames
+  - correct `camera_id` derivation
+  - stable timestamps (used later for audits and exports)
+
 ### Deliverables required back to Manager
 1) **Design Spec**: integration boundary and Docker baseline rules
 2) **Interface Contract**: ingest outputs (clip path + sidecar) and invariants
 3) **Copilot Prompt Pack**: minimal edits needed to align with F0 manifest backbone (if any)
 4) **Acceptance Criteria**: prove ingest outputs are valid and deterministic
+
+### Explicit non-responsibilities (anti-drift)
+- Ingest must not:
+  - write to `outputs/`
+  - create or modify `clip_manifest.json`
+  - perform any video decoding beyond basic validation
 
 ---
 

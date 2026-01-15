@@ -1,3 +1,15 @@
+## Addendum — 2026-01-14 (POC update: B3 is complete via D7; B-stage work deferred; clarify scope)
+
+### POC status / scope clarification
+Homography calibration + preflight is already implemented and owned by **D7 + F1**.
+This worker doc remains as reference for future **drift monitoring** enhancements, but **must not introduce new canonical paths or formats** beyond what D7/F1 have locked.
+
+### Hybrid pipeline context (POC)
+- **Phase 1 (online decode pass):** `multiplex_AC` (Stage A + Stage C in one decode loop)
+- **Phase 2 (offline artifact pass):** `D → E → X` (artifact-driven)
+
+Stage B (SAM refinement) is deferred for the POC; this does not change homography requirements.
+
 ## Addendum — 2026-01-10 (D7 closeout + Stage A geometry dependency)
 
 ### Canonical homography path (locked by D7/F1/F2)
@@ -59,9 +71,10 @@ This worker defines the calibration UX, file formats, and validation rules so do
 - `configs/cameras/<camera_id>.yaml` (camera config)
 
 ### Outputs (camera-scoped)
-Choose ONE canonical storage and document it:
-- Option A: `configs/cameras/<camera_id>/homography.npz`
-- Option B: `configs/cameras/<camera_id>/homography.yaml`
+**Canonical storage (LOCKED):**
+- `configs/cameras/<camera_id>/homography.json`
+
+Do not introduce alternative canonical formats/paths (e.g., `.npz`, `.yaml`). Those were superseded by the D7/F1 manager lock.
 
 Must include:
 - `H` (3x3)
@@ -132,6 +145,8 @@ Options:
 
 POC requirement:
 - define the metric + thresholds and write audit events; implement full auto-recal later.
+
+> **POC note:** Drift monitoring is not required for the current A + C → D proof-of-concept. If implemented, it must emit **warnings/audit events** and must not silently mutate homography without an explicit interactive recalibration step.
 
 ---
 
@@ -221,3 +236,5 @@ Z3 introduced an **optional single-pass multiplex mode** (`multiplex_ABC`) that 
 ### Interface expectations (keep flexible, but follow intent)
 - If you introduce a per-frame API (recommended for A/B/C), keep it behind the stage module so orchestration can call it in multiplex mode.
 - Ensure stage outputs can still be produced in multipass mode by reading upstream artifacts from disk (parity requirement until multipass is retired).
+
+> **POC update:** current target multiplex mode is `multiplex_AC` (A + C). This does not affect homography file location or preflight behavior.

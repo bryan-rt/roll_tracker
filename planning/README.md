@@ -12,6 +12,15 @@ Each file in `planning/worker_threads/` is meant to be pasted as the **first mes
 - Min-Cost Flow stitching is mandatory.
 - All stages communicate only through versioned artifacts defined in F0.
 
+## Hybrid pipeline (current POC execution model)
+- **Phase 1 (online decode pass):** run **Stage A + Stage C** together in `multiplex_AC` (single video decode loop).
+- **Phase 2 (offline artifact pass):** run **D → E → X** sequentially (artifact-driven).
+- **Stage B (SAM refinement work)** is **deferred** until after the A+C→D POC.
+
+### Stage C note (POC ROI + scheduling)
+- Stage C uses **expanded bbox ROIs** as the primary decode region (do not hard-clip to YOLO masks).
+- Decode cadence / backoff / ramp-up is owned by **C0** (Tag Decode Scheduling & Cadence).
+
 ## Current locks
 - **F3** ingest contract: clips under `data/raw/nest/...`
 - **F0** contracts: stage artifacts + manifest anchored at `outputs/<clip_id>/clip_manifest.json`
@@ -55,3 +64,6 @@ Z3 introduced an **optional single-pass multiplex mode** (`multiplex_ABC`) that 
 ### Interface expectations (keep flexible, but follow intent)
 - If you introduce a per-frame API (recommended for A/B/C), keep it behind the stage module so orchestration can call it in multiplex mode.
 - Ensure stage outputs can still be produced in multipass mode by reading upstream artifacts from disk (parity requirement until multipass is retired).
+
+### POC clarification (Jan 2026)
+For the current POC, the active target is `multiplex_AC` (A + C). `multiplex_ABC` exists as an architectural capability, but **Stage B is deferred** and must not be required for a valid run.

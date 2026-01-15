@@ -1,3 +1,15 @@
+## Addendum — 2026-01-14 (POC update: A2 deferred; C0 owns online tag scheduling; B deferred)
+
+⚠️ **A2 is DEFERRED for the current POC.**
+
+We are prioritizing an end-to-end A + C → D proof-of-concept:
+- **Phase 1:** `multiplex_AC` (Stage A + Stage C online in a single decode pass)
+- **Phase 2:** offline `D → E → X` (artifact-driven)
+
+Online “when to attempt tag decode” scheduling now lives in **Stage C family** as **C0** (Tag Decode Scheduling & Cadence). Stage B (SAM refinement) is also **deferred** for the POC.
+
+This document is retained as a future spec for offline/advanced quality analytics once the POC is complete.
+
 ## Addendum — 2026-01-08 (Post-D7 / Z3 Alignment)
 
 ### Role Clarification
@@ -29,13 +41,14 @@ This addendum updates A2 based on **A1R4 completion** and the now-locked **multi
 ### A2 Scope (Online, multiplex-safe)
 A2 is **online-only**: it may use *past* context (short rolling windows) but must not use future frames.
 
-A2’s purpose is to compute **quality / interaction signals** that help orchestration decide **when to invoke Stage B** (SAM refinement) and to annotate tracklets/detections with lightweight health metrics.
+A2’s (future) purpose is to compute **quality / interaction signals** and annotate tracklets/detections with lightweight health metrics.
+For the current POC, online tag decode cadence is handled by **C0/C1** (Stage C family), and Stage B is deferred.
 
 Concretely, A2 should focus on:
 - **Entanglement / proximity scoring**: detect when two athletes are likely engaged (close distance in meters, overlapping boxes/masks, sustained contact over a rolling window).
 - **Merge/split suspicion signals**: sudden mask area changes, aspect ratio spikes, mask topology anomalies, IoU instability, duplicate track IDs near-colliding.
 - **Mask quality flags** (beyond A1’s per-frame gating): sustained low-quality segments, flicker frequency, “stringy” masks, perimeter/area heuristics.
-- **Trigger policy outputs**: a deterministic list of `(frame_index, detection_id[, tracklet_id])` candidates to send to Stage B for refinement.
+- **(Future) Trigger policy outputs**: candidate windows for analysis/refinement. Out of scope for current POC.
 
 ### What moved OUT of A2 (Offline) → new worker D0
 Any logic that uses **future context** or requires full-tracklet hindsight belongs in **D0 (offline cleanup & bank curation)**, e.g.:
@@ -47,7 +60,7 @@ Any logic that uses **future context** or requires full-tracklet hindsight belon
 ### Outputs / contracts (planning-level; keep additive)
 A2 should prefer **additive, optional** artifacts so we don’t mutate A1 canonical outputs:
 - `stage_A/quality_signals.jsonl` (or `stage_A/quality_signals.parquet`) keyed by `detection_id`/`tracklet_id` + `frame_index`
-- a compact `stage_A/stage_B_triggers.jsonl` list for orchestration (deterministic ordering)
+- a compact `stage_A/stage_B_triggers.jsonl` list for orchestration (deterministic ordering) *(future; Stage B deferred)*
 
 If we decide to make these canonical later, we will bump F0 explicitly; until then, they are treated as stage-scoped artifacts validated by A2’s own tests.
 
@@ -58,7 +71,7 @@ If we decide to make these canonical later, we will bump F0 explicitly; until th
 - Provides at least one pytest smoke test (can run CPU-only)
 
 ### Relationship to Stage B
-Stage B should consume A2 triggers to run SAM **selectively** (targeted frames/detections), then emit refined masks + sparse overrides (see B1/B2 addenda).
+Stage B is **DEFERRED** for the current POC. This relationship is retained for future reactivation.
 ## Update: F0 + F3 are complete (locked constraints)
 
 ### F3 (Stage 0 ingest) — locked input contract
@@ -143,12 +156,13 @@ An **offline** (batch) video processing pipeline for BJJ practice footage. Input
    - Output: frame-level detections + short, high-precision **tracklets** (intentionally allowed to break).
 
 2) **Stage B — Masks + contact point + homography (offline refinement)**
-   - Tooling target: SAM/SAM2 offline refinement (or fallback masks) + OpenCV.
-   - Output: mask references + stable “ground contact point” per frame + projected ground-plane coordinates.
+   - **DEFERRED for POC.**
+   - Tooling target (future): SAM/SAM2 refinement (or fallback masks) + OpenCV.
+   - Output (future): refined masks + sparse overrides where needed.
 
 3) **Stage C — Identity anchoring (AprilTag scanning + registry)**
-   - Tooling target: AprilTag detection applied inside mask ROI + voting registry.
-   - Output: tag observations (frame-level) + stable identity assignments + conflicts.
+   - Tooling target: AprilTag detection applied inside **expanded bbox ROI** (mask may be used as a soft hint) + voting registry.
+   - Output: tag observations (frame-level) + identity hints/constraints for Stage D.
 
 4) **Stage D — Global stitching (Min-Cost Flow)**
    - Tooling target: MCF solver (start with OR-Tools or NetworkX; optimize later).
@@ -166,7 +180,7 @@ An **offline** (batch) video processing pipeline for BJJ practice footage. Input
 ### Canonical tool choices (POC defaults)
 These are defaults; workers may propose alternatives but must align with constraints.
 - **Tracking**: BoxMOT **BoT-SORT** (as tracklet generator)
-- **Masks**: YOLO-seg online where possible; **SAM/SAM2 offline** where higher fidelity needed
+- **Masks**: YOLO-seg online where possible; **SAM/SAM2 deferred for POC**
 - **AprilTags**: Python apriltag detector (library choice can be decided in C1)
 - **ReID (optional early, likely later)**: OSNet / torchreid or FastReID; ideally on masked crops
 - **Stitching**: **Min-Cost Flow** (OR-Tools min-cost flow or NetworkX as baseline)

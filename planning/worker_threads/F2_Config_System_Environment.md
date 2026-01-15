@@ -24,10 +24,11 @@ Stage A — Detection & Tracklets (must write):
 - `stage_A/detections.parquet`
 - `stage_A/tracklet_frames.parquet`
 - `stage_A/tracklet_summaries.parquet`
+- `stage_A/contact_points.parquet` (baseline geometry; full coverage)
 - `stage_A/audit.jsonl`
 
-Stage B — Masks & Geometry:
-- `stage_B/contact_points.parquet`
+Stage B — Masks & Geometry (optional / deferred for current POC):
+- `stage_B/contact_points_refined.parquet` (subset overrides; only when B runs)
 - `stage_B/masks/*.npz` (canonical mask storage; referenced by relative path)
 - `stage_B/audit.jsonl`
 
@@ -84,9 +85,9 @@ An **offline** (batch) video processing pipeline for BJJ practice footage. Input
    - Tooling target: detector (YOLO or similar) + tracker (BoT-SORT via BoxMOT).
    - Output: frame-level detections + short, high-precision **tracklets** (intentionally allowed to break).
 
-2) **Stage B — Masks + contact point + homography (offline refinement)**
-   - Tooling target: SAM/SAM2 offline refinement (or fallback masks) + OpenCV.
-   - Output: mask references + stable “ground contact point” per frame + projected ground-plane coordinates.
+2) **Stage B — Mask refinement + geometry overrides (optional / deferred for current POC)**
+  - Tooling target: SAM/SAM2 selective refinement + OpenCV.
+  - Output: refined masks + **subset** contact point overrides (not full coverage).
 
 3) **Stage C — Identity anchoring (AprilTag scanning + registry)**
    - Tooling target: AprilTag detection applied inside mask ROI + voting registry.
@@ -146,6 +147,9 @@ We need configs that encode:
 - `configs/cameras/cam01.yaml` overriding homography + ROI
 - A typed config model proposal (Pydantic/BaseModel suggested)
 - Path conventions for outputs + caching directories
+ - Hybrid execution mode defaults:
+   - `run.mode: multipass | multiplex_AC`
+   - Stage B feature flags remain present but default **off** for current POC
 
 ### Invariants
 - No code constants for thresholds (everything configurable)
@@ -214,11 +218,22 @@ Verified via: real pipeline run + audit inspection (config_resolved events)
   - If present, auto-merged from: `configs/cameras/<camera_id>/homography.json`
   - Included in `config_hash` and `config_sources` and recorded in `orchestration_audit.jsonl`
   - Absence is allowed at load time (enforcement is owned by orchestration preflight / B3)
+
+- **Stage A baseline geometry config expectations**
+  - Stage A assumes homography is present at runtime (preflight enforced elsewhere).
+  - Any Stage-A geometry thresholds (contact method params, on_mat polygon selection) must come from config,
+    not hard-coded constants.
 - **Resolved config persistence**
   - The fully resolved config is recorded via **orchestration audit event only** (`event_type="config_resolved"`)
   - No new artifact families or manifest schema changes were introduced for resolved config snapshots
 - **Cache containment**
   - Any stage caches must live under: `outputs/<clip_id>/_cache/...`
+
+### POC note (hybrid model alignment)
+For the current POC, config should be able to represent:
+- `multiplex_AC` online pass (A + C)
+- offline artifact pass (D → E → X)
+without requiring Stage B to be enabled.
 
 ### Files & entry points
 

@@ -1,9 +1,34 @@
+## Addendum — 2026-01-14 (POC update: C runs online in multiplex_AC; C0 cadence; bbox-expanded ROI; Stage B deferred)
+
+### Hybrid pipeline execution model (locked for POC)
+We are using a **single pipeline** with two phases:
+- **Phase 1 (online decode pass):** `multiplex_AC` runs **Stage A + Stage C** in a single shared frame loop (decode once).
+- **Phase 2 (offline artifact pass):** `D → E → X` runs sequentially (artifact-driven; no multiplex).
+
+### Stage B status (locked)
+Stage B (SAM refinement / refined masks) is **DEFERRED for the POC**. C1 must function end-to-end using Stage A outputs only.
+
+### Decode scheduling (new C0 responsibility)
+When and how often to attempt decoding is owned by **C0 (Tag Decode Scheduling & Cadence)**:
+- aggressive until first successful decode per `tracklet_id`
+- backoff after success
+- ramp-up on occlusion/ambiguity events (bbox overlap, track instability proxies)
+
+C1 owns the **decoder + evidence emission** (observations + identity hints) and must log attempt/skip reasons in audit.
+
+### ROI policy (important correction)
+**Primary decode ROI is NOT a tight mask crop.** The primary ROI is an **expanded bbox** derived from Stage A detections:
+- Start from Stage A bbox
+- Apply configurable padding (and clip to image bounds)
+- Optionally use masks as a **soft hint** (e.g., to prioritize pixels or compute “likely tag fits” checks)
+- **Never hard-clip the decode region to the YOLO mask**, because YOLO masks frequently under-cover torso/chest/back regions where tags live.
+
 ## Addendum — 2026-01-08 (Crop Candidate Contract)
 
 ### Input Sources
-Stage C consumes crop candidates produced by Stage A and B.
-It must not generate its own crops or read raw video frames
-except as a fallback.
+Stage C runs **online** in multiplex and consumes the already-decoded frame provided by orchestration.
+It may optionally consume **curated crop candidates** (if present) for offline reprocessing, but C1 must not depend on crops for the POC.
+When running outside multiplex (future multipass), C1 may re-open raw video frames **only for the frames/ROIs it chooses to scan**.
 
 ### Hard Evidence Policy
 AprilTag detections are treated as hard constraints.
@@ -21,17 +46,20 @@ This addendum locks how C1 chooses the ROI for AprilTag scanning now that:
 ### ROI source priority (authoritative)
 For each `(frame_index, detection_id)` being scanned:
 
-1) **Stage B refined mask** if present for that exact detection/frame  
-   - Use: `stage_B/masks/*.npz`
-   - Rationale: B exists specifically to improve mask quality during entanglement/merge-split/low-quality segments.
+1) **Expanded bbox ROI (primary; POC default)**  
+   - Use bbox from `stage_A/detections.parquet` and apply configurable padding.
+   - Rationale: tags live on torso/chest/back; YOLO masks often under-cover these regions.
 
-2) **Stage A canonical mask** otherwise  
+2) **(Future) Stage B refined mask hint** if present  
+   - Use: `stage_B/masks/*.npz` *(Stage B deferred for POC)*
+   - Use as a **soft hint** only (e.g., pixel weighting, “tag fits” checks), not as a hard crop boundary.
+
+3) **Stage A canonical mask hint** otherwise  
    - Use: `stage_A/masks/*.npz`
-   - Rationale: A guarantees a valid mask for every detection (YOLO-seg if gated, bbox fallback otherwise).
+   - Use as a **soft hint** only; do not hard-clip decode ROI to the mask.
 
-3) **Fallback to bbox** only if mask loading fails unexpectedly  
-   - Use bbox from `stage_A/detections.parquet` for that detection row
-   - This fallback should be rare; if it occurs, log an audit warning with counts.
+4) **Fallback behavior**  
+   - If mask loading fails unexpectedly, proceed with bbox-only ROI and log an audit warning with counts.
 
 ### Geometry usage (important clarification)
 C1 may use Stage A’s geometry for:
@@ -42,15 +70,15 @@ But **C1 must not mutate** Stage A geometry. C1 only emits tag observations and 
 
 ### Determinism & audit requirements (C1)
 When scanning, C1 must record per-attempt metadata in `stage_C/audit.jsonl`, including:
-- `roi_source`: "stage_B_mask" | "stage_A_mask" | "bbox_fallback"
+- `roi_source`: "bbox_expanded" | "stage_B_mask_hint" | "stage_A_mask_hint" | "bbox_only"
 - `roi_px_area`, `roi_bbox` (optional but helpful)
 - decode results + failure reason code (e.g., "no_candidates", "low_contrast", "motion_blur")
 
 ### Acceptance criteria update
 C1 is considered successful when:
-- it can scan using Stage A masks for an entire clip deterministically, and
-- when Stage B has refined masks for some frames, C1 automatically prefers them (no manual intervention),
-- and audit logs show ROI-source counts and decode attempt stats.
+- it can scan an entire clip deterministically in `multiplex_AC` using **expanded bbox ROIs**, and
+- audit logs show ROI-source counts and decode attempt stats (including skip reasons from C0 cadence decisions), and
+- (future) when Stage B is reactivated, C1 can incorporate refined masks as optional hints with no manual intervention.
 
 ## Update: F0 + F3 are complete (locked constraints)
 
@@ -136,12 +164,13 @@ An **offline** (batch) video processing pipeline for BJJ practice footage. Input
    - Output: frame-level detections + short, high-precision **tracklets** (intentionally allowed to break).
 
 2) **Stage B — Masks + contact point + homography (offline refinement)**
-   - Tooling target: SAM/SAM2 offline refinement (or fallback masks) + OpenCV.
-   - Output: mask references + stable “ground contact point” per frame + projected ground-plane coordinates.
+   - **DEFERRED for POC.**
+   - Tooling target (future): SAM/SAM2 offline refinement (or fallback masks) + OpenCV.
+   - Output (future): refined masks + sparse overrides where needed.
 
 3) **Stage C — Identity anchoring (AprilTag scanning + registry)**
-   - Tooling target: AprilTag detection applied inside mask ROI + voting registry.
-   - Output: tag observations (frame-level) + stable identity assignments + conflicts.
+   - Tooling target: AprilTag detection applied inside **expanded bbox ROI** + voting registry.
+   - Output: tag observations (frame-level) + identity hints/constraints for Stage D.
 
 4) **Stage D — Global stitching (Min-Cost Flow)**
    - Tooling target: MCF solver (start with OR-Tools or NetworkX; optimize later).
@@ -159,7 +188,7 @@ An **offline** (batch) video processing pipeline for BJJ practice footage. Input
 ### Canonical tool choices (POC defaults)
 These are defaults; workers may propose alternatives but must align with constraints.
 - **Tracking**: BoxMOT **BoT-SORT** (as tracklet generator)
-- **Masks**: YOLO-seg online where possible; **SAM/SAM2 offline** where higher fidelity needed
+- **Masks**: YOLO-seg online where possible; **SAM/SAM2 deferred for POC**
 - **AprilTags**: Python apriltag detector (library choice can be decided in C1)
 - **ReID (optional early, likely later)**: OSNet / torchreid or FastReID; ideally on masked crops
 - **Stitching**: **Min-Cost Flow** (OR-Tools min-cost flow or NetworkX as baseline)
@@ -181,10 +210,10 @@ AprilTag scanning should happen throughout the clip (not only during matches).
 Use masks/ROIs to reduce compute and false positives.
 
 ### Must include
-- ROI extraction from mask (tight bbox + padding)
+- ROI extraction from **expanded bbox** (mask may be used as a soft hint; never hard-clip decode ROI to mask)
 - Preprocessing steps (contrast, grayscale, thresholding) proposed and configurable
 - Confidence scoring + false positive handling
-- Strategy for picking “best frames” (from A2/B1 signals)
+- Strategy for picking “best frames” and cadence (from **C0** state machine; A2/B1 are deferred for POC)
 
 ### Invariants
 - Every tag observation includes: frame_index, tracklet_id/person_id (if known), tag_id, confidence, roi bounds, method
