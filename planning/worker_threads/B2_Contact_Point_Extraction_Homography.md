@@ -1,3 +1,13 @@
+## Addendum — 2026-01-14 (POC update: Stage B deferred; A owns baseline geometry; C online)
+
+⚠️ **Stage B is DEFERRED for the current POC.**
+
+We are prioritizing an end-to-end A + C → D proof-of-concept:
+- **Phase 1:** `multiplex_AC` (Stage A + Stage C online in a single decode pass)
+- **Phase 2:** offline `D → E → X` (artifact-driven)
+
+Baseline contact point + homography projection + `on_mat` are already owned by **Stage A** (as implemented in A1R4 via `tracklet_frames.parquet`). This document is retained as a spec for a future Stage B reactivation where we add **sparse overrides** (refined contact points / refined masks) only when it yields measurable lift.
+
 ## Addendum — 2026-01-10 (A/B scope lock: baseline in A, refinement in B)
 
 ### Updated ownership model (Manager decision)
@@ -13,6 +23,8 @@ After the F0 bump:
 - Stage B refinement artifact: stage_B/contact_points_refined.parquet (subset / overrides)
 
 Downstream consumers (D/E/F) should default to Stage A contact_points and apply Stage B refined overrides when present.
+
+> **Repo reality note (Jan 2026):** In the current repo snapshot, Stage A already carries baseline contact/homography fields in `stage_A/tracklet_frames.parquet`, and validators still list `stage_B/contact_points.parquet` as the Stage B artifact. The `stage_A/contact_points.parquet` + `stage_B/contact_points_refined.parquet` split is **planned** and must not be assumed until the schema bump + validator/orchestrator updates land.
 
 ### Multiplex implication (Z3)
 Stage B should be multiplex-friendly:
@@ -118,12 +130,13 @@ An **offline** (batch) video processing pipeline for BJJ practice footage. Input
    - Output: frame-level detections + short, high-precision **tracklets** (intentionally allowed to break).
 
 2) **Stage B — Masks + contact point + homography (offline refinement)**
-   - Tooling target: SAM/SAM2 offline refinement (or fallback masks) + OpenCV.
-   - Output: mask references + stable “ground contact point” per frame + projected ground-plane coordinates.
+  - **DEFERRED for POC.**
+  - Tooling target (future): SAM/SAM2 refinement (or fallback masks) + OpenCV.
+  - Output (future): refined masks + sparse overrides where needed.
 
 3) **Stage C — Identity anchoring (AprilTag scanning + registry)**
-   - Tooling target: AprilTag detection applied inside mask ROI + voting registry.
-   - Output: tag observations (frame-level) + stable identity assignments + conflicts.
+  - Tooling target: AprilTag detection applied inside **expanded bbox ROI** (mask may be used as a soft hint) + voting registry.
+  - Output: tag observations (frame-level) + identity hints/constraints for Stage D.
 
 4) **Stage D — Global stitching (Min-Cost Flow)**
    - Tooling target: MCF solver (start with OR-Tools or NetworkX; optimize later).
@@ -141,7 +154,7 @@ An **offline** (batch) video processing pipeline for BJJ practice footage. Input
 ### Canonical tool choices (POC defaults)
 These are defaults; workers may propose alternatives but must align with constraints.
 - **Tracking**: BoxMOT **BoT-SORT** (as tracklet generator)
-- **Masks**: YOLO-seg online where possible; **SAM/SAM2 offline** where higher fidelity needed
+- **Masks**: YOLO-seg online where possible; **SAM/SAM2 deferred for POC**
 - **AprilTags**: Python apriltag detector (library choice can be decided in C1)
 - **ReID (optional early, likely later)**: OSNet / torchreid or FastReID; ideally on masked crops
 - **Stitching**: **Min-Cost Flow** (OR-Tools min-cost flow or NetworkX as baseline)

@@ -1,3 +1,13 @@
+## Addendum — 2026-01-14 (POC update: Stage B deferred)
+
+⚠️ **Stage B (SAM refinement) is DEFERRED for the current POC.**
+
+We are prioritizing an end-to-end A + C → D proof-of-concept:
+- **Phase 1:** `multiplex_AC` (Stage A + Stage C online in a single decode pass)
+- **Phase 2:** offline `D → E → X` (artifact-driven)
+
+Stage B remains a future selective refinement stage. This document is retained as a spec for reactivation after the A+C→D POC, when we can quantify the lift from SAM refinement on entanglement/merge-split windows.
+
 ## Addendum — 2026-01-08 (Post-D7 / Z3 Alignment)
 
 ### Refinement-Only Rule
@@ -10,7 +20,7 @@ All refinements are emitted as new canonical artifacts.
 SAM execution is selective and gated by:
 - low YOLO mask quality
 - high mask overlap / entanglement
-- A2 quality flags
+- (future) A2 quality flags *(A2 deferred for POC)*
 - proximity-based engagement signals
 
 ### Crop Upgrade Emission
@@ -32,8 +42,8 @@ This addendum aligns B1 with the **A1R4** outcome:
 
 ### Updated operating model
 1. Stage A: always produce a usable mask (YOLO-seg or bbox fallback) so downstream stages are never blocked.
-2. A2: compute online signals and emit a deterministic trigger list for when refinement is worth the cost.
-3. Stage B: run SAM refinement *selectively* on triggered detections/frames and emit refined masks (plus optional geometry overrides per B2 addendum).
+2. (Future) A2: compute online signals and emit a deterministic trigger list for when refinement is worth the cost. *(A2 deferred for POC)*
+3. Stage B: run SAM refinement *selectively* on triggered detections/frames and emit refined masks (plus optional geometry overrides per B2 addendum). *(Stage B deferred for POC)*
 
 ### Key constraint
 Stage B should avoid full-video re-decode whenever practical (multiplex-friendly). Prefer:
@@ -41,7 +51,7 @@ Stage B should avoid full-video re-decode whenever practical (multiplex-friendly
 - sampling only triggered frame indices from the original video.
 
 ### Acceptance criteria update
-B1 is done when we can demonstrate:
+B1 is done (when reactivated) when we can demonstrate:
 - a triggered refinement run that improves masks in entanglement frames
 - sparse refined mask outputs under `stage_B/masks/`
 - deterministic, auditable selection + refinement behavior
@@ -129,12 +139,13 @@ An **offline** (batch) video processing pipeline for BJJ practice footage. Input
    - Output: frame-level detections + short, high-precision **tracklets** (intentionally allowed to break).
 
 2) **Stage B — Masks + contact point + homography (offline refinement)**
-   - Tooling target: SAM/SAM2 offline refinement (or fallback masks) + OpenCV.
-   - Output: mask references + stable “ground contact point” per frame + projected ground-plane coordinates.
+   - **DEFERRED for POC.**
+   - Tooling target (future): SAM/SAM2 refinement (or fallback masks) + OpenCV.
+   - Output (future): refined masks + sparse overrides where needed.
 
 3) **Stage C — Identity anchoring (AprilTag scanning + registry)**
-   - Tooling target: AprilTag detection applied inside mask ROI + voting registry.
-   - Output: tag observations (frame-level) + stable identity assignments + conflicts.
+   - Tooling target: AprilTag detection applied inside **expanded bbox ROI** (mask may be used as a soft hint) + voting registry.
+   - Output: tag observations (frame-level) + identity hints/constraints for Stage D.
 
 4) **Stage D — Global stitching (Min-Cost Flow)**
    - Tooling target: MCF solver (start with OR-Tools or NetworkX; optimize later).
@@ -152,7 +163,7 @@ An **offline** (batch) video processing pipeline for BJJ practice footage. Input
 ### Canonical tool choices (POC defaults)
 These are defaults; workers may propose alternatives but must align with constraints.
 - **Tracking**: BoxMOT **BoT-SORT** (as tracklet generator)
-- **Masks**: YOLO-seg online where possible; **SAM/SAM2 offline** where higher fidelity needed
+- **Masks**: YOLO-seg online where possible; **SAM/SAM2 deferred for POC**
 - **AprilTags**: Python apriltag detector (library choice can be decided in C1)
 - **ReID (optional early, likely later)**: OSNet / torchreid or FastReID; ideally on masked crops
 - **Stitching**: **Min-Cost Flow** (OR-Tools min-cost flow or NetworkX as baseline)

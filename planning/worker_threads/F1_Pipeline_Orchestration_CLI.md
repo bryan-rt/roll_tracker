@@ -24,10 +24,11 @@ Stage A — Detection & Tracklets (must write):
 - `stage_A/detections.parquet`
 - `stage_A/tracklet_frames.parquet`
 - `stage_A/tracklet_summaries.parquet`
+- `stage_A/contact_points.parquet` (baseline geometry; full coverage)
 - `stage_A/audit.jsonl`
 
-Stage B — Masks & Geometry:
-- `stage_B/contact_points.parquet`
+Stage B — Masks & Geometry (optional / deferred for current POC):
+- `stage_B/contact_points_refined.parquet` (subset overrides; only when B runs)
 - `stage_B/masks/*.npz` (canonical mask storage; referenced by relative path)
 - `stage_B/audit.jsonl`
 
@@ -84,9 +85,9 @@ An **offline** (batch) video processing pipeline for BJJ practice footage. Input
    - Tooling target: detector (YOLO or similar) + tracker (BoT-SORT via BoxMOT).
    - Output: frame-level detections + short, high-precision **tracklets** (intentionally allowed to break).
 
-2) **Stage B — Masks + contact point + homography (offline refinement)**
-   - Tooling target: SAM/SAM2 offline refinement (or fallback masks) + OpenCV.
-   - Output: mask references + stable “ground contact point” per frame + projected ground-plane coordinates.
+2) **Stage B — Mask refinement + geometry overrides (optional / deferred for current POC)**
+  - Tooling target: SAM/SAM2 selective refinement + OpenCV.
+  - Output: refined masks and **subset** contact point overrides (not full coverage).
 
 3) **Stage C — Identity anchoring (AprilTag scanning + registry)**
    - Tooling target: AprilTag detection applied inside mask ROI + voting registry.
@@ -326,6 +327,13 @@ Add an explicit flag to orchestration commands:
 
 Default is **non-interactive** (fail-fast if missing).
 
+### Hybrid pipeline mode (POC execution model)
+For the current POC, orchestration supports a two-phase execution model:
+1) Online decode pass: `--mode multiplex_AC` runs Stage A + C in a single shared frame loop (video decoded once).
+2) Offline artifact pass: D → E → X run sequentially from artifacts (no shared frame iterator).
+
+Stage B is deferred and must not be required for a valid end-to-end run.
+
 ### Audit requirements
 Orchestration must write run-level audit events into:
 
@@ -394,3 +402,5 @@ Z3 introduced an **optional single-pass multiplex mode** (`multiplex_ABC`) that 
 ### Interface expectations (keep flexible, but follow intent)
 - If you introduce a per-frame API (recommended for A/B/C), keep it behind the stage module so orchestration can call it in multiplex mode.
 - Ensure stage outputs can still be produced in multipass mode by reading upstream artifacts from disk (parity requirement until multipass is retired).
+
+> POC clarification: treat `multiplex_ABC` as an architectural capability; the current active target is `multiplex_AC`.

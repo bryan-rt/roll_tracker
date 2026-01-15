@@ -48,10 +48,11 @@ Stage A — Detection & Tracklets (must write):
 - `stage_A/detections.parquet`
 - `stage_A/tracklet_frames.parquet`
 - `stage_A/tracklet_summaries.parquet`
+- `stage_A/contact_points.parquet` (baseline geometry; full coverage)
 - `stage_A/audit.jsonl`
 
-Stage B — Masks & Geometry:
-- `stage_B/contact_points.parquet`
+Stage B — Masks & Geometry (optional / deferred for current POC):
+- `stage_B/contact_points_refined.parquet` (subset overrides; only when B runs)
 - `stage_B/masks/*.npz` (canonical mask storage; referenced by relative path)
 - `stage_B/audit.jsonl`
 
@@ -108,9 +109,9 @@ An **offline** (batch) video processing pipeline for BJJ practice footage. Input
    - Tooling target: detector (YOLO or similar) + tracker (BoT-SORT via BoxMOT).
    - Output: frame-level detections + short, high-precision **tracklets** (intentionally allowed to break).
 
-2) **Stage B — Masks + contact point + homography (offline refinement)**
-   - Tooling target: SAM/SAM2 offline refinement (or fallback masks) + OpenCV.
-   - Output: mask references + stable “ground contact point” per frame + projected ground-plane coordinates.
+2) **Stage B — Mask refinement + geometry overrides (optional / deferred for current POC)**
+   - Tooling target: SAM/SAM2 selective refinement + OpenCV.
+   - Output: refined masks and **subset** contact point overrides (not full coverage).
 
 3) **Stage C — Identity anchoring (AprilTag scanning + registry)**
    - Tooling target: AprilTag detection applied inside mask ROI + voting registry.
@@ -180,6 +181,13 @@ You are defining the **canonical schemas** that every other stage must follow. T
 - Tracklet frames reference valid detections
 - Person tracks must map back to source tracklets (traceability)
 - Tag observations must include confidence + ROI method used
+
+### Downstream override rule (Manager-locked)
+Downstream consumers (D/E/X) must:
+1) load `stage_A/contact_points.parquet` as the baseline
+2) if present, apply overrides from `stage_B/contact_points_refined.parquet` by `(frame_index, detection_id)` (or an equivalent stable key)
+
+This preserves the ability to skip Stage B while keeping geometry available and deterministic.
 
 ### What you should propose
 - Where we store artifact files (e.g., `outputs/<clip_id>/<stage>/...`)

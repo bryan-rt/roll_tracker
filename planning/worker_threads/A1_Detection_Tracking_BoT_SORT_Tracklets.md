@@ -1,3 +1,16 @@
+## Addendum — 2026-01-14 (Hybrid POC alignment: multiplex_AC; Stage B deferred; C online)
+
+### Hybrid pipeline execution model (locked for POC)
+We are using a **single pipeline** with two phases:
+- **Phase 1 (online decode pass):** `multiplex_AC` runs **Stage A + Stage C** in a single shared frame loop (decode once).
+- **Phase 2 (offline artifact pass):** `D → E → X` runs sequentially (artifact-driven; no multiplex).
+
+### Stage B status (locked)
+Stage B (SAM refinement / sparse overrides) is **DEFERRED for the POC**. Do not plan A1 deliverables or invariants around Stage B being present.
+
+### Stage C status (locked)
+Stage C runs **online** in the multiplex pass with Stage A and should use **expanded bbox ROIs** as the primary decode region (masks are optional hints only; never hard-clip decode ROIs).
+
 ## Addendum — 2026-01-10 (Post-Z3 + D7 + A/B Scope Lock)
 
 ### Locked scope clarification (Manager decision)
@@ -20,10 +33,12 @@ Stage A must continue to emit the locked Stage A artifacts:
 - stage_A/audit.jsonl
 ...and in addition emit stage_A/contact_points.parquet after the F0 bump lands.
 
+> **Repo reality note (Jan 2026):** In the current code repo snapshot, baseline contact point + homography fields are already carried in `tracklet_frames.parquet`, and Stage B still owns `stage_B/contact_points.parquet` in validators. The `stage_A/contact_points.parquet` migration is **planned** but not yet landed as a required contract. Treat this as **future** until the schema bump + validator/orchestrator updates are merged.
+
 ### Multiplex parity requirement (Z3)
 Stage A logic must be callable in both:
 - multipass mode (stage reads raw clip, writes artifacts)
-- multiplex_ABC mode (stage participates in a shared frame iterator)
+- multiplex mode (stage participates in a shared frame iterator; **POC target is multiplex_AC**)
 
 Canonical outputs MUST remain identical across both modes.
 
@@ -81,6 +96,7 @@ Stage A is the **canonical owner** of per-frame *online* signals for every detec
 - **Mat inclusion** (`on_mat`) using `mat_blueprint.json` polygon
 
 Stage A runs in **multiplex_ABC** (single-pass frame loop) and writes canonical artifacts at end-of-run, preserving determinism and F0 validation.
+**POC update:** current target is `multiplex_AC` (A + C). Stage B is deferred.
 
 ### Canonical Outputs (authoritative)
 - `stage_A/detections.parquet`
@@ -92,7 +108,7 @@ Stage A runs in **multiplex_ABC** (single-pass frame loop) and writes canonical 
 Dev visualization remains orchestration-owned under `outputs/<clip_id>/_debug/`.
 
 ### Stage B Relationship (updated)
-Stage B is now **selective** and should be invoked only for frames/detections that need refinement (entanglement/merge-split, poor mask quality, etc.). When Stage B runs, it may emit **refined masks** and **sparse geometry overrides** for affected detections/frames; it should *not* duplicate Stage A’s full-frame pass.
+Stage B is **DEFERRED for the POC**. The system should achieve an end-to-end A + C → D proof-of-concept without relying on SAM refinement. If/when B is reactivated, it should remain selective and emit sparse overrides; it must not duplicate Stage A’s full-frame pass.
 
 ### Accepted Non-Blocking Deferrals
 - Tracklet summaries remain minimal by design
@@ -295,12 +311,13 @@ An **offline** (batch) video processing pipeline for BJJ practice footage. Input
    - Output: frame-level detections + short, high-precision **tracklets** (intentionally allowed to break).
 
 2) **Stage B — Masks + contact point + homography (offline refinement)**
-   - Tooling target: SAM/SAM2 offline refinement (or fallback masks) + OpenCV.
-   - Output: mask references + stable “ground contact point” per frame + projected ground-plane coordinates.
+  - **DEFERRED for POC.**
+  - Tooling target (future): SAM/SAM2 refinement (or fallback masks).
+  - Output (future): refined masks + sparse overrides where needed.
 
 3) **Stage C — Identity anchoring (AprilTag scanning + registry)**
-   - Tooling target: AprilTag detection applied inside mask ROI + voting registry.
-   - Output: tag observations (frame-level) + stable identity assignments + conflicts.
+  - Tooling target: AprilTag detection applied inside **expanded bbox ROI** (mask may be used as a soft hint).
+  - Output: tag observations (frame-level) + identity hints/constraints for Stage D.
 
 4) **Stage D — Global stitching (Min-Cost Flow)**
    - Tooling target: MCF solver (start with OR-Tools or NetworkX; optimize later).
@@ -318,7 +335,7 @@ An **offline** (batch) video processing pipeline for BJJ practice footage. Input
 ### Canonical tool choices (POC defaults)
 These are defaults; workers may propose alternatives but must align with constraints.
 - **Tracking**: BoxMOT **BoT-SORT** (as tracklet generator)
-- **Masks**: YOLO-seg online where possible; **SAM/SAM2 offline** where higher fidelity needed
+- **Masks**: YOLO-seg online where possible; **SAM/SAM2 deferred for POC**
 - **AprilTags**: Python apriltag detector (library choice can be decided in C1)
 - **ReID (optional early, likely later)**: OSNet / torchreid or FastReID; ideally on masked crops
 - **Stitching**: **Min-Cost Flow** (OR-Tools min-cost flow or NetworkX as baseline)
