@@ -2,6 +2,24 @@
 
 ---
 
+## Addendum — 2026-01-XX (Post-F0G: Stage A canonical contact points; audit ownership; mux mode name)
+
+### Execution mode (POC lock)
+- POC online mode is **`multiplex_AC` only** (Stage A + Stage C in a shared frame loop).
+- Stage B is **DEFERRED** and **must not be required** for Stage C to run or validate.
+
+### Canonical geometry source (POC lock)
+Stage A is the canonical owner of baseline geometry via:
+- `stage_A/contact_points.parquet` (join-ready by `(frame_index, detection_id)`; includes `tracklet_id`, `on_mat`, `u_px/v_px`, `x_m/y_m`, etc.)
+
+Implications:
+- **Multiplex mode:** C0 may receive some geometry fields in-memory, but must still function with bbox-only inputs.
+- **Multipass mode:** Stage C (scheduler/gating) should read **Stage A `contact_points.parquet`** (not Stage B, not tracklet_frames) for optional gating.
+
+### Audit ownership boundary (avoid duplication)
+- **C0 audit:** attempt-vs-skip decisions + scheduler state + skip reason codes + summary counters.
+- **C1 audit:** ROI bbox/source + decode attempt metadata + decode outcome/failure codes (only when a decode is attempted).
+
 ## Status — 2026-01-14 (Manager-locked for POC)
 
 ### Hybrid pipeline execution model (POC)
@@ -53,7 +71,7 @@ In multiplex mode, C0 receives per-frame inputs from the shared frame loop:
   - `detection_id`, `tracklet_id`
   - bbox (x1,y1,x2,y2) + detection confidence
   - (optional) mask path or in-memory mask reference (hint only)
-  - (optional) geometry fields from `tracklet_frames` (on_mat, x_m, y_m, vx, vy)
+   - (optional) geometry fields (e.g., on_mat, x_m, y_m, vx, vy) if provided in-memory by orchestration
 
 **Important:** C0 must be able to operate with *only* bbox + tracklet_id + conf if optional fields are missing.
 
@@ -70,12 +88,15 @@ This worker must not introduce new F0 artifacts by default. Stage C canonical ou
 ### Audit events (required)
 C0 must write audit lines to `stage_C/audit.jsonl` capturing:
 - attempt/skip per `(frame_index, detection_id)` with a compact reason code
+- scheduler state per tracklet (e.g., SEEKING / VERIFIED / RAMP_UP)
 - per-run counters summary:
   - total_candidates_seen
   - total_decode_attempts
   - total_skips (by reason)
   - attempts_before_first_success (distribution or summary)
   - backoff_state_counts (e.g., SEEKING vs VERIFIED)
+
+> Note: per-attempt ROI/decode metadata lives in C1 audit events to avoid duplication.
 
 ---
 
@@ -109,6 +130,11 @@ Allowed (POC):
 - optional `on_mat` gating (skip off-mat if reliable)
 - optional “tag-fit” heuristic (cheap):
   - estimate whether an AprilTag-sized square could fit inside the **expanded bbox ROI**
+
+### Join contract (downstream-friendly; POC lock)
+- **Primary unit of work / record:** `(clip_id, frame_index, detection_id)`
+- `tracklet_id` is attached for scheduling state and aggregation, but is not the primary join key.
+- Any scheduler decisions and audit counters should be attributable to `(frame_index, detection_id)` first.
 
 Occlusion/ambiguity triggers (POC proxies):
 - sustained bbox overlap between two tracklets (IoU over threshold for M frames)

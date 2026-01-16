@@ -132,6 +132,11 @@ def _write_placeholder_stage_A(layout: ClipOutputLayout, manifest: ClipManifest,
     layout.ensure_dirs_for_stage("A")
     ts_ms = int(pkt0.timestamp_ms) if pkt0 is not None else 0
 
+    # Keep placeholders validator-safe: bbox must have x2>=x1 and y2>=y1.
+    x1, y1, x2, y2 = 10.0, 10.0, 20.0, 20.0
+    x1, x2 = (x1, x2) if x1 <= x2 else (x2, x1)
+    y1, y2 = (y1, y2) if y1 <= y2 else (y2, y1)
+
     det = pd.DataFrame([{
         "clip_id": manifest.clip_id,
         "camera_id": camera_id,
@@ -140,10 +145,10 @@ def _write_placeholder_stage_A(layout: ClipOutputLayout, manifest: ClipManifest,
         "detection_id": "d1",
         "class_name": "person",
         "confidence": 0.9,
-        "x1": 10.0,
-        "y1": 10.0,
-        "x2": 20.0,
-        "y2": 20.0,
+        "x1": x1,
+        "y1": y1,
+        "x2": x2,
+        "y2": y2,
         "tracklet_id": "t1",
     }])
     tf = pd.DataFrame([{
@@ -166,9 +171,26 @@ def _write_placeholder_stage_A(layout: ClipOutputLayout, manifest: ClipManifest,
         "reason_codes_json": "[]",
     }])
 
-    det.to_parquet(layout.detections_parquet())
-    tf.to_parquet(layout.tracklet_frames_parquet())
-    ts.to_parquet(layout.tracklet_summaries_parquet())
+    cp = pd.DataFrame([{
+        "clip_id": manifest.clip_id,
+        "camera_id": camera_id,
+        "frame_index": 0,
+        "timestamp_ms": ts_ms,
+        "detection_id": "d1",
+        "tracklet_id": "t1",
+        "u_px": 15.0,
+        "v_px": 20.0,
+        "x_m": 0.1,
+        "y_m": 0.2,
+        "on_mat": True,
+        "contact_conf": 0.5,
+        "contact_method": "placeholder",
+    }])
+
+    det.to_parquet(layout.detections_parquet(), index=False)
+    tf.to_parquet(layout.tracklet_frames_parquet(), index=False)
+    ts.to_parquet(layout.tracklet_summaries_parquet(), index=False)
+    cp.to_parquet(layout.stage_A_contact_points_parquet(), index=False)
     p = Path(layout.audit_jsonl("A"))
     p.parent.mkdir(parents=True, exist_ok=True)
     with p.open("a", encoding="utf-8") as f:
@@ -514,12 +536,13 @@ def run_multiplex_ABC(*,
 
             # Validate canonical outputs immediately (keeps resume/skip logic honest).
             try:
-                from bjj_pipeline.contracts.f0_validate import validate_detections_df, validate_tracklet_tables
+                from bjj_pipeline.contracts.f0_validate import validate_detections_df, validate_tracklet_tables, validate_stage_A_contact_points_df
                 validate_detections_df(pd.read_parquet(layout.detections_parquet()))
                 validate_tracklet_tables(
                     pd.read_parquet(layout.tracklet_frames_parquet()),
                     pd.read_parquet(layout.tracklet_summaries_parquet()),
                 )
+                validate_stage_A_contact_points_df(pd.read_parquet(layout.stage_A_contact_points_parquet()))
             except Exception:
                 # Orchestration will surface validation errors later; avoid hard fail here.
                 pass

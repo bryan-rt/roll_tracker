@@ -98,7 +98,7 @@ Stage A — Detection & Tracklets (must write):
 - `stage_A/audit.jsonl`
 
 Stage B — Masks & Geometry:
-- `stage_B/contact_points.parquet`
+- `stage_B/contact_points_refined.parquet`
 - `stage_B/masks/*.npz` (canonical mask storage; referenced by relative path)
 - `stage_B/audit.jsonl`
 
