@@ -171,6 +171,12 @@ def register_stage_A_defaults(manifest: ClipManifest, layout: ClipOutputLayout) 
     )
     manifest.register_artifact(
         stage="A",
+        key="contact_points_parquet",
+        relpath=layout.rel_to_clip_root(layout.stage_A_contact_points_parquet()),
+        content_type="application/parquet",
+    )
+    manifest.register_artifact(
+        stage="A",
         key="audit_jsonl",
         relpath=layout.rel_to_clip_root(layout.audit_jsonl("A")),
         content_type="application/jsonl",
@@ -188,6 +194,15 @@ def register_stage_B_defaults(manifest: ClipManifest, layout: ClipOutputLayout) 
         relpath=layout.rel_to_clip_root(layout.contact_points_parquet()),
         content_type="application/parquet",
     )
+    # Back-compat: if the legacy path exists, register it under a separate key.
+    legacy = layout.stage_B_contact_points_parquet_legacy()
+    if legacy.exists():
+        manifest.register_artifact(
+            stage="B",
+            key="contact_points_parquet_legacy",
+            relpath=layout.rel_to_clip_root(legacy),
+            content_type="application/parquet",
+        )
     manifest.register_artifact(
         stage="B",
         key="masks_dir",

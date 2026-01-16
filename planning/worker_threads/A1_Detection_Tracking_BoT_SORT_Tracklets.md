@@ -33,7 +33,7 @@ Stage A must continue to emit the locked Stage A artifacts:
 - stage_A/audit.jsonl
 ...and in addition emit stage_A/contact_points.parquet after the F0 bump lands.
 
-> **Repo reality note (Jan 2026):** In the current code repo snapshot, baseline contact point + homography fields are already carried in `tracklet_frames.parquet`, and Stage B still owns `stage_B/contact_points.parquet` in validators. The `stage_A/contact_points.parquet` migration is **planned** but not yet landed as a required contract. Treat this as **future** until the schema bump + validator/orchestrator updates are merged.
+> **Repo reality note (Jan 2026):** Baseline contact point + homography fields are carried in `stage_A/tracklet_frames.parquet`, and Stage A also writes `stage_A/contact_points.parquet` (baseline/full coverage). Stage B emits `stage_B/contact_points_refined.parquet` only when refinement runs.
 
 ### Multiplex parity requirement (Z3)
 Stage A logic must be callable in both:
@@ -253,7 +253,7 @@ Stage A — Detection & Tracklets (must write):
 - `stage_A/audit.jsonl`
 
 Stage B — Masks & Geometry:
-- `stage_B/contact_points.parquet`
+- `stage_B/contact_points_refined.parquet`
 - `stage_B/masks/*.npz` (canonical mask storage; referenced by relative path)
 - `stage_B/audit.jsonl`
 

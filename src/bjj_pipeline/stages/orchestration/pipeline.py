@@ -64,11 +64,13 @@ def required_outputs_for_stage(layout: ClipOutputLayout, letter: StageLetter) ->
             layout.rel_to_clip_root(layout.detections_parquet()),
             layout.rel_to_clip_root(layout.tracklet_frames_parquet()),
             layout.rel_to_clip_root(layout.tracklet_summaries_parquet()),
+            layout.rel_to_clip_root(layout.stage_A_contact_points_parquet()),
             layout.rel_to_clip_root(layout.audit_jsonl("A")),
         ]
     if letter == "B":
         return [
-            layout.rel_to_clip_root(layout.contact_points_parquet()),
+            # Accept either refined (canonical) or legacy filename for completion checks.
+            f"glob:{layout.rel_to_clip_root(layout.stage_dir('B'))}/contact_points*.parquet",
             f"glob:{layout.rel_to_clip_root(layout.masks_dir())}/*.npz",
             layout.rel_to_clip_root(layout.audit_jsonl("B")),
         ]
@@ -357,15 +359,20 @@ def ensure_manifest(layout: ClipOutputLayout, clip_id: str, camera_id: str, inpu
 def _validate_stage_outputs(manifest: ClipManifest, layout: ClipOutputLayout, letter: StageLetter) -> None:
     root = layout.clip_root
     if letter == "A":
-        det = pd.read_parquet(root / "stage_A" / "detections.parquet")
-        tf = pd.read_parquet(root / "stage_A" / "tracklet_frames.parquet")
-        ts = pd.read_parquet(root / "stage_A" / "tracklet_summaries.parquet")
-        v.validate_detections_df(det)
-        v.validate_tracklet_tables(tf, ts)
-        v.validate_tracklet_frames_fk_to_detections(tf, det)
+        tables = v.read_stage_A_clip_tables(layout)
+        v.validate_stage_A_contract(tables)
         return
     if letter == "B":
-        cp = pd.read_parquet(root / "stage_B" / "contact_points.parquet")
+        refined = root / "stage_B" / "contact_points_refined.parquet"
+        legacy = root / "stage_B" / "contact_points.parquet"
+        if refined.exists():
+            cp_path = refined
+        elif legacy.exists():
+            cp_path = legacy
+        else:
+            raise PipelineError("Missing stage B contact points parquet (expected refined or legacy file)")
+
+        cp = pd.read_parquet(cp_path)
         v.validate_contact_points_df(cp)
         return
     if letter == "C":

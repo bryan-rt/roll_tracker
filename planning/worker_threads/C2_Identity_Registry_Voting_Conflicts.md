@@ -1,5 +1,20 @@
 # C2 — Identity Registry (Voting + Conflicts)
 
+## Addendum — 2026-01-XX (Post-F0G: canonical join keys; Stage B deferred; canonical outputs only)
+
+### POC lock: execution + Stage B posture
+- Stage C runs online in **`multiplex_AC`** (A + C). Stage B is **DEFERRED** and must not be required.
+
+### Canonical join keys / data expectations
+- C2 should treat `(frame_index, detection_id)` as the primary join key for C1 evidence, with `tracklet_id` as the identity-voting key.
+- If geometry is needed for gating/weighting (optional), in multipass it must come from **Stage A `stage_A/contact_points.parquet`**.
+
+### Output contract lock (F0-aligned)
+- Canonical outputs remain: `stage_C/tag_observations.jsonl`, `stage_C/identity_hints.jsonl`, `stage_C/audit.jsonl`
+- Any additional registry/conflict/evidence files are **dev-only** unless F0 is explicitly bumped.
+
+> Note: In POC, primary ROI is `roi_source="bbox_expanded"`. Treat mask-hint sources as secondary evidence quality signals only.
+
 ## Addendum — 2026-01-14 (POC update: C online in multiplex_AC; bbox-expanded ROI; Stage B deferred; outputs must match F0)
 
 ### Hybrid pipeline execution model (locked for POC)
@@ -94,7 +109,7 @@ Stage A — Detection & Tracklets (must write):
 - `stage_A/audit.jsonl`
 
 Stage B — Masks & Geometry:
-- `stage_B/contact_points.parquet`
+- `stage_B/contact_points_refined.parquet`
 - `stage_B/masks/*.npz` (canonical mask storage; referenced by relative path)
 - `stage_B/audit.jsonl`
 

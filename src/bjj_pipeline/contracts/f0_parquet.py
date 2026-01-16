@@ -113,12 +113,20 @@ CONTACT_POINTS_SPECS: List[ColSpec] = [
     ColSpec("frame_index", "int"),
     ColSpec("timestamp_ms", "int"),
     ColSpec("detection_id", "string"),
+    # Optional linkage (Stage A provides; Stage B may omit)
+    ColSpec("tracklet_id", "string", required=False),
+    # Contact pixel + ground-plane projection (Stage A baseline + Stage B refined)
     ColSpec("u_px", "float"),
     ColSpec("v_px", "float"),
     ColSpec("x_m", "float"),
     ColSpec("y_m", "float"),
-    ColSpec("method", "string"),
-    ColSpec("confidence", "float"),
+    # Stage A baseline fields
+    ColSpec("on_mat", "bool", required=False),
+    ColSpec("contact_conf", "float", required=False),
+    ColSpec("contact_method", "string", required=False),
+    # Stage B legacy fields (kept for backward compatibility)
+    ColSpec("method", "string", required=False),
+    ColSpec("confidence", "float", required=False),
     ColSpec("homography_id", "string", required=False),
 ]
 

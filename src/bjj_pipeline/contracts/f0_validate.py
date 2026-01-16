@@ -20,6 +20,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 import pandas as pd
 
 from . import f0_parquet as pq
+from .f0_paths import ClipOutputLayout
 
 
 # ----------------------------
@@ -231,6 +232,11 @@ def validate_tracklet_frames_fk_to_detections(tracklet_frames: pd.DataFrame, det
 
 
 def validate_contact_points_df(df: pd.DataFrame) -> None:
+    """Validate the generic (cross-stage) contact_points table shape.
+
+    Note: Stage-specific requirements (e.g., Stage A requiring on_mat/contact_conf/contact_method
+    and deterministic ordering by (frame_index, detection_id)) are enforced in dedicated validators.
+    """
     pq.validate_df_schema_by_key(df, "contact_points")
 
     if df.empty:
@@ -240,10 +246,68 @@ def validate_contact_points_df(df: pd.DataFrame) -> None:
     _assert_singleton(df, "camera_id", table_name="contact_points")
     _validate_frame_index_monotonic(df, table_name="contact_points", group_cols=("clip_id", "camera_id"))
 
-    # confidence range sanity
-    bad = df[(df["confidence"] < 0.0) | (df["confidence"] > 1.0)]
-    if not bad.empty:
-        raise ValidationError(f"contact_points: confidence outside [0,1]. Example={bad.iloc[0].to_dict()}")
+    # confidence range sanity (Stage B legacy column; may be absent)
+    if "confidence" in df.columns:
+        s = df["confidence"]
+        # ignore nulls
+        s = s.dropna()
+        if not s.empty:
+            mask = (df["confidence"] < 0.0) | (df["confidence"] > 1.0)
+            try:
+                mask = mask.fillna(False)
+            except Exception:
+                pass
+            bad = df[mask]
+            if not bad.empty:
+                raise ValidationError(
+                    f"contact_points: confidence outside [0,1]. Example={bad.iloc[0].to_dict()}"
+                )
+
+
+def validate_stage_A_contact_points_df(df: pd.DataFrame) -> None:
+    """Stage A-specific contact_points validator (F0G).
+
+    Requirements:
+    - Must include join keys: clip_id,camera_id,frame_index,timestamp_ms,detection_id
+    - Must include tracklet_id
+    - Must include geometry: u_px,v_px,x_m,y_m,on_mat
+    - Must include contact fields: contact_conf,contact_method
+    - Deterministic ordering by (frame_index asc, detection_id asc)
+    """
+    validate_contact_points_df(df)
+
+    required_cols = [
+        "clip_id",
+        "camera_id",
+        "frame_index",
+        "timestamp_ms",
+        "detection_id",
+        "tracklet_id",
+        "u_px",
+        "v_px",
+        "x_m",
+        "y_m",
+        "on_mat",
+        "contact_conf",
+        "contact_method",
+    ]
+    missing = [c for c in required_cols if c not in df.columns]
+    if missing:
+        raise ValidationError(f"stage_A: contact_points missing required columns: {missing}")
+
+    if df.empty:
+        return
+
+    # Deterministic ordering: frame_index asc, detection_id asc (stable lexicographic)
+    cur = df[["frame_index", "detection_id"]].reset_index(drop=True)
+    sorted_df = df.sort_values(["frame_index", "detection_id"], kind="mergesort")
+    exp = sorted_df[["frame_index", "detection_id"]].reset_index(drop=True)
+    if not cur.equals(exp):
+        ex = df.iloc[0].to_dict() if not df.empty else {}
+        raise ValidationError(
+            "stage_A: contact_points must be sorted by (frame_index asc, detection_id asc). "
+            f"Example_first_row={ex}"
+        )
 
 
 def validate_person_tracks_df(df: pd.DataFrame) -> None:
@@ -444,13 +508,49 @@ class ClipTables:
     person_tracks: Optional[pd.DataFrame] = None
 
 
+def read_stage_B_contact_points_df(layout: ClipOutputLayout) -> pd.DataFrame:
+    """Load Stage B contact points (refined preferred, legacy fallback)."""
+    refined = layout.stage_B_contact_points_refined_parquet()
+    legacy = layout.stage_B_contact_points_parquet_legacy()
+    if refined.exists():
+        return pd.read_parquet(refined)
+    if legacy.exists():
+        return pd.read_parquet(legacy)
+    raise FileNotFoundError(
+        "Stage B contact points parquet not found. Expected either "
+        f"{refined.as_posix()} or {legacy.as_posix()}"
+    )
+
+
+def read_stage_A_clip_tables(layout: ClipOutputLayout) -> ClipTables:
+    """Load the core Stage A tables for contract validation.
+
+    Critical invariant: Stage A contact points must be loaded from
+    stage_A/contact_points.parquet (not Stage B).
+    """
+    return ClipTables(
+        detections=pd.read_parquet(layout.detections_parquet()),
+        tracklet_frames=pd.read_parquet(layout.tracklet_frames_parquet()),
+        tracklet_summaries=pd.read_parquet(layout.tracklet_summaries_parquet()),
+        contact_points=pd.read_parquet(layout.stage_A_contact_points_parquet()),
+    )
+
+
 def validate_stage_A_contract(tables: ClipTables) -> None:
     validate_detections_df(tables.detections)
     validate_tracklet_tables(tables.tracklet_frames, tables.tracklet_summaries)
     validate_tracklet_frames_fk_to_detections(tables.tracklet_frames, tables.detections)
 
+    # F0G: Stage A owns baseline contact points
+    if tables.contact_points is None:
+        raise ValidationError("stage_A: contact_points table is required for validation")
+    validate_stage_A_contact_points_df(tables.contact_points)
+
 
 def validate_stage_B_contract(tables: ClipTables) -> None:
+    """Stage B contact points remain a supported artifact, but are no longer required
+    for end-to-end validation unless Stage B is explicitly validated.
+    """
     if tables.contact_points is None:
         raise ValidationError("stage_B: contact_points table is required for validation")
     validate_contact_points_df(tables.contact_points)

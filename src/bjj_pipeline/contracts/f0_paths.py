@@ -45,6 +45,13 @@ class ClipOutputLayout:
     def tracklet_summaries_parquet(self) -> Path:
         return self.stage_dir("A") / "tracklet_summaries.parquet"
 
+    def stage_A_contact_points_parquet(self) -> Path:
+        """Canonical Stage A baseline contact points (derived from tracklet_frames).
+
+        Required for Stage A completion (F0G).
+        """
+        return self.stage_dir("A") / "contact_points.parquet"
+
     def stage_A_masks_dir(self) -> Path:
         """Directory for Stage A lightweight masks (e.g., YOLO-seg).
 
@@ -61,8 +68,20 @@ class ClipOutputLayout:
         return self.stage_dir(stage) / "audit.jsonl"
 
     # ---- Stage B ----
-    def contact_points_parquet(self) -> Path:
+    def stage_B_contact_points_refined_parquet(self) -> Path:
+        """Canonical Stage B refinement contact points (subset overrides)."""
+        return self.stage_dir("B") / "contact_points_refined.parquet"
+
+    def stage_B_contact_points_parquet_legacy(self) -> Path:
+        """Legacy Stage B contact points path (pre-refined rename)."""
         return self.stage_dir("B") / "contact_points.parquet"
+
+    def contact_points_parquet(self) -> Path:
+        """Stage B contact points artifact path.
+
+        Canonical as of Jan 2026: stage_B/contact_points_refined.parquet.
+        """
+        return self.stage_B_contact_points_refined_parquet()
 
     def masks_dir(self) -> Path:
         return self.stage_dir("B") / "masks"

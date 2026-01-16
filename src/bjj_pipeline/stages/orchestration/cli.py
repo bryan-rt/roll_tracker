@@ -243,7 +243,7 @@ def validate(
 	clip: Path = typer.Option(..., help="Path to clip file under data/raw/nest/..."),
 	camera: str = typer.Option(..., help="Camera ID (e.g., cam03)"),
 	out: Optional[Path] = typer.Option(None, help="Outputs root override (default: outputs/)"),
-	stage: Optional[str] = typer.Option(None, help="Stage letter to validate (A..F). If omitted, validate all."),
+	stage: Optional[str] = typer.Option(None, help="Stage letter to validate (A..F). If omitted, validate all (Stage B optional if missing)."),
 ) -> None:
 	"""Run validators for a specific stage or all stages."""
 	layout = ClipOutputLayout(clip_id=clip.stem, root=out or Path("outputs"))
@@ -261,6 +261,12 @@ def validate(
 	try:
 		letters = [stage] if stage in {"A","B","C","D","E","F"} else [s.letter for s in STAGES]
 		for letter in letters:
+			rels = required_outputs_for_stage(layout, letter)
+			if stage is None and letter == "B" and not _files_exist(layout, rels):
+				# Stage B is deferred; do not fail global validate when B outputs are absent
+				continue
+			if not _files_exist(layout, rels):
+				raise PipelineError(f"Missing required outputs for stage {letter}: {rels}")
 			_validate_stage_outputs(m, layout, letter)
 		print("Validation OK")
 		return None

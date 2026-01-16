@@ -11,6 +11,7 @@ paths must remain stable.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -24,7 +25,7 @@ from bjj_pipeline.contracts.f0_paths import ClipOutputLayout
 _FAMILY_TO_DTYPE: Dict[str, str] = {
 	"string": "object",  # accept object/StringDtype
 	"int": "Int64",  # nullable integer
-	"float": "float64",
+	"float": "Float64",
 	"bool": "boolean",
 }
 
@@ -69,11 +70,27 @@ def _write_jsonl(path: Path, events: Iterable[Dict[str, Any]]) -> None:
 			f.write("\n")
 
 
+def _homography_id_for_camera(camera_id: str) -> Optional[str]:
+	"""Best-effort stable identifier for the homography used by Stage A.
+
+	We use the canonical per-camera homography.json path and hash its bytes.
+	"""
+	path = Path("configs") / "cameras" / camera_id / "homography.json"
+	if not path.exists():
+		return None
+	try:
+		digest = hashlib.sha256(path.read_bytes()).hexdigest()[:12]
+	except Exception:
+		return None
+	return f"{path.as_posix()}@sha256:{digest}"
+
+
 @dataclass
 class StageAWriteResult:
 	detections_ref: str
 	tracklet_frames_ref: str
 	tracklet_summaries_ref: str
+	contact_points_ref: str
 	audit_ref: str
 
 
@@ -305,16 +322,95 @@ class StageAWriter:
 		det_path = self.layout.detections_parquet()
 		tf_path = self.layout.tracklet_frames_parquet()
 		ts_path = self.layout.tracklet_summaries_parquet()
+		cp_path = self.layout.stage_A_contact_points_parquet()
 		audit_path = self.layout.audit_jsonl("A")
+
+		# Derive baseline contact_points directly from tracklet_frames (F0G)
+		cp_cols = [
+			"clip_id",
+			"camera_id",
+			"frame_index",
+			"timestamp_ms",
+			"detection_id",
+			"tracklet_id",
+			"u_px",
+			"v_px",
+			"x_m",
+			"y_m",
+			"on_mat",
+			"contact_conf",
+			"contact_method",
+		]
+		if tf_df.empty:
+			cp_df = empty_df_for_schema_key("contact_points")[cp_cols].copy()
+		else:
+			# Keep only Stage A canonical columns and enforce deterministic ordering.
+			cp_df = tf_df[cp_cols].copy()
+			cp_df = cp_df.sort_values(["frame_index", "detection_id"], kind="mergesort")
+
+		# Back-compat: populate Stage B legacy columns for convenience.
+		# These do not affect Stage A validation and help downstream users inspect the table.
+		cp_df["method"] = cp_df.get("contact_method")
+		if not det_df.empty:
+			# Prefer mask_quality as "confidence of the mask"; fall back to detector confidence.
+			if "mask_quality" in det_df.columns:
+				q = det_df.set_index("detection_id")["mask_quality"]
+				cp_df["confidence"] = cp_df["detection_id"].map(q)
+			elif "confidence" in det_df.columns:
+				c = det_df.set_index("detection_id")["confidence"]
+				cp_df["confidence"] = cp_df["detection_id"].map(c)
+			else:
+				cp_df["confidence"] = cp_df.get("contact_conf")
+		else:
+			cp_df["confidence"] = cp_df.get("contact_conf")
+
+		hid = _homography_id_for_camera(self.camera_id)
+		cp_df["homography_id"] = hid if hid is not None else pd.NA
+
+		if not tf_df.empty:
+			# Audit simple health metrics
+			try:
+				on = cp_df["on_mat"]
+				on_true = int(on.fillna(False).sum())
+				on_false = int((on == False).sum())  # noqa: E712
+				on_null = int(on.isna().sum())
+			except Exception:
+				on_true = on_false = on_null = 0
+
+			null_x = int(cp_df["x_m"].isna().sum()) if "x_m" in cp_df.columns else 0
+			null_y = int(cp_df["y_m"].isna().sum()) if "y_m" in cp_df.columns else 0
+
+			method_counts = {}
+			if "contact_method" in cp_df.columns:
+				try:
+					method_counts = cp_df["contact_method"].fillna("null").value_counts().to_dict()
+				except Exception:
+					method_counts = {}
+
+			self.audit(
+				"contact_points_stats",
+				{
+					"n_rows": int(len(cp_df)),
+					"n_null_x_m": null_x,
+					"n_null_y_m": null_y,
+					"on_mat_true": on_true,
+					"on_mat_false": on_false,
+					"on_mat_null": on_null,
+					"contact_method_counts": method_counts,
+				},
+			)
 
 		det_df.to_parquet(det_path, index=False)
 		tf_df.to_parquet(tf_path, index=False)
 		ts_df.to_parquet(ts_path, index=False)
+		cp_df = _coerce_df_to_schema(cp_df, "contact_points")
+		cp_df.to_parquet(cp_path, index=False)
 		_write_jsonl(audit_path, self._audit_events)
 
 		return StageAWriteResult(
 			detections_ref=self.layout.rel_to_clip_root(det_path),
 			tracklet_frames_ref=self.layout.rel_to_clip_root(tf_path),
 			tracklet_summaries_ref=self.layout.rel_to_clip_root(ts_path),
+			contact_points_ref=self.layout.rel_to_clip_root(cp_path),
 			audit_ref=self.layout.rel_to_clip_root(audit_path),
 		)

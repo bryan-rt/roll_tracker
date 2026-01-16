@@ -26,6 +26,7 @@ import pandas as pd
 from bjj_pipeline.contracts.f0_paths import ClipOutputLayout
 from bjj_pipeline.contracts.f0_validate import (
 	validate_detections_df,
+	validate_stage_A_contact_points_df,
 	validate_tracklet_tables,
 )
 from .outputs import StageAWriter
@@ -221,13 +222,16 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 	det_path = layout.detections_parquet()
 	tf_path = layout.tracklet_frames_parquet()
 	ts_path = layout.tracklet_summaries_parquet()
+	cp_path = layout.stage_A_contact_points_parquet()
 	validate_detections_df(pd.read_parquet(det_path))
 	validate_tracklet_tables(pd.read_parquet(tf_path), pd.read_parquet(ts_path))
+	validate_stage_A_contact_points_df(pd.read_parquet(cp_path))
 
 	return {
 		"detections_parquet": res.detections_ref,
 		"tracklet_frames_parquet": res.tracklet_frames_ref,
 		"tracklet_summaries_parquet": res.tracklet_summaries_ref,
+		"contact_points_parquet": res.contact_points_ref,
 		"audit_jsonl": res.audit_ref,
 	}
 

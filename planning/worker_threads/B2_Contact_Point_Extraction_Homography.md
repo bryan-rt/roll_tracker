@@ -24,7 +24,7 @@ After the F0 bump:
 
 Downstream consumers (D/E/F) should default to Stage A contact_points and apply Stage B refined overrides when present.
 
-> **Repo reality note (Jan 2026):** In the current repo snapshot, Stage A already carries baseline contact/homography fields in `stage_A/tracklet_frames.parquet`, and validators still list `stage_B/contact_points.parquet` as the Stage B artifact. The `stage_A/contact_points.parquet` + `stage_B/contact_points_refined.parquet` split is **planned** and must not be assumed until the schema bump + validator/orchestrator updates land.
+> **Repo reality note (Jan 2026):** This split is now implemented: Stage A writes `stage_A/contact_points.parquet` (baseline/full coverage) and Stage B writes `stage_B/contact_points_refined.parquet` (subset overrides when B runs).
 
 ### Multiplex implication (Z3)
 Stage B should be multiplex-friendly:
@@ -72,7 +72,7 @@ Stage A — Detection & Tracklets (must write):
 - `stage_A/audit.jsonl`
 
 Stage B — Masks & Geometry:
-- `stage_B/contact_points.parquet`
+- `stage_B/contact_points_refined.parquet`
 - `stage_B/masks/*.npz` (canonical mask storage; referenced by relative path)
 - `stage_B/audit.jsonl`
 

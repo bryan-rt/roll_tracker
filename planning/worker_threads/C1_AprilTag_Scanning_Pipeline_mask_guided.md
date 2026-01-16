@@ -1,3 +1,16 @@
+## Addendum — 2026-01-XX (Post-F0G + C0 boundary)
+
+### POC mode & Stage B posture (lock)
+- Current target is **`multiplex_AC`** (A + C). Stage B is **DEFERRED** and must not be required.
+
+### Canonical geometry source (multipass clarity)
+- In multipass mode, any geometry gating should use **Stage A `stage_A/contact_points.parquet`** (join-ready by `(frame_index, detection_id)`).
+- In multiplex mode, geometry may be supplied in-memory; C1 must still be able to run bbox-only.
+
+### Audit ownership (avoid duplication with C0)
+- **C0 logs** attempt-vs-skip decisions + scheduler state + skip reasons.
+- **C1 logs** per-attempt ROI + decode attempt metadata + outcomes/failure codes.
+
 ## Addendum — 2026-01-14 (POC update: C runs online in multiplex_AC; C0 cadence; bbox-expanded ROI; Stage B deferred)
 
 ### Hybrid pipeline execution model (locked for POC)
@@ -74,6 +87,13 @@ When scanning, C1 must record per-attempt metadata in `stage_C/audit.jsonl`, inc
 - `roi_px_area`, `roi_bbox` (optional but helpful)
 - decode results + failure reason code (e.g., "no_candidates", "low_contrast", "motion_blur")
 
+Additionally, each C1 attempt event should include enough keys to join downstream:
+- `clip_id`, `camera_id`
+- `frame_index`, `timestamp_ms`
+- `detection_id`, `tracklet_id`
+
+> C0 will separately log skip/attempt scheduling decisions; C1 should not duplicate skip logging.
+
 ### Acceptance criteria update
 C1 is considered successful when:
 - it can scan an entire clip deterministically in `multiplex_AC` using **expanded bbox ROIs**, and
@@ -106,7 +126,7 @@ Stage A — Detection & Tracklets (must write):
 - `stage_A/audit.jsonl`
 
 Stage B — Masks & Geometry:
-- `stage_B/contact_points.parquet`
+- `stage_B/contact_points_refined.parquet`
 - `stage_B/masks/*.npz` (canonical mask storage; referenced by relative path)
 - `stage_B/audit.jsonl`
 

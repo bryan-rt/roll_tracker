@@ -70,6 +70,27 @@ def write_stage_a(layout: ClipOutputLayout, clip_id: str, camera_id: str):
     det.to_parquet(layout.detections_parquet())
     tf.to_parquet(layout.tracklet_frames_parquet())
     ts.to_parquet(layout.tracklet_summaries_parquet())
+
+    # Stage A now requires baseline contact_points.parquet
+    cp = pd.DataFrame([
+        {
+            "clip_id": clip_id,
+            "camera_id": camera_id,
+            "frame_index": 0,
+            "timestamp_ms": 0,
+            "detection_id": "d1",
+            "tracklet_id": "t1",
+            "u_px": 0.5,
+            "v_px": 1.0,
+            "x_m": 0.1,
+            "y_m": 0.2,
+            "on_mat": True,
+            "contact_conf": 0.5,
+            "contact_method": "unit",
+        }
+    ]).sort_values(["frame_index", "detection_id"], kind="mergesort")
+    cp.to_parquet(layout.stage_A_contact_points_parquet(), index=False)
+
     (layout.audit_jsonl("A")).write_text("{}\n", encoding="utf-8")
 
 
