@@ -32,6 +32,10 @@ class Candidate:
     det_conf: float = 1.0
     on_mat: Optional[bool] = None
 
+    # Optional metric geometry (from Stage A overlays when available)
+    x_m: Optional[float] = None
+    y_m: Optional[float] = None
+
     scannable: bool = True
     gate_reason: str = "ok"
     gate_meta: Dict[str, Any] = field(default_factory=dict)
@@ -43,6 +47,7 @@ class TrackletScheduleState:
     last_attempt_frame: Optional[int] = None
     last_success_frame: Optional[int] = None
     ramp_until_frame: Optional[int] = None
+    last_trigger_frame: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -70,7 +75,14 @@ class C0Scheduler:
     """
 
     def __init__(
-        self, *, enabled: bool = True, k_seek: int = 1, k_verify: int = 30, n_ramp: int = 60
+        self,
+        *,
+        enabled: bool = True,
+        k_seek: int = 1,
+        k_verify: int = 30,
+        n_ramp: int = 60,
+        trigger_cooldown_frames: int = 15,
+        extend_ramp_on_retrigger: bool = True,
     ):
         if k_seek <= 0:
             raise ValueError("k_seek must be > 0")
@@ -84,7 +96,15 @@ class C0Scheduler:
         self.k_verify = int(k_verify)
         self.n_ramp = int(n_ramp)
 
+        # Milestone 4 trigger controls
+        self.trigger_cooldown_frames = int(trigger_cooldown_frames)
+        self.extend_ramp_on_retrigger = bool(extend_ramp_on_retrigger)
+
         self._state: Dict[str, TrackletScheduleState] = {}
+
+    def configure_triggers(self, *, trigger_cooldown_frames: int = 15, extend_ramp_on_retrigger: bool = True) -> None:
+        self.trigger_cooldown_frames = int(trigger_cooldown_frames)
+        self.extend_ramp_on_retrigger = bool(extend_ramp_on_retrigger)
 
     # -------------------------
     # Public hooks
@@ -102,6 +122,36 @@ class C0Scheduler:
         st.state = CadenceState.VERIFIED
         st.last_success_frame = int(frame_index)
         st.ramp_until_frame = None
+
+    def apply_triggers(
+        self,
+        *,
+        frame_index: int,
+        timestamp_ms: int,
+        trigger_events: List[Dict[str, Any]],
+    ) -> None:
+        _ = int(timestamp_ms)
+
+        for ev in trigger_events:
+            tid = str(ev.get("tracklet_id", ""))
+            if not tid:
+                continue
+            st = self._state.get(tid)
+            if st is None:
+                st = TrackletScheduleState()
+                self._state[tid] = st
+
+            if st.last_trigger_frame is not None and self.trigger_cooldown_frames > 0:
+                if (int(frame_index) - int(st.last_trigger_frame)) < int(self.trigger_cooldown_frames):
+                    continue
+
+            st.last_trigger_frame = int(frame_index)
+
+            if st.state == CadenceState.VERIFIED:
+                st.state = CadenceState.RAMP_UP
+                st.ramp_until_frame = int(frame_index) + int(self.n_ramp)
+            elif st.state == CadenceState.RAMP_UP and self.extend_ramp_on_retrigger:
+                st.ramp_until_frame = int(frame_index) + int(self.n_ramp)
 
     def step(self, frame_index: int, timestamp_ms: int, candidates: List[Candidate]) -> List[Decision]:
         """Compute cadence-only attempt/skip decisions for the current frame."""

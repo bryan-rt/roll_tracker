@@ -96,6 +96,22 @@ stages:
           method: "gray_std"
           min_std: 18.0
 
+      # Milestone 4: cadence ramp-up triggers
+      triggers:
+        enabled: true
+        cooldown_frames: 15
+        extend_ramp_on_retrigger: true
+        overlap:
+          iou_thresh: 0.35
+          window_frames: 6
+        motion:
+          enabled: true
+          prefer_metric: true
+          dv_thresh_mps: 2.5
+          a_thresh_mps2: 12.0
+          dv_thresh_pxps: 250.0
+          a_thresh_pxps2: 1200.0
+
   stage_D:
     enabled: null
 
