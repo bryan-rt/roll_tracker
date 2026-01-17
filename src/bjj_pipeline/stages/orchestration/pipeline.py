@@ -286,6 +286,7 @@ def ensure_homography_preflight(layout: ClipOutputLayout, *, camera_id: str, int
         "interactive",
         "--video", str(ingest_path),
         "--mat-blueprint", str((Path("configs") / "mat_blueprint.json").resolve()),
+        "--calibration-ui", "overlay_rect",
     ]
     subprocess.run(CALIBRATOR_CMD, check=True)
     print(f"[roll-tracker][D7] Homography calibration complete. Continuing pipeline ...")
