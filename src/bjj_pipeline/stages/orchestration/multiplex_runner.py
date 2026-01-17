@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import defaultdict
 import json
 from pathlib import Path
 import traceback
@@ -313,6 +314,7 @@ def run_multiplex_AC(*,
     """
 
     letters_to_run = [l for l, spec in run_plan.items() if spec.get("should_run") and l in {"A","C"}]
+    stage_c_enabled = "C" in letters_to_run
     # Only open the video if needed for visualize or for placeholder timebase/frame size
     need_frames = visualize or bool(letters_to_run)
 
@@ -328,6 +330,24 @@ def run_multiplex_AC(*,
     stage_a_allow_placeholder = bool(
         _cfg_get(resolved_config, "stages.stage_A.allow_placeholder", False)
     )
+
+    # ------------------------------
+    # Stage C (C0) scheduler wiring
+    # ------------------------------
+    stage_c_audit_f = None
+    stage_c_counts = {
+        "total_candidates_seen": 0,
+        "total_scheduled_attempts": 0,
+        "total_skipped": 0,
+    }
+    stage_c_skips_by_reason = defaultdict(int)
+    stage_c_tag_family_default = _cfg_get(resolved_config, "stages.stage_C.tag_family", "36h11")
+    stage_c_sched_cfg = _cfg_get(resolved_config, "stages.stage_C.c0_scheduler", {}) or {}
+    stage_c_sched_enabled = bool(stage_c_sched_cfg.get("enabled", True))
+    stage_c_k_seek = int(stage_c_sched_cfg.get("k_seek", 1))
+    stage_c_k_verify = int(stage_c_sched_cfg.get("k_verify", 30))
+    stage_c_n_ramp = int(stage_c_sched_cfg.get("n_ramp", 60))
+    stage_c_scheduler = None
 
     if need_frames:
         it = FrameIterator(ingest_path)
@@ -477,6 +497,45 @@ def run_multiplex_AC(*,
             blueprint = load_mat_blueprint(Path("configs") / "mat_blueprint.json")
             viz = None
 
+        # Stage C output files (always empty JSONLs in M2; audit contains decisions)
+        if stage_c_enabled:
+            from bjj_pipeline.stages.tags.c0_scheduler import C0Scheduler, Candidate
+
+            layout.ensure_dirs_for_stage("C")
+            Path(layout.identity_hints_jsonl()).write_text("", encoding="utf-8")
+            Path(layout.tag_observations_jsonl()).write_text("", encoding="utf-8")
+
+            # Open audit file for streaming append (header now, decisions per frame, summary at end).
+            audit_path = Path(layout.audit_jsonl("C"))
+            audit_path.parent.mkdir(parents=True, exist_ok=True)
+            stage_c_audit_f = audit_path.open("w", encoding="utf-8")
+
+            stage_c_scheduler = C0Scheduler(
+                enabled=stage_c_sched_enabled,
+                k_seek=stage_c_k_seek,
+                k_verify=stage_c_k_verify,
+                n_ramp=stage_c_n_ramp,
+            )
+
+            header = {
+                "event": "stage_C_run_header",
+                "stage": "C",
+                "schema_version": "0",
+                "clip_id": manifest.clip_id,
+                "camera_id": camera_id,
+                "pipeline_version": manifest.pipeline_version,
+                "created_at_ms": int(getattr(manifest, "created_at_ms", 0) or 0),
+                "mode": "multiplex_AC",
+                "tag_family_default": str(stage_c_tag_family_default) if stage_c_tag_family_default is not None else "36h11",
+                "scheduler": {
+                    "enabled": bool(stage_c_sched_enabled),
+                    "k_seek": int(stage_c_k_seek),
+                    "k_verify": int(stage_c_k_verify),
+                    "n_ramp": int(stage_c_n_ramp),
+                },
+            }
+            stage_c_audit_f.write(json.dumps(header) + "\n")
+
         for pkt in it:
             if pkt0 is None:
                 pkt0 = pkt
@@ -503,6 +562,53 @@ def run_multiplex_AC(*,
                         ann, mat = viz.render_frame(pkt.image_bgr, pkt.frame_index, overlays=overlays)
                         ann_writer.write(ann)
                         mat_writer.write(mat)
+
+                    # Stage C (C0) cadence decisions (no gating, no decode in M2)
+                    if stage_c_enabled and stage_c_audit_f is not None and stage_c_scheduler is not None:
+                        # Candidate selection is join-first: (frame_index, timestamp_ms, detection_id) + tracklet_id.
+                        candidates = []
+                        for o in overlays or []:
+                            # OverlayItem guarantees these are strings in Stage A code path.
+                            if getattr(o, "detection_id", None) and getattr(o, "tracklet_id", None):
+                                candidates.append(
+                                    Candidate(
+                                        frame_index=int(pkt.frame_index),
+                                        timestamp_ms=int(pkt.timestamp_ms),
+                                        detection_id=str(o.detection_id),
+                                        tracklet_id=str(o.tracklet_id),
+                                    )
+                                )
+
+                        stage_c_counts["total_candidates_seen"] += int(len(candidates))
+
+                        decisions = stage_c_scheduler.step(
+                            frame_index=int(pkt.frame_index),
+                            timestamp_ms=int(pkt.timestamp_ms),
+                            candidates=candidates,
+                        )
+
+                        for d in decisions:
+                            if d.decision == "attempt":
+                                stage_c_counts["total_scheduled_attempts"] += 1
+                            else:
+                                stage_c_counts["total_skipped"] += 1
+                                stage_c_skips_by_reason[str(d.reason)] += 1
+
+                            ev = {
+                                "event": "c0_decision",
+                                "stage": "C",
+                                "clip_id": manifest.clip_id,
+                                "camera_id": camera_id,
+                                "frame_index": int(d.candidate.frame_index),
+                                "timestamp_ms": int(d.candidate.timestamp_ms),
+                                "detection_id": str(d.candidate.detection_id),
+                                "tracklet_id": str(d.candidate.tracklet_id),
+                                "decision": d.decision,
+                                "reason": d.reason,
+                                "state_before": d.state_before,
+                                "state_after": d.state_after,
+                            }
+                            stage_c_audit_f.write(json.dumps(ev) + "\n")
                 except Exception as e:
                     # Capture full traceback so we can pinpoint the exact file:line of failure
                     tb = traceback.format_exc()
@@ -545,6 +651,29 @@ def run_multiplex_AC(*,
         if mat_writer is not None:
             mat_writer.close()
 
+        if stage_c_enabled and stage_c_audit_f is not None:
+            # Emit summary at end of run (M2: cadence-only).
+            summary = {
+                "event": "stage_C_run_summary",
+                "stage": "C",
+                "clip_id": manifest.clip_id,
+                "camera_id": camera_id,
+                "counters": {
+                    "total_candidates_seen": int(stage_c_counts["total_candidates_seen"]),
+                    "total_scheduled_attempts": int(stage_c_counts["total_scheduled_attempts"]),
+                    "total_skipped": int(stage_c_counts["total_skipped"]),
+                    "skips_by_reason": dict(stage_c_skips_by_reason),
+                    "total_decode_attempts": 0,
+                    "total_tag_observations_emitted": 0,
+                    "total_identity_hints_emitted": 0,
+                },
+            }
+            stage_c_audit_f.write(json.dumps(summary) + "\n")
+            try:
+                stage_c_audit_f.close()
+            except Exception:
+                pass
+
         if stage_a_processor is not None and stage_a_writer is not None:
             stage_a_writer.audit("stage_a_completed", {"n_frames": int(it.n_frames) if hasattr(it, "n_frames") else None})
             stage_a_writer.write_all()
@@ -569,14 +698,6 @@ def run_multiplex_AC(*,
             _write_placeholder_stage_A(layout, manifest, camera_id=camera_id, pkt0=pkt0)
     if "B" in letters_to_run:
         _write_placeholder_stage_B(layout, manifest, camera_id=camera_id, pkt0=pkt0)
-    if "C" in letters_to_run:
-        _write_placeholder_stage_C(
-            layout,
-            manifest,
-            camera_id=camera_id,
-            mode="multiplex_AC",
-            resolved_config=resolved_config,
-        )
 
 
 def run_multiplex_ABC(**kwargs):
