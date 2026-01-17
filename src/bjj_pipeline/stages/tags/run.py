@@ -3,7 +3,7 @@
 Writes empty JSONL artifacts so orchestration can run end-to-end:
 - stage_C/tag_observations.jsonl (empty file)
 - stage_C/identity_hints.jsonl (empty file)
-- stage_C/audit.jsonl (minimal line)
+- stage_C/audit.jsonl (header + summary)
 """
 
 from __future__ import annotations
@@ -42,6 +42,7 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 		return cur
 
 	tag_family_default = _cfg_get(config, "stages.stage_C.tag_family", "36h11")
+	sched_cfg = _cfg_get(config, "stages.stage_C.c0_scheduler", {}) or {}
 	header = {
 		"event": "stage_C_run_header",
 		"stage": "C",
@@ -52,6 +53,12 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 		"created_at_ms": int(getattr(manifest, "created_at_ms", 0) or 0),
 		"mode": "multipass",
 		"tag_family_default": str(tag_family_default) if tag_family_default is not None else "36h11",
+		"scheduler": {
+			"enabled": bool(sched_cfg.get("enabled", True)),
+			"k_seek": int(sched_cfg.get("k_seek", 1)),
+			"k_verify": int(sched_cfg.get("k_verify", 30)),
+			"n_ramp": int(sched_cfg.get("n_ramp", 60)),
+		},
 		"note": "stage_C_enabled_no_decode_yet",
 	}
 	summary = {
@@ -61,6 +68,9 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 		"camera_id": manifest.camera_id,
 		"counters": {
 			"total_candidates_seen": 0,
+			"total_scheduled_attempts": 0,
+			"total_skipped": 0,
+			"skips_by_reason": {},
 			"total_decode_attempts": 0,
 			"total_tag_observations_emitted": 0,
 			"total_identity_hints_emitted": 0,
