@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 from pydantic import BaseModel, Field
 from pydantic import ConfigDict
@@ -163,6 +163,13 @@ class StageCConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     sample_frames_for_tags: Optional[int] = Field(default=None, description="0 means all frames")
+
+    # Tag decoder settings (used by Stage C + multiplex AC validation/audit)
+    tag_family: Optional[str] = Field(default=None, description="Expected AprilTag family (e.g. 36h11)")
+    c0_scheduler: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Cadence + gating configuration for Stage C C0 scheduler",
+    )
 
     @field_validator("sample_frames_for_tags")
     @classmethod

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 
 class CadenceState(str, Enum):
@@ -13,12 +13,28 @@ class CadenceState(str, Enum):
 
 @dataclass(frozen=True)
 class Candidate:
-    """Join-first scheduling candidate (no ROI/gating in M2)."""
+    """Join-first scheduling candidate.
+
+    Carries join keys + optional gating metadata. In M2, gating may cause
+    immediate skip decisions before cadence evaluation.
+    """
 
     frame_index: int
     timestamp_ms: int
     detection_id: str
     tracklet_id: str
+
+    # Optional ROI + gating fields
+    x1: int = 0
+    y1: int = 0
+    x2: int = 0
+    y2: int = 0
+    det_conf: float = 1.0
+    on_mat: Optional[bool] = None
+
+    scannable: bool = True
+    gate_reason: str = "ok"
+    gate_meta: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -33,9 +49,11 @@ class TrackletScheduleState:
 class Decision:
     candidate: Candidate
     decision: Literal["attempt", "skip"]
-    reason: Literal["cadence_due", "cadence_not_due"]
+    # cadence_due / cadence_not_due / skip_* (gating)
+    reason: str
     state_before: str
     state_after: str
+    gate_meta: Optional[Dict[str, Any]] = None
 
 
 class C0Scheduler:
@@ -125,6 +143,19 @@ class C0Scheduler:
                         candidate=c,
                         decision="skip",
                         reason="cadence_not_due",
+                        state_before=before,
+                        state_after=st.state.value,
+                    )
+                )
+                continue
+
+            if not bool(getattr(c, "scannable", True)):
+                decisions.append(
+                    Decision(
+                        candidate=c,
+                        decision="skip",
+                        reason=str(getattr(c, "gate_reason", "skip_not_scannable")),
+                        gate_meta=dict(getattr(c, "gate_meta", {}) or {}),
                         state_before=before,
                         state_after=st.state.value,
                     )
