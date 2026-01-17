@@ -418,6 +418,61 @@ def validate_identity_hints_records(records: List[Dict], *, expected_clip_id: Op
         if conf < 0.0 or conf > 1.0:
             raise ValidationError(f"identity_hints: record[{i}] confidence outside [0,1]")
 
+        # f0_models.IdentityHint declares evidence: Dict[str, Any]
+        if not isinstance(r.get("evidence"), dict):
+            raise ValidationError(f"identity_hints: record[{i}] evidence must be a dict")
+
+
+def validate_tag_observations_records(
+    records: List[Dict],
+    *,
+    expected_clip_id: Optional[str] = None,
+    expected_tag_family: Optional[str] = None,
+) -> None:
+    """Validate loaded JSONL tag_observations as dict records.
+
+    Enforces:
+    - base metadata present
+    - join-friendly keys present (frame_index, timestamp_ms, detection_id)
+    - tag_family matches configured expected value (Option B), else defaults to "36h11"
+    """
+
+    base = ["schema_version", "artifact_type", "clip_id", "camera_id", "pipeline_version", "created_at_ms"]
+    req = base + [
+        "frame_index",
+        "timestamp_ms",
+        "detection_id",
+        "tag_id",
+        "tag_family",
+        "confidence",
+        "roi_method",
+    ]
+    _validate_jsonl_required_fields(records, req, name="tag_observations")
+
+    fam = expected_tag_family or "36h11"
+
+    for i, r in enumerate(records):
+        if r["artifact_type"] != "tag_observation":
+            raise ValidationError(f"tag_observations: record[{i}] artifact_type must be 'tag_observation'")
+
+        if expected_clip_id is not None and r["clip_id"] != expected_clip_id:
+            raise ValidationError(
+                f"tag_observations: record[{i}] clip_id mismatch expected={expected_clip_id} got={r['clip_id']}"
+            )
+
+        _require_non_empty_str(r["detection_id"], name="tag_observations.detection_id")
+        _require_non_empty_str(r["tag_id"], name="tag_observations.tag_id")
+        _require_non_empty_str(r["tag_family"], name="tag_observations.tag_family")
+
+        if str(r["tag_family"]) != fam:
+            raise ValidationError(
+                f"tag_observations: record[{i}] tag_family mismatch expected={fam} got={r['tag_family']}"
+            )
+
+        conf = float(r["confidence"])
+        if conf < 0.0 or conf > 1.0:
+            raise ValidationError(f"tag_observations: record[{i}] confidence outside [0,1]")
+
 
 def validate_identity_assignments_records(records: List[Dict], *, expected_clip_id: Optional[str] = None) -> None:
     base = ["schema_version", "artifact_type", "clip_id", "camera_id", "pipeline_version", "created_at_ms"]

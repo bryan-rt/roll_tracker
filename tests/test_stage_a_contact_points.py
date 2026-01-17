@@ -82,4 +82,4 @@ def test_stage_a_writes_contact_points_parquet_and_validates(tmp_path):
         pipeline_version="test",
         created_at_ms=0,
     )
-    _validate_stage_outputs(m, layout, "A")
+    _validate_stage_outputs(m, layout, "A", resolved_config={})
