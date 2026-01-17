@@ -83,7 +83,7 @@ def run(
 	to_stage: Optional[str] = typer.Option(None, help="Stage letter to end at (A..F)"),
 	force: bool = typer.Option(False, help="Force rerun all stages in window"),
 	force_stage: List[str] = typer.Option([], help="Force specific stage letters (repeatable)"),
-	mode: str = typer.Option("multipass", help="Execution mode: multipass|multiplex_ABC"),
+	mode: str = typer.Option("multipass", help="Execution mode: multipass|multiplex_AC"),
 	visualize: bool = typer.Option(
 		False,
 		help="Write dev-only debug videos under outputs/<clip_id>/_debug/ (multiplex mode).",
@@ -97,7 +97,7 @@ def run(
 		# Default multiplex window to A..C unless user overrides to_stage
 		effective_from = from_stage if from_stage in {"A","B","C","D","E","F"} else None
 		effective_to = to_stage if to_stage in {"A","B","C","D","E","F"} else None
-		if mode == "multiplex_ABC" and effective_to is None:
+		if mode == "multiplex_AC" and effective_to is None:
 			effective_to = "C"
 
 		fl = [s for s in force_stage]
@@ -206,6 +206,7 @@ def status(
 		# try validation if complete
 		if complete:
 			try:
+				cfg, _, _ = _load_config(camera, None)
 				# minimal manifest stub for validators that need clip_id
 				from bjj_pipeline.contracts.f0_manifest import init_manifest
 				m = init_manifest(
@@ -218,7 +219,7 @@ def status(
 					pipeline_version="dev",
 					created_at_ms=0,
 				)
-				_validate_stage_outputs(m, layout, spec.letter)
+				_validate_stage_outputs(m, layout, spec.letter, resolved_config=cfg)
 				validated = True
 			except Exception:
 				validated = False
@@ -247,6 +248,7 @@ def validate(
 ) -> None:
 	"""Run validators for a specific stage or all stages."""
 	layout = ClipOutputLayout(clip_id=clip.stem, root=out or Path("outputs"))
+	cfg, _, _ = _load_config(camera, None)
 	from bjj_pipeline.contracts.f0_manifest import init_manifest
 	m = init_manifest(
 		clip_id=clip.stem,
@@ -267,7 +269,7 @@ def validate(
 				continue
 			if not _files_exist(layout, rels):
 				raise PipelineError(f"Missing required outputs for stage {letter}: {rels}")
-			_validate_stage_outputs(m, layout, letter)
+			_validate_stage_outputs(m, layout, letter, resolved_config=cfg)
 		print("Validation OK")
 		return None
 	except Exception as e:

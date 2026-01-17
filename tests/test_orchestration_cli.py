@@ -118,21 +118,9 @@ def write_stage_b(layout: ClipOutputLayout, clip_id: str, camera_id: str):
 
 def write_stage_c(layout: ClipOutputLayout, clip_id: str, camera_id: str):
     layout.ensure_dirs_for_stage("C")
-    hints = [{
-        "schema_version": "0",
-        "artifact_type": "identity_hint",
-        "clip_id": clip_id,
-        "camera_id": camera_id,
-        "pipeline_version": "dev",
-        "created_at_ms": 0,
-        "tracklet_id": "t1",
-        "anchor_key": "tag:123",
-        "constraint": "must_link",
-        "confidence": 0.9,
-        "evidence": "unit",
-    }]
-    Path(layout.identity_hints_jsonl()).write_text("\n".join(json.dumps(r) for r in hints)+"\n", encoding="utf-8")
-    Path(layout.tag_observations_jsonl()).write_text("{}\n", encoding="utf-8")
+    # Stage C outputs are allowed to be empty in early slices; ensure validator-safe.
+    Path(layout.identity_hints_jsonl()).write_text("", encoding="utf-8")
+    Path(layout.tag_observations_jsonl()).write_text("", encoding="utf-8")
     (layout.audit_jsonl("C")).write_text("{}\n", encoding="utf-8")
 
 

@@ -238,46 +238,61 @@ def _write_placeholder_stage_B(layout: ClipOutputLayout, manifest: ClipManifest,
         }) + "\n")
 
 
-def _write_placeholder_stage_C(layout: ClipOutputLayout, manifest: ClipManifest, *, camera_id: str) -> None:
+def _write_placeholder_stage_C(
+    layout: ClipOutputLayout,
+    manifest: ClipManifest,
+    *,
+    camera_id: str,
+    mode: str,
+    resolved_config: Dict[str, Any],
+) -> None:
+    """Write *contract-valid* Stage C outputs without emitting fake observations.
+
+    Milestone 1 behavior:
+    - tag_observations.jsonl is empty (0 records)
+    - identity_hints.jsonl is empty (0 records)
+    - audit.jsonl is non-empty with a run header + summary (for evidence/review)
+    """
+
     layout.ensure_dirs_for_stage("C")
 
-    hints = [{
+    # Touch empty JSONL files
+    Path(layout.identity_hints_jsonl()).write_text("", encoding="utf-8")
+    Path(layout.tag_observations_jsonl()).write_text("", encoding="utf-8")
+
+    # Audit: header + summary (always present)
+    tag_family_default = _cfg_get(resolved_config, "stages.stage_C.tag_family", "36h11")
+    header = {
+        "event": "stage_C_run_header",
+        "stage": "C",
         "schema_version": "0",
-        "artifact_type": "identity_hint",
         "clip_id": manifest.clip_id,
         "camera_id": camera_id,
         "pipeline_version": manifest.pipeline_version,
-        "created_at_ms": 0,
-        "tracklet_id": "t1",
-        "anchor_key": "tag:123",
-        "constraint": "must_link",
-        "confidence": 0.9,
-        "evidence": "placeholder",
-    }]
-    Path(layout.identity_hints_jsonl()).write_text("\n".join(json.dumps(r) for r in hints) + "\n", encoding="utf-8")
-    Path(layout.tag_observations_jsonl()).write_text(json.dumps({
-        "schema_version": "0",
-        "artifact_type": "tag_observation",
+        "created_at_ms": int(getattr(manifest, "created_at_ms", 0) or 0),
+        "mode": mode,
+        "tag_family_default": str(tag_family_default) if tag_family_default is not None else "36h11",
+        "note": "stage_C_enabled_no_decode_yet",
+    }
+    summary = {
+        "event": "stage_C_run_summary",
+        "stage": "C",
         "clip_id": manifest.clip_id,
         "camera_id": camera_id,
-        "pipeline_version": manifest.pipeline_version,
-        "created_at_ms": 0,
-        "tag_id": "123",
-        "frame_index": 0,
-        "evidence": "placeholder",
-    }) + "\n", encoding="utf-8")
-    p = Path(layout.audit_jsonl("C"))
-    p.parent.mkdir(parents=True, exist_ok=True)
-    with p.open("a", encoding="utf-8") as f:
-        f.write(json.dumps({
-            "event": "placeholder_stage_output",
-            "stage": "C",
-            "clip_id": manifest.clip_id,
-            "camera_id": camera_id,
-        }) + "\n")
+        "counters": {
+            "total_candidates_seen": 0,
+            "total_decode_attempts": 0,
+            "total_tag_observations_emitted": 0,
+            "total_identity_hints_emitted": 0,
+        },
+    }
+    Path(layout.audit_jsonl("C")).write_text(
+        json.dumps(header) + "\n" + json.dumps(summary) + "\n",
+        encoding="utf-8",
+    )
 
 
-def run_multiplex_ABC(*,
+def run_multiplex_AC(*,
     ingest_path: Path,
     layout: ClipOutputLayout,
     manifest: ClipManifest,
@@ -288,7 +303,7 @@ def run_multiplex_ABC(*,
     run_plan: Dict[str, Dict[str, Any]],
     visualize: bool = False,
 ) -> None:
-    """Run a single-pass loop over frames for the A/B/C window.
+    """Run a single-pass loop over frames for the A/C window.
 
     Slice 1 responsibilities:
     - Prove single-pass orchestration by opening the video once and iterating frames once.
@@ -297,7 +312,7 @@ def run_multiplex_ABC(*,
       (Real stage implementations will replace these in Slice 2+.)
     """
 
-    letters_to_run = [l for l, spec in run_plan.items() if spec.get("should_run") and l in {"A","B","C"}]
+    letters_to_run = [l for l, spec in run_plan.items() if spec.get("should_run") and l in {"A","C"}]
     # Only open the video if needed for visualize or for placeholder timebase/frame size
     need_frames = visualize or bool(letters_to_run)
 
@@ -555,4 +570,15 @@ def run_multiplex_ABC(*,
     if "B" in letters_to_run:
         _write_placeholder_stage_B(layout, manifest, camera_id=camera_id, pkt0=pkt0)
     if "C" in letters_to_run:
-        _write_placeholder_stage_C(layout, manifest, camera_id=camera_id)
+        _write_placeholder_stage_C(
+            layout,
+            manifest,
+            camera_id=camera_id,
+            mode="multiplex_AC",
+            resolved_config=resolved_config,
+        )
+
+
+def run_multiplex_ABC(**kwargs):
+    """Backwards-compatible alias (old mode name was multiplex_ABC)."""
+    return run_multiplex_AC(**kwargs)

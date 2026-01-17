@@ -356,7 +356,23 @@ def ensure_manifest(layout: ClipOutputLayout, clip_id: str, camera_id: str, inpu
     return manifest
 
 
-def _validate_stage_outputs(manifest: ClipManifest, layout: ClipOutputLayout, letter: StageLetter) -> None:
+def _cfg_get(cfg: Any, path: str, default: Any = None) -> Any:
+    """Lightweight dot-path getter used for validation-time config lookups."""
+    cur: Any = cfg
+    for part in path.split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            return default
+        cur = cur[part]
+    return cur
+
+
+def _validate_stage_outputs(
+    manifest: ClipManifest,
+    layout: ClipOutputLayout,
+    letter: StageLetter,
+    *,
+    resolved_config: Dict[str, Any],
+) -> None:
     root = layout.clip_root
     if letter == "A":
         tables = v.read_stage_A_clip_tables(layout)
@@ -376,6 +392,19 @@ def _validate_stage_outputs(manifest: ClipManifest, layout: ClipOutputLayout, le
         v.validate_contact_points_df(cp)
         return
     if letter == "C":
+        # Stage C JSONL outputs are allowed to be empty (0 records) in early slices.
+        # Validators should still run on any records that are present.
+        expected_family = _cfg_get(resolved_config, "stages.stage_C.tag_family", "36h11")
+
+        to_path = root / "stage_C" / "tag_observations.jsonl"
+        if to_path.exists():
+            records = [json.loads(line) for line in to_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+            v.validate_tag_observations_records(
+                records,
+                expected_clip_id=manifest.clip_id,
+                expected_tag_family=str(expected_family) if expected_family is not None else None,
+            )
+
         ih_path = root / "stage_C" / "identity_hints.jsonl"
         if ih_path.exists():
             records = [json.loads(line) for line in ih_path.read_text(encoding="utf-8").splitlines() if line.strip()]
@@ -417,7 +446,7 @@ def _files_exist(layout: ClipOutputLayout, rels: List[str]) -> bool:
 
 
 def _compute_stage_run_plan(manifest: ClipManifest, layout: ClipOutputLayout, letters: List[StageLetter], *,
-                            cfg_hash: str, force_stages: Optional[List[StageLetter]] = None) -> Dict[StageLetter, Dict[str, Any]]:
+                            cfg_hash: str, resolved_config: Dict[str, Any], force_stages: Optional[List[StageLetter]] = None) -> Dict[StageLetter, Dict[str, Any]]:
     """Compute per-stage run/skip decisions for a set of stage letters.
 
     This preserves existing multipass semantics:
@@ -442,7 +471,7 @@ def _compute_stage_run_plan(manifest: ClipManifest, layout: ClipOutputLayout, le
             continue
         # Hash matches; validate to confirm completeness
         try:
-            _validate_stage_outputs(manifest, layout, letter)
+            _validate_stage_outputs(manifest, layout, letter, resolved_config=resolved_config)
         except Exception:
             plan[letter] = {"should_run": True, "is_complete": False, "reason": "validate_failed"}
             continue
@@ -534,16 +563,23 @@ def run_pipeline(ingest_path: Path, camera_id: str, config: Dict[str, Any], *,
                 ingest_path=ingest_path,
             )
 
-        allowed_modes = {'multipass', 'multiplex_ABC'}
+        allowed_modes = {'multipass', 'multiplex_AC'}
         if mode not in allowed_modes:
             raise PipelineError(f"invalid mode: {mode}; expected one of {sorted(allowed_modes)}")
 
-        # Optional single-pass multiplexer for stages A/B/C
-        if mode == 'multiplex_ABC':
-            abc_letters = [s.letter for s in stage_list if s.letter in {'A','B','C'}]
+        # Optional single-pass multiplexer for stages A/C
+        if mode == 'multiplex_AC':
+            abc_letters = [s.letter for s in stage_list if s.letter in {'A','C'}]
             if abc_letters:
-                from bjj_pipeline.stages.orchestration.multiplex_runner import run_multiplex_ABC
-                run_plan = _compute_stage_run_plan(manifest, layout, abc_letters, cfg_hash=cfg_hash, force_stages=force_stages)
+                from bjj_pipeline.stages.orchestration.multiplex_runner import run_multiplex_AC
+                run_plan = _compute_stage_run_plan(
+                    manifest,
+                    layout,
+                    abc_letters,
+                    cfg_hash=cfg_hash,
+                    resolved_config=resolved_config,
+                    force_stages=force_stages,
+                )
                 stage_starts: Dict[StageLetter, Tuple[int, str]] = {}
                 # Emit stage_started / stage_skipped events consistent with multipass behavior
                 for letter in abc_letters:
@@ -575,7 +611,7 @@ def run_pipeline(ingest_path: Path, camera_id: str, config: Dict[str, Any], *,
                 letters_to_run = [l for l in abc_letters if run_plan[l]['should_run']]
                 if letters_to_run or visualize:
                     try:
-                        run_multiplex_ABC(
+                        run_multiplex_AC(
                             ingest_path=ingest_path,
                             layout=layout,
                             manifest=manifest,
@@ -591,8 +627,6 @@ def run_pipeline(ingest_path: Path, camera_id: str, config: Dict[str, Any], *,
                             # Register canonical artifacts exactly as in multipass mode
                             if letter == 'A':
                                 register_stage_A_defaults(manifest, layout)
-                            elif letter == 'B':
-                                register_stage_B_defaults(manifest, layout)
                             elif letter == 'C':
                                 manifest.register_artifact(
                                     stage='C', key='tag_observations_jsonl',
@@ -609,7 +643,7 @@ def run_pipeline(ingest_path: Path, camera_id: str, config: Dict[str, Any], *,
                                     relpath=layout.rel_to_clip_root(layout.audit_jsonl('C')),
                                     content_type='application/jsonl',
                                 )
-                            _validate_stage_outputs(manifest, layout, letter)
+                            _validate_stage_outputs(manifest, layout, letter, resolved_config=resolved_config)
                             write_manifest(manifest, layout.clip_manifest_path())
 
                             append_audit(layout, {
@@ -639,7 +673,7 @@ def run_pipeline(ingest_path: Path, camera_id: str, config: Dict[str, Any], *,
                         raise
 
                 # Remove handled stages so they are not executed again in multipass loop
-                stage_list = [s for s in stage_list if s.letter not in {'A','B','C'}]
+                stage_list = [s for s in stage_list if s.letter not in {'A','C'}]
 
         for spec in stage_list:
             stage_letter = spec.letter
@@ -664,7 +698,7 @@ def run_pipeline(ingest_path: Path, camera_id: str, config: Dict[str, Any], *,
             is_complete = False
             try:
                 if _files_exist(layout, required_rels):
-                    _validate_stage_outputs(manifest, layout, stage_letter)
+                    _validate_stage_outputs(manifest, layout, stage_letter, resolved_config=resolved_config)
                     if last_success_hash == cfg_hash:
                         is_complete = True
             except Exception:
@@ -749,7 +783,7 @@ def run_pipeline(ingest_path: Path, camera_id: str, config: Dict[str, Any], *,
                         content_type="application/jsonl",
                     )
 
-                _validate_stage_outputs(manifest, layout, stage_letter)
+                _validate_stage_outputs(manifest, layout, stage_letter, resolved_config=resolved_config)
                 write_manifest(manifest, layout.clip_manifest_path())
 
                 append_audit(layout, {
