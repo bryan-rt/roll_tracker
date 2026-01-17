@@ -499,7 +499,17 @@ def run_multiplex_AC(*,
 
         # Stage C output files (always empty JSONLs in M2; audit contains decisions)
         if stage_c_enabled:
+            from bjj_pipeline.stages.tags.c0_gating import evaluate_scannability
+            from bjj_pipeline.stages.tags.c0_scannability_map import load_scannability_map
             from bjj_pipeline.stages.tags.c0_scheduler import C0Scheduler, Candidate
+
+            gating_cfg = _cfg_get(resolved_config, "stages.stage_C.c0_scheduler.gating", {}) or {}
+            prior_map = None
+            if bool(gating_cfg.get("use_scannability_prior", False)):
+                prior_path = gating_cfg.get("prior_path")
+                if prior_path is None:
+                    prior_path = Path("configs") / "cameras" / camera_id / "scannability_map.json"
+                prior_map = load_scannability_map(Path(prior_path))
 
             layout.ensure_dirs_for_stage("C")
             Path(layout.identity_hints_jsonl()).write_text("", encoding="utf-8")
@@ -563,19 +573,56 @@ def run_multiplex_AC(*,
                         ann_writer.write(ann)
                         mat_writer.write(mat)
 
-                    # Stage C (C0) cadence decisions (no gating, no decode in M2)
+                    # Stage C (C0) cadence decisions (gating + cadence; no decode in M2)
                     if stage_c_enabled and stage_c_audit_f is not None and stage_c_scheduler is not None:
                         # Candidate selection is join-first: (frame_index, timestamp_ms, detection_id) + tracklet_id.
                         candidates = []
                         for o in overlays or []:
                             # OverlayItem guarantees these are strings in Stage A code path.
                             if getattr(o, "detection_id", None) and getattr(o, "tracklet_id", None):
+                                x1 = int(round(getattr(o, "x1", 0)))
+                                y1 = int(round(getattr(o, "y1", 0)))
+                                x2 = int(round(getattr(o, "x2", 0)))
+                                y2 = int(round(getattr(o, "y2", 0)))
+                                det_conf = float(getattr(o, "confidence", 1.0))
+                                on_mat = getattr(o, "on_mat", None)
+
+                                gate = evaluate_scannability(
+                                    frame_bgr=pkt.image_bgr,
+                                    x1=x1,
+                                    y1=y1,
+                                    x2=x2,
+                                    y2=y2,
+                                    det_conf=det_conf,
+                                    on_mat=on_mat,
+                                    gating_cfg=gating_cfg,
+                                    prior_map=prior_map,
+                                )
+
                                 candidates.append(
                                     Candidate(
                                         frame_index=int(pkt.frame_index),
                                         timestamp_ms=int(pkt.timestamp_ms),
                                         detection_id=str(o.detection_id),
                                         tracklet_id=str(o.tracklet_id),
+                                        x1=x1,
+                                        y1=y1,
+                                        x2=x2,
+                                        y2=y2,
+                                        det_conf=det_conf,
+                                        on_mat=on_mat,
+                                        scannable=bool(gate.scannable),
+                                        gate_reason=str(gate.reason),
+                                        gate_meta={
+                                            "roi_xyxy": list(gate.roi_xyxy),
+                                            "roi_area": int(gate.roi_area),
+                                            "roi_w": int(gate.roi_w),
+                                            "roi_h": int(gate.roi_h),
+                                            "blur_var": gate.blur_var,
+                                            "contrast_std": gate.contrast_std,
+                                            "prior": gate.prior,
+                                            "on_mat": gate.on_mat,
+                                        },
                                     )
                                 )
 
@@ -603,8 +650,16 @@ def run_multiplex_AC(*,
                                 "timestamp_ms": int(d.candidate.timestamp_ms),
                                 "detection_id": str(d.candidate.detection_id),
                                 "tracklet_id": str(d.candidate.tracklet_id),
+                                "x1": int(getattr(d.candidate, "x1", 0)),
+                                "y1": int(getattr(d.candidate, "y1", 0)),
+                                "x2": int(getattr(d.candidate, "x2", 0)),
+                                "y2": int(getattr(d.candidate, "y2", 0)),
+                                "det_conf": float(getattr(d.candidate, "det_conf", 0.0)),
+                                "on_mat": getattr(d.candidate, "on_mat", None),
+                                "scannable": bool(getattr(d.candidate, "scannable", True)),
                                 "decision": d.decision,
                                 "reason": d.reason,
+                                "gate_meta": (d.gate_meta if d.gate_meta is not None else dict(getattr(d.candidate, "gate_meta", {}) or {})),
                                 "state_before": d.state_before,
                                 "state_after": d.state_after,
                             }

@@ -73,6 +73,29 @@ stages:
     # Tag extraction sampling. 0 means use all frames.
     sample_frames_for_tags: 0
 
+    tag_family: "36h11"
+    c0_scheduler:
+      enabled: true
+      k_seek: 1
+      k_verify: 30
+      n_ramp: 60
+      gating:
+        enabled: true
+        bbox_pad_frac: 0.15
+        min_det_conf: 0.25
+        min_roi_side_px: 40
+        min_roi_area_px: 2500
+        require_on_mat: false
+        use_scannability_prior: true
+        prior_min: 0.2
+        prior_path: null
+        blur:
+          method: "laplacian_var"
+          min_var: 60.0
+        contrast:
+          method: "gray_std"
+          min_std: 18.0
+
   stage_D:
     enabled: null
 
