@@ -347,7 +347,11 @@ def run_multiplex_AC(*,
     stage_c_k_seek = int(stage_c_sched_cfg.get("k_seek", 1))
     stage_c_k_verify = int(stage_c_sched_cfg.get("k_verify", 30))
     stage_c_n_ramp = int(stage_c_sched_cfg.get("n_ramp", 60))
+    stage_c_triggers_cfg = dict(stage_c_sched_cfg.get("triggers", {}) or {})
+    stage_c_trigger_cooldown = int(stage_c_triggers_cfg.get("cooldown_frames", 15))
+    stage_c_extend_ramp_on_retrigger = bool(stage_c_triggers_cfg.get("extend_ramp_on_retrigger", True))
     stage_c_scheduler = None
+    stage_c_trigger_engine = None
 
     if need_frames:
         it = FrameIterator(ingest_path)
@@ -502,6 +506,7 @@ def run_multiplex_AC(*,
             from bjj_pipeline.stages.tags.c0_gating import evaluate_scannability
             from bjj_pipeline.stages.tags.c0_scannability_map import load_scannability_map
             from bjj_pipeline.stages.tags.c0_scheduler import C0Scheduler, Candidate
+            from bjj_pipeline.stages.tags.c0_triggers import C0TriggerEngine
 
             gating_cfg = _cfg_get(resolved_config, "stages.stage_C.c0_scheduler.gating", {}) or {}
             prior_map = None
@@ -526,6 +531,12 @@ def run_multiplex_AC(*,
                 k_verify=stage_c_k_verify,
                 n_ramp=stage_c_n_ramp,
             )
+            stage_c_scheduler.configure_triggers(
+                trigger_cooldown_frames=stage_c_trigger_cooldown,
+                extend_ramp_on_retrigger=stage_c_extend_ramp_on_retrigger,
+            )
+
+            stage_c_trigger_engine = C0TriggerEngine(stage_c_triggers_cfg)
 
             header = {
                 "event": "stage_C_run_header",
@@ -542,6 +553,7 @@ def run_multiplex_AC(*,
                     "k_seek": int(stage_c_k_seek),
                     "k_verify": int(stage_c_k_verify),
                     "n_ramp": int(stage_c_n_ramp),
+                    "triggers": dict(stage_c_triggers_cfg),
                 },
             }
             stage_c_audit_f.write(json.dumps(header) + "\n")
@@ -586,6 +598,8 @@ def run_multiplex_AC(*,
                                 y2 = int(round(getattr(o, "y2", 0)))
                                 det_conf = float(getattr(o, "confidence", 1.0))
                                 on_mat = getattr(o, "on_mat", None)
+                                x_m = getattr(o, "x_m", None)
+                                y_m = getattr(o, "y_m", None)
 
                                 gate = evaluate_scannability(
                                     frame_bgr=pkt.image_bgr,
@@ -611,6 +625,8 @@ def run_multiplex_AC(*,
                                         y2=y2,
                                         det_conf=det_conf,
                                         on_mat=on_mat,
+                                        x_m=(float(x_m) if x_m is not None else None),
+                                        y_m=(float(y_m) if y_m is not None else None),
                                         scannable=bool(gate.scannable),
                                         gate_reason=str(gate.reason),
                                         gate_meta={
@@ -627,6 +643,23 @@ def run_multiplex_AC(*,
                                 )
 
                         stage_c_counts["total_candidates_seen"] += int(len(candidates))
+
+                        # M4: update trigger engine and apply triggers to scheduler state BEFORE cadence decisions.
+                        if stage_c_trigger_engine is not None and stage_c_scheduler is not None:
+                            trig_events = stage_c_trigger_engine.update(
+                                frame_index=int(pkt.frame_index),
+                                timestamp_ms=int(pkt.timestamp_ms),
+                                candidates=candidates,
+                            )
+                            if trig_events:
+                                stage_c_scheduler.apply_triggers(
+                                    frame_index=int(pkt.frame_index),
+                                    timestamp_ms=int(pkt.timestamp_ms),
+                                    trigger_events=[
+                                        {"tracklet_id": e.tracklet_id, "trigger": e.trigger, "details": e.details}
+                                        for e in trig_events
+                                    ],
+                                )
 
                         decisions = stage_c_scheduler.step(
                             frame_index=int(pkt.frame_index),
