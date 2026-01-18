@@ -239,6 +239,40 @@ class StageAWriter:
 	# -------------------------
 	# Finalize
 	# -------------------------
+	def get_tracklet_spans(self) -> Dict[str, Tuple[int, int]]:
+		"""Return deterministic tracklet spans without writing artifacts.
+
+		This is safe to call during multiplex runs before Stage A artifacts are
+		written. It does not mutate internal state and only inspects the in-memory
+		tracklet frame rows appended so far.
+		
+		Returns:
+			Dict mapping tracklet_id -> (start_frame, end_frame) inclusive.
+		"""
+		if not self._tf_rows:
+			return {}
+		spans: Dict[str, Tuple[int, int]] = {}
+		for r in self._tf_rows:
+			try:
+				tid = str(r.get("tracklet_id"))
+				fi = int(r.get("frame_index"))
+			except Exception:
+				continue
+			if not tid:
+				continue
+			lo_hi = spans.get(tid)
+			if lo_hi is None:
+				spans[tid] = (fi, fi)
+			else:
+				lo, hi = lo_hi
+				if fi < lo:
+					lo = fi
+				if fi > hi:
+					hi = fi
+				spans[tid] = (lo, hi)
+		# deterministic iteration for callers
+		return {k: spans[k] for k in sorted(spans.keys())}
+
 	def finalize_tables(self) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
 		det_df = pd.DataFrame(self._det_rows) if self._det_rows else empty_df_for_schema_key("detections")
 		tf_df = (

@@ -337,6 +337,7 @@ def run_multiplex_AC(*,
     stage_c_audit_f = None
     stage_c_tagobs_f = None
     stage_c_idhints_f = None
+    c2_registry = None
     stage_c_counts = {
         "total_candidates_seen": 0,
         "total_scheduled_attempts": 0,
@@ -568,6 +569,24 @@ def run_multiplex_AC(*,
                 },
             }
             stage_c_audit_f.write(json.dumps(header) + "\n")
+
+            # Stage C2 registry (identity hints)
+            from bjj_pipeline.stages.tags.identity_registry import C2IdentityRegistry
+
+            # Support both config paths: stages.stage_C.c2_registry (preferred) then stage_C.c2_registry
+            c2_cfg = _cfg_get(resolved_config, "stages.stage_C.c2_registry", None)
+            if c2_cfg is None:
+                c2_cfg = _cfg_get(resolved_config, "stage_C.c2_registry", {})
+            if c2_cfg is None:
+                c2_cfg = {}
+
+            c2_registry = C2IdentityRegistry(
+                cfg=dict(c2_cfg) if isinstance(c2_cfg, dict) else {},
+                clip_id=manifest.clip_id,
+                camera_id=camera_id,
+                pipeline_version=manifest.pipeline_version,
+                created_at_ms=int(getattr(manifest, "created_at_ms", 0) or 0),
+            )
 
         for pkt in it:
             if pkt0 is None:
@@ -802,6 +821,28 @@ def run_multiplex_AC(*,
                                         stage_c_tagobs_f.write(json.dumps(rec) + "\n")
                                         stage_c_counts["total_tag_observations_emitted"] += 1
 
+                                        # Feed C2 registry (in-memory) for identity_hints finalize.
+                                        try:
+                                            if c2_registry is not None:
+                                                c2_registry.ingest_tag_observation(rec)
+                                        except Exception as e:
+                                            # Never fail run on C2; record and proceed.
+                                            try:
+                                                if stage_c_audit_f is not None:
+                                                    stage_c_audit_f.write(json.dumps({
+                                                        "event": "c2_ingest_failed",
+                                                        "stage": "C",
+                                                        "clip_id": manifest.clip_id,
+                                                        "camera_id": camera_id,
+                                                        "frame_index": int(d.candidate.frame_index),
+                                                        "detection_id": str(d.candidate.detection_id),
+                                                        "tracklet_id": str(d.candidate.tracklet_id),
+                                                        "error_type": type(e).__name__,
+                                                        "error": str(e),
+                                                    }) + "\n")
+                                            except Exception:
+                                                pass
+
                                     # Cadence transition: SEEKING/RAMP_UP -> VERIFIED
                                     try:
                                         stage_c_scheduler.on_decode_success(
@@ -852,6 +893,34 @@ def run_multiplex_AC(*,
             mat_writer.close()
 
         if stage_c_enabled and stage_c_audit_f is not None:
+            # Finalize C2 (identity hints) before summary/close.
+            try:
+                spans = None
+                if stage_a_writer is not None:
+                    try:
+                        spans = stage_a_writer.get_tracklet_spans()
+                    except Exception:
+                        spans = None
+                if c2_registry is not None and stage_c_idhints_f is not None:
+                    hints, events = c2_registry.finalize(tracklet_spans=spans)
+                    for e in events:
+                        stage_c_audit_f.write(json.dumps(e) + "\n")
+                    for h in hints:
+                        stage_c_idhints_f.write(json.dumps(h) + "\n")
+                    stage_c_counts["total_identity_hints_emitted"] += int(len(hints))
+            except Exception as e:
+                try:
+                    stage_c_audit_f.write(json.dumps({
+                        "event": "c2_finalize_failed",
+                        "stage": "C",
+                        "clip_id": manifest.clip_id,
+                        "camera_id": camera_id,
+                        "error_type": type(e).__name__,
+                        "error": str(e),
+                    }) + "\n")
+                except Exception:
+                    pass
+
             # Emit summary at end of run (M2: cadence-only).
             summary = {
                 "event": "stage_C_run_summary",

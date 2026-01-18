@@ -114,8 +114,8 @@ An **offline** (batch) video processing pipeline for BJJ practice footage. Input
    - Output: refined masks and **subset** contact point overrides (not full coverage).
 
 3) **Stage C — Identity anchoring (AprilTag scanning + registry)**
-   - Tooling target: AprilTag detection applied inside mask ROI + voting registry.
-   - Output: tag observations (frame-level) + stable identity assignments + conflicts.
+   - Tooling target: AprilTag decode in expanded bbox ROI (mask is a soft hint; Stage B optional) + deterministic registry.
+   - Output: tag observations (frame-level) + identity constraints/hints (must_link / cannot_link).
 
 4) **Stage D — Global stitching (Min-Cost Flow)**
    - Tooling target: MCF solver (start with OR-Tools or NetworkX; optimize later).
@@ -134,7 +134,7 @@ An **offline** (batch) video processing pipeline for BJJ practice footage. Input
 These are defaults; workers may propose alternatives but must align with constraints.
 - **Tracking**: BoxMOT **BoT-SORT** (as tracklet generator)
 - **Masks**: YOLO-seg online where possible; **SAM/SAM2 offline** where higher fidelity needed
-- **AprilTags**: Python apriltag detector (library choice can be decided in C1)
+- **AprilTags**: OpenCV ArUco (`cv2.aruco`) decoder (current implementation)
 - **ReID (optional early, likely later)**: OSNet / torchreid or FastReID; ideally on masked crops
 - **Stitching**: **Min-Cost Flow** (OR-Tools min-cost flow or NetworkX as baseline)
 - **Video I/O**: OpenCV for reading frames when needed; ffmpeg for export
@@ -145,7 +145,7 @@ Workers should assume the following artifact families will exist, with exact sch
 - `detections` (per-frame detections)
 - `tracklets` (tracklet spans + summaries)
 - `masks` (mask references, RLE/paths) and `contact_points` (u,v and x,y)
-- `tag_observations` (frame-level tag detections) and `identity_assignments`
+- `tag_observations` (frame-level tag detections) and `identity_hints` (must_link / cannot_link constraints)
 - `person_tracks` (stitched per-person timeline)
 - `match_sessions`
 - `export_manifest` / DB rows / audit logs

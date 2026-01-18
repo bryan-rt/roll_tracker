@@ -192,9 +192,7 @@ An **offline** (batch) video processing pipeline for BJJ practice footage. Input
 Stage tooling choices are defined in their own workers (see F0 for constraints). C2 focuses on identity voting and conflict resolution.
 
 ### Contracts & artifacts
-See F0 for authoritative schemas. C2 writes `identity_registry.jsonl`, `conflicts.jsonl`, and `evidence.jsonl`; `hints.jsonl` remain non-binding suggestions to A/B.
-
-> **Correction:** C2’s canonical outputs must remain limited to the F0-locked artifacts (`tag_observations.jsonl`, `identity_hints.jsonl`, `audit.jsonl`). Any additional “registry/conflict/evidence” files are dev-only unless F0 is bumped.
+See F0 for authoritative schemas. In the current implementation, C2 emits only the F0-locked artifacts (`stage_C/identity_hints.jsonl` and `stage_C/audit.jsonl`), derived from `stage_C/tag_observations.jsonl`.
 
 ### Definition of done
 Follow the standard manager checklist; add deterministic tests for vote aggregation and conflict detection; outputs must validate via F0.
@@ -254,7 +252,7 @@ Also include a bullet explicitly confirming alignment with the locked F0/F3 cont
 Follow F1’s checkpoint rules; ensure identity votes are reproducible, auditable, and artifacts validate.
 
 ## Update after Z3 completion (2026-01-07)
-Z3 introduced an **optional single-pass multiplex mode** (`multiplex_ABC`) that runs **Stages A→B→C within a shared frame loop** (video decoded once), while preserving:
+Z3 introduced an **optional single-pass multiplex mode** (`multiplex_AC`) that runs **Stages A + C within a shared frame loop** (video decoded once), while preserving:
 - **F0 artifact contracts + paths** (each stage still writes its own canonical artifacts)
 - **F1 stage contract** (`run(config, inputs) -> dict`) and skip/resume semantics
 - **F2 config hashing + orchestration audit discipline**

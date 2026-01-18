@@ -95,8 +95,8 @@ Stage A is the **canonical owner** of per-frame *online* signals for every detec
 - **Homography projection** px→meters and per-frame velocities
 - **Mat inclusion** (`on_mat`) using `mat_blueprint.json` polygon
 
-Stage A runs in **multiplex_ABC** (single-pass frame loop) and writes canonical artifacts at end-of-run, preserving determinism and F0 validation.
-**POC update:** current target is `multiplex_AC` (A + C). Stage B is deferred.
+Stage A runs in **multiplex_AC** (single-pass frame loop with Stage C) and writes canonical artifacts at end-of-run, preserving determinism and F0 validation.
+**POC lock:** current target is `multiplex_AC` (A + C). Stage B is deferred.
 
 ### Canonical Outputs (authoritative)
 - `stage_A/detections.parquet`
@@ -336,7 +336,7 @@ An **offline** (batch) video processing pipeline for BJJ practice footage. Input
 These are defaults; workers may propose alternatives but must align with constraints.
 - **Tracking**: BoxMOT **BoT-SORT** (as tracklet generator)
 - **Masks**: YOLO-seg online where possible; **SAM/SAM2 deferred for POC**
-- **AprilTags**: Python apriltag detector (library choice can be decided in C1)
+- **AprilTags**: OpenCV ArUco (`cv2.aruco`) decoder inside expanded bbox ROI (current implementation)
 - **ReID (optional early, likely later)**: OSNet / torchreid or FastReID; ideally on masked crops
 - **Stitching**: **Min-Cost Flow** (OR-Tools min-cost flow or NetworkX as baseline)
 - **Video I/O**: OpenCV for reading frames when needed; ffmpeg for export
@@ -449,7 +449,7 @@ should remain in their respective stages unless a manager-approved F0 schema bum
 Debug visualization outputs (if enabled) are **non-canonical** and must not become required artifacts for stage completion.
 
 ## Update after Z3 completion (2026-01-07)
-Z3 introduced an **optional single-pass multiplex mode** (`multiplex_ABC`) that runs **Stages A→B→C within a shared frame loop** (video decoded once), while preserving:
+Z3 introduced an **optional single-pass multiplex mode** (`multiplex_AC`) that runs **Stages A + C within a shared frame loop** (video decoded once), while preserving:
 - **F0 artifact contracts + paths** (each stage still writes its own canonical artifacts)
 - **F1 stage contract** (`run(config, inputs) -> dict`) and skip/resume semantics
 - **F2 config hashing + orchestration audit discipline**
