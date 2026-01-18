@@ -335,10 +335,15 @@ def run_multiplex_AC(*,
     # Stage C (C0) scheduler wiring
     # ------------------------------
     stage_c_audit_f = None
+    stage_c_tagobs_f = None
+    stage_c_idhints_f = None
     stage_c_counts = {
         "total_candidates_seen": 0,
         "total_scheduled_attempts": 0,
         "total_skipped": 0,
+        "total_decode_attempts": 0,
+        "total_tag_observations_emitted": 0,
+        "total_identity_hints_emitted": 0,
     }
     stage_c_skips_by_reason = defaultdict(int)
     stage_c_tag_family_default = _cfg_get(resolved_config, "stages.stage_C.tag_family", "36h11")
@@ -507,6 +512,7 @@ def run_multiplex_AC(*,
             from bjj_pipeline.stages.tags.c0_scannability_map import load_scannability_map
             from bjj_pipeline.stages.tags.c0_scheduler import C0Scheduler, Candidate
             from bjj_pipeline.stages.tags.c0_triggers import C0TriggerEngine
+            from bjj_pipeline.stages.tags.apriltag_runner import decode_apriltags_in_roi
 
             gating_cfg = _cfg_get(resolved_config, "stages.stage_C.c0_scheduler.gating", {}) or {}
             prior_map = None
@@ -517,8 +523,13 @@ def run_multiplex_AC(*,
                 prior_map = load_scannability_map(Path(prior_path))
 
             layout.ensure_dirs_for_stage("C")
-            Path(layout.identity_hints_jsonl()).write_text("", encoding="utf-8")
-            Path(layout.tag_observations_jsonl()).write_text("", encoding="utf-8")
+            # Always create/truncate contract-valid JSONLs. We stream-append to tag_observations in M5.
+            idhints_path = Path(layout.identity_hints_jsonl())
+            tagobs_path = Path(layout.tag_observations_jsonl())
+            idhints_path.parent.mkdir(parents=True, exist_ok=True)
+            tagobs_path.parent.mkdir(parents=True, exist_ok=True)
+            stage_c_idhints_f = idhints_path.open("w", encoding="utf-8")
+            stage_c_tagobs_f = tagobs_path.open("w", encoding="utf-8")
 
             # Open audit file for streaming append (header now, decisions per frame, summary at end).
             audit_path = Path(layout.audit_jsonl("C"))
@@ -697,6 +708,107 @@ def run_multiplex_AC(*,
                                 "state_after": d.state_after,
                             }
                             stage_c_audit_f.write(json.dumps(ev) + "\n")
+
+                            # Milestone 5: perform real decode attempts + emit TagObservation records.
+                            if (
+                                d.decision == "attempt"
+                                and stage_c_tagobs_f is not None
+                                and stage_c_scheduler is not None
+                            ):
+                                stage_c_counts["total_decode_attempts"] += 1
+
+                                gm = ev.get("gate_meta") or {}
+                                roi_xyxy = gm.get("roi_xyxy")
+                                if not (isinstance(roi_xyxy, list) and len(roi_xyxy) == 4):
+                                    # Fallback to candidate gate_meta if needed
+                                    roi_xyxy = getattr(d.candidate, "gate_meta", {}) or {}
+                                    roi_xyxy = roi_xyxy.get("roi_xyxy") if isinstance(roi_xyxy, dict) else None
+
+                                if not (isinstance(roi_xyxy, list) and len(roi_xyxy) == 4):
+                                    stage_c_audit_f.write(
+                                        json.dumps({
+                                            "event": "c1_decode_attempt",
+                                            "stage": "C",
+                                            "clip_id": manifest.clip_id,
+                                            "camera_id": camera_id,
+                                            "frame_index": int(d.candidate.frame_index),
+                                            "timestamp_ms": int(d.candidate.timestamp_ms),
+                                            "detection_id": str(d.candidate.detection_id),
+                                            "tracklet_id": str(d.candidate.tracklet_id),
+                                            "tag_family": str(stage_c_tag_family_default or "36h11"),
+                                            "roi_xyxy": None,
+                                            "error": "missing_roi_xyxy",
+                                            "error_detail": None,
+                                        })
+                                        + "\n"
+                                    )
+                                    continue
+
+                                tag_family = str(stage_c_tag_family_default or "36h11")
+                                decode_res = decode_apriltags_in_roi(
+                                    frame_bgr=pkt.image_bgr,
+                                    roi_xyxy=roi_xyxy,
+                                    tag_family=tag_family,
+                                )
+                                dets = decode_res.get("detections", []) or []
+                                err = decode_res.get("error")
+                                err_detail = decode_res.get("error_detail")
+
+                                stage_c_audit_f.write(
+                                    json.dumps({
+                                        "event": "c1_decode_attempt",
+                                        "stage": "C",
+                                        "clip_id": manifest.clip_id,
+                                        "camera_id": camera_id,
+                                        "frame_index": int(d.candidate.frame_index),
+                                        "timestamp_ms": int(d.candidate.timestamp_ms),
+                                        "detection_id": str(d.candidate.detection_id),
+                                        "tracklet_id": str(d.candidate.tracklet_id),
+                                        "tag_family": tag_family,
+                                        "roi_xyxy": [int(v) for v in roi_xyxy],
+                                        "n_detections": int(len(dets)),
+                                        "tag_ids": [int(getattr(t, "tag_id", -1)) for t in dets],
+                                        "error": err,
+                                        "error_detail": err_detail,
+                                    })
+                                    + "\n"
+                                )
+
+                                if dets:
+                                    # Emit observations (join-first keys included).
+                                    for t in dets:
+                                        rec = {
+                                            "schema_version": "0",
+                                            "artifact_type": "tag_observation",
+                                            "clip_id": manifest.clip_id,
+                                            "camera_id": camera_id,
+                                            "pipeline_version": manifest.pipeline_version,
+                                            "created_at_ms": int(getattr(manifest, "created_at_ms", 0) or 0),
+                                            "frame_index": int(d.candidate.frame_index),
+                                            "timestamp_ms": int(d.candidate.timestamp_ms),
+                                            "detection_id": str(d.candidate.detection_id),
+                                            "tracklet_id": str(d.candidate.tracklet_id),
+                                            "tag_id": str(getattr(t, "tag_id", "")),
+                                            "tag_family": str(getattr(t, "tag_family", tag_family)),
+                                            # OpenCV ArUco does not provide a calibrated confidence; use 1.0 for "detected".
+                                            "confidence": 1.0,
+                                            "roi_method": "bbox_pad_frac",
+                                            "roi_xyxy": [int(v) for v in roi_xyxy],
+                                            "tag_corners_px": [
+                                                [float(px), float(py)]
+                                                for (px, py) in (getattr(t, "corners_px", []) or [])
+                                            ],
+                                        }
+                                        stage_c_tagobs_f.write(json.dumps(rec) + "\n")
+                                        stage_c_counts["total_tag_observations_emitted"] += 1
+
+                                    # Cadence transition: SEEKING/RAMP_UP -> VERIFIED
+                                    try:
+                                        stage_c_scheduler.on_decode_success(
+                                            str(d.candidate.tracklet_id), int(d.candidate.frame_index)
+                                        )
+                                    except Exception:
+                                        pass
                 except Exception as e:
                     # Capture full traceback so we can pinpoint the exact file:line of failure
                     tb = traceback.format_exc()
@@ -751,9 +863,9 @@ def run_multiplex_AC(*,
                     "total_scheduled_attempts": int(stage_c_counts["total_scheduled_attempts"]),
                     "total_skipped": int(stage_c_counts["total_skipped"]),
                     "skips_by_reason": dict(stage_c_skips_by_reason),
-                    "total_decode_attempts": 0,
-                    "total_tag_observations_emitted": 0,
-                    "total_identity_hints_emitted": 0,
+                    "total_decode_attempts": int(stage_c_counts["total_decode_attempts"]),
+                    "total_tag_observations_emitted": int(stage_c_counts["total_tag_observations_emitted"]),
+                    "total_identity_hints_emitted": int(stage_c_counts["total_identity_hints_emitted"]),
                 },
             }
             stage_c_audit_f.write(json.dumps(summary) + "\n")
@@ -761,6 +873,15 @@ def run_multiplex_AC(*,
                 stage_c_audit_f.close()
             except Exception:
                 pass
+
+            # Close Stage C JSONL writers (tag_observations + identity_hints).
+            for _f in (stage_c_tagobs_f, stage_c_idhints_f):
+                try:
+                    if _f is not None:
+                        _f.close()
+                except Exception:
+                    pass
+
 
         if stage_a_processor is not None and stage_a_writer is not None:
             stage_a_writer.audit("stage_a_completed", {"n_frames": int(it.n_frames) if hasattr(it, "n_frames") else None})
