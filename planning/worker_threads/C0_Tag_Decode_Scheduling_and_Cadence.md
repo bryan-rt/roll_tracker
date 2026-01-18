@@ -126,8 +126,11 @@ All gating must be **frame-local** (may use short rolling history, no future).
 
 Allowed (POC):
 - bbox area threshold (skip tiny bboxes)
+- ROI sizing (min side / min area) on the expanded bbox ROI
 - detection confidence threshold
-- optional `on_mat` gating (skip off-mat if reliable)
+- `on_mat` gating (skip off-mat when reliable)
+- blur/contrast gates (cheap image quality proxies)
+- optional scannability prior (per-frame prior map)
 - optional “tag-fit” heuristic (cheap):
   - estimate whether an AprilTag-sized square could fit inside the **expanded bbox ROI**
 
@@ -156,18 +159,16 @@ For each scheduled attempt, C0 must hand C1:
 
 ---
 
-## Configuration (F2-compatible keys; names are suggestions)
+## Configuration (implemented config key paths)
 
-Recommend placing under `config["stage_C"]["c0_scheduler"]`:
-- `enabled: bool` (default true in multiplex_AC)
-- `k_seek: int` (e.g., 1–3)
-- `k_verify: int` (e.g., 15–30)
-- `n_ramp: int` (e.g., 20–60)
-- `bbox_pad_px: int` or `bbox_pad_frac: float`
-- `min_bbox_area_px: int`
-- `min_det_conf: float`
-- `iou_overlap_thresh: float`
-- `iou_overlap_window: int`
+Current config lives under `stages.stage_C` (see `configs/default.yaml`), notably:
+- `stages.stage_C.tag_family`
+- `stages.stage_C.c0_scheduler.enabled`
+- `stages.stage_C.c0_scheduler.k_seek`
+- `stages.stage_C.c0_scheduler.k_verify`
+- `stages.stage_C.c0_scheduler.n_ramp`
+- `stages.stage_C.c0_scheduler.gating.*` (ROI sizing, blur/contrast, on-mat, scannability prior)
+- `stages.stage_C.c0_scheduler.triggers.*` (overlap + motion ramp-up triggers)
 
 All defaults must be deterministic and recorded in Stage C audit/config snapshot.
 

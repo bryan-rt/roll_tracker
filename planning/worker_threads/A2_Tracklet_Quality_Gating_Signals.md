@@ -36,7 +36,7 @@ No geometry, crops, or embeddings are produced here.
 
 ## Addendum — Split A2 (Online) vs D0 (Offline)
 
-This addendum updates A2 based on **A1R4 completion** and the now-locked **multiplex_ABC** “online” execution model.
+This addendum updates A2 based on **A1R4 completion** and the now-locked **multiplex_AC** “online” execution model.
 
 ### A2 Scope (Online, multiplex-safe)
 A2 is **online-only**: it may use *past* context (short rolling windows) but must not use future frames.
@@ -288,7 +288,7 @@ should remain in their respective stages unless a manager-approved F0 schema bum
 Debug visualization outputs (if enabled) are **non-canonical** and must not become required artifacts for stage completion.
 
 ## Update after Z3 completion (2026-01-07)
-Z3 introduced an **optional single-pass multiplex mode** (`multiplex_ABC`) that runs **Stages A→B→C within a shared frame loop** (video decoded once), while preserving:
+Z3 introduced an **optional single-pass multiplex mode** (`multiplex_AC`) that runs **Stages A + C within a shared frame loop** (video decoded once), while preserving:
 - **F0 artifact contracts + paths** (each stage still writes its own canonical artifacts)
 - **F1 stage contract** (`run(config, inputs) -> dict`) and skip/resume semantics
 - **F2 config hashing + orchestration audit discipline**

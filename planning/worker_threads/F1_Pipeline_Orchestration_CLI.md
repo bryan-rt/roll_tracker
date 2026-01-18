@@ -90,8 +90,8 @@ An **offline** (batch) video processing pipeline for BJJ practice footage. Input
   - Output: refined masks and **subset** contact point overrides (not full coverage).
 
 3) **Stage C — Identity anchoring (AprilTag scanning + registry)**
-   - Tooling target: AprilTag detection applied inside mask ROI + voting registry.
-   - Output: tag observations (frame-level) + stable identity assignments + conflicts.
+  - Tooling target: AprilTag decode in expanded bbox ROI (mask is a soft hint) + deterministic registry.
+  - Output: tag observations (frame-level) + identity constraints/hints (must_link / cannot_link).
 
 4) **Stage D — Global stitching (Min-Cost Flow)**
    - Tooling target: MCF solver (start with OR-Tools or NetworkX; optimize later).
@@ -110,7 +110,7 @@ An **offline** (batch) video processing pipeline for BJJ practice footage. Input
 These are defaults; workers may propose alternatives but must align with constraints.
 - **Tracking**: BoxMOT **BoT-SORT** (as tracklet generator)
 - **Masks**: YOLO-seg online where possible; **SAM/SAM2 offline** where higher fidelity needed
-- **AprilTags**: Python apriltag detector (library choice can be decided in C1)
+- **AprilTags**: OpenCV ArUco (`cv2.aruco`) decoder (current implementation)
 - **ReID (optional early, likely later)**: OSNet / torchreid or FastReID; ideally on masked crops
 - **Stitching**: **Min-Cost Flow** (OR-Tools min-cost flow or NetworkX as baseline)
 - **Video I/O**: OpenCV for reading frames when needed; ffmpeg for export
@@ -294,7 +294,7 @@ Flags:
 
 ## F1.1 — Added Requirement: Homography Preflight (Camera Calibration)
 
-The Manager added an explicit requirement that **before Stage A runs**, orchestration must ensure a valid homography exists for the camera. fileciteturn3file0L70-L77
+ The Manager added an explicit requirement that **before Stage A runs**, orchestration must ensure a valid homography exists for the camera.
 
 ### Homography file location (DECIDED)
 Homography is stored per camera at:
@@ -317,7 +317,7 @@ When a pipeline run includes Stage A (i.e., stage window contains `A`), orchestr
    - **Interactive mode enabled**: invoke the homography calibrator, then re-check for the file.
    - **Interactive mode disabled**: fail fast with a clear error indicating how to create it.
 
-All downstream stages assume homography exists and is valid. fileciteturn3file0L70-L77
+All downstream stages assume homography exists and is valid.
 
 ### CLI surface additions
 Add an explicit flag to orchestration commands:
@@ -384,7 +384,7 @@ If performance becomes an issue, prefer reducing resolution / selecting fewer ca
 - Homography **preflight** remains an orchestration responsibility: check presence/shape before Stage A when required; do not rely on downstream stages to handle missing homography.
 
 ## Update after Z3 completion (2026-01-07)
-Z3 introduced an **optional single-pass multiplex mode** (`multiplex_ABC`) that runs **Stages A→B→C within a shared frame loop** (video decoded once), while preserving:
+Z3 introduced an **optional single-pass multiplex mode** (`multiplex_AC`) that runs **Stages A + C within a shared frame loop** (video decoded once), while preserving:
 - **F0 artifact contracts + paths** (each stage still writes its own canonical artifacts)
 - **F1 stage contract** (`run(config, inputs) -> dict`) and skip/resume semantics
 - **F2 config hashing + orchestration audit discipline**
@@ -403,4 +403,4 @@ Z3 introduced an **optional single-pass multiplex mode** (`multiplex_ABC`) that 
 - If you introduce a per-frame API (recommended for A/B/C), keep it behind the stage module so orchestration can call it in multiplex mode.
 - Ensure stage outputs can still be produced in multipass mode by reading upstream artifacts from disk (parity requirement until multipass is retired).
 
-> POC clarification: treat `multiplex_ABC` as an architectural capability; the current active target is `multiplex_AC`.
+> POC clarification: current active target is `multiplex_AC` (A + C). Stage B remains deferred.

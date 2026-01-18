@@ -27,7 +27,7 @@ When and how often to attempt decoding is owned by **C0 (Tag Decode Scheduling &
 - backoff after success
 - ramp-up on occlusion/ambiguity events (bbox overlap, track instability proxies)
 
-C1 owns the **decoder + evidence emission** (observations + identity hints) and must log attempt/skip reasons in audit.
+C1 owns the **decoder + evidence emission** (observations + identity hints) and logs per-attempt ROI + decode metadata only when a decode is attempted.
 
 ### ROI policy (important correction)
 **Primary decode ROI is NOT a tight mask crop.** The primary ROI is an **expanded bbox** derived from Stage A detections:
@@ -209,7 +209,7 @@ An **offline** (batch) video processing pipeline for BJJ practice footage. Input
 These are defaults; workers may propose alternatives but must align with constraints.
 - **Tracking**: BoxMOT **BoT-SORT** (as tracklet generator)
 - **Masks**: YOLO-seg online where possible; **SAM/SAM2 deferred for POC**
-- **AprilTags**: Python apriltag detector (library choice can be decided in C1)
+- **AprilTags**: OpenCV ArUco (`cv2.aruco`) decoder (current implementation)
 - **ReID (optional early, likely later)**: OSNet / torchreid or FastReID; ideally on masked crops
 - **Stitching**: **Min-Cost Flow** (OR-Tools min-cost flow or NetworkX as baseline)
 - **Video I/O**: OpenCV for reading frames when needed; ffmpeg for export
@@ -308,7 +308,7 @@ should remain in their respective stages unless a manager-approved F0 schema bum
 Debug visualization outputs (if enabled) are **non-canonical** and must not become required artifacts for stage completion.
 
 ## Update after Z3 completion (2026-01-07)
-Z3 introduced an **optional single-pass multiplex mode** (`multiplex_ABC`) that runs **Stages A→B→C within a shared frame loop** (video decoded once), while preserving:
+Z3 introduced an **optional single-pass multiplex mode** (`multiplex_AC`) that runs **Stages A + C within a shared frame loop** (video decoded once), while preserving:
 - **F0 artifact contracts + paths** (each stage still writes its own canonical artifacts)
 - **F1 stage contract** (`run(config, inputs) -> dict`) and skip/resume semantics
 - **F2 config hashing + orchestration audit discipline**
