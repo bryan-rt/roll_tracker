@@ -21,6 +21,9 @@ Embeddings are computed on-demand and stored in a bank
 Rolling averages are explicitly discouraged.
 # D4 — ReID Embeddings (masked crops) (optional)
 
+> **POC posture:** D4 is **OPTIONAL** and must not block Stage D.  
+> If disabled, Stage D must still run end-to-end using geometry + MCF costs + C2 constraints only.
+
 
 ## Update: F0 + F3 are complete (locked constraints)
 
@@ -45,16 +48,20 @@ Stage A — Detection & Tracklets (must write):
 - `stage_A/detections.parquet`
 - `stage_A/tracklet_frames.parquet`
 - `stage_A/tracklet_summaries.parquet`
+- `stage_A/contact_points.parquet` *(canonical baseline geometry; join-friendly)*
 - `stage_A/audit.jsonl`
 
 Stage B — Masks & Geometry:
-- `stage_B/contact_points_refined.parquet`
-- `stage_B/masks/*.npz` (canonical mask storage; referenced by relative path)
-- `stage_B/audit.jsonl`
+- **DEFERRED for POC.**
+- (Future, optional) `stage_B/contact_points_refined.parquet` *(sparse overrides only)*
+- (Future, optional) `stage_B/masks/*.npz` *(refined mask hints; not required)*
+- (Future) `stage_B/audit.jsonl`
 
 Stage C — Identity Anchoring (AprilTags):
 - `stage_C/tag_observations.jsonl`
-- `stage_C/identity_hints.jsonl` (must_link / cannot_link keyed to tracklet_id; anchor_key like `tag:<tag_id>`)
+- `stage_C/identity_hints.jsonl`
+   - must_link: `tracklet_id -> anchor_key="tag:<tag_id>"`
+   - cannot_link: `tracklet_id -> anchor_key="tracklet:<other_tracklet_id>"` *(symmetric pairs emitted)*
 - `stage_C/audit.jsonl`
 
 Stage D — Global Stitching (MCF):
@@ -157,13 +164,62 @@ A worker thread is “done” only when it returns to the Manager:
 
 
 ## Module-specific context (D4 — ReID embeddings)
-Optional early, likely needed later. If done, keep it modular.
 
-### Must include
-- Whether embeddings are computed per-frame or per-tracklet summary (e.g., average of best frames)
-- Masked crop preparation (use B1 masks)
-- Caching strategy keyed by (clip_id, frame_index, tracklet_id)
-- Similarity metric and how D2 consumes it
+This worker explores adding **optional** appearance embeddings to help stitch tracklets that are ambiguous under geometry alone.
+
+### Hard constraints (do not violate)
+- **No new canonical artifacts** without an explicit F0 bump.
+- Must be fully deterministic (same inputs + config → identical embeddings and similarity scores).
+- Must not require Stage B (deferred).
+- Must not read video in a way that breaks the offline artifact model (D runs offline, but can open raw video frames if needed *only* for the specific crops it chooses; avoid full decode).
+
+### POC recommendation
+- Treat D4 as **dev-only** unless/until it demonstrates measurable benefit on real clips.
+- Default: `enabled: false`.
+
+### Inputs
+- Authoritative:
+   - `stage_A/detections.parquet` (bbox + mask_ref if present)
+   - `stage_A/tracklet_frames.parquet` (tracklet_id keyed timeline)
+   - `stage_A/tracklet_summaries.parquet` (spans)
+- Optional:
+   - Stage A masks referenced by `mask_ref` (soft guidance for crop masking)
+   - Raw video frames **only for selected frames** (no full-pass decode)
+
+### Outputs
+- **No new F0 artifacts by default.**
+- If you produce anything, it must be **dev-only** under:
+   - `outputs/<clip_id>/_debug/` or `outputs/<clip_id>/_cache/`
+- D4 may optionally return an **in-memory** function that D2/D3 can call to obtain a similarity score for a candidate edge:
+   - `sim(tracklet_a, tracklet_b) -> float`
+
+### Determinism requirements
+- Fixed model weights and preprocessing (explicit paths / versions).
+- Stable sampling strategy:
+   - deterministic selection of frames within each tracklet (e.g., first/middle/last valid bbox frames)
+   - stable crop extraction rules (bbox pad fraction, clamp to bounds)
+- Explicit random seeds set (if model uses any nondeterminism).
+
+---
+
+## Borrow from roll_it_back (appearance ideas) — adaptation notes
+If roll_it_back contains appearance/crop logic, we may reuse concepts, but must adapt:
+- roll_tracker IDs: `tracklet_id`, `detection_id`, `frame_index` (no legacy IDs)
+- crop sources: bbox-expanded ROI; masks are hints only (do not hard-clip unless explicitly configured)
+- outputs must remain dev-only unless F0 is bumped
+
+---
+
+## Acceptance criteria (D4)
+1) **Optional & non-blocking**
+    - With D4 disabled, Stage D produces identical outputs as before.
+2) **Deterministic**
+    - Same clip + config produces byte-identical cached embeddings/scores.
+3) **Useful interface**
+    - A single function or table can be consumed by D2 cost function as an optional term:
+       - `cost += reid_weight * (1 - similarity)`
+4) **Pytest**
+    - Synthetic crops → stable embeddings (hash) and stable similarity results.
 
 
 ---

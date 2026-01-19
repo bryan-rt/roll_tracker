@@ -1,5 +1,11 @@
 # D5 — MCF Birth/Death + Mat-Zone Gating
 
+> **Why this matters:** Birth/death decisions are **foundational** to MCF quality.
+> D5 owns the **policy** and **costs** for:
+> - when a tracklet is allowed to start a new person (birth)
+> - when a tracklet is allowed to end a person (death)
+> - when links are disallowed/penalized due to mat-zone / off-mat state
+
 ## Update: Locked constraints to honor (F0 + F3)
 
 - **F3 ingest contract**: clips live at `data/raw/nest/<camera_id>/YYYY-MM-DD/HH/<camera_id>-YYYYMMDD-HHMMSS.mp4`
@@ -8,88 +14,126 @@
 - **Run anchor**: `outputs/<clip_id>/clip_manifest.json`
 - **Stage artifacts are locked** (Parquet/JSONL + masks `.npz`), and paths must be **relative** to `outputs/<clip_id>/`
 
----
+### Locked artifact families (by stage)
+Stage A — Detection & Tracklets (must write):
 
-## Why this worker exists
-A Min-Cost Flow (MCF) stitcher needs explicit **birth** and **death** edges so identities can enter/exit the scene naturally. In a gym, people also exist **off-mat**, and we do not want the solver to waste capacity trying to track them or incorrectly stitch on/off-mat fragments.
+- `stage_A/detections.parquet`
+- `stage_A/tracklet_frames.parquet`
+- `stage_A/tracklet_summaries.parquet`
+- `stage_A/contact_points.parquet` *(canonical baseline geometry; join-friendly)*
+- `stage_A/audit.jsonl`
+
+Stage B — Masks & Geometry:
+- **DEFERRED for POC.**
+- (Future, optional) `stage_B/contact_points_refined.parquet` *(sparse overrides only)*
+- (Future, optional) `stage_B/masks/*.npz` *(refined mask hints; not required)*
+- (Future) `stage_B/audit.jsonl`
+
+Stage C — Identity Anchoring (AprilTags):
+- `stage_C/tag_observations.jsonl`
+- `stage_C/identity_hints.jsonl`
+  - must_link: `tracklet_id -> anchor_key="tag:<tag_id>"`
+  - cannot_link: `tracklet_id -> anchor_key="tracklet:<other_tracklet_id>"` *(symmetric pairs emitted)*
+- `stage_C/audit.jsonl`
+
+## Module-specific context (D5 — births/deaths + gating)
 
 This worker defines:
-- how to model **entry/exit** in the MCF graph
-- how to use the **mat polygon** to gate tracklets (“on mat” vs “off mat”)
-- how costs change depending on boundary proximity and context
+1) **Birth costs / eligibility** (source edges)
+2) **Death costs / eligibility** (sink edges)
+3) **Mat-zone / on_mat gating** used to disallow or penalize links
 
----
-
-## Scope
-### In-scope
-- Mat polygon + zones usage (from `mat_blueprint.json` in meters)
-- Definitions:
-  - on-mat “active zone”
-  - boundary “entry/exit zone” (buffer ring)
-- Birth/death edges:
-  - which nodes get source/sink edges
-  - cost formulas (low at boundaries, high mid-mat)
-- Constraints interacting with AprilTags:
-  - cannot “birth” a second instance of the same `tag:<id>` in overlapping time
-  - must respect `must_link` / `cannot_link` hints
-- How this integrates into existing D1/D2/D3 code modules
-
-### Out-of-scope (for now)
-- Multi-camera cross-view re-identification (handled by future work)
-- Fully online, real-time gating (we’re offline/batch)
-
----
-
-## Inputs & Outputs
-### Inputs (from locked artifacts)
-- Stage A tracklets (frames/summaries)
-- Stage B contact points (ground-plane x,y)
-- Stage C identity hints (must_link/cannot_link keyed by tracklet_id)
-- Stage D graph construction inputs (this worker influences D1/D2)
+### Inputs (authoritative)
+From Stage A:
+- `tracklet_frames.parquet` (frame-level `x_m,y_m,on_mat,contact_conf`)
+- `tracklet_summaries.parquet` (start/end frame spans)
+- `contact_points.parquet` (join-friendly geometry table; optional if frames already has endpoints)
 
 ### Outputs
-No new artifact family. This worker changes **how Stage D’s MCF graph is built** and how costs/edges are computed.
-- If you add debug outputs, they must be registered in the manifest and remain optional.
+- No new artifacts. D5 feeds parameters + helper functions into D2/D3.
+- D5 must define config keys under `stage_D.d5_birth_death` (or similar) and document defaults.
+
+### Borrow from roll_it_back — adaptation notes
+We may reuse the **concepts**:
+- “edge eligibility by zone”
+- “penalize births/deaths away from boundaries”
+- “prefer continuity on-mat”
+But adapt to roll_tracker signals:
+- use `on_mat` + `contact_conf` + (x,y) from Stage A
+- do not rely on Stage B refined masks (deferred)
+- do not assume a specific mat coordinate frame beyond homography outputs
 
 ---
 
-## Design: Mat-zone gating
-Define `is_on_mat(point_xy)` using the mat boundary polygon.
-- Tracklet “on-mat score” = fraction of its contact points inside polygon
-- Gate rules (POC):
-  - if score < threshold (e.g., 0.2), treat as off-mat and exclude from match logic
-  - still allow birth/death near boundary (walk-ons)
+## D5 policy (POC baseline)
 
-Define boundary buffers:
-- entry/exit zone = within `d_buffer_m` meters of boundary (e.g., 0.5m)
+### 1) Birth eligibility + cost
+Birth edges represent starting a new person track at a tracklet’s start.
+
+POC-safe baseline:
+- Allow birth if:
+  - tracklet has at least one valid geometry sample (x_m,y_m non-null) **OR** missing_geom_policy allows it.
+  - (optional) start endpoint is on_mat == true (if configured as hard gate).
+- Birth cost:
+  - base_birth_cost (constant)
+  - plus boundary penalty if start is far from mat boundary / entry zones (if zones configured)
+
+### 2) Death eligibility + cost
+Death edges represent ending a person track at a tracklet’s end.
+
+POC-safe baseline:
+- Allow death if:
+  - end endpoint is valid (or missing_geom_policy allows it)
+  - (optional) end endpoint is on_mat == true (if configured)
+- Death cost:
+  - base_death_cost (constant)
+  - plus boundary penalty if end is far from mat boundary / exit zones (if zones configured)
+
+### 3) Mat-zone gating for links
+For candidate link A->B (A ends before B starts):
+- If either endpoint lacks geometry:
+  - follow missing_geom_policy: "penalize" or "disallow" (configurable, deterministic)
+- If both endpoints have geometry:
+  - hard-disallow if endpoints violate zone rules (e.g., A ends off-mat but B starts deep on-mat with no plausible transition)
+  - otherwise apply a zone transition penalty (added to D2 edge cost)
+
+### 4) Missing geometry policy (must be explicit)
+Because homography/contacts can be null, D5 must define:
+- `missing_geom_policy: "penalize" | "disallow"`
+- `missing_geom_penalty: float` (used when penalize)
+
+All decisions must be auditable (counts of disallowed vs penalized edges).
 
 ---
 
-## Design: Birth & Death costs
-For each tracklet i, compute:
-- start point `p_start`, end point `p_end`
-- distance to boundary `db_start`, `db_end`
+## Configuration (F2-compatible; suggested keys)
+Under `config["stage_D"]["d5_birth_death"]`:
+- `base_birth_cost: float`
+- `base_death_cost: float`
+- `require_on_mat_for_birth: bool`
+- `require_on_mat_for_death: bool`
+- `missing_geom_policy: str`  # "penalize" | "disallow"
+- `missing_geom_penalty: float`
+- (optional) `mat_zones: ...`  # named polygons/rects in (x,y) meters for entry/exit preference
 
-Birth edge: `SOURCE -> i`
-- cost low if `db_start` small (near boundary)
-- cost high if `db_start` large (starts mid-mat)
-
-Death edge: `i -> SINK`
-- cost low if `db_end` small
-- cost high if `db_end` large
-
-Rationale:
-- prevents “teleport” by encouraging continuation when tracklets end mid-mat.
+All resolved values must be logged by Stage D audit.
 
 ---
 
-## Interactions with identity anchors (AprilTags)
-If tracklet has a strong anchor to `tag:<id>`:
-- enforce uniqueness across time:
-  - two chains cannot both contain the same tag in overlapping frames
-- birth/death behavior:
-  - allow “re-entry” across gaps if tag evidence exists later
-  - discourage “new person with same tag” by infinite/very large cost
+## Acceptance criteria (D5)
+1) **Edge gating is deterministic**
+   - same inputs/config → same allowed/disallowed sets and costs.
+2) **Birth/death are explicitly modeled**
+   - D3 solver uses D5 birth/death costs (not implicit defaults).
+3) **Audit evidence**
+   - counts of births/deaths chosen
+   - counts of candidate links removed due to gating
+   - counts of endpoints missing geometry and how handled
+4) **Pytest**
+   - synthetic endpoints verify:
+     - birth/death eligibility rules
+     - missing geometry policy behavior
+     - mat-zone penalty application
 
 ---
 

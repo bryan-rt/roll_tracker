@@ -1,5 +1,26 @@
 # D1 — MCF Graph Model (Nodes/Edges)
 
+## Addendum — 2026-01-18 (POC reality check: A+C online; Stage B deferred; C2 constraints live)
+
+### Pipeline execution model (locked for POC)
+- **Phase 1 (online decode pass):** `multiplex_AC` runs **Stage A + Stage C** in a single shared frame loop (decode once).
+- **Phase 2 (offline artifact pass):** **Stage D** runs offline (artifact-driven) and owns the Min-Cost Flow stitcher.
+
+### Stage B status (locked)
+- **Stage B is DEFERRED for the POC.** Do not depend on any Stage B artifacts for D1/D2/D3.
+
+### Canonical geometry source (F-bump implemented)
+- **Stage A** now owns canonical, join-friendly geometry via:
+   - `stage_A/contact_points.parquet` (baseline per-frame/per-detection contact + x/y + on_mat)
+
+### Identity constraints (C2 complete)
+- Stage C now emits:
+   - `stage_C/identity_hints.jsonl` containing:
+      - `must_link(tracklet_id -> tag:<id>)` anchors
+      - `cannot_link(tracklet_id <-> tracklet_id)` conflicts (symmetric)
+
+**D1 must model these as hard constraints on the graph / flow feasibility.**
+
 
 ## Update: F0 + F3 are complete (locked constraints)
 
@@ -24,6 +45,7 @@ Stage A — Detection & Tracklets (must write):
 - `stage_A/detections.parquet`
 - `stage_A/tracklet_frames.parquet`
 - `stage_A/tracklet_summaries.parquet`
+- `stage_A/contact_points.parquet`
 - `stage_A/audit.jsonl`
 
 Stage B — Masks & Geometry:
@@ -85,16 +107,16 @@ An **offline** (batch) video processing pipeline for BJJ practice footage. Input
    - Output: frame-level detections + short, high-precision **tracklets** (intentionally allowed to break).
 
 2) **Stage B — Masks + contact point + homography (offline refinement)**
-   - Tooling target: SAM/SAM2 offline refinement (or fallback masks) + OpenCV.
-   - Output: mask references + stable “ground contact point” per frame + projected ground-plane coordinates.
+   - **DEFERRED for POC.**
+   - Tooling target (future): SAM/SAM2 offline refinement + sparse overrides.
 
 3) **Stage C — Identity anchoring (AprilTag scanning + registry)**
-   - Tooling target: AprilTag detection applied inside mask ROI + voting registry.
-   - Output: tag observations (frame-level) + stable identity assignments + conflicts.
+   - Tooling target: AprilTag detection in **expanded bbox ROI** + deterministic voting (C2).
+   - Output: `tag_observations.jsonl` + `identity_hints.jsonl` (constraints, not final IDs).
 
 4) **Stage D — Global stitching (Min-Cost Flow)**
    - Tooling target: MCF solver (start with OR-Tools or NetworkX; optimize later).
-   - Inputs: tracklets + (x,y) + (optional) ReID similarity + AprilTag constraints.
+   - Inputs: tracklets + canonical (x,y) + optional ReID + **C2 constraints**.
    - Output: stitched person tracks across entire clip.
 
 5) **Stage E — Match session detection (hysteresis)**
@@ -108,8 +130,8 @@ An **offline** (batch) video processing pipeline for BJJ practice footage. Input
 ### Canonical tool choices (POC defaults)
 These are defaults; workers may propose alternatives but must align with constraints.
 - **Tracking**: BoxMOT **BoT-SORT** (as tracklet generator)
-- **Masks**: YOLO-seg online where possible; **SAM/SAM2 offline** where higher fidelity needed
-- **AprilTags**: Python apriltag detector (library choice can be decided in C1)
+- **Masks**: YOLO-seg online where possible; **SAM/SAM2 deferred for POC**
+- **AprilTags**: OpenCV ArUco (`cv2.aruco`) (current implementation)
 - **ReID (optional early, likely later)**: OSNet / torchreid or FastReID; ideally on masked crops
 - **Stitching**: **Min-Cost Flow** (OR-Tools min-cost flow or NetworkX as baseline)
 - **Video I/O**: OpenCV for reading frames when needed; ffmpeg for export
@@ -136,19 +158,55 @@ A worker thread is “done” only when it returns to the Manager:
 
 
 ## Module-specific context (D1 — MCF graph model)
-Define graph at the **tracklet level**.
+Define the stitcher graph at the **tracklet level**, with explicit modeling for:
+- **birth / death** (source/sink arcs)
+- **identity anchors** (tag must_link)
+- **identity conflicts** (tracklet↔tracklet cannot_link)
+
+This worker is the **formal definition** of graph objects that D2/D3 implement.
+
+### Inputs available to D1 (POC)
+Authoritative (must work with just these):
+- `stage_A/tracklet_summaries.parquet` (tracklet spans)
+- `stage_A/contact_points.parquet` (canonical geometry; join-ready)
+- `stage_C/identity_hints.jsonl` (C2 constraints)
+
+Helpful but optional:
+- `stage_A/tracklet_frames.parquet` (more detailed per-frame trajectories if needed for edge features)
+- `stage_A/detections.parquet` (bbox stats / size gates)
+- `stage_A/audit.jsonl` (debug counters / sanity checks)
+
+**Hard rule:** D1 must not depend on Stage B.
 
 ### Must include
-- Node definition: tracklet (with start/end, endpoints, stats)
-- Source/sink modeling (enter/exit costs)
+- Node definition: **tracklet node** with:
+   - `tracklet_id`, `(start_frame, end_frame)`, `n_frames`
+   - endpoint features derived deterministically from `contact_points`:
+      - `(x_start,y_start)` and `(x_end,y_end)` using the first/last valid `on_mat` rows when possible
+      - fallback behavior when x/y missing (do not guess; mark as unknown and gate edges accordingly)
+- Explicit **SOURCE** and **SINK** nodes and arc templates:
+   - `SOURCE -> tracklet` (birth)
+   - `tracklet -> SINK` (death)
+   - (optional) direct `SOURCE -> SINK` for “unused flow” if your solver formulation needs it
 - Edge gating:
   - time gap max
   - spatial max (ground-plane)
   - optional appearance gate
-- Debug outputs to explain why an edge exists/does not
+- Identity constraints integration:
+   - must_link(tracklet → tag:<id>) becomes a hard requirement on feasible assignments
+   - cannot_link(tracklet ↔ tracklet) forbids same-identity grouping in the stitch solution
+- Debug outputs (dev-only) to explain:
+   - why an edge exists / is pruned (reason codes)
+   - which constraints eliminated which pairings
 
 ### Invariants
 - Graph construction deterministic given artifacts + config
+- Graph is **join-friendly**: every node/edge references upstream identifiers (`tracklet_id`, frame ranges) and never invents hidden IDs.
+
+### Non-responsibilities (D1)
+- Do not implement costs (belongs to D2).
+- Do not implement the solver (belongs to D3).
+- Do not decide births/deaths thresholds (belongs to D5; D1 just models the arcs).
 
 
 ---
@@ -182,6 +240,16 @@ Please begin by producing:
 End your first response by asking me to review/approve the plan before you go deeper.
 
 Also include a bullet explicitly confirming alignment with the locked F0/F3 contracts (artifacts, paths, manifest).
+
+### POC-specific kickoff requirements (add these)
+- Confirm exactly which fields from `stage_A/contact_points.parquet` you will treat as authoritative for:
+   - endpoints
+   - edge gating
+   - “unknown geometry” handling
+- Specify how you will interpret **C2 hints** in the graph model:
+   - must_link as an anchor constraint
+   - symmetric cannot_link as a hard exclusion
+- Provide explicit reason codes for edge pruning (these will be mirrored in D2/D3 audits).
 
 ## Checkpoint discipline
 

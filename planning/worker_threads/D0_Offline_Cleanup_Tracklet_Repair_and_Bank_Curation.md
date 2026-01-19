@@ -1,94 +1,166 @@
-# D0 — Offline Cleanup, Tracklet Repair, and Bank Curation (Pre-D)
+# D0 — Offline Cleanup: Tracklet Repair, Geometry Smoothing & Birth/Death Prep
+
+Status: MANAGER-LOCKED FOR POC  
+Pipeline Phase: Offline (post A + C, pre MCF graph construction)
 
 **Owner:** D0 worker  
 **Status:** READY (new)  
 **Execution class:** OFFLINE (may use full past+future over a clip)  
 **Where it runs:** after A/B/C artifacts exist; before D1 MCF graph building
 
-## Purpose
+## Purpose (Authoritative)
 
-D0 performs **offline, hindsight-allowed** cleanup and preparation over the *online* outputs from Stage A (and optionally Stage B refinements), to improve downstream global association (Stage D) and ReID stability **without changing any online stage behavior**.
+D0 prepares **clean, physically plausible tracklets** for global identity stitching.
+It is the *only* stage allowed to modify per-tracklet geometry prior to MCF.
 
-This worker exists because A/B/C run in **multiplex_ABC** and must not use future frames. D0 is explicitly allowed to use full-clip context.
+This stage exists to:
 
-## Inputs (authoritative sources)
+- Remove physically impossible motion artifacts
+- Repair short occlusion-induced geometry failures
+- Normalize contact point trajectories
+- Produce **birth/death–ready tracklet metadata** for MCF
 
-Primary:
-- `stage_A/detections.parquet`
-- `stage_A/tracklet_frames.parquet` (includes x/y/vx/vy/on_mat per v0.3.0)
-- `stage_A/masks/*.npz` (canonical per-detection masks)
+D0 does **not** assign identities and does **not** merge tracklets.
+
+## Inputs (Authoritative)
+
+### Required
+- `stage_A/tracklet_frames.parquet`
 - `stage_A/tracklet_summaries.parquet`
-- `stage_A/audit.jsonl`
+- `stage_A/contact_points.parquet`  *(canonical geometry source)*
 
-Optional refinements:
-- Stage B refined masks + sparse geometry overrides (if B ran)
-- Stage C tag observations / identity hints (for anchor-aware cleanup, optional)
+### Optional (Non-blocking)
+- `stage_C/identity_hints.jsonl` *(read-only; never alters geometry)*
 
-## Responsibilities
+D0 must run correctly **without** Stage B or ReID.
 
-### 1) Tracklet repair (offline smoothing / deglitch)
-- Detect and smooth **single-frame spikes** in (x,y) and velocities
-- Fill short gaps if allowed (but do **not** invent long occlusion bridges; leave that to MCF)
-- Produce “repaired” trajectories suitable for cost modeling (D2/D5)
+## Core Responsibilities (POC Scope)
 
-### 2) Junk removal / pruning
-- Identify micro-tracklets that are clearly spurious (very short, tiny area, off-mat, low confidence)
-- Decide whether to:
-  - mark them as “ignore” for downstream, or
-  - keep them but with low-quality flags
-- Must be deterministic and auditable.
+### 1. Geometry Repair (Borrowed & Adapted from *roll it back*)
 
-### 3) ReID bank curation prep (inputs for D4)
-- Curate a per-tracklet “best frames” set:
-  - stable pose, non-entangled, good mask quality
-  - diverse viewpoints over time
-- Provide a deterministic, limited-size list of crop/mask references for embedding extraction.
+Borrow the *concept*, not the implementation:
 
-### 4) Stage B trigger hindsight (optional)
-- Using full-clip context, suggest additional segments that *should* have been refined by B (for later policy tuning), but do not require re-running B in this worker.
+From *roll it back*:
+- Detection of sudden world-space jumps caused by lower-body occlusion
+- Use of short temporal windows to infer implausible motion
 
-## Outputs (proposal; keep additive until explicitly made canonical)
+Adaptations for **Roll Tracker**:
+- Use **Stage A canonical contact points** (`x_m`, `y_m`)
+- Never reproject from bbox bottoms
+- Operate **per-tracklet**, never across tracklets
+- Repairs must be:
+  - local in time
+  - reversible
+  - explicitly audited
 
-D0 should **not mutate** Stage A artifacts. Prefer additive artifacts under `stage_D0/`:
+Allowed repairs:
+- Short linear interpolation over ≤ N frames
+- Velocity clamping using physically plausible limits
+- Contact point snap-back when occlusion ends
 
-- `stage_D0/tracklet_frames_clean.parquet`  
-  Same key columns as `tracklet_frames.parquet`, plus:
-  - `x_m_clean`, `y_m_clean`, `vx_mps_clean`, `vy_mps_clean`
-  - `cleaning_reason_codes_json`
-  - `is_pruned_candidate` (bool)
+Forbidden:
+- Long-range interpolation
+- Identity-aware smoothing
+- Cross-tracklet borrowing
 
-- `stage_D0/reid_bank_candidates.parquet`  
-  Rows keyed by `tracklet_id` + `frame_index` + `detection_id`, with:
-  - `rank`, `reason_code`, `mask_quality_score`, `crop_hint` (optional)
+All repairs must emit audit events with:
+- original vs repaired displacement
+- method used
+- frame window affected
 
-- `stage_D0/audit.jsonl`  
-  Counts, thresholds, and summary stats.
+### 2. Contact Stability & Motion Smoothing (New)
 
-> NOTE: If we decide these should be canonical, we will bump F0. Until then, these are D0-scoped artifacts with their own validation tests.
+Introduce light, deterministic smoothing to improve MCF cost stability:
 
-## Determinism & audit requirements
+- Median filtering on `(x_m, y_m)` within short windows
+- Velocity outlier suppression (vx, vy)
 
-- All heuristics must be parameterized in config (F2) and recorded in audit.
-- Output ordering must be stable.
-- No randomness unless seeded and logged.
+Rules:
+- Smoothing must never shift start/end frames
+- Must preserve monotonic time
+- Must not invent new contact points
 
-## Acceptance Criteria
+### 3. Tracklet Validity Scoring (New)
 
-- Runs end-to-end on a real clip after A1R4 outputs exist.
-- Produces additive artifacts and an audit log.
-- Demonstrates at least one repaired trajectory example (debug plot or stats).
-- Includes a CPU-only pytest smoke test using small fixture data.
+Each tracklet receives metadata used downstream:
 
-## Non-responsibilities
+- fraction_on_mat
+- mean_velocity
+- max_velocity
+- num_repaired_frames
 
-- Global identity stitching (Stage D1–D6)
-- AprilTag decoding (Stage C)
-- Homography creation (D7)
-- Online per-frame detection/tracking (A1)
+These are **features**, not decisions.
+D0 must not drop tracklets.
 
-## Handoff Notes
+### 4. Birth / Death Preparation (Critical for MCF)
 
-Downstream (Stage D) should preferentially read cleaned fields when present:
-- `x_m_clean/y_m_clean` if available, else fall back to Stage A `x_m/y_m`.
+D0 is responsible for computing *candidate birth and death zones*.
 
-This keeps D0 strictly optional and non-breaking.
+For each tracklet:
+- start_frame
+- end_frame
+- start_position (x_m, y_m)
+- end_position (x_m, y_m)
+
+These feed directly into:
+- D1 node construction
+- D2 birth/death cost functions
+
+D0 must not decide births/deaths — only prepare evidence.
+
+## Outputs (Canonical for Stage D)
+
+D0 produces **cleaned tracklet banks** consumed by D1–D6:
+
+- `stage_D/tracklet_frames_cleaned.parquet`
+- `stage_D/tracklet_summaries_cleaned.parquet`
+- `stage_D/audit.jsonl`
+
+No other artifacts are written.
+
+## Explicit Non-Responsibilities
+
+D0 must NOT:
+
+- Merge tracklets
+- Assign identities
+- Apply AprilTag logic
+- Use ReID embeddings
+- Read or write Stage A artifacts
+- Look at future frames beyond local windows
+
+All global reasoning belongs to D1+.
+
+## Determinism & Auditability (Non-negotiable)
+
+- All operations are deterministic
+- No randomness, no learning
+- Same inputs → byte-identical outputs
+
+Audit events include:
+- repair_applied
+- repair_skipped_reason
+- smoothing_applied
+- smoothing_skipped_reason
+
+## Relationship to Other D Stages
+
+- **D1** consumes cleaned tracklets as immutable nodes
+- **D2/D5** rely on accurate birth/death metadata
+- **D3** assumes geometry is physically plausible
+- **D4** (ReID) may optionally consume cleaned crops later
+- **D6** assumes D0 never violates physical constraints
+
+D0 is the *last chance* to fix geometry before optimization.
+
+## Definition of Done (POC)
+
+D0 is complete when:
+
+- Cleaned tracklets pass validation
+- Birth/death metadata is present for all tracklets
+- Repairs are sparse, auditable, and conservative
+- MCF can run without geometry explosions
+
+Any future expansion (long occlusions, multi-contact models)
+requires a new manager-approved milestone.
