@@ -1,5 +1,8 @@
 # D6 — Global ILP Optimizer (Post-MCF)
 
+> **POC posture:** D6 is **OPTIONAL / DEFERRED** unless MCF alone fails on real clips.
+> Treat D6 as a “Phase 2 refinement” that can be bolted on without changing F0 artifacts.
+
 ## Update: Locked constraints to honor (F0 + F3)
 
 - **F3 ingest contract**: clips live at `data/raw/nest/<camera_id>/YYYY-MM-DD/HH/<camera_id>-YYYYMMDD-HHMMSS.mp4`
@@ -8,113 +11,147 @@
 - **Run anchor**: `outputs/<clip_id>/clip_manifest.json`
 - **Stage artifacts are locked** (Parquet/JSONL + masks `.npz`), and paths must be **relative** to `outputs/<clip_id>/`
 
----
+### Locked artifact families (by stage)
+Stage A — Detection & Tracklets (must write):
+- `stage_A/detections.parquet`
+- `stage_A/tracklet_frames.parquet`
+- `stage_A/tracklet_summaries.parquet`
+- `stage_A/contact_points.parquet` *(canonical baseline geometry; join-friendly)*
+- `stage_A/audit.jsonl`
 
-## Why this worker exists
-We are **not deferring ILP**. The solver stack is:
+Stage B — Masks & Geometry:
+- **DEFERRED for POC.**
+- (Future, optional) `stage_B/contact_points_refined.parquet` *(sparse overrides only)*
+- (Future, optional) `stage_B/masks/*.npz` *(refined mask hints; not required)*
+- (Future) `stage_B/audit.jsonl`
 
-1) **MCF (Stage D core)**: produces locally consistent `person_tracks` under hard constraints.
-2) **ILP (global)**: resolves remaining global inconsistencies and enforces high-level constraints that MCF may not capture cleanly, especially:
-- long-range identity consistency across difficult occlusions
-- uniqueness constraints tied to AprilTags
-- “one person can’t be in two places at once”
-- (optional) cross-clip/session consistency
-
-The ILP does not replace MCF; it **post-processes** MCF outputs to produce globally consistent assignments and conflict resolution signals.
-
----
-
-## Scope
-### In-scope
-- Define ILP variables, objective, and constraints using:
-  - Stage D `person_tracks.parquet`
-  - Stage C `identity_hints.jsonl`
-  - ReID banks / similarity signals (if available)
-  - homography-space feasibility gates
-- Decide the ILP “granularity”:
-  - link-person-chains across tracklet fragments, OR
-  - resolve conflicts where multiple person_tracks claim same tag
-- Implementation library recommendation:
-  - OR-Tools CP-SAT OR PuLP OR Pyomo (pick one and justify)
-- Output integration:
-  - must remain compatible with F0:
-    - primary outputs stay `stage_D/person_tracks.parquet` and `stage_D/identity_assignments.jsonl`
-  - ILP may produce:
-    - updated `identity_assignments.jsonl` (preferred)
-    - optional debug artifact registered in manifest
-
-### Out-of-scope (for now)
-- Cross-day, multi-session global optimization (future)
-- Full multi-hypothesis tracking explosion
-
----
-
-## Key design decisions to make
-### 1) What ILP is optimizing
-We need a precise statement:
-- either it assigns **track chains** to **identities (tag anchors)**,
-- or it selects **merge/split decisions** among candidate links produced by MCF,
-- or it resolves **conflicting identity assignments** with a global objective.
-
-### 2) Objective function (candidate)
-Minimize:
-- (1 - ReID similarity) for selected links
-- spatial infeasibility penalties (teleport)
-- number of births/deaths (encourage continuity) — consistent with D5
-Subject to:
-- hard constraints from AprilTags (must_link/cannot_link)
-- uniqueness (one tag per time)
-
-### 3) Constraints (must have)
-- **Tag uniqueness over time**: a given `tag:<id>` cannot be assigned to two simultaneous chains.
-- **Mutual exclusion**: a person_id cannot map to two tags; if undecided, must remain unknown.
-- **Reachability**: if chain A ends at (x1,y1,t1) and chain B begins at (x2,y2,t2), require feasible speed or penalize heavily.
-- **Evidence consistency**: must_link implies same identity; cannot_link forbids.
-
----
-
-## Inputs & Outputs
-### Inputs
-- `stage_D/person_tracks.parquet` (from MCF)
+Stage C — Identity Anchoring (AprilTags):
+- `stage_C/tag_observations.jsonl`
 - `stage_C/identity_hints.jsonl`
-- optional: feature-bank similarities (D4) and mat-zone gates (D5)
+  - must_link: `tracklet_id -> anchor_key="tag:<tag_id>"`
+  - cannot_link: `tracklet_id -> anchor_key="tracklet:<other_tracklet_id>"` *(symmetric pairs emitted)*
+- `stage_C/audit.jsonl`
+
+---
+
+## Module-specific context (D6 — ILP refinement)
+
+This worker explores improving stitching beyond min-cost flow using an ILP/MIP to enforce global constraints.
+The core idea: run MCF first, then optionally solve a refinement problem over a reduced candidate set.
+
+### Hard constraints (do not violate)
+- **No new canonical artifacts** without an explicit F0 bump.
+- Must be **deterministic** (same inputs + config → same solution).
+- Must not require Stage B.
+- Must be able to run as a post-pass over existing Stage D candidate structures.
+
+### Inputs (authoritative)
+- Stage A: `tracklet_frames.parquet`, `tracklet_summaries.parquet`, `contact_points.parquet` (geometry / spans)
+- Stage C: `identity_hints.jsonl` (must_link/cannot_link constraints)
+- Stage D (from MCF): candidate graph / intermediate solution (in-memory or dev-only cache)
 
 ### Outputs
-- Update or produce `stage_D/identity_assignments.jsonl` with:
-  - final assignment decisions
-  - evidence summary and conflicts resolved
-- If ILP changes person_track grouping, document how it maps back to `person_id` stability (may require a controlled re-index).
+- By default, D6 should output:
+  - **an updated in-memory assignment** (same shape as MCF output), and/or
+  - **dev-only diagnostics** under `outputs/<clip_id>/_debug/` / `_cache/`
+- Final canonical outputs remain Stage D’s:
+  - `stage_D/person_tracks.parquet`
+  - `stage_D/identity_assignments.jsonl`
+  - `stage_D/audit.jsonl`
 
 ---
 
-## Implementation expectations
-- Start with a **minimal ILP** that only resolves:
-  1) duplicate tag assignments
-  2) impossible simultaneity
-  3) best assignment of untagged chains to tagged anchors when evidence is strong
-
-Then expand to richer linking.
+## Borrow from roll_it_back — adaptation notes
+If roll_it_back used global optimization (ILP) or constraint propagation:
+- Reuse concepts (reduced candidate sets, hard constraints, penalty terms),
+- Adapt identifiers + artifacts:
+  - variables reference `tracklet_id` and D-edge candidates
+  - hard constraints consume C2 hints (must_link/cannot_link)
+  - geometry terms come from Stage A (x_m,y_m,on_mat)
+  - keep all outputs deterministic and auditable
 
 ---
 
-## Deliverables back to Manager
-1) ILP formulation: variables, objective, constraints (math + narrative)
-2) Library pick + rationale
-3) Integration plan into Stage D:
-   - where it runs (post MCF)
-   - how it reads/writes artifacts and respects F0
+## D6 problem framing (POC-safe baseline)
+
+### When to run D6
+Default: **off**.
+Enable only if one of these is true (config-controlled):
+- MCF solution violates known-hard constraints (should be rare if D2 enforced them),
+- MCF produces clearly fragmented identities around tag anchors,
+- or we want to test a refinement path on a small clip.
+
+### Variable design (typical)
+Assuming D1/D2/D3 already define candidate edges A->B and births/deaths:
+- Binary variables for selecting edges (or re-selecting edges) within a constrained neighborhood.
+- Optional variables for “identity anchor assignment” per connected component (if needed).
+
+### Hard constraints (must enforce)
+- Flow constraints (each tracklet has at most one successor and one predecessor in a person path).
+- C2 **cannot_link** between tracklets:
+  - disallow selecting paths that place both in same person identity.
+- C2 **must_link** anchors:
+  - enforce that all tracklets assigned to same tag anchor are consistent (exact encoding depends on D2 contract).
+
+### Objective (typical)
+Minimize:
+- sum(edge_costs) + birth/death costs (from D2/D5)
+- plus optional penalties:
+  - anchor inconsistency (should be hard if feasible)
+  - excessive identity switches
+  - implausible speed jumps (based on geometry deltas)
+
+All terms must be documented and deterministic.
+
+---
+
+## Solver guidance (implementation choices)
+Prefer OR-Tools MIP/CP-SAT only if:
+- model size is constrained (small neighborhood)
+- we can guarantee deterministic solve via fixed params
+
+Otherwise:
+- keep D6 as a research sandbox and do not merge into the POC critical path.
+
+---
+
+## Acceptance criteria (D6)
+1) **Non-blocking**
+   - With D6 disabled, pipeline outputs unchanged.
+2) **Deterministic**
+   - identical inputs/config → identical refined solution (including tie-breakers / solver params).
+3) **Constraint compliance**
+   - never violates C2 cannot_link / must_link (as encoded).
+4) **Audit evidence**
+   - logs why refinement ran, model size, solve status, and delta vs MCF.
+5) **Pytest**
+   - tiny synthetic graph where MCF makes a known suboptimal choice; ILP corrects it deterministically.
+
+---
+
+## Required deliverables back to Manager
+1) A minimal ILP refinement formulation:
+   - variables (what decisions are being changed vs MCF)
+   - objective terms (costs + any penalties)
+   - hard constraints (flow + must_link/cannot_link + uniqueness, if applicable)
+2) Library pick + determinism plan:
+   - how ties are broken
+   - solver parameters pinned for reproducibility
+3) Integration plan into Stage D (post-MCF):
+   - where the candidate neighborhood comes from
+   - what gets updated (in-memory vs dev-only debug)
+   - what goes into `stage_D/audit.jsonl`
 4) Test plan:
-   - synthetic conflicts (two chains claim same tag)
-   - long occlusion gaps with later tag reappearance
-   - cannot_link enforcement
+   - at least 3 tiny deterministic synthetic graphs
+   - includes must_link and cannot_link cases
 
 ---
 
 ## Kickoff
 Please begin by writing:
-1) The minimal viable ILP formulation we can implement first.
-2) The exact artifact touch-points (what you read, what you write).
-3) A test plan with at least 3 deterministic synthetic cases.
+1) The minimal viable ILP refinement we implement first (small neighborhood only).
+2) Exact artifact touch-points (what you read, what you write).
+3) A deterministic test plan with at least 3 synthetic cases.
 
 End by asking me to approve the plan before implementation.
 
@@ -136,4 +173,4 @@ Minimum requirements for *any* stage/worker deliverable:
   - `roll-tracker run --clip <path> --camera <camera_id> --to-stage <your_stage>`
   - and receive deterministic outputs under `outputs/<clip_id>/...`.
 
-If performance becomes an issue, prefer reducing resolution / selecting fewer candidates over skipping frames at POC time.
+If performance becomes an issue, prefer reducing neighborhood size / selecting fewer candidates over skipping frames at POC time.
