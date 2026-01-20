@@ -111,6 +111,12 @@ class ClipOutputLayout:
         # Produced after stitching (post-pass) but stored under stage_D outputs canonically
         return self.stage_dir("D") / "identity_assignments.jsonl"
 
+    def tracklet_bank_frames_parquet(self) -> Path:
+        return self.stage_dir("D") / "tracklet_bank_frames.parquet"
+
+    def tracklet_bank_summaries_parquet(self) -> Path:
+        return self.stage_dir("D") / "tracklet_bank_summaries.parquet"
+
     # ---- Stage E ----
     def match_sessions_jsonl(self) -> Path:
         return self.stage_dir("E") / "match_sessions.jsonl"

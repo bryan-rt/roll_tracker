@@ -182,12 +182,13 @@ def status(
 	out: Optional[Path] = typer.Option(None, help="Outputs root override (default: outputs/)"),
 ) -> None:
 	"""Print human-readable status table for all stages."""
+	cfg, _, _ = _load_config(camera, None)
 	layout = ClipOutputLayout(clip_id=clip.stem, root=out or Path("outputs"))
 	typer.echo(f"clip_id={clip.stem} outputs={layout.clip_root}")
 	header = ["stage", "complete", "validated", "last_success_ts", "last_config_hash"]
 	rows: List[List[str]] = []
 	for spec in STAGES:
-		rels = required_outputs_for_stage(layout, spec.letter)
+		rels = required_outputs_for_stage(layout, spec.letter, resolved_config=cfg)
 		complete = _files_exist(layout, rels)
 		validated = False
 		last_hash = get_last_stage_success_config_hash(layout, spec.letter) or ""
@@ -206,7 +207,7 @@ def status(
 		# try validation if complete
 		if complete:
 			try:
-				cfg, _, _ = _load_config(camera, None)
+				# cfg already loaded above
 				# minimal manifest stub for validators that need clip_id
 				from bjj_pipeline.contracts.f0_manifest import init_manifest
 				m = init_manifest(
@@ -263,7 +264,7 @@ def validate(
 	try:
 		letters = [stage] if stage in {"A","B","C","D","E","F"} else [s.letter for s in STAGES]
 		for letter in letters:
-			rels = required_outputs_for_stage(layout, letter)
+			rels = required_outputs_for_stage(layout, letter, resolved_config=cfg)
 			if stage is None and letter == "B" and not _files_exist(layout, rels):
 				# Stage B is deferred; do not fail global validate when B outputs are absent
 				continue

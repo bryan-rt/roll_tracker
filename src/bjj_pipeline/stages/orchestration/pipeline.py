@@ -58,7 +58,12 @@ STAGES: List[StageSpec] = [
 ]
 
 
-def required_outputs_for_stage(layout: ClipOutputLayout, letter: StageLetter) -> List[str]:
+def required_outputs_for_stage(
+    layout: ClipOutputLayout,
+    letter: StageLetter,
+    *,
+    resolved_config: Optional[Dict[str, Any]] = None,
+) -> List[str]:
     if letter == "A":
         return [
             layout.rel_to_clip_root(layout.detections_parquet()),
@@ -81,6 +86,20 @@ def required_outputs_for_stage(layout: ClipOutputLayout, letter: StageLetter) ->
             layout.rel_to_clip_root(layout.audit_jsonl("C")),
         ]
     if letter == "D":
+        cfg = resolved_config or {}
+        # Back-compat: allow both nested (stages.stage_D.*) and top-level (stage_D.*) shapes.
+        run_until = _cfg_get(cfg, "stages.stage_D.run_until", None)
+        if run_until is None:
+            run_until = _cfg_get(cfg, "stage_D.run_until", "D0")
+
+        if run_until in {"D0", "D2"}:
+            return [
+                layout.rel_to_clip_root(layout.tracklet_bank_frames_parquet()),
+                layout.rel_to_clip_root(layout.tracklet_bank_summaries_parquet()),
+                layout.rel_to_clip_root(layout.audit_jsonl("D")),
+            ]
+
+        # Default (D6 / full Stage D): stitched tracks + identity assignments.
         return [
             layout.rel_to_clip_root(layout.person_tracks_parquet()),
             layout.rel_to_clip_root(layout.identity_assignments_jsonl()),
@@ -412,6 +431,16 @@ def _validate_stage_outputs(
             v.validate_identity_hints_records(records, expected_clip_id=manifest.clip_id)
         return
     if letter == "D":
+        run_until = _cfg_get(resolved_config, "stages.stage_D.run_until", None)
+        if run_until is None:
+            run_until = _cfg_get(resolved_config, "stage_D.run_until", "D0")
+
+        if run_until in {"D0", "D2"}:
+            bf = pd.read_parquet(root / "stage_D" / "tracklet_bank_frames.parquet")
+            bs = pd.read_parquet(root / "stage_D" / "tracklet_bank_summaries.parquet")
+            v.validate_tracklet_bank_tables(bf, bs)
+            return
+
         pt = pd.read_parquet(root / "stage_D" / "person_tracks.parquet")
         det = pd.read_parquet(root / "stage_A" / "detections.parquet")
         tf = pd.read_parquet(root / "stage_A" / "tracklet_frames.parquet")
@@ -462,7 +491,7 @@ def _compute_stage_run_plan(manifest: ClipManifest, layout: ClipOutputLayout, le
         if letter in forced:
             plan[letter] = {"should_run": True, "is_complete": False, "reason": "forced"}
             continue
-        required = required_outputs_for_stage(layout, letter)
+        required = required_outputs_for_stage(layout, letter, resolved_config=resolved_config)
         if not _files_exist(layout, required):
             plan[letter] = {"should_run": True, "is_complete": False, "reason": "missing_outputs"}
             continue
@@ -692,7 +721,7 @@ def run_pipeline(ingest_path: Path, camera_id: str, config: Dict[str, Any], *,
             if interactive:
                 print(f"[roll-tracker] Stage {stage_letter} started ...")
 
-            required_rels = required_outputs_for_stage(layout, stage_letter)
+            required_rels = required_outputs_for_stage(layout, stage_letter, resolved_config=resolved_config)
             last_success_hash = get_last_stage_success_config_hash(layout, stage_letter)
             should_force = force_stages and stage_letter in set(force_stages)
 
@@ -746,21 +775,31 @@ def run_pipeline(ingest_path: Path, camera_id: str, config: Dict[str, Any], *,
                         content_type="application/jsonl",
                     )
                 elif stage_letter == "D":
-                    manifest.register_artifact(
-                        stage="D", key="person_tracks_parquet",
-                        relpath=layout.rel_to_clip_root(layout.person_tracks_parquet()),
-                        content_type="application/parquet",
-                    )
-                    manifest.register_artifact(
-                        stage="D", key="identity_assignments_jsonl",
-                        relpath=layout.rel_to_clip_root(layout.identity_assignments_jsonl()),
-                        content_type="application/jsonl",
-                    )
-                    manifest.register_artifact(
-                        stage="D", key="audit_jsonl",
-                        relpath=layout.rel_to_clip_root(layout.audit_jsonl("D")),
-                        content_type="application/jsonl",
-                    )
+                    # Stage D is conditional on plan; register artifacts accordingly.
+                    run_until = _cfg_get(resolved_config, "stages.stage_D.run_until", None)
+                    if run_until is None:
+                        run_until = _cfg_get(resolved_config, "stage_D.run_until", "D0")
+
+                    if run_until in {"D0", "D2"}:
+                        from bjj_pipeline.contracts.f0_manifest import register_stage_D0_defaults
+
+                        register_stage_D0_defaults(manifest, layout)
+                    else:
+                        manifest.register_artifact(
+                            stage="D", key="person_tracks_parquet",
+                            relpath=layout.rel_to_clip_root(layout.person_tracks_parquet()),
+                            content_type="application/parquet",
+                        )
+                        manifest.register_artifact(
+                            stage="D", key="identity_assignments_jsonl",
+                            relpath=layout.rel_to_clip_root(layout.identity_assignments_jsonl()),
+                            content_type="application/jsonl",
+                        )
+                        manifest.register_artifact(
+                            stage="D", key="audit_jsonl",
+                            relpath=layout.rel_to_clip_root(layout.audit_jsonl("D")),
+                            content_type="application/jsonl",
+                        )
                 elif stage_letter == "E":
                     manifest.register_artifact(
                         stage="E", key="match_sessions_jsonl",

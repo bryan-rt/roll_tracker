@@ -114,6 +114,7 @@ stages:
 
   stage_D:
     enabled: null
+    run_until: "D0"
 
   stage_E:
     enabled: null

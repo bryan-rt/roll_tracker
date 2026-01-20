@@ -107,6 +107,28 @@ TRACKLET_SUMMARIES_SPECS: List[ColSpec] = [
     ColSpec("reason_codes_json", "string", required=False),
 ]
 
+TRACKLET_BANK_FRAMES_SPECS: List[ColSpec] = [
+    *TRACKLET_FRAMES_SPECS,
+    # D0+ optional columns will be appended over time (keep strict + explicit).
+    # ColSpec("x_m_repaired", "float", required=False),
+    # ColSpec("y_m_repaired", "float", required=False),
+    # ColSpec("vx_m_repaired", "float", required=False),
+    # ColSpec("vy_m_repaired", "float", required=False),
+    # ColSpec("flag_vel_jump", "bool", required=False),
+    # ColSpec("flag_geom_jump", "bool", required=False),
+    # ColSpec("split_candidate", "bool", required=False),
+    # ColSpec("split_reason", "string", required=False),
+]
+
+TRACKLET_BANK_SUMMARIES_SPECS: List[ColSpec] = [
+    *TRACKLET_SUMMARIES_SPECS,
+    # Stage C aggregated identity hints (tracklet-level)
+    ColSpec("identity_hints_json", "string", required=False),
+    ColSpec("must_link_anchor_key", "string", required=False),
+    ColSpec("must_link_confidence", "float", required=False),
+    ColSpec("cannot_link_anchor_keys_json", "string", required=False),
+]
+
 CONTACT_POINTS_SPECS: List[ColSpec] = [
     ColSpec("clip_id", "string"),
     ColSpec("camera_id", "string"),
@@ -158,6 +180,8 @@ PARQUET_SCHEMAS: Dict[str, List[ColSpec]] = {
     "detections": DETECTIONS_SPECS,
     "tracklet_frames": TRACKLET_FRAMES_SPECS,
     "tracklet_summaries": TRACKLET_SUMMARIES_SPECS,
+    "tracklet_bank_frames": TRACKLET_BANK_FRAMES_SPECS,
+    "tracklet_bank_summaries": TRACKLET_BANK_SUMMARIES_SPECS,
     "contact_points": CONTACT_POINTS_SPECS,
     "person_tracks": PERSON_TRACKS_SPECS,
 }
