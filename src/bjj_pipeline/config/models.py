@@ -181,11 +181,86 @@ class StageCConfig(BaseModel):
         return v
 
 
+class OcclusionRepairConfig(BaseModel):
+
+    """D0 occlusion-span detection + interpolation repair configuration.
+
+    Uses normalized ratios derived from bbox bottom/height against a rolling median baseline.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enable_normalized: bool = Field(default=True)
+    # thresholds are normalized by rolling median baseline height
+    min_bottom_frac: float = Field(default=0.15, ge=0.0)
+    min_height_frac: float = Field(default=0.10, ge=0.0)
+    onset_window: int = Field(default=5, ge=1)
+    onset_min_frames: int = Field(default=1, ge=1)
+    recover_bottom_frac: float = Field(default=0.10, ge=0.0)
+    recover_height_frac: float = Field(default=0.08, ge=0.0)
+    recover_min_frames: int = Field(default=3, ge=1)
+    merge_gap_frames: int = Field(default=2, ge=0)
+    min_window_frames: int = Field(default=2, ge=1)
+    # null => no hard cap; audit span lengths and tune later
+    max_span_frames: Optional[int] = Field(default=None, ge=1, description="Optional cap for safety")
+
+
+class GlobalContextConfig(BaseModel):
+
+    """Evidence-only global context for downstream stages.
+
+    These do not gate repair in D0; they are emitted as features.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    # Evidence-only; does NOT gate repairs.
+    # If null, context metrics are omitted.
+    context_radius_m: Optional[float] = Field(default=None, gt=0)
+    candidate_radius_m: Optional[float] = Field(default=None, gt=0)
+
+
+class StageD0Config(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    occlusion_repair: OcclusionRepairConfig = Field(default_factory=OcclusionRepairConfig)
+    global_context: GlobalContextConfig = Field(default_factory=GlobalContextConfig)
+
+
+class StageDQAConfig(BaseModel):
+    """Stage D visual QA configuration (Checkpoint 2.5)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = Field(default=False, description="If true, write Stage D footpath PNG under _debug/")
+    # Where to load the mat blueprint from (repo-relative).
+    mat_blueprint_path: str = Field(default="configs/mat_blueprint.json")
+    # Output filename inside outputs/<clip_id>/_debug/
+    output_name: str = Field(default="stage_D_paths.png")
+    # Canvas sizing
+    canvas_size_px: int = Field(default=640, gt=0)
+    margin_px: int = Field(default=24, ge=0)
+    # Grouping: auto chooses person_tracks if present else tracklet bank frames.
+    group_by: str = Field(default="auto", description="auto|person|tracklet")
+    # If bank contains repaired columns, overlay repaired spans as dotted lines.
+    prefer_repaired: bool = Field(default=True)
+
+    @field_validator("group_by")
+    @classmethod
+    def _validate_group_by(cls, v: str) -> str:
+        allowed = {"auto", "person", "tracklet"}
+        if v not in allowed:
+            raise ValueError(f"stage_D.qa.group_by must be one of {sorted(allowed)} (got {v!r})")
+        return v
+
+
 class StageDConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: Optional[bool] = Field(default=None)
     run_until: str = Field(default="D0", description="Stage D dispatcher target: D0|D2|D6")
+    d0: Optional["StageD0Config"] = Field(default=None, description="Stage D0 cleanup configuration")
+    qa: Optional["StageDQAConfig"] = Field(default=None, description="Stage D visual QA configuration")
 
     @field_validator("run_until")
     @classmethod

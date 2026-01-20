@@ -115,6 +115,38 @@ stages:
   stage_D:
     enabled: null
     run_until: "D0"
+    d0:
+      occlusion_repair:
+        enable_normalized: true
+        # thresholds are normalized by rolling median baseline height
+        min_bottom_frac: 0.15
+        min_height_frac: 0.10
+        onset_window: 5
+        onset_min_frames: 1
+        recover_bottom_frac: 0.10
+        recover_height_frac: 0.08
+        recover_min_frames: 3
+        merge_gap_frames: 2
+        min_window_frames: 2
+        # null => no hard cap; audit span lengths and tune later
+        max_span_frames: null
+      global_context:
+        # Evidence-only; does NOT gate repairs.
+        # If null, context metrics are omitted.
+        context_radius_m: null
+        candidate_radius_m: null
+
+    # Optional visual QA (Checkpoint 2.5): render a mat-space footpath PNG.
+    # Disabled by default to avoid extra work on every run; enable in an overlay
+    # or per-camera config when you want it.
+    qa:
+      enabled: false
+      group_by: auto            # auto|person|tracklet
+      prefer_repaired: true
+      output_name: stage_D_paths.png
+      mat_blueprint_path: configs/mat_blueprint.json
+      canvas_size_px: 800
+      margin_px: 24
 
   stage_E:
     enabled: null

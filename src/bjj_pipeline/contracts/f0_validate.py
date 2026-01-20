@@ -249,6 +249,21 @@ def validate_tracklet_bank_tables(bank_frames: pd.DataFrame, bank_summaries: pd.
                 f"tracklet_bank_summaries. Missing count={len(missing)} examples={ex}"
             )
 
+    # If D0 repair columns are present, enforce basic invariants.
+    if not bank_frames.empty and "is_repaired" in bank_frames.columns:
+        repaired = bank_frames[bank_frames["is_repaired"] == True]  # noqa: E712
+        if not repaired.empty:
+            for c in ["x_m_repaired", "y_m_repaired", "repair_span_id"]:
+                if c not in repaired.columns:
+                    raise ValidationError(
+                        f"tracklet_bank_frames: missing column {c!r} required when is_repaired exists"
+                    )
+                if repaired[c].isna().any():
+                    ex = repaired[repaired[c].isna()].iloc[0].to_dict()
+                    raise ValidationError(
+                        f"tracklet_bank_frames: repaired row has null {c!r}. Example row={ex}"
+                    )
+
 
 def validate_tracklet_frames_fk_to_detections(tracklet_frames: pd.DataFrame, detections: pd.DataFrame) -> None:
     """
