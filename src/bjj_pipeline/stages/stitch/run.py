@@ -45,21 +45,32 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 	# Ensure stage directory exists
 	layout.stage_dir("D").mkdir(parents=True, exist_ok=True)
 
-	if run_until == "D0":
+	outputs: Dict[str, Any] = {"run_until": run_until}
+
+	if run_until in ("D0", "D2", "D6"):
 		from bjj_pipeline.stages.stitch.d0_bank import run_d0
 
 		run_d0(config=config, layout=layout, manifest=manifest)
 		register_stage_D0_defaults(manifest, layout)
 		write_manifest(manifest, layout.clip_manifest_path())
+
+		# Optional visual QA (Checkpoint 2.5): write a mat-space footpath PNG.
+		try:
+			from bjj_pipeline.viz.stage_d_paths import render_stage_d_paths_png
+
+			render_stage_d_paths_png(config=config, inputs=inputs)
+		except Exception as e:
+			# Visual QA must never fail the pipeline; audit logging occurs inside the helper.
+			print(f"[roll-tracker] Stage D visual QA skipped due to error: {e}")
+
 		print(
 			f"[roll-tracker] Stage D dispatcher completed run_until={run_until} outputs="
 			f"[{layout.rel_to_clip_root(layout.tracklet_bank_frames_parquet())}, "
-			f"{layout.rel_to_clip_root(layout.tracklet_bank_summaries_parquet())}, "
-			f"{layout.rel_to_clip_root(layout.audit_jsonl('D'))}]"
+			f"{layout.rel_to_clip_root(layout.tracklet_bank_summaries_parquet())}]"
 		)
-		return {"stage": "D", "run_until": "D0"}
+		return outputs
 
-	raise NotImplementedError(f"Stage D run_until={run_until!r} not implemented yet (only D0 is available).")
+	raise ValueError(f"Unsupported stage_D.run_until={run_until!r}")
 
 
 def main() -> None:

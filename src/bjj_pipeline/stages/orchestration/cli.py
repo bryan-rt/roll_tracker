@@ -94,6 +94,29 @@ def run(
 	try:
 		cfg, cfg_hash, cfg_sources = _load_config(camera, config)
 
+		# Dev-only convenience: --visualize implies Stage D visual QA.
+		# This keeps PNG generation aligned with other debug artifacts without
+		# requiring YAML edits or a separate overlay file.
+		if visualize:
+			stages_blk = cfg.get("stages")
+			if not isinstance(stages_blk, dict):
+				stages_blk = {}
+				cfg["stages"] = stages_blk
+			stage_d_blk = stages_blk.get("stage_D")
+			if not isinstance(stage_d_blk, dict):
+				stage_d_blk = {}
+				stages_blk["stage_D"] = stage_d_blk
+			qa_blk = stage_d_blk.get("qa")
+			if not isinstance(qa_blk, dict):
+				qa_blk = {}
+				stage_d_blk["qa"] = qa_blk
+			qa_blk["enabled"] = True
+			# Keep the config hash consistent with the actual resolved config.
+			from bjj_pipeline.config import config_hash as _config_hash
+
+			cfg_hash = _config_hash(cfg)
+			cfg_sources = list(cfg_sources) + ["<runtime>:--visualize enables stages.stage_D.qa.enabled"]
+
 		# Default multiplex window to A..C unless user overrides to_stage
 		effective_from = from_stage if from_stage in {"A","B","C","D","E","F"} else None
 		effective_to = to_stage if to_stage in {"A","B","C","D","E","F"} else None

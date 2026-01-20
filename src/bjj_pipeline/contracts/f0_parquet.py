@@ -110,14 +110,14 @@ TRACKLET_SUMMARIES_SPECS: List[ColSpec] = [
 TRACKLET_BANK_FRAMES_SPECS: List[ColSpec] = [
     *TRACKLET_FRAMES_SPECS,
     # D0+ optional columns will be appended over time (keep strict + explicit).
-    # ColSpec("x_m_repaired", "float", required=False),
-    # ColSpec("y_m_repaired", "float", required=False),
-    # ColSpec("vx_m_repaired", "float", required=False),
-    # ColSpec("vy_m_repaired", "float", required=False),
-    # ColSpec("flag_vel_jump", "bool", required=False),
-    # ColSpec("flag_geom_jump", "bool", required=False),
-    # ColSpec("split_candidate", "bool", required=False),
-    # ColSpec("split_reason", "string", required=False),
+    ColSpec("x_m_repaired", "float", required=False),
+    ColSpec("y_m_repaired", "float", required=False),
+    ColSpec("is_repaired", "bool", required=False),
+    ColSpec("repair_method", "string", required=False),
+    ColSpec("repair_span_id", "int", required=False),
+    ColSpec("occ_span_active", "bool", required=False),
+    ColSpec("occ_r_bottom", "float", required=False),
+    ColSpec("occ_r_height", "float", required=False),
 ]
 
 TRACKLET_BANK_SUMMARIES_SPECS: List[ColSpec] = [
@@ -127,6 +127,14 @@ TRACKLET_BANK_SUMMARIES_SPECS: List[ColSpec] = [
     ColSpec("must_link_anchor_key", "string", required=False),
     ColSpec("must_link_confidence", "float", required=False),
     ColSpec("cannot_link_anchor_keys_json", "string", required=False),
+    # D0 evidence aggregates
+    ColSpec("n_occlusion_spans", "int", required=False),
+    ColSpec("n_repaired_frames", "int", required=False),
+    ColSpec("min_nn_dist_m_at_anchors", "float", required=False),
+    ColSpec("mean_nn_dist_m_at_anchors", "float", required=False),
+    ColSpec("min_tracks_within_r_at_anchors", "int", required=False),
+    ColSpec("mean_tracks_within_r_at_anchors", "float", required=False),
+    ColSpec("n_spans_with_plausible_other_candidate", "int", required=False),
 ]
 
 CONTACT_POINTS_SPECS: List[ColSpec] = [
