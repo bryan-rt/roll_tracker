@@ -208,6 +208,48 @@ def validate_tracklet_tables(tracklet_frames: pd.DataFrame, tracklet_summaries: 
             )
 
 
+def validate_tracklet_bank_tables(bank_frames: pd.DataFrame, bank_summaries: pd.DataFrame) -> None:
+    """
+    Validates Stage D bank tables (tracklet_bank_frames.parquet and tracklet_bank_summaries.parquet).
+    These are D0+ evolving "master tables" with strict explicit schemas.
+    """
+    pq.validate_df_schema_by_key(bank_frames, "tracklet_bank_frames")
+    pq.validate_df_schema_by_key(bank_summaries, "tracklet_bank_summaries")
+
+    if bank_frames.empty and bank_summaries.empty:
+        return
+
+    if not bank_frames.empty:
+        _assert_singleton(bank_frames, "clip_id", table_name="tracklet_bank_frames")
+        _assert_singleton(bank_frames, "camera_id", table_name="tracklet_bank_frames")
+        _validate_frame_index_monotonic(
+            bank_frames,
+            table_name="tracklet_bank_frames",
+            group_cols=("clip_id", "camera_id", "tracklet_id"),
+        )
+
+    if not bank_summaries.empty:
+        _assert_singleton(bank_summaries, "clip_id", table_name="tracklet_bank_summaries")
+        _assert_singleton(bank_summaries, "camera_id", table_name="tracklet_bank_summaries")
+        bad = bank_summaries[bank_summaries["end_frame"] < bank_summaries["start_frame"]]
+        if not bad.empty:
+            raise ValidationError(
+                f"tracklet_bank_summaries: end_frame < start_frame for some rows. Example={bad.iloc[0].to_dict()}"
+            )
+
+    # Cross-table: every tracklet_id in frames should exist in summaries
+    if not bank_frames.empty and not bank_summaries.empty:
+        frame_ids = set(bank_frames["tracklet_id"].dropna().astype(str).unique().tolist())
+        sum_ids = set(bank_summaries["tracklet_id"].dropna().astype(str).unique().tolist())
+        missing = frame_ids - sum_ids
+        if missing:
+            ex = list(missing)[:10]
+            raise ValidationError(
+                "tracklet_bank_tables: tracklet_bank_frames has tracklet_id(s) not present in "
+                f"tracklet_bank_summaries. Missing count={len(missing)} examples={ex}"
+            )
+
+
 def validate_tracklet_frames_fk_to_detections(tracklet_frames: pd.DataFrame, detections: pd.DataFrame) -> None:
     """
     FK invariant: each (clip_id,camera_id,frame_index,detection_id) in tracklet_frames must exist in detections.

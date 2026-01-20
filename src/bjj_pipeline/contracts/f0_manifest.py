@@ -215,3 +215,28 @@ def register_stage_B_defaults(manifest: ClipManifest, layout: ClipOutputLayout) 
         relpath=layout.rel_to_clip_root(layout.audit_jsonl("B")),
         content_type="application/jsonl",
     )
+
+
+def register_stage_D0_defaults(manifest: ClipManifest, layout: ClipOutputLayout) -> None:
+    """
+    Convenience: register canonical Stage D0 artifacts (bank tables + audit).
+    Call after writing the files.
+    """
+    manifest.register_artifact(
+        stage="D",
+        key="tracklet_bank_frames_parquet",
+        relpath=layout.rel_to_clip_root(layout.tracklet_bank_frames_parquet()),
+        content_type="application/parquet",
+    )
+    manifest.register_artifact(
+        stage="D",
+        key="tracklet_bank_summaries_parquet",
+        relpath=layout.rel_to_clip_root(layout.tracklet_bank_summaries_parquet()),
+        content_type="application/parquet",
+    )
+    manifest.register_artifact(
+        stage="D",
+        key="audit_jsonl",
+        relpath=layout.rel_to_clip_root(layout.audit_jsonl("D")),
+        content_type="application/jsonl",
+    )

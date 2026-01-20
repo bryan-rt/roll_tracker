@@ -126,6 +126,35 @@ def write_stage_c(layout: ClipOutputLayout, clip_id: str, camera_id: str):
 
 def write_stage_d(layout: ClipOutputLayout, clip_id: str, camera_id: str):
     layout.ensure_dirs_for_stage("D")
+    # D0/D2 completion path: emit minimal valid tracklet bank tables.
+    bf = pd.DataFrame(
+        [
+            {
+                "clip_id": clip_id,
+                "camera_id": camera_id,
+                "tracklet_id": "t1",
+                "frame_index": 0,
+                "timestamp_ms": 0,
+                "detection_id": "d1",
+            }
+        ]
+    )
+    bf.to_parquet(layout.tracklet_bank_frames_parquet(), index=False)
+    bs = pd.DataFrame(
+        [
+            {
+                "clip_id": clip_id,
+                "camera_id": camera_id,
+                "tracklet_id": "t1",
+                "start_frame": 0,
+                "end_frame": 0,
+                "n_frames": 1,
+            }
+        ]
+    )
+    bs.to_parquet(layout.tracklet_bank_summaries_parquet(), index=False)
+
+    # Full D6 completion path: emit minimal stitched outputs (kept for back-compat tests).
     pt = pd.DataFrame([
         {
             "clip_id": clip_id,

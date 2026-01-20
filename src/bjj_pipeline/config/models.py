@@ -185,6 +185,15 @@ class StageDConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: Optional[bool] = Field(default=None)
+    run_until: str = Field(default="D0", description="Stage D dispatcher target: D0|D2|D6")
+
+    @field_validator("run_until")
+    @classmethod
+    def _validate_run_until(cls, v: str) -> str:
+        allowed = {"D0", "D2", "D6"}
+        if v not in allowed:
+            raise ValueError(f"stage_D.run_until must be one of {sorted(allowed)} (got {v!r})")
+        return v
 
 
 class StageEConfig(BaseModel):
