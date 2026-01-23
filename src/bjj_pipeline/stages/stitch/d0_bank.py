@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections import deque
 from dataclasses import dataclass
 from math import sqrt
 from pathlib import Path
@@ -121,109 +122,304 @@ def _rolling_median(s: pd.Series, window: int) -> pd.Series:
 	return s.rolling(window=w, min_periods=1).median()
 
 
-def _compute_occ_ratios(df: pd.DataFrame, *, onset_window: int) -> pd.DataFrame:
+def _compute_occ_ratios(tf: pd.DataFrame, *, onset_window: int) -> pd.DataFrame:
+	"""Compute per-frame occlusion helpers used by D0.
+
+	We compute a few absolute bbox delta helpers (dy2/dy1/dh) that can gate onset.
+	Primary evidence + span logic is handled in `_detect_occlusion_linker2`.
+
+	IMPORTANT: preserve the original index so we can write results back into the
+	full tracklet_frames table using `.loc[sub2.index, ...]`.
 	"""
-	Compute normalized occlusion ratios using bbox_bottom and bbox_h:
-	  r_bottom = (base_bottom - bottom) / base_height
-	  r_height = (base_height - height) / base_height
-	"""
-	out = df.copy()
-	bottom = out["bbox_bottom"].astype("float64")
-	height = out["bbox_h"].astype("float64")
+	out = tf.copy()
+	# Preserve original index while ensuring deterministic order
+	out = out.sort_values(["frame_index"], kind="mergesort")
 
-	base_bottom = _rolling_median(bottom, onset_window)
-	base_height = _rolling_median(height, onset_window)
+	# absolute bbox deltas (pixel space)
+	out["_occ_dy2_px"] = out["bbox_bottom"].diff().abs()
+	out["_occ_dy1_px"] = out["bbox_top"].diff().abs()
+	out["_occ_dh_px"] = out["bbox_h"].diff().abs()
 
-	bh = base_height.to_numpy(copy=True)
-	bh[bh == 0] = np.nan
-
-	rb = (base_bottom.to_numpy() - bottom.to_numpy()) / bh
-	rh = (base_height.to_numpy() - height.to_numpy()) / bh
-	rb = np.nan_to_num(rb, nan=0.0, posinf=0.0, neginf=0.0).astype("float64")
-	rh = np.nan_to_num(rh, nan=0.0, posinf=0.0, neginf=0.0).astype("float64")
-
-	out["occ_r_bottom"] = rb
-	out["occ_r_height"] = rh
+	# initialize expected output columns
+	out["occ_r_bottom"] = 0.0
+	out["occ_r_height"] = 0.0
+	out["occ_span_active"] = False
 	return out
 
 
-def _find_spans(rb: np.ndarray, rh: np.ndarray, cfg: Dict[str, Any]) -> List[Tuple[int, int]]:
-	"""
-	Find occlusion spans (index-space, inclusive).
-	Spans start when rb>=min_bottom and rh>=min_height (onset),
-	and end when rb<=recover_bottom and rh<=recover_height for recover_min_frames.
-	"""
-	min_bottom = float(cfg.get("min_bottom_frac", 0.15))
-	min_height = float(cfg.get("min_height_frac", 0.10))
-	onset_min = int(cfg.get("onset_min_frames", 1))
+def _find_spans(rb: np.ndarray, rh: np.ndarray, dy2: np.ndarray, cfg: Dict[str, Any]) -> List[Tuple[int, int]]:
+	"""Deprecated helper (kept for backwards compat).
 
-	rec_bottom = float(cfg.get("recover_bottom_frac", 0.10))
-	rec_height = float(cfg.get("recover_height_frac", 0.08))
-	rec_min = int(cfg.get("recover_min_frames", 3))
-
+	Span detection for D0 is now implemented with linker_2 semantics in
+	`_detect_occlusion_linker2`.
+	"""
+	min_b = float(cfg.get("min_bottom_frac", 0.15))
+	min_h = float(cfg.get("min_height_frac", 0.10))
+	rec_b = float(cfg.get("recover_bottom_frac", 0.10))
+	rec_h = float(cfg.get("recover_height_frac", 0.08))
+	onset_min_frames = int(cfg.get("onset_min_frames", 1))
+	recover_min_frames = int(cfg.get("recover_min_frames", 3))
 	merge_gap = int(cfg.get("merge_gap_frames", 2))
-	min_win = int(cfg.get("min_window_frames", 2))
+	min_window = int(cfg.get("min_window_frames", 2))
 	max_span = cfg.get("max_span_frames", None)
-	max_span_i = int(max_span) if max_span is not None else None
 
-	n = int(len(rb))
-	if n == 0:
-		return []
-
-	on = (rb >= min_bottom) & (rh >= min_height)
-	off = (rb <= rec_bottom) & (rh <= rec_height)
+	onset = (rb >= min_b) & (rh >= min_h)
+	still = (rb >= min_b) | (rh >= min_h)
+	recover = (rb <= rec_b) & (rh <= rec_h)
 
 	spans: List[Tuple[int, int]] = []
 	i = 0
+	n = len(rb)
 	while i < n:
-		if not on[i]:
+		if not onset[i]:
 			i += 1
 			continue
-
 		j = i
-		while j < n and on[j]:
+		while j < n and onset[j]:
 			j += 1
-		if (j - i) < onset_min:
+		if (j - i) < onset_min_frames:
 			i = j
 			continue
-
-		end = j - 1
+		start = i
 		k = j
 		rec_run = 0
 		while k < n:
-			if off[k]:
+			if still[k]:
+				rec_run = 0
+				k += 1
+				continue
+			if recover[k]:
 				rec_run += 1
 			else:
 				rec_run = 0
-			if rec_run >= rec_min:
-				end = k - rec_min
-				break
 			k += 1
-		else:
-			end = n - 1
-
-		spans.append((i, end))
+			if rec_run >= recover_min_frames:
+				break
+		end = min(n - 1, k - 1)
+		if max_span is not None:
+			end = min(end, start + int(max_span) - 1)
+		if (end - start + 1) >= min_window:
+			spans.append((start, end))
 		i = end + 1
 
-	# merge close spans
-	if not spans:
-		return []
-	merged: List[Tuple[int, int]] = [spans[0]]
-	for a, b in spans[1:]:
-		pa, pb = merged[-1]
-		if a - pb - 1 <= merge_gap:
-			merged[-1] = (pa, max(pb, b))
-		else:
-			merged.append((a, b))
+	if merge_gap > 0 and spans:
+		merged: List[Tuple[int, int]] = []
+		cs, ce = spans[0]
+		for s, e in spans[1:]:
+			if s - ce - 1 <= merge_gap:
+				ce = e
+			else:
+				merged.append((cs, ce))
+				cs, ce = s, e
+		merged.append((cs, ce))
+		spans = merged
 
-	out: List[Tuple[int, int]] = []
-	for a, b in merged:
-		if (b - a + 1) < min_win:
+	return spans
+
+
+def _detect_occlusion_linker2(
+	sub: pd.DataFrame,
+	occ_cfg: Dict[str, Any],
+) -> Tuple[pd.DataFrame, List[Tuple[int, int]]]:
+	"""Compute linker_2-style occlusion evidence + spans for one tracklet.
+
+	Returns:
+	- sub2 with occ_r_bottom, occ_r_height, occ_span_active
+	- spans as (start_idx, end_idx) in sub2 positional indices (inclusive)
+
+	Notes:
+	- baselines are trailing medians over onset_window
+	- once a span starts, baselines are frozen until recovery
+	- recovery tail frames are INCLUDED in the span (recall-first)
+	"""
+	ow = int(occ_cfg.get("onset_window", 5) or 5)
+	min_b = float(occ_cfg.get("min_bottom_frac", 0.15))
+	min_h = float(occ_cfg.get("min_height_frac", 0.10))
+	omf = int(occ_cfg.get("onset_min_frames", 1) or 1)
+	omf = max(1, min(omf, ow))
+
+	rec_b = float(occ_cfg.get("recover_bottom_frac", 0.10))
+	rec_h = float(occ_cfg.get("recover_height_frac", 0.08))
+	rmin = int(occ_cfg.get("recover_min_frames", 3) or 3)
+	rmin = max(1, rmin)
+
+	merge_gap = int(occ_cfg.get("merge_gap_frames", 2) or 0)
+	min_window = int(occ_cfg.get("min_window_frames", 2) or 1)
+	max_span = occ_cfg.get("max_span_frames", None)
+
+	# Default dy2 gate matches config model default; disables only if explicitly set.
+	dy2_px_min = float(occ_cfg.get("dy2_px_min", 3.0) or 0.0)
+	gate_onset = bool(occ_cfg.get("gate_onset_with_dy2", True))
+
+	sub2 = _compute_occ_ratios(sub, onset_window=ow)
+
+	# ensure float arrays for scan
+	y2 = sub2["bbox_bottom"].astype("float64").to_numpy()
+	h = sub2["bbox_h"].astype("float64").to_numpy()
+	dy2 = sub2["_occ_dy2_px"].fillna(0.0).astype("float64").to_numpy()
+
+	n = len(sub2)
+	rb_out = np.zeros(n, dtype="float64")
+	rh_out = np.zeros(n, dtype="float64")
+	active = np.zeros(n, dtype=bool)
+
+	baseline_bottom_q: deque = deque(maxlen=ow)
+	baseline_height_q: deque = deque(maxlen=ow)
+	recent_flags: deque = deque(maxlen=ow)
+
+	in_occ = False
+	start_i: Optional[int] = None
+	occ_b0: Optional[float] = None
+	occ_h0: Optional[float] = None
+	recover_streak = 0
+	last_occ_i: Optional[int] = None
+
+	def _median(q: deque) -> Optional[float]:
+		if not q:
+			return None
+		xs = sorted(q)
+		m = xs[len(xs) // 2]
+		if len(xs) % 2 == 0:
+			m = 0.5 * (xs[len(xs) // 2 - 1] + xs[len(xs) // 2])
+		return float(m)
+
+	def _current_baseline() -> Tuple[Optional[float], Optional[float]]:
+		b0 = _median(baseline_bottom_q)
+		h0 = _median(baseline_height_q)
+		if b0 is None or h0 is None:
+			return None, None
+		if h0 <= 0.0:
+			return b0, None
+		return b0, h0
+
+	spans: List[Tuple[int, int]] = []
+
+	for i in range(n):
+		b = float(y2[i]) if np.isfinite(y2[i]) else None
+		hh = float(h[i]) if np.isfinite(h[i]) else None
+		b0, h0 = _current_baseline()
+
+		# invalid bbox/height handling
+		if b is None or hh is None or hh <= 0.0 or b0 is None or h0 is None or h0 <= 0.0:
+			if (not in_occ) and (b is not None) and (hh is not None) and (hh > 0.0):
+				baseline_bottom_q.append(b)
+				baseline_height_q.append(hh)
+			elif in_occ:
+				recover_streak = 0
+				last_occ_i = i
+				active[i] = True
 			continue
-		if max_span_i is not None and (b - a + 1) > max_span_i:
-			b = a + max_span_i - 1
-		out.append((a, b))
-	return out
+
+		# choose baseline: frozen during occlusion
+		if in_occ and (occ_b0 is not None) and (occ_h0 is not None):
+			base_b, base_h = occ_b0, occ_h0
+		else:
+			base_b, base_h = b0, h0
+
+		if base_h is None or base_h <= 0.0:
+			if in_occ:
+				recover_streak = 0
+				last_occ_i = i
+				active[i] = True
+			continue
+
+		rb = (base_b - b) / base_h
+		rh0 = (base_h - hh) / base_h
+		if rb < 0.0:
+			rb = 0.0
+		if rh0 < 0.0:
+			rh0 = 0.0
+		rb_out[i] = float(rb)
+		rh_out[i] = float(rh0)
+
+		if not in_occ:
+			is_candidate = (rb >= min_b and rh0 >= min_h)
+			if gate_onset:
+				is_candidate = bool(is_candidate and (float(dy2[i]) >= dy2_px_min))
+			recent_flags.append(bool(is_candidate))
+			if len(recent_flags) == ow and sum(1 for x in recent_flags if x) >= omf:
+				first_off = None
+				for k in range(ow):
+					if recent_flags[k]:
+						first_off = k
+						break
+				if first_off is None:
+					continue
+				start_i = max(0, (i - ow + 1) + int(first_off))
+				in_occ = True
+				recover_streak = 0
+				occ_b0, occ_h0 = b0, h0
+				last_occ_i = i
+				active[i] = True
+			else:
+				baseline_bottom_q.append(b)
+				baseline_height_q.append(hh)
+			continue
+
+		# in occlusion
+		still_occ = (rb >= min_b) or (rh0 >= min_h)
+		recovered = (rb <= rec_b) and (rh0 <= rec_h)
+
+		if still_occ:
+			last_occ_i = i
+			recover_streak = 0
+			active[i] = True
+			continue
+
+		if recovered:
+			recover_streak += 1
+			# recall-first: keep recovery frames active AND include them in span tail
+			last_occ_i = i
+			active[i] = True
+			if recover_streak >= rmin:
+				if start_i is not None and last_occ_i is not None:
+					spans.append((start_i, last_occ_i))
+				in_occ = False
+				start_i = None
+				occ_b0 = None
+				occ_h0 = None
+				recover_streak = 0
+				recent_flags.clear()
+			continue
+
+		# ambiguous frame => treat as still occluded
+		last_occ_i = i
+		recover_streak = 0
+		active[i] = True
+
+	if in_occ and start_i is not None and last_occ_i is not None:
+		spans.append((start_i, last_occ_i))
+
+	# enforce min_window and optional hard cap
+	filtered: List[Tuple[int, int]] = []
+	for s, e in spans:
+		if (e - s + 1) < min_window:
+			continue
+		if max_span is not None and int(max_span) > 0:
+			e = min(e, s + int(max_span) - 1)
+		filtered.append((int(s), int(e)))
+	spans = filtered
+
+	if merge_gap > 0 and spans:
+		merged: List[Tuple[int, int]] = []
+		cs, ce = spans[0]
+		for s, e in spans[1:]:
+			if s - ce - 1 <= merge_gap:
+				ce = max(ce, e)
+			else:
+				merged.append((cs, ce))
+				cs, ce = s, e
+		merged.append((cs, ce))
+		spans = merged
+
+	# materialize framewise outputs
+	for s, e in spans:
+		active[s : e + 1] = True
+
+	sub2["occ_r_bottom"] = rb_out
+	sub2["occ_r_height"] = rh_out
+	sub2["occ_span_active"] = active
+	return sub2, spans
 
 
 def _compute_nn_and_density(
@@ -249,7 +445,7 @@ def _compute_nn_and_density(
 	return nn, cnt
 
 
-def _get_d0_cfg(config: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+def _get_d0_cfg(config: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
 	# config is the fully merged dict (post overlays)
 	stage_d: Dict[str, Any] = {}
 	if isinstance(config.get("stages"), dict) and isinstance(config["stages"].get("stage_D"), dict):
@@ -261,7 +457,175 @@ def _get_d0_cfg(config: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]
 	d0 = stage_d.get("d0", {}) if isinstance(stage_d, dict) else {}
 	occ = d0.get("occlusion_repair", {}) if isinstance(d0, dict) else {}
 	ctx = d0.get("global_context", {}) if isinstance(d0, dict) else {}
-	return (occ if isinstance(occ, dict) else {}), (ctx if isinstance(ctx, dict) else {})
+	kin = d0.get("kinematics", {}) if isinstance(d0, dict) else {}
+	return (
+		(occ if isinstance(occ, dict) else {}),
+		(ctx if isinstance(ctx, dict) else {}),
+		(kin if isinstance(kin, dict) else {}),
+	)
+
+
+def _apply_cp3_kinematics(
+	tf: pd.DataFrame, *, fps: float, kin_cfg: Dict[str, Any]
+) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+	"""Checkpoint 3 (CP3): recompute dt-aware velocities from *effective* world coords and flag implausible kinematics.
+
+	- Uses repaired coords where CP2 marked `is_repaired`; otherwise uses original x_m/y_m.
+	- Does NOT clamp or suppress; emits velocities + flags only.
+	- Tracklet-local; no cross-tracklet logic.
+	"""
+	if not (fps > 0.0):
+		raise ValueError(f"D0 CP3 requires fps > 0, got {fps!r}")
+
+	enabled = bool(kin_cfg.get("enabled", True))
+	if not enabled:
+		return tf, {"enabled": False}
+
+	v_max = float(kin_cfg.get("v_max_mps", 8.0))
+	a_max = float(kin_cfg.get("a_max_mps2", 12.0))
+
+	# Ensure columns exist with deterministic defaults.
+	for c in ["vx_mps_k", "vy_mps_k", "speed_mps_k", "accel_mps2_k"]:
+		if c not in tf.columns:
+			tf[c] = np.nan
+			tf[c] = tf[c].astype("float64")
+	for c in ["speed_is_implausible", "accel_is_implausible"]:
+		if c not in tf.columns:
+			tf[c] = False
+			tf[c] = tf[c].astype("bool")
+
+	# Fast path: if no rows, return early.
+	if len(tf) == 0:
+		return tf, {
+			"enabled": True,
+			"n_rows": 0,
+			"n_tracklets": 0,
+			"n_speed_flagged": 0,
+			"n_accel_flagged": 0,
+			"n_bad_df_steps": 0,
+			"max_speed_mps_k": float("nan"),
+			"max_accel_mps2_k": float("nan"),
+		}
+
+	# Compute per-tracklet in deterministic order.
+	# We compute and write values into tf via iloc positions.
+	if "tracklet_id" not in tf.columns or "frame_index" not in tf.columns:
+		raise ValueError("D0 CP3 requires tf to include tracklet_id and frame_index")
+
+	# Sorting index (stable, deterministic).
+	sort_cols = ["tracklet_id", "frame_index"]
+	if "detection_id" in tf.columns:
+		sort_cols.append("detection_id")
+	tf = tf.sort_values(sort_cols, kind="mergesort").reset_index(drop=True)
+
+	# Required CP2 columns (fallback to originals if missing, but CP2 should have created them).
+	if "is_repaired" not in tf.columns:
+		tf["is_repaired"] = False
+		tf["is_repaired"] = tf["is_repaired"].astype("bool")
+
+	# Pre-allocate counters.
+	n_bad_df_steps = 0
+
+	# Group indices per tracklet.
+	# We avoid pandas groupby-apply to keep types stable and runtime reasonable.
+	tids = tf["tracklet_id"].astype(str).to_numpy()
+	frames = tf["frame_index"].to_numpy()
+
+	# Effective coords per-row.
+	# Note: treat non-finite as missing; this will propagate to NaNs in velocities.
+	x_m = tf.get("x_m")
+	y_m = tf.get("y_m")
+	if x_m is None or y_m is None:
+		raise ValueError("D0 CP3 requires tf to include x_m and y_m (world coords)")
+	x_rep = tf.get("x_m_repaired") if "x_m_repaired" in tf.columns else None
+	y_rep = tf.get("y_m_repaired") if "y_m_repaired" in tf.columns else None
+	is_rep = tf["is_repaired"].to_numpy(dtype=bool)
+
+	x_eff = (x_rep.to_numpy() if x_rep is not None else x_m.to_numpy()).astype("float64").copy()
+	y_eff = (y_rep.to_numpy() if y_rep is not None else y_m.to_numpy()).astype("float64").copy()
+	# Where not repaired, use original coords if present.
+	x_orig = x_m.to_numpy(dtype="float64")
+	y_orig = y_m.to_numpy(dtype="float64")
+	x_eff[~is_rep] = x_orig[~is_rep]
+	y_eff[~is_rep] = y_orig[~is_rep]
+
+	vx = tf["vx_mps_k"].to_numpy(dtype="float64", copy=True)
+	vy = tf["vy_mps_k"].to_numpy(dtype="float64", copy=True)
+	speed = tf["speed_mps_k"].to_numpy(dtype="float64", copy=True)
+	accel = tf["accel_mps2_k"].to_numpy(dtype="float64", copy=True)
+
+	# Initialize outputs to NaN/False (in case tf came with junk values).
+	vx[:] = np.nan
+	vy[:] = np.nan
+	speed[:] = np.nan
+	accel[:] = np.nan
+	speed_flag = np.zeros(len(tf), dtype=bool)
+	accel_flag = np.zeros(len(tf), dtype=bool)
+
+	# Walk contiguous blocks of the same tracklet_id.
+	start = 0
+	N = len(tf)
+	while start < N:
+		tid = tids[start]
+		end = start + 1
+		while end < N and tids[end] == tid:
+			end += 1
+
+		# Compute stepwise velocities for this block [start, end).
+		for i in range(start + 1, end):
+			df = int(frames[i] - frames[i - 1])
+			if df <= 0:
+				n_bad_df_steps += 1
+				continue
+			dt_s = df / fps
+			# Require finite endpoints.
+			if not (
+				np.isfinite(x_eff[i])
+				and np.isfinite(y_eff[i])
+				and np.isfinite(x_eff[i - 1])
+				and np.isfinite(y_eff[i - 1])
+			):
+				continue
+			dx = float(x_eff[i] - x_eff[i - 1])
+			dy = float(y_eff[i] - y_eff[i - 1])
+			vx_i = dx / dt_s
+			vy_i = dy / dt_s
+			vx[i] = vx_i
+			vy[i] = vy_i
+			speed_i = float(np.hypot(vx_i, vy_i))
+			speed[i] = speed_i
+			if speed_i > v_max:
+				speed_flag[i] = True
+			# Accel requires previous speed.
+			if i - 1 >= start and np.isfinite(speed[i - 1]):
+				acc_i = abs(speed_i - float(speed[i - 1])) / dt_s
+				accel[i] = float(acc_i)
+				if acc_i > a_max:
+					accel_flag[i] = True
+
+		start = end
+
+	# Write back.
+	tf["vx_mps_k"] = vx
+	tf["vy_mps_k"] = vy
+	tf["speed_mps_k"] = speed
+	tf["accel_mps2_k"] = accel
+	tf["speed_is_implausible"] = speed_flag.astype("bool")
+	tf["accel_is_implausible"] = accel_flag.astype("bool")
+
+	# Summary
+	return tf, {
+		"enabled": True,
+		"v_max_mps": float(v_max),
+		"a_max_mps2": float(a_max),
+		"n_rows": int(N),
+		"n_tracklets": int(len(pd.unique(tf["tracklet_id"]))),
+		"n_speed_flagged": int(np.sum(speed_flag)),
+		"n_accel_flagged": int(np.sum(accel_flag)),
+		"n_bad_df_steps": int(n_bad_df_steps),
+		"max_speed_mps_k": float(np.nanmax(speed)) if np.any(np.isfinite(speed)) else float("nan"),
+		"max_accel_mps2_k": float(np.nanmax(accel)) if np.any(np.isfinite(accel)) else float("nan"),
+	}
 
 
 def run_d0(*, config: Dict[str, Any], layout: Any, manifest: Any) -> None:
@@ -275,7 +639,8 @@ def run_d0(*, config: Dict[str, Any], layout: Any, manifest: Any) -> None:
 	tf = pd.read_parquet(tf_path)
 	ts = pd.read_parquet(ts_path)
 
-	occ_cfg, ctx_cfg = _get_d0_cfg(config)
+	kin_summary: Dict[str, Any] = {"enabled": False}
+	occ_cfg, ctx_cfg, kin_cfg = _get_d0_cfg(config)
 	enable_norm = bool(occ_cfg.get("enable_normalized", True))
 	onset_window = int(occ_cfg.get("onset_window", 5) or 5)
 	context_radius_m = ctx_cfg.get("context_radius_m", None)
@@ -430,23 +795,15 @@ def run_d0(*, config: Dict[str, Any], layout: Any, manifest: Any) -> None:
 				if sub.empty or sub["bbox_bottom"].isna().all() or sub["bbox_h"].isna().all():
 					continue
 
-				sub2 = _compute_occ_ratios(sub, onset_window=onset_window)
-				rb = sub2["occ_r_bottom"].to_numpy(dtype="float64", copy=False)
-				rh = sub2["occ_r_height"].to_numpy(dtype="float64", copy=False)
-				spans = _find_spans(rb, rh, occ_cfg)
-
-				# write back ratios + active flags
-				active = np.zeros(len(sub2), dtype=bool)
-				for a, b in spans:
-					active[a : b + 1] = True
-				sub2["occ_span_active"] = active
+				sub2, spans = _detect_occlusion_linker2(sub, occ_cfg)
+				spans_abs = [(int(s), int(e)) for (s, e) in spans]
 
 				# initialize repaired as pass-through
 				sub2["x_m_repaired"] = pd.to_numeric(sub2.get("x_m"), errors="coerce").astype("float64")
 				sub2["y_m_repaired"] = pd.to_numeric(sub2.get("y_m"), errors="coerce").astype("float64")
 
 				plausible_count = 0
-				for span_id, (a, b) in enumerate(spans):
+				for span_id, (a, b) in enumerate(spans_abs):
 					n_spans_by_tid[tid] = n_spans_by_tid.get(tid, 0) + 1
 					pre_i = a - 1
 					post_i = b + 1
@@ -460,6 +817,12 @@ def run_d0(*, config: Dict[str, Any], layout: Any, manifest: Any) -> None:
 						"span_start_frame": int(sub2.iloc[a]["frame_index"]),
 						"span_end_frame": int(sub2.iloc[b]["frame_index"]),
 						"n_frames": int(b - a + 1),
+						"occ_detector": "linker2",
+						"occ_evidence": {
+							"max_r_bottom": float(np.max(sub2["occ_r_bottom"].to_numpy()[a : b + 1])) if b >= a else 0.0,
+							"max_r_height": float(np.max(sub2["occ_r_height"].to_numpy()[a : b + 1])) if b >= a else 0.0,
+							"max_dy2_px": float(np.max(sub2["_occ_dy2_px"].fillna(0.0).to_numpy()[a : b + 1])) if b >= a else 0.0,
+						},
 						"repaired": False,
 						"skip_reason": None,
 					}
@@ -622,7 +985,14 @@ def run_d0(*, config: Dict[str, Any], layout: Any, manifest: Any) -> None:
 				)
 
 		# drop helper columns from tf before writing (schema strict)
-		for c in ["y1", "y2", "bbox_top", "bbox_bottom", "bbox_h", "x_ctx", "y_ctx"]:
+		# CP3: dt-aware kinematics (velocity/accel) from effective world coords; flag-only (no clamping).
+		fps = float(getattr(manifest, "fps", 0.0) or 0.0)
+		if not (fps > 0.0):
+			raise ValueError(f"D0 CP3 requires manifest.fps > 0, got {fps!r}")
+		tf, kin_summary = _apply_cp3_kinematics(tf, fps=fps, kin_cfg=kin_cfg)
+
+		# drop helper columns from tf before writing (schema strict)
+		for c in ["y1", "y2", "bbox_top", "bbox_bottom", "bbox_h", "x_ctx", "y_ctx", "_occ_dy2_px"]:
 			if c in tf.columns:
 				tf = tf.drop(columns=[c])
 
@@ -651,6 +1021,16 @@ def run_d0(*, config: Dict[str, Any], layout: Any, manifest: Any) -> None:
 				"bbox_missing_rows_after_join": int(bbox_missing_after_join) if "bbox_missing_after_join" in locals() else 0,
 				"context_enabled": bool((context_radius_f is not None) or (candidate_radius_f is not None)),
 			},
+		},
+	)
+	_write_audit_event(
+		audit_path,
+		{
+			"event_type": "d0_kinematics_summary",
+			"timestamp": _now_ms(),
+			"clip_id": getattr(manifest, "clip_id", None),
+			"camera_id": getattr(manifest, "camera_id", None),
+			"totals": kin_summary,
 		},
 	)
 	_write_audit_event(

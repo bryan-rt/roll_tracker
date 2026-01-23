@@ -185,7 +185,8 @@ class OcclusionRepairConfig(BaseModel):
 
     """D0 occlusion-span detection + interpolation repair configuration.
 
-    Uses normalized ratios derived from bbox bottom/height against a rolling median baseline.
+    Occlusion evidence is computed from bbox deltas (see Stage D0 implementation), and
+    span onset is gated by a hard pixel threshold on dy2 (bottom movement).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -194,6 +195,9 @@ class OcclusionRepairConfig(BaseModel):
     # thresholds are normalized by rolling median baseline height
     min_bottom_frac: float = Field(default=0.15, ge=0.0)
     min_height_frac: float = Field(default=0.10, ge=0.0)
+    # hard pixel gate for dy2 (bbox bottom delta); suppresses normal jitter
+    dy2_px_min: float = Field(default=3.0, ge=0.0)
+    gate_onset_with_dy2: bool = Field(default=True, description="If true, require dy2 >= dy2_px_min to start an occlusion span")
     onset_window: int = Field(default=5, ge=1)
     onset_min_frames: int = Field(default=1, ge=1)
     recover_bottom_frac: float = Field(default=0.10, ge=0.0)
@@ -220,11 +224,26 @@ class GlobalContextConfig(BaseModel):
     candidate_radius_m: Optional[float] = Field(default=None, gt=0)
 
 
+class KinematicsConfig(BaseModel):
+
+    """D0 Checkpoint 3 (CP3): flag-only kinematics derived from effective world coordinates.
+
+    These thresholds are used only for emitting boolean flags; D0 does not clamp or suppress values.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = Field(default=True)
+    v_max_mps: float = Field(default=8.0, gt=0)
+    a_max_mps2: float = Field(default=12.0, gt=0)
+
+
 class StageD0Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     occlusion_repair: OcclusionRepairConfig = Field(default_factory=OcclusionRepairConfig)
     global_context: GlobalContextConfig = Field(default_factory=GlobalContextConfig)
+    kinematics: KinematicsConfig = Field(default_factory=KinematicsConfig)
 
 
 class StageDQAConfig(BaseModel):

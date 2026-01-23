@@ -9,7 +9,7 @@ from typing import Any, Dict
 import numpy as np
 import pandas as pd
 
-from bjj_pipeline.contracts.f0_manifest import ClipManifest
+from bjj_pipeline.contracts.f0_manifest import ClipManifest, write_manifest
 from bjj_pipeline.contracts.f0_paths import ClipOutputLayout
 from bjj_pipeline.core.frame_iterator import FrameIterator, FramePacket
 from bjj_pipeline.viz.mux_visualizer import MuxVisualizer, load_mat_blueprint
@@ -361,7 +361,22 @@ def run_multiplex_AC(*,
 
     if need_frames:
         it = FrameIterator(ingest_path)
-        fps = it.fps or 30.0
+        # Single source of truth: manifest.fps (backfilled in ensure_manifest).
+        # Belt-and-suspenders: if manifest fps is missing, fall back to iterator fps and persist it.
+        fps = float(getattr(manifest, "fps", 0.0) or 0.0)
+        if fps <= 0.0:
+            it_fps = float(it.fps or 0.0)
+            fps = it_fps if it_fps > 0.0 else 0.0
+            if fps > 0.0:
+                try:
+                    manifest.fps = float(fps)
+                    # Write back so downstream (e.g., Stage D0 CP3) sees canonical fps.
+                    write_manifest(manifest, layout.clip_manifest_path())
+                except Exception:
+                    # Non-fatal: visualization can still proceed; D0 will fail-fast if fps stays 0.
+                    pass
+        if fps <= 0.0:
+            fps = 30.0
 
         if stage_a_enabled:
             # Lazy imports so unit tests do not require ultralytics/boxmot.
