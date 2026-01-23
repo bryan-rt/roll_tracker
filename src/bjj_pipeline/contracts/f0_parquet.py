@@ -118,6 +118,13 @@ TRACKLET_BANK_FRAMES_SPECS: List[ColSpec] = [
     ColSpec("occ_span_active", "bool", required=False),
     ColSpec("occ_r_bottom", "float", required=False),
     ColSpec("occ_r_height", "float", required=False),
+    # CP3 (kinematics): dt-aware velocities/accel derived from effective (repaired-or-original) world coords.
+    ColSpec("vx_mps_k", "float", required=False),
+    ColSpec("vy_mps_k", "float", required=False),
+    ColSpec("speed_mps_k", "float", required=False),
+    ColSpec("speed_is_implausible", "bool", required=False),
+    ColSpec("accel_mps2_k", "float", required=False),
+    ColSpec("accel_is_implausible", "bool", required=False),
 ]
 
 TRACKLET_BANK_SUMMARIES_SPECS: List[ColSpec] = [

@@ -130,11 +130,18 @@ stages:
         min_window_frames: 2
         # null => no hard cap; audit span lengths and tune later
         max_span_frames: null
+        dy2_px_min: 3.0
       global_context:
         # Evidence-only; does NOT gate repairs.
         # If null, context metrics are omitted.
         context_radius_m: null
         candidate_radius_m: null
+      kinematics:
+        # CP3: flag-only kinematics derived from effective world coords (repaired-or-original).
+        enabled: true
+        # Human-plausibility thresholds used ONLY for flagging (no clamping/suppression).
+        v_max_mps: 8.0
+        a_max_mps2: 12.0
 
     # Optional visual QA (Checkpoint 2.5): render a mat-space footpath PNG.
     # Disabled by default to avoid extra work on every run; enable in an overlay

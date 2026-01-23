@@ -14,6 +14,7 @@ from __future__ import annotations
 import importlib
 import json
 import time
+import cv2  # type: ignore
 from dataclasses import dataclass
 import subprocess
 import sys
@@ -154,6 +155,34 @@ def hash_config(config: Dict[str, Any]) -> str:
 
 def orchestration_audit_path(layout: ClipOutputLayout) -> Path:
     return layout.clip_root / "orchestration_audit.jsonl"
+
+
+def _probe_video_meta_opencv(input_video_path: Path) -> tuple[float, int, int]:
+    """
+    Probe video metadata via OpenCV.
+
+    Returns: (fps, frame_count, duration_ms)
+    - If probing fails, returns (0.0, 0, 0) without raising.
+    """
+    try:
+        cap = cv2.VideoCapture(str(input_video_path))
+        if not cap.isOpened():
+            return 0.0, 0, 0
+        fps_raw = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+        fps = fps_raw if fps_raw > 0 else 0.0
+        fc_raw = float(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0.0)
+        frame_count = int(round(fc_raw)) if fc_raw > 0 else 0
+        if fps > 0 and frame_count > 0:
+            duration_ms = int(round(1000.0 * frame_count / fps))
+        else:
+            duration_ms = 0
+        try:
+            cap.release()
+        except Exception:
+            pass
+        return fps, frame_count, duration_ms
+    except Exception:
+        return 0.0, 0, 0
 
 
 def _now_ms() -> int:
@@ -347,6 +376,16 @@ def ensure_manifest(layout: ClipOutputLayout, clip_id: str, camera_id: str, inpu
     audit_rel = layout.rel_to_clip_root(orchestration_audit_path(layout))
     if mpath.exists():
         manifest = load_manifest(mpath)
+        # Backfill video metadata if missing. Manifest is the single source of truth downstream.
+        if float(getattr(manifest, "fps", 0.0) or 0.0) <= 0.0:
+            fps, frame_count, duration_ms = _probe_video_meta_opencv(Path(manifest.input_video_path))
+            if fps > 0:
+                manifest.fps = float(fps)
+                if frame_count > 0:
+                    manifest.frame_count = int(frame_count)
+                if duration_ms > 0:
+                    manifest.duration_ms = int(duration_ms)
+                write_manifest(manifest, mpath)
         try:
             manifest.get_misc_artifact_path(key="orchestration_audit_jsonl")
         except Exception:
@@ -357,13 +396,15 @@ def ensure_manifest(layout: ClipOutputLayout, clip_id: str, camera_id: str, inpu
             )
             write_manifest(manifest, mpath)
         return manifest
+
+    fps, frame_count, duration_ms = _probe_video_meta_opencv(Path(input_video_path))
     manifest = init_manifest(
         clip_id=clip_id,
         camera_id=camera_id,
         input_video_path=str(input_video_path),
-        fps=0.0,
-        frame_count=0,
-        duration_ms=0,
+        fps=float(fps),
+        frame_count=int(frame_count),
+        duration_ms=int(duration_ms),
         pipeline_version=pipeline_version,
         created_at_ms=_now_ms(),
     )
