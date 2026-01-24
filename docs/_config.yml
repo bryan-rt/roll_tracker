@@ -1,8 +1,8 @@
 title: Roll Tracker
 description: "Roll Tracker planning + docs"
 
-# GitHub Pages Jekyll build
-theme: minima
+# GitHub Pages Jekyll build - using Cayman theme for better formatting
+theme: jekyll-theme-cayman
 
 # Keep URLs stable and readable
 permalink: pretty
