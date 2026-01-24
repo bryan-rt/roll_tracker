@@ -377,14 +377,37 @@ def ensure_manifest(layout: ClipOutputLayout, clip_id: str, camera_id: str, inpu
     if mpath.exists():
         manifest = load_manifest(mpath)
         # Backfill video metadata if missing. Manifest is the single source of truth downstream.
-        if float(getattr(manifest, "fps", 0.0) or 0.0) <= 0.0:
-            fps, frame_count, duration_ms = _probe_video_meta_opencv(Path(manifest.input_video_path))
-            if fps > 0:
-                manifest.fps = float(fps)
-                if frame_count > 0:
-                    manifest.frame_count = int(frame_count)
-                if duration_ms > 0:
-                    manifest.duration_ms = int(duration_ms)
+        mfps = float(getattr(manifest, "fps", 0.0) or 0.0)
+        mfc = int(getattr(manifest, "frame_count", 0) or 0)
+        mdur = int(getattr(manifest, "duration_ms", 0) or 0)
+
+        if (mfps <= 0.0) or (mfc <= 0) or (mdur <= 0):
+            pfps, pfc, pdur = _probe_video_meta_opencv(Path(manifest.input_video_path))
+            changed = False
+
+            # Only overwrite missing fields with valid probed values (never overwrite good values with zeros).
+            if mfps <= 0.0 and pfps > 0.0:
+                manifest.fps = float(pfps)
+                mfps = float(pfps)
+                changed = True
+
+            if mfc <= 0 and pfc > 0:
+                manifest.frame_count = int(pfc)
+                mfc = int(pfc)
+                changed = True
+
+            if mdur <= 0:
+                if pdur > 0:
+                    manifest.duration_ms = int(pdur)
+                    mdur = int(pdur)
+                    changed = True
+                elif (mfps > 0.0) and (mfc > 0):
+                    # Compute duration from (fps, frame_count) if OpenCV couldn't provide it directly.
+                    manifest.duration_ms = int(round(1000.0 * mfc / mfps))
+                    mdur = int(manifest.duration_ms)
+                    changed = True
+
+            if changed:
                 write_manifest(manifest, mpath)
         try:
             manifest.get_misc_artifact_path(key="orchestration_audit_jsonl")

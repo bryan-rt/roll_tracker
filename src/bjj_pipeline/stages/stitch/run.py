@@ -47,12 +47,18 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 
 	outputs: Dict[str, Any] = {"run_until": run_until}
 
-	if run_until in ("D0", "D2", "D6"):
+	if run_until in ("D0", "D1", "D2", "D6"):
 		from bjj_pipeline.stages.stitch.d0_bank import run_d0
 
 		run_d0(config=config, layout=layout, manifest=manifest)
 		register_stage_D0_defaults(manifest, layout)
 		write_manifest(manifest, layout.clip_manifest_path())
+
+		# D1: construct candidate graph
+		if run_until in ("D1", "D2", "D6"):
+			from bjj_pipeline.stages.stitch.d1_graph_build import run_d1
+
+			run_d1(cfg=config, layout=layout, manifest=manifest)
 
 		# Optional visual QA (Checkpoint 2.5): write a mat-space footpath PNG.
 		try:
