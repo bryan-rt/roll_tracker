@@ -1,0 +1,8 @@
+title: Roll Tracker
+description: "Roll Tracker planning + docs"
+
+# GitHub Pages Jekyll build
+theme: minima
+
+# Keep URLs stable and readable
+permalink: pretty

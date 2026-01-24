@@ -155,6 +155,22 @@ stages:
       canvas_size_px: 800
       margin_px: 24
 
+    # D1: graph construction (no costs, no solving)
+    d1:
+      enabled: true
+      # maximum allowed gap (in frames) for single→single continuation edges
+      max_continue_gap_frames: 90
+      # endpoint extraction windows (frames)
+      start_window_frames: 10
+      end_window_frames: 10
+      # group-tracklet inference
+      enable_group_nodes: true
+      merge_dist_m: 0.45
+      merge_end_sync_frames: 3
+      merge_disappear_gap_frames: 6
+      split_dist_m: 0.60
+      split_search_horizon_frames: 120
+
   stage_E:
     enabled: null
 

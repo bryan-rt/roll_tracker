@@ -273,18 +273,40 @@ class StageDQAConfig(BaseModel):
         return v
 
 
+class StageD1Config(BaseModel):
+
+    """Stage D1 configuration (graph build only; no costs, no solving)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = Field(default=True)
+    # maximum allowed gap (in frames) for single→single continuation edges
+    max_continue_gap_frames: int = Field(default=90, ge=0)
+    # endpoint extraction windows (frames)
+    start_window_frames: int = Field(default=10, ge=0)
+    end_window_frames: int = Field(default=10, ge=0)
+    # group-tracklet inference
+    enable_group_nodes: bool = Field(default=True)
+    merge_dist_m: float = Field(default=0.45, gt=0)
+    merge_end_sync_frames: int = Field(default=3, ge=0)
+    merge_disappear_gap_frames: int = Field(default=6, ge=0)
+    split_dist_m: float = Field(default=0.60, gt=0)
+    split_search_horizon_frames: int = Field(default=120, ge=0)
+
+
 class StageDConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: Optional[bool] = Field(default=None)
-    run_until: str = Field(default="D0", description="Stage D dispatcher target: D0|D2|D6")
+    run_until: str = Field(default="D0", description="Stage D dispatcher target: D0|D1|D2|D6")
     d0: Optional["StageD0Config"] = Field(default=None, description="Stage D0 cleanup configuration")
     qa: Optional["StageDQAConfig"] = Field(default=None, description="Stage D visual QA configuration")
+    d1: Optional["StageD1Config"] = Field(default=None, description="Stage D1 graph build configuration")
 
     @field_validator("run_until")
     @classmethod
     def _validate_run_until(cls, v: str) -> str:
-        allowed = {"D0", "D2", "D6"}
+        allowed = {"D0", "D1", "D2", "D6"}
         if v not in allowed:
             raise ValueError(f"stage_D.run_until must be one of {sorted(allowed)} (got {v!r})")
         return v
