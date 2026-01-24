@@ -1,4 +1,3 @@
----
 layout: default
 title: Planning Documentation
 ---
@@ -9,7 +8,7 @@ This section contains the core planning documentation for the Roll Tracker proje
 
 ## 📋 Core Documents
 
-### [Planning README](README.html)
+### [Planning README]({{ '/planning/README.html' | relative_url }})
 The main planning pack document covering:
 - **Workflow**: How to use worker threads effectively
 - **Pipeline Architecture**: Hybrid execution model (multiplex_AC)
@@ -18,7 +17,7 @@ The main planning pack document covering:
 - **Checkpoint Discipline**: Requirements for keeping the pipeline runnable
 - **Stage D POC Map**: Detailed specifications for the MCF stitcher
 
-### [Worker Thread Index](WORKER_THREAD_INDEX.html)
+### [Worker Thread Index]({{ '/planning/WORKER_THREAD_INDEX.html' | relative_url }})
 Comprehensive index of all worker threads organized by stage (A through X), including:
 - Worker IDs and responsibilities
 - Current status and deliverables
@@ -26,7 +25,7 @@ Comprehensive index of all worker threads organized by stage (A through X), incl
 
 ## 🧵 Worker Thread Specifications
 
-### [Worker Threads Directory](worker_threads/)
+### [Worker Threads Directory]({{ '/planning/worker_threads/' | relative_url }})
 Individual worker thread specification files, each designed to be pasted as the first message in a dedicated worker chat.
 
 **Usage**:
@@ -47,3 +46,8 @@ Individual worker thread specification files, each designed to be pasted as the 
 ---
 
 [← Back to Home](../)
+=======
+- [README]({{ '/planning/README.html' | relative_url }})
+- [Worker Thread Index]({{ '/planning/WORKER_THREAD_INDEX.html' | relative_url }})
+- [Worker Threads]({{ '/planning/worker_threads/' | relative_url }})
+>>>>>>> 4da742c (docs: fix internal links and normalize layouts; set baseurl)
