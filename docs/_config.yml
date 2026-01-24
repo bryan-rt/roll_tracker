@@ -6,3 +6,6 @@ theme: jekyll-theme-cayman
 
 # Keep URLs stable and readable
 permalink: pretty
+
+# Site baseurl for project pages
+baseurl: "/roll_tracker"
