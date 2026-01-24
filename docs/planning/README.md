@@ -1,5 +1,5 @@
 ---
-layout: page
+layout: default
 ---
 
 # roll_tracker planning pack (expanded)
