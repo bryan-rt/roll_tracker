@@ -114,7 +114,7 @@ stages:
 
   stage_D:
     enabled: null
-    run_until: "D0"
+    run_until: "D1"
     d0:
       occlusion_repair:
         enable_normalized: true
@@ -158,18 +158,34 @@ stages:
     # D1: graph construction (no costs, no solving)
     d1:
       enabled: true
+      # Enable intra-lifespan segmentation of carriers into SOLO/GROUP segments
+      enable_lifespan_segmentation: true
+      # Minimum duration for a GROUP segment (frames)
+      min_group_duration_frames: 10
+      # Suppress split triggers closer than this (frames)
+      min_split_separation_frames: 10
+      # Search window around trigger frame for carrier coordinates (frames)
+      carrier_coord_window_frames: 15
+      # Max allowed delay after disappearance to consider merge trigger (frames)
+      merge_trigger_max_age_frames: 90
+
+      # If true, write dev-only candidate artifacts under outputs/<clip_id>/_debug/.
+      # These are intentionally not part of the F0/F* public artifact contracts.
+      write_debug_graph_artifacts: true
       # maximum allowed gap (in frames) for single→single continuation edges
-      max_continue_gap_frames: 90
+      # mainly relevant if enable_lifespan_segmentation is False
+      max_continue_gap_frames: 300
       # endpoint extraction windows (frames)
+      # mainly relevant if enable_lifespan_segmentation is False
       start_window_frames: 10
       end_window_frames: 10
       # group-tracklet inference
       enable_group_nodes: true
-      merge_dist_m: 0.45
+      merge_dist_m: 0.6
       merge_end_sync_frames: 3
       merge_disappear_gap_frames: 6
-      split_dist_m: 0.60
-      split_search_horizon_frames: 120
+      split_dist_m: 1.0
+      split_search_horizon_frames: 2700
 
   stage_E:
     enabled: null

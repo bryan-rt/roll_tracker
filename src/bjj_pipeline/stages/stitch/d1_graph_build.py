@@ -126,6 +126,12 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 	"""
 	# ---- config ----
 	d1_cfg = _cfg_get(cfg, "stages.stage_D.d1", {}) or {}
+	write_debug_graph_artifacts = bool(d1_cfg.get("write_debug_graph_artifacts", False))
+	enable_lifespan_segmentation = bool(d1_cfg.get("enable_lifespan_segmentation", True))
+	min_group_duration_frames = int(d1_cfg.get("min_group_duration_frames", 10))
+	min_split_separation_frames = int(d1_cfg.get("min_split_separation_frames", 10))
+	carrier_coord_window_frames = int(d1_cfg.get("carrier_coord_window_frames", 8))
+	merge_trigger_max_age_frames = int(d1_cfg.get("merge_trigger_max_age_frames", 60))
 	enable_group_nodes = bool(d1_cfg.get("enable_group_nodes", True))
 	max_continue_gap_frames = int(d1_cfg.get("max_continue_gap_frames", 90))
 	start_window_frames = int(d1_cfg.get("start_window_frames", 10))
@@ -143,6 +149,10 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 	frames_path = Path(layout.tracklet_bank_frames_parquet())
 	summ_path = Path(layout.tracklet_bank_summaries_parquet())
 	audit_path = Path(layout.audit_jsonl("D"))
+	# Dev-only debug artifacts live under outputs/<clip_id>/_debug/.
+	# Prefer layout.clip_root when available; otherwise infer from stage_D parquet path.
+	clip_root = Path(getattr(layout, "clip_root", frames_path.parent.parent))
+	debug_dir = clip_root / "_debug"
 
 	# ---- load ----
 	tf = pd.read_parquet(frames_path)
@@ -272,6 +282,589 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 			used_repaired_frames += 1
 		return ((x, y), used_raw)
 
+	# =====================================================================
+	# NEW PATH: full-lifespan segmentation (SOLO/GROUP segments)
+	#
+	# This path does NOT remove your existing endpoint-based logic. Instead,
+	# it runs first when enabled, returning early. If disabled, the original
+	# D1 behavior is preserved below.
+	# =====================================================================
+	if enable_group_nodes and enable_lifespan_segmentation and last_frame is not None:
+		# Precompute endpoints for disappear/new using existing helpers.
+		endpoints_end: Dict[str, Optional[Tuple[Tuple[float, float], bool]]] = {}
+		endpoints_start: Dict[str, Optional[Tuple[float, float], bool]] = {}
+		for tid in sorted(ts_by_tid.keys()):
+			endpoints_end[tid] = endpoint_end(tid)
+			endpoints_start[tid] = endpoint_start(tid)
+
+		def _carrier_pos_near_frame(tid: str, target_frame: int, window: int) -> Optional[Tuple[Tuple[float, float], bool]]:
+			# Deterministic nearest-frame lookup (exact -> +/-1 -> +/-2 ...).
+			for off in range(0, window + 1):
+				if off == 0:
+					res = carrier_pos_at_frame(tid, target_frame)
+					if res is not None:
+						return res
+					continue
+				for f in (target_frame - off, target_frame + off):
+					res = carrier_pos_at_frame(tid, int(f))
+					if res is not None:
+						return res
+			return None
+
+		# ---- merge triggers: disappear tid ends while carrier continues, close in space ----
+		merge_triggers: List[Dict[str, Any]] = []
+		for disappear, drow in ts_by_tid.items():
+			d_end = int(drow["end_frame"])
+			disp_ep = endpoints_end.get(disappear)
+			if disp_ep is None:
+				continue
+			disp_xy = disp_ep[0]
+			for carrier, crow in ts_by_tid.items():
+				if carrier == disappear:
+					continue
+				cs = int(crow["start_frame"])
+				ce = int(crow["end_frame"])
+				if not (cs <= d_end <= ce):
+					continue
+				cpos = _carrier_pos_near_frame(carrier, d_end, carrier_coord_window_frames)
+				if cpos is None:
+					continue
+				dist = _dist_m(disp_xy, cpos[0])
+				if dist > merge_dist_m:
+					continue
+				merge_triggers.append(
+					{
+						"carrier": carrier,
+						"disappear": disappear,
+						"merge_frame": d_end + 1,  # group begins immediately after disappearance
+						"merge_end": d_end,
+						"merge_dist_m": float(dist),
+					}
+				)
+
+		# Optional timing suppression (do not infer “ancient” merges).
+		if merge_trigger_max_age_frames > 0:
+			merge_triggers = [
+				m
+				for m in merge_triggers
+				if (int(m["merge_frame"]) - int(ts_by_tid[m["disappear"]]["end_frame"])) <= merge_trigger_max_age_frames
+			]
+
+		# ---- split triggers: new tid starts while carrier exists, close in space ----
+		split_triggers_raw: List[Dict[str, Any]] = []
+		for new_tid, nrow in ts_by_tid.items():
+			n_start = int(nrow["start_frame"])
+			new_ep = endpoints_start.get(new_tid)
+			if new_ep is None:
+				continue
+			new_xy = new_ep[0]
+			for carrier, crow in ts_by_tid.items():
+				if carrier == new_tid:
+					continue
+				cs = int(crow["start_frame"])
+				ce = int(crow["end_frame"])
+				if not (cs <= n_start <= ce):
+					continue
+				cpos = _carrier_pos_near_frame(carrier, n_start, carrier_coord_window_frames)
+				if cpos is None:
+					continue
+				dist = _dist_m(new_xy, cpos[0])
+				if dist > split_dist_m:
+					continue
+				split_triggers_raw.append(
+					{
+						"carrier": carrier,
+						"new": new_tid,
+						"split_frame": n_start,
+						"split_dist_m": float(dist),
+					}
+				)
+
+		# Suppress split triggers too close in time on the same carrier.
+		suppressed_split_triggers: List[Dict[str, Any]] = []
+		split_triggers: List[Dict[str, Any]] = []
+		for carrier in sorted({t["carrier"] for t in split_triggers_raw}):
+			cands = sorted(
+				[t for t in split_triggers_raw if t["carrier"] == carrier],
+				key=lambda x: (int(x["split_frame"]), float(x["split_dist_m"]), str(x["new"])),
+			)
+			kept: List[Dict[str, Any]] = []
+			for t in cands:
+				if not kept:
+					kept.append(t)
+					continue
+				prev = kept[-1]
+				if int(t["split_frame"]) - int(prev["split_frame"]) < min_split_separation_frames:
+					# keep the better (lower dist), deterministic tie-breaker by new id
+					if (float(t["split_dist_m"]), str(t["new"])) < (float(prev["split_dist_m"]), str(prev["new"])):
+						worse = prev
+						kept[-1] = t
+					else:
+						worse = t
+					worse = dict(worse)
+					worse["reason"] = "suppressed_close_split"
+					suppressed_split_triggers.append(worse)
+				else:
+					kept.append(t)
+			split_triggers.extend(kept)
+
+		# ---- pair merges to splits to form GROUP spans per carrier ----
+		group_spans: List[Dict[str, Any]] = []
+		suppressed_group_spans: List[Dict[str, Any]] = []
+
+		for carrier in sorted({m["carrier"] for m in merge_triggers} | {s["carrier"] for s in split_triggers}):
+			# Carrier lifespan bounds are authoritative (from tracklet_bank_summaries).
+			crow = ts_by_tid.get(carrier)
+			if crow is None:
+				continue
+			cs = int(crow["start_frame"])
+			ce = int(crow["end_frame"])
+
+			merges = sorted([m for m in merge_triggers if m["carrier"] == carrier], key=lambda x: int(x["merge_frame"]))
+			splits = sorted([s for s in split_triggers if s["carrier"] == carrier], key=lambda x: int(x["split_frame"]))
+
+			# clip-start merged: split occurs early and no merge evidence before it
+			if splits:
+				first_split = splits[0]
+				if int(first_split["split_frame"]) <= split_search_horizon_frames:
+					has_prior_merge = any(int(m["merge_frame"]) <= int(first_split["split_frame"]) for m in merges)
+					if not has_prior_merge:
+						gs_raw = 0
+						ge_raw = int(first_split["split_frame"]) - 1
+						gs = max(gs_raw, cs)
+						ge = min(ge_raw, ce)
+						if ge < gs:
+							suppressed_group_spans.append(
+								{
+									"kind": "start_merged",
+									"carrier": carrier,
+									"disappear": None,
+									"new": first_split["new"],
+									"group_start_raw": gs_raw,
+									"group_end_raw": ge_raw,
+									"group_start": gs,
+									"group_end": ge,
+									"merge_end": None,
+									"split_start": int(first_split["split_frame"]),
+									"merge_dist_m": None,
+									"split_dist_m": float(first_split["split_dist_m"]),
+									"reason": "invalid_after_clamp",
+								}
+							)
+						elif (ge - gs + 1) >= min_group_duration_frames:
+							group_spans.append(
+								{
+									"kind": "start_merged",
+									"carrier": carrier,
+									"disappear": None,
+									"new": first_split["new"],
+									"group_start_raw": gs_raw,
+									"group_end_raw": ge_raw,
+									"group_start": gs,
+									"group_end": ge,
+									"merge_end": None,
+									"split_start": int(first_split["split_frame"]),
+									"merge_dist_m": None,
+									"split_dist_m": float(first_split["split_dist_m"]),
+								}
+							)
+						else:
+							suppressed_group_spans.append(
+								{
+									"kind": "start_merged",
+									"carrier": carrier,
+									"disappear": None,
+									"new": first_split["new"],
+									"group_start_raw": gs_raw,
+									"group_end_raw": ge_raw,
+									"group_start": gs,
+									"group_end": ge,
+									"merge_end": None,
+									"split_start": int(first_split["split_frame"]),
+									"merge_dist_m": None,
+									"split_dist_m": float(first_split["split_dist_m"]),
+									"reason": "too_short",
+								}
+							)
+
+			used_split_idx: set = set()
+			cursor_end: Optional[int] = None
+			for m in merges:
+				mf = int(m["merge_frame"])
+				if cursor_end is not None and mf <= cursor_end:
+					suppressed_group_spans.append({**m, "reason": "overlaps_existing_group"})
+					continue
+
+				chosen: Optional[Tuple[int, Dict[str, Any]]] = None
+				for i, s in enumerate(splits):
+					if i in used_split_idx:
+						continue
+					sf = int(s["split_frame"])
+					if sf <= mf:
+						continue
+					if (sf - mf) > split_search_horizon_frames:
+						break
+					chosen = (i, s)
+					break
+
+				if chosen is None:
+					# open-ended merged until the end of the carrier lifespan (never beyond it)
+					gs_raw = mf
+					ge_raw = int(last_frame)
+					gs = max(gs_raw, cs)
+					ge = min(ge_raw, ce)
+					if ge < gs:
+						suppressed_group_spans.append(
+							{
+								**m,
+								"kind": "merge_open_end",
+								"group_start_raw": gs_raw,
+								"group_end_raw": ge_raw,
+								"group_start": gs,
+								"group_end": ge,
+								"reason": "invalid_after_clamp",
+							}
+						)
+						continue
+					if (ge - gs + 1) >= min_group_duration_frames:
+						group_spans.append(
+							{
+								"kind": "merge_open_end",
+								"carrier": carrier,
+								"disappear": m["disappear"],
+								"new": None,
+								"group_start_raw": gs_raw,
+								"group_end_raw": ge_raw,
+								"group_start": gs,
+								"group_end": ge,
+								"merge_end": int(m["merge_end"]),
+								"split_start": None,
+								"merge_dist_m": float(m["merge_dist_m"]),
+								"split_dist_m": None,
+							}
+						)
+						cursor_end = ge
+					else:
+						suppressed_group_spans.append({**m, "reason": "too_short"})
+					continue
+
+				i, s = chosen
+				used_split_idx.add(i)
+				gs_raw = mf
+				ge_raw = int(s["split_frame"]) - 1
+				gs = max(gs_raw, cs)
+				ge = min(ge_raw, ce)
+				if ge < gs:
+					suppressed_group_spans.append(
+						{
+							**m,
+							**s,
+							"kind": "merge_split",
+							"group_start_raw": gs_raw,
+							"group_end_raw": ge_raw,
+							"group_start": gs,
+							"group_end": ge,
+							"reason": "invalid_after_clamp",
+						}
+					)
+					continue
+				if (ge - gs + 1) < min_group_duration_frames:
+					suppressed_group_spans.append({**m, **s, "reason": "too_short"})
+					continue
+				group_spans.append(
+					{
+						"kind": "merge_split",
+						"carrier": carrier,
+						"disappear": m["disappear"],
+						"new": s["new"],
+						"group_start_raw": gs_raw,
+						"group_end_raw": ge_raw,
+						"group_start": gs,
+						"group_end": ge,
+						"merge_end": int(m["merge_end"]),
+						"split_start": int(s["split_frame"]),
+						"merge_dist_m": float(m["merge_dist_m"]),
+						"split_dist_m": float(s["split_dist_m"]),
+					}
+				)
+				cursor_end = ge
+
+		# ---- segment each base tracklet into SOLO segments + GROUP segments ----
+		segments_by_base: Dict[str, List[Dict[str, Any]]] = {}
+		all_segments: List[Dict[str, Any]] = []
+
+		for tid, row in sorted(ts_by_tid.items(), key=lambda kv: (int(kv[1]["start_frame"]), str(kv[0]))):
+			ts0 = int(row["start_frame"])
+			te0 = int(row["end_frame"])
+			spans = sorted([g for g in group_spans if g["carrier"] == tid], key=lambda x: (int(x["group_start"]), int(x["group_end"])))
+
+			out: List[Dict[str, Any]] = []
+			cursor = ts0
+			k = 0
+			for gspan in spans:
+				gs = int(gspan["group_start"])
+				ge = int(gspan["group_end"])
+				if cursor < gs:
+					out.append(
+						{
+							"segment_type": "SOLO",
+							"base_tracklet_id": tid,
+							"start_frame": cursor,
+							"end_frame": gs - 1,
+							"k": k,
+							"payload": {},
+						}
+					)
+					k += 1
+				out.append(
+					{
+						"segment_type": "GROUP",
+						"base_tracklet_id": tid,
+						"start_frame": gs,
+						"end_frame": ge,
+						"k": k,
+						"payload": dict(gspan),
+					}
+				)
+				k += 1
+				cursor = ge + 1
+			if cursor <= te0:
+				out.append(
+					{
+						"segment_type": "SOLO",
+						"base_tracklet_id": tid,
+						"start_frame": cursor,
+						"end_frame": te0,
+						"k": k,
+						"payload": {},
+					}
+				)
+
+			# Invariant: every emitted segment must lie within the base tracklet lifespan.
+			for seg in out:
+				sf = int(seg["start_frame"])
+				ef = int(seg["end_frame"])
+				if ef < sf or sf < ts0 or ef > te0:
+					raise ValueError(
+						f"D1 segmentation produced out-of-bounds segment for {tid}: {sf}-{ef} not within {ts0}-{te0}"
+					)
+
+			# Assign stable node_ids with backwards-compat where possible:
+			# - If only one SOLO segment == full lifespan => node_id "T:<tid>".
+			# - Otherwise SOLO segments => "T:<tid>:s<k>:<start>-<end>"
+			# - GROUP segments => "G:<start>-<end>:carrier=<tid>:d=<...>:n=<...>"
+			if len(out) == 1 and out[0]["segment_type"] == "SOLO" and int(out[0]["start_frame"]) == ts0 and int(out[0]["end_frame"]) == te0:
+				out[0]["node_id"] = f"T:{tid}"
+				out[0]["capacity"] = 1
+			else:
+				for seg in out:
+					if seg["segment_type"] == "SOLO":
+						seg["node_id"] = f"T:{tid}:s{int(seg['k'])}:{int(seg['start_frame'])}-{int(seg['end_frame'])}"
+						seg["capacity"] = 1
+					else:
+						gs = int(seg["start_frame"])
+						ge = int(seg["end_frame"])
+						p = seg["payload"]
+						disp = p.get("disappear", None) or "none"
+						new = p.get("new", None) or "none"
+						seg["node_id"] = f"G:{gs}-{ge}:carrier={tid}:d={disp}:n={new}"
+						seg["capacity"] = 2
+
+			segments_by_base[tid] = out
+			all_segments.extend(out)
+
+		# ---- Build the segmented graph ----
+		g = TrackletGraph()
+		g.add_node(GraphNode(node_id="SOURCE", type=NodeType.SOURCE, capacity=0, start_frame=None, end_frame=None, payload={}))
+		g.add_node(GraphNode(node_id="SINK", type=NodeType.SINK, capacity=0, start_frame=None, end_frame=None, payload={}))
+
+		for tid, chain in segments_by_base.items():
+			base_row = ts_by_tid.get(tid)
+			must_key = base_row.get("must_link_anchor_key", None) if base_row is not None else None
+			cannot_keys = _parse_json_list(base_row.get("cannot_link_anchor_keys_json", None)) if base_row is not None else []
+
+			for seg in chain:
+				node_id = str(seg["node_id"])
+				seg_type = str(seg["segment_type"])
+				start_f = int(seg["start_frame"])
+				end_f = int(seg["end_frame"])
+				cap = int(seg["capacity"])
+
+				payload = {
+					"tracklet_id": tid,
+					"base_tracklet_id": tid,
+					"segment_type": seg_type,
+					"must_link_anchor_key": must_key,
+					"cannot_link_anchor_keys": cannot_keys,
+				}
+				if seg_type == "GROUP":
+					p = seg["payload"]
+					payload.update(
+						{
+							"carrier_tracklet_id": tid,
+							"disappearing_tracklet_id": p.get("disappear", None),
+							"new_tracklet_id": p.get("new", None),
+							"kind": p.get("kind", None),
+						}
+					)
+
+				node_type = NodeType.GROUP_TRACKLET if seg_type == "GROUP" else NodeType.SINGLE_TRACKLET
+				g.add_node(GraphNode(node_id=node_id, type=node_type, capacity=cap, start_frame=start_f, end_frame=end_f, payload=payload))
+
+			# births/deaths for the chain: if first/last are GROUP, use cap=2 like original semantics
+			first = chain[0]
+			last = chain[-1]
+			g.add_edge(GraphEdge(edge_id=f"E:BIRTH:{first['node_id']}", u="SOURCE", v=str(first["node_id"]), type=EdgeType.BIRTH, capacity=int(first["capacity"]), payload={}))
+			g.add_edge(GraphEdge(edge_id=f"E:DEATH:{last['node_id']}", u=str(last["node_id"]), v="SINK", type=EdgeType.DEATH, capacity=int(last["capacity"]), payload={}))
+
+			# temporal edges between consecutive segments of same base tracklet
+			for a, b in zip(chain, chain[1:]):
+				u = str(a["node_id"])
+				v = str(b["node_id"])
+				g.add_edge(
+					GraphEdge(
+						edge_id=f"E:CONT:{u}->{v}",
+						u=u,
+						v=v,
+						type=EdgeType.CONTINUE,
+						capacity=1,
+						payload={"dt_frames": int(b["start_frame"]) - int(a["end_frame"])},
+					)
+				)
+
+		# MERGE edges: disappearing identity flows into the GROUP segment.
+		for gspan in group_spans:
+			disp = gspan.get("disappear", None)
+			merge_end = gspan.get("merge_end", None)
+			if disp is None or merge_end is None:
+				continue
+			carrier = str(gspan["carrier"])
+			gs = int(gspan["group_start"])
+			ge = int(gspan["group_end"])
+			group_id = f"G:{gs}-{ge}:carrier={carrier}:d={(disp or 'none')}:n={(gspan.get('new') or 'none')}"
+
+			# Find disappearing segment containing merge_end; fallback to legacy node if unsplit.
+			u_node: Optional[str] = None
+			for seg in segments_by_base.get(str(disp), []):
+				if int(seg["start_frame"]) <= int(merge_end) <= int(seg["end_frame"]):
+					u_node = str(seg["node_id"])
+					break
+			if u_node is None:
+				u_node = f"T:{disp}"
+			g.add_edge(GraphEdge(edge_id=f"E:MERGE:{u_node}->{group_id}", u=u_node, v=group_id, type=EdgeType.MERGE, capacity=1, payload={"merge_end": int(merge_end)}))
+
+		# SPLIT edges: GROUP segment to new identity segment.
+		for gspan in group_spans:
+			new_tid = gspan.get("new", None)
+			split_start = gspan.get("split_start", None)
+			if new_tid is None or split_start is None:
+				continue
+			carrier = str(gspan["carrier"])
+			gs = int(gspan["group_start"])
+			ge = int(gspan["group_end"])
+			group_id = f"G:{gs}-{ge}:carrier={carrier}:d={(gspan.get('disappear') or 'none')}:n={(new_tid or 'none')}"
+
+			v_node: Optional[str] = None
+			for seg in segments_by_base.get(str(new_tid), []):
+				if int(seg["start_frame"]) <= int(split_start) <= int(seg["end_frame"]):
+					v_node = str(seg["node_id"])
+					break
+			if v_node is None:
+				v_node = f"T:{new_tid}"
+			g.add_edge(GraphEdge(edge_id=f"E:SPLIT:{group_id}->{v_node}", u=group_id, v=v_node, type=EdgeType.SPLIT, capacity=1, payload={"split_start": int(split_start)}))
+
+		# Validate + write debug artifacts (adds segments + triggers).
+		g.validate()
+
+		debug_outputs: Dict[str, str] = {}
+		if write_debug_graph_artifacts:
+			debug_dir.mkdir(parents=True, exist_ok=True)
+
+			nodes_path = debug_dir / "d1_graph_nodes.parquet"
+			edges_path = debug_dir / "d1_graph_edges.parquet"
+			groups_path = debug_dir / "d1_group_spans.parquet"
+			suppressed_path = debug_dir / "d1_suppressed_continue_edges.parquet"
+
+			nodes_rows: List[Dict[str, Any]] = []
+			for n in g.sorted_nodes():
+				nodes_rows.append(
+					{
+						"node_id": n.node_id,
+						"node_type": str(n.type),
+						"capacity": int(n.capacity),
+						"start_frame": n.start_frame,
+						"end_frame": n.end_frame,
+						"payload_json": json.dumps(n.payload, sort_keys=True),
+					}
+				)
+			pd.DataFrame(nodes_rows).to_parquet(nodes_path, index=False)
+
+			edges_rows: List[Dict[str, Any]] = []
+			for e in g.sorted_edges():
+				edges_rows.append(
+					{
+						"edge_id": e.edge_id,
+						"edge_type": str(e.type),
+						"u": e.u,
+						"v": e.v,
+						"capacity": int(e.capacity),
+						"payload_json": json.dumps(e.payload, sort_keys=True),
+					}
+				)
+			pd.DataFrame(edges_rows).to_parquet(edges_path, index=False)
+
+			pd.DataFrame(group_spans).to_parquet(groups_path, index=False)
+			# segmentation path doesn’t use suppressed-continue, but keep file for compat
+			pd.DataFrame([]).to_parquet(suppressed_path, index=False)
+
+			(pd.DataFrame(all_segments) if all_segments else pd.DataFrame([])).to_parquet(debug_dir / "d1_segments.parquet", index=False)
+			(pd.DataFrame(merge_triggers) if merge_triggers else pd.DataFrame([])).to_parquet(debug_dir / "d1_merge_triggers.parquet", index=False)
+			(pd.DataFrame(split_triggers) if split_triggers else pd.DataFrame([])).to_parquet(debug_dir / "d1_split_triggers.parquet", index=False)
+			(pd.DataFrame(suppressed_split_triggers) if suppressed_split_triggers else pd.DataFrame([])).to_parquet(
+				debug_dir / "d1_suppressed_split_triggers.parquet", index=False
+			)
+			(pd.DataFrame(suppressed_group_spans) if suppressed_group_spans else pd.DataFrame([])).to_parquet(debug_dir / "d1_suppressed_group_spans.parquet", index=False)
+
+			debug_outputs = {
+				"d1_graph_nodes_parquet": str(nodes_path),
+				"d1_graph_edges_parquet": str(edges_path),
+				"d1_group_spans_parquet": str(groups_path),
+				"d1_suppressed_continue_edges_parquet": str(suppressed_path),
+				"d1_segments_parquet": str(debug_dir / "d1_segments.parquet"),
+				"d1_merge_triggers_parquet": str(debug_dir / "d1_merge_triggers.parquet"),
+				"d1_split_triggers_parquet": str(debug_dir / "d1_split_triggers.parquet"),
+				"d1_suppressed_split_triggers_parquet": str(debug_dir / "d1_suppressed_split_triggers.parquet"),
+				"d1_suppressed_group_spans_parquet": str(debug_dir / "d1_suppressed_group_spans.parquet"),
+			}
+
+		_write_audit_event(
+			audit_path,
+			{
+				"event": "d1_graph_built",
+				"event_type": "d1_graph_built",
+				"stage": "D1",
+				"ts_ms": _now_ms(),
+				"manifest": {"fps": fps, "frame_count": frame_count, "duration_ms": duration_ms},
+				"graph": {
+					"n_nodes": len(g.nodes),
+					"n_edges": len(g.edges),
+					"n_group_nodes": len([n for n in g.nodes.values() if n.type == NodeType.GROUP_TRACKLET]),
+					"n_segments_total": len(all_segments),
+					"n_group_spans_total": len(group_spans),
+				},
+				"coords": {
+					"primary": ["x_m_repaired", "y_m_repaired"],
+					"fallback": ["x_m", "y_m"],
+					"frames_used_repaired": used_repaired_frames,
+					"frames_used_raw_fallback": used_raw_frames,
+					"on_mat_missing": bool(on_mat_missing),
+				},
+				"debug_outputs": debug_outputs,
+			},
+		)
+
+		return g
+
 	# ---- build base graph ----
 	g = TrackletGraph()
 	g.add_node(GraphNode(node_id="SOURCE", type=NodeType.SOURCE, capacity=0, start_frame=None, end_frame=None, payload={}))
@@ -362,6 +955,7 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 	group_from_start = 0
 	merge_split_groups = 0
 	suppressed_continue_edges = 0
+	suppressed_continue_edges_rows: List[Dict[str, Any]] = []
 
 	# Precompute endpoints for efficiency (deterministic)
 	endpoints_end: Dict[str, Optional[Tuple[Tuple[float, float], bool]]] = {}
@@ -644,6 +1238,7 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 			return False
 
 		edges_to_remove: List[str] = []
+		edges_remove_detail: List[Tuple[str, str, str, int, int]] = []
 		for e in g.edges.values():
 			if e.type != EdgeType.CONTINUE:
 				continue
@@ -655,9 +1250,69 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 			sj = int(ts_by_tid[v_tid]["start_frame"])
 			if _in_any_group(ei + 1) or _in_any_group(sj - 1):
 				edges_to_remove.append(e.edge_id)
+				edges_remove_detail.append((e.edge_id, e.u, e.v, ei, sj))
 		for eid in edges_to_remove:
 			g.edges.pop(eid, None)
 		suppressed_continue_edges = len(edges_to_remove)
+		# Preserve suppressed edges as a debug-only artifact for candidate visibility.
+		for edge_id, u, v, u_end_frame, v_start_frame in edges_remove_detail:
+			suppressed_continue_edges_rows.append(
+				{
+					"edge_id": edge_id,
+					"u": u,
+					"v": v,
+					"u_end_frame": int(u_end_frame),
+					"v_start_frame": int(v_start_frame),
+					"reason": "suppressed_by_group_interval",
+				}
+			)
+	# ---- debug artifacts (dev-only; not part of public contracts) ----
+	debug_outputs: Dict[str, str] = {}
+	if write_debug_graph_artifacts:
+		debug_dir.mkdir(parents=True, exist_ok=True)
+		nodes_path = debug_dir / "d1_graph_nodes.parquet"
+		edges_path = debug_dir / "d1_graph_edges.parquet"
+		groups_path = debug_dir / "d1_group_spans.parquet"
+		suppressed_path = debug_dir / "d1_suppressed_continue_edges.parquet"
+
+		nodes_rows: List[Dict[str, Any]] = []
+		for n in g.sorted_nodes():
+			nodes_rows.append(
+				{
+					"node_id": n.node_id,
+					"node_type": str(n.type),
+					"capacity": int(n.capacity),
+					"start_frame": n.start_frame,
+					"end_frame": n.end_frame,
+					"payload_json": json.dumps(n.payload, sort_keys=True),
+				}
+			)
+		pd.DataFrame(nodes_rows).to_parquet(nodes_path, index=False)
+
+		edges_rows: List[Dict[str, Any]] = []
+		for e in g.sorted_edges():
+			edges_rows.append(
+				{
+					"edge_id": e.edge_id,
+					"edge_type": str(e.type),
+					"u": e.u,
+					"v": e.v,
+					"capacity": int(e.capacity),
+					"payload_json": json.dumps(e.payload, sort_keys=True),
+				}
+			)
+		pd.DataFrame(edges_rows).to_parquet(edges_path, index=False)
+
+		pd.DataFrame(groups).to_parquet(groups_path, index=False)
+		pd.DataFrame(suppressed_continue_edges_rows).to_parquet(suppressed_path, index=False)
+
+		# clip-relative debug paths for audit traceability
+		debug_outputs = {
+			"d1_graph_nodes_parquet": str(nodes_path.relative_to(clip_root)),
+			"d1_graph_edges_parquet": str(edges_path.relative_to(clip_root)),
+			"d1_group_spans_parquet": str(groups_path.relative_to(clip_root)),
+			"d1_suppressed_continue_edges_parquet": str(suppressed_path.relative_to(clip_root)),
+		}
 
 	# ---- final validate ----
 	g.validate()
@@ -696,6 +1351,7 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 			"suppressed_continue_edges": suppressed_continue_edges,
 			"missing_endpoint_coords": missing_endpoint_coords,
 		},
+		"debug_outputs": debug_outputs if write_debug_graph_artifacts else None,
 	}
 	_write_audit_event(audit_path, audit_evt)
 	return g
