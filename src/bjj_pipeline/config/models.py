@@ -280,6 +280,20 @@ class StageD1Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = Field(default=True)
+    write_debug_graph_artifacts: bool = Field(
+        default=False,
+        description="If true, write dev-only D1 graph candidate artifacts under outputs/<clip_id>/_debug/",
+    )
+
+    enable_lifespan_segmentation: bool = Field(
+        default=True,
+        description="If true, segment full carrier lifespans into SOLO/GROUP segments (intra-lifespan merges).",
+    )
+    min_group_duration_frames: int = Field(default=10, ge=0)
+    min_split_separation_frames: int = Field(default=10, ge=0)
+    carrier_coord_window_frames: int = Field(default=8, ge=0)
+    merge_trigger_max_age_frames: int = Field(default=60, ge=0)
+
     # maximum allowed gap (in frames) for single→single continuation edges
     max_continue_gap_frames: int = Field(default=90, ge=0)
     # endpoint extraction windows (frames)
