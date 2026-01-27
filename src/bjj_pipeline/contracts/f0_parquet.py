@@ -1,3 +1,84 @@
+# from __future__ import annotations
+from __future__ import annotations
+from dataclasses import dataclass
+from typing import Dict, Iterable, List, Literal, Optional, Sequence, Tuple
+
+# ...existing code...
+
+# ----------------------------
+# Column specs
+# ----------------------------
+
+DTypeFamily = Literal["string", "int", "float", "bool"]
+
+@dataclass(frozen=True)
+class ColSpec:
+    name: str
+    family: DTypeFamily
+    required: bool = True
+    # Optional: allow nulls even if present (common in Parquet for optional cols)
+    nullable: bool = True
+
+# ---- Stage D1 graph artifacts (solver-agnostic; consumed by D2/D3) ----
+D1_GRAPH_NODES_SPECS: List[ColSpec] = [
+    ColSpec("node_id", "string", nullable=False),
+    ColSpec("node_type", "string", nullable=False),
+    ColSpec("capacity", "int", nullable=False),
+    ColSpec("start_frame", "int", nullable=True),
+    ColSpec("end_frame", "int", nullable=True),
+
+    # Solver-agnostic join keys / features for D2 pricing.
+    # These MUST be derivable deterministically from upstream artifacts (A/C) + D0 bank.
+    ColSpec("base_tracklet_id", "string", nullable=True),
+    ColSpec("segment_type", "string", nullable=True),  # "SOLO" | "GROUP"
+    ColSpec("carrier_tracklet_id", "string", nullable=True),
+    ColSpec("disappearing_tracklet_id", "string", nullable=True),
+    ColSpec("new_tracklet_id", "string", nullable=True),
+
+    # Identity-hint payloads (annotations for D2/D3; D1 may use them only for strict pruning).
+    ColSpec("must_link_anchor_key", "string", nullable=True),
+    ColSpec("must_link_confidence", "float", nullable=True),
+    ColSpec("cannot_link_anchor_keys_json", "string", nullable=True),
+
+    # Full structured payload (lossless, forwards compatible).
+    ColSpec("payload_json", "string", nullable=False),
+]
+
+D1_GRAPH_EDGES_SPECS: List[ColSpec] = [
+    ColSpec("edge_id", "string", nullable=False),
+    ColSpec("edge_type", "string", nullable=False),
+    ColSpec("u", "string", nullable=False),
+    ColSpec("v", "string", nullable=False),
+    ColSpec("capacity", "int", nullable=False),
+
+    # Common edge features for D2 pricing / debug.
+    ColSpec("dt_frames", "int", nullable=True),
+    ColSpec("merge_end", "int", nullable=True),
+    ColSpec("split_start", "int", nullable=True),
+
+    # Full structured payload (lossless, forwards compatible).
+    ColSpec("payload_json", "string", nullable=False),
+]
+
+D1_SEGMENTS_SPECS: List[ColSpec] = [
+    ColSpec("segment_type", "string", nullable=False),
+    ColSpec("base_tracklet_id", "string", nullable=False),
+    ColSpec("start_frame", "int", nullable=False),
+    ColSpec("end_frame", "int", nullable=False),
+    ColSpec("k", "int", nullable=False),
+    ColSpec("node_id", "string", nullable=False),
+    ColSpec("capacity", "int", nullable=False),
+    ColSpec("payload_json", "string", nullable=False),
+]
+
+# Stage D1 (graph construction; solver-agnostic)
+PARQUET_SCHEMA_SPECS = {
+    # ...existing code...
+    "d1_graph_nodes": D1_GRAPH_NODES_SPECS,
+    "d1_graph_edges": D1_GRAPH_EDGES_SPECS,
+    "d1_segments": D1_SEGMENTS_SPECS,
+    # ...existing code...
+}
 """
 F0 — Parquet schema mappings (authoritative)
 
@@ -11,7 +92,6 @@ This module intentionally supports both:
 - pyarrow schema objects (optional use by writers)
 """
 
-from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Literal, Optional, Sequence, Tuple
@@ -197,6 +277,10 @@ PARQUET_SCHEMAS: Dict[str, List[ColSpec]] = {
     "tracklet_summaries": TRACKLET_SUMMARIES_SPECS,
     "tracklet_bank_frames": TRACKLET_BANK_FRAMES_SPECS,
     "tracklet_bank_summaries": TRACKLET_BANK_SUMMARIES_SPECS,
+    # Stage D1 (graph construction; solver-agnostic)
+    "d1_graph_nodes": D1_GRAPH_NODES_SPECS,
+    "d1_graph_edges": D1_GRAPH_EDGES_SPECS,
+    "d1_segments": D1_SEGMENTS_SPECS,
     "contact_points": CONTACT_POINTS_SPECS,
     "person_tracks": PERSON_TRACKS_SPECS,
 }

@@ -1,3 +1,35 @@
+
+# Place this after all class and helper function definitions
+
+def register_stage_D1_defaults(manifest: 'ClipManifest', layout: 'ClipOutputLayout') -> None:
+    """
+    Convenience: register canonical Stage D1 artifacts (graph tables).
+
+    These artifacts are solver-agnostic inputs for D2 (cost modeling) and D3 (MCF/ILP solving).
+    Call after writing the files.
+    """
+    manifest.register_artifact(
+        stage="D",
+        key="d1_graph_nodes_parquet",
+        relpath=layout.rel_to_clip_root(layout.d1_graph_nodes_parquet()),
+        content_type="application/parquet",
+    )
+    manifest.register_artifact(
+        stage="D",
+        key="d1_graph_edges_parquet",
+        relpath=layout.rel_to_clip_root(layout.d1_graph_edges_parquet()),
+        content_type="application/parquet",
+    )
+    manifest.register_artifact(
+        stage="D",
+        key="d1_segments_parquet",
+        relpath=layout.rel_to_clip_root(layout.d1_segments_parquet()),
+        content_type="application/parquet",
+    )
+
+# ...existing code...
+
+# Place this after all class and helper function definitions
 """
 F0 — Clip manifest model + helpers (authoritative)
 
@@ -9,7 +41,7 @@ A clip manifest is the single source of truth linking:
 Stages should register artifacts as they are produced.
 """
 
-from __future__ import annotations
+
 
 from pathlib import Path
 from typing import Any, Dict, Optional

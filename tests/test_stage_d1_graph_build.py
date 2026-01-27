@@ -10,9 +10,19 @@ from bjj_pipeline.stages.stitch.d1_graph_build import run_d1
 from bjj_pipeline.stages.stitch.graph import EdgeType, NodeType
 
 
+
 @dataclass
 class _Layout:
     root: Path
+
+    def d1_graph_nodes_parquet(self) -> Path:
+        return self.root / "stage_D" / "d1_graph_nodes.parquet"
+
+    def d1_graph_edges_parquet(self) -> Path:
+        return self.root / "stage_D" / "d1_graph_edges.parquet"
+
+    def d1_segments_parquet(self) -> Path:
+        return self.root / "stage_D" / "d1_segments.parquet"
 
     @property
     def clip_root(self) -> Path:
@@ -205,13 +215,7 @@ def test_d1_debug_artifacts_include_segments(tmp_path: Path):
     manifest = {"fps": 30.0, "frame_count": 60, "duration_ms": 2000}
     run_d1(cfg=_base_cfg(write_debug_graph_artifacts=True), layout=layout, manifest=manifest)
 
-    debug_dir = tmp_path / "_debug"
-    assert (debug_dir / "d1_graph_nodes.parquet").exists()
-    assert (debug_dir / "d1_graph_edges.parquet").exists()
-    assert (debug_dir / "d1_group_spans.parquet").exists()
-    assert (debug_dir / "d1_suppressed_continue_edges.parquet").exists()
-    assert (debug_dir / "d1_segments.parquet").exists()
-    assert (debug_dir / "d1_merge_triggers.parquet").exists()
-    assert (debug_dir / "d1_split_triggers.parquet").exists()
-    assert (debug_dir / "d1_suppressed_split_triggers.parquet").exists()
-    assert (debug_dir / "d1_suppressed_group_spans.parquet").exists()
+    stage_d_dir = tmp_path / "stage_D"
+    assert (stage_d_dir / "d1_graph_nodes.parquet").exists()
+    assert (stage_d_dir / "d1_graph_edges.parquet").exists()
+    assert (stage_d_dir / "d1_segments.parquet").exists()

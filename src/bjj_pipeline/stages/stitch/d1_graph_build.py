@@ -1,14 +1,14 @@
-"""Stage D1 — Candidate graph construction.
+from __future__ import annotations
+from bjj_pipeline.contracts.f0_parquet import validate_df_schema_by_key
+"""Stage D1 4 Candidate graph construction.
 
 D1 constructs a solver-agnostic graph over tracklets, including explicit
 GROUP_TRACKLET nodes (capacity=2) and merge/split edges to represent
-2→1→2 events.
+22122 events.
 
 Authoritative spatial source: Stage D0 bank frames (repaired coords with
 per-frame fallback to raw coords).
 """
-
-from __future__ import annotations
 
 import json
 import math
@@ -776,17 +776,9 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 		# Validate + write debug artifacts (adds segments + triggers).
 		g.validate()
 
-		debug_outputs: Dict[str, str] = {}
-		if write_debug_graph_artifacts:
-			debug_dir.mkdir(parents=True, exist_ok=True)
-
-			nodes_path = debug_dir / "d1_graph_nodes.parquet"
-			edges_path = debug_dir / "d1_graph_edges.parquet"
-			groups_path = debug_dir / "d1_group_spans.parquet"
-			suppressed_path = debug_dir / "d1_suppressed_continue_edges.parquet"
-
-			nodes_rows: List[Dict[str, Any]] = []
-			for n in g.sorted_nodes():
+		# Canonical graph artifacts (always written)
+		nodes_rows: List[Dict[str, Any]] = []
+		for n in g.sorted_nodes():
 				nodes_rows.append(
 					{
 						"node_id": n.node_id,
@@ -797,10 +789,8 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 						"payload_json": json.dumps(n.payload, sort_keys=True),
 					}
 				)
-			pd.DataFrame(nodes_rows).to_parquet(nodes_path, index=False)
-
-			edges_rows: List[Dict[str, Any]] = []
-			for e in g.sorted_edges():
+		edges_rows: List[Dict[str, Any]] = []
+		for e in g.sorted_edges():
 				edges_rows.append(
 					{
 						"edge_id": e.edge_id,
@@ -811,31 +801,60 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 						"payload_json": json.dumps(e.payload, sort_keys=True),
 					}
 				)
-			pd.DataFrame(edges_rows).to_parquet(edges_path, index=False)
+		segments_df = (pd.DataFrame(all_segments) if all_segments else pd.DataFrame([]))
+		if not segments_df.empty:
+			# Add payload_json column as required by schema
+			segments_df["payload_json"] = segments_df["payload"].apply(lambda p: json.dumps(p, sort_keys=True))
+			segments_df = segments_df.drop(columns=["payload"])  # Remove payload dict column to match schema
 
+		nodes_df = pd.DataFrame(nodes_rows)
+		# Ensure integer columns are int, not float
+		for col in ("start_frame", "end_frame"):
+			if col in nodes_df.columns:
+				nodes_df[col] = nodes_df[col].astype('Int64' if nodes_df[col].isnull().any() else int)
+		edges_df = pd.DataFrame(edges_rows)
+		validate_df_schema_by_key(nodes_df, "d1_graph_nodes")
+		validate_df_schema_by_key(edges_df, "d1_graph_edges")
+		# empty is allowed early / for short clips
+		if len(segments_df) > 0:
+			validate_df_schema_by_key(segments_df, "d1_segments")
+
+		nodes_out = layout.d1_graph_nodes_parquet()
+		edges_out = layout.d1_graph_edges_parquet()
+		segs_out = layout.d1_segments_parquet()
+		nodes_out.parent.mkdir(parents=True, exist_ok=True)
+		nodes_df.to_parquet(nodes_out, index=False)
+		edges_df.to_parquet(edges_out, index=False)
+		segments_df.to_parquet(segs_out, index=False)
+
+		debug_outputs: Dict[str, str] = {
+			"d1_graph_nodes_parquet": str(nodes_out),
+			"d1_graph_edges_parquet": str(edges_out),
+			"d1_segments_parquet": str(segs_out),
+		}
+		if write_debug_graph_artifacts:
+			debug_dir.mkdir(parents=True, exist_ok=True)
+			groups_path = debug_dir / "d1_group_spans.parquet"
+			suppressed_path = debug_dir / "d1_suppressed_continue_edges.parquet"
 			pd.DataFrame(group_spans).to_parquet(groups_path, index=False)
 			# segmentation path doesn’t use suppressed-continue, but keep file for compat
 			pd.DataFrame([]).to_parquet(suppressed_path, index=False)
-
-			(pd.DataFrame(all_segments) if all_segments else pd.DataFrame([])).to_parquet(debug_dir / "d1_segments.parquet", index=False)
 			(pd.DataFrame(merge_triggers) if merge_triggers else pd.DataFrame([])).to_parquet(debug_dir / "d1_merge_triggers.parquet", index=False)
 			(pd.DataFrame(split_triggers) if split_triggers else pd.DataFrame([])).to_parquet(debug_dir / "d1_split_triggers.parquet", index=False)
-			(pd.DataFrame(suppressed_split_triggers) if suppressed_split_triggers else pd.DataFrame([])).to_parquet(
-				debug_dir / "d1_suppressed_split_triggers.parquet", index=False
-			)
+			(pd.DataFrame(suppressed_split_triggers) if suppressed_split_triggers else pd.DataFrame([])).to_parquet(debug_dir / "d1_suppressed_split_triggers.parquet", index=False)
 			(pd.DataFrame(suppressed_group_spans) if suppressed_group_spans else pd.DataFrame([])).to_parquet(debug_dir / "d1_suppressed_group_spans.parquet", index=False)
 
-			debug_outputs = {
-				"d1_graph_nodes_parquet": str(nodes_path),
-				"d1_graph_edges_parquet": str(edges_path),
-				"d1_group_spans_parquet": str(groups_path),
-				"d1_suppressed_continue_edges_parquet": str(suppressed_path),
-				"d1_segments_parquet": str(debug_dir / "d1_segments.parquet"),
-				"d1_merge_triggers_parquet": str(debug_dir / "d1_merge_triggers.parquet"),
-				"d1_split_triggers_parquet": str(debug_dir / "d1_split_triggers.parquet"),
-				"d1_suppressed_split_triggers_parquet": str(debug_dir / "d1_suppressed_split_triggers.parquet"),
-				"d1_suppressed_group_spans_parquet": str(debug_dir / "d1_suppressed_group_spans.parquet"),
-			}
+			debug_outputs.update(
+				{
+					"d1_group_spans_parquet": str(groups_path),
+					"d1_suppressed_continue_edges_parquet": str(suppressed_path),
+					"d1_merge_triggers_parquet": str(debug_dir / "d1_merge_triggers.parquet"),
+					"d1_split_triggers_parquet": str(debug_dir / "d1_split_triggers.parquet"),
+					"d1_suppressed_split_triggers_parquet": str(debug_dir / "d1_suppressed_split_triggers.parquet"),
+					"d1_suppressed_group_spans_parquet": str(debug_dir / "d1_suppressed_group_spans.parquet"),
+				}
+			)
+
 
 		_write_audit_event(
 			audit_path,
@@ -1284,6 +1303,18 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 					"capacity": int(n.capacity),
 					"start_frame": n.start_frame,
 					"end_frame": n.end_frame,
+					# Solver-agnostic join keys / features for D2 pricing (redundant with payload_json).
+					"base_tracklet_id": n.payload.get("base_tracklet_id"),
+					"segment_type": n.payload.get("segment_type"),
+					"carrier_tracklet_id": n.payload.get("carrier_tracklet_id"),
+					"disappearing_tracklet_id": n.payload.get("disappearing_tracklet_id"),
+					"new_tracklet_id": n.payload.get("new_tracklet_id"),
+					"must_link_anchor_key": n.payload.get("must_link_anchor_key"),
+					"must_link_confidence": n.payload.get("must_link_confidence"),
+					"cannot_link_anchor_keys_json": json.dumps(
+						n.payload.get("cannot_link_anchor_keys", []), sort_keys=True
+					),
+					# Full structured payload (lossless; forwards compatible).
 					"payload_json": json.dumps(n.payload, sort_keys=True),
 				}
 			)
@@ -1298,6 +1329,9 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 					"u": e.u,
 					"v": e.v,
 					"capacity": int(e.capacity),
+					"dt_frames": e.payload.get("dt_frames"),
+					"merge_end": e.payload.get("merge_end"),
+					"split_start": e.payload.get("split_start"),
 					"payload_json": json.dumps(e.payload, sort_keys=True),
 				}
 			)
