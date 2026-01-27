@@ -17,7 +17,11 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from bjj_pipeline.contracts.f0_manifest import register_stage_D0_defaults, write_manifest
+from bjj_pipeline.contracts.f0_manifest import (
+	register_stage_D0_defaults,
+	register_stage_D1_defaults,
+	write_manifest,
+)
 
 
 def _cfg_get(cfg: Dict[str, Any], path: str, default: Any = None) -> Any:
@@ -59,6 +63,8 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 			from bjj_pipeline.stages.stitch.d1_graph_build import run_d1
 
 			run_d1(cfg=config, layout=layout, manifest=manifest)
+			register_stage_D1_defaults(manifest, layout)
+			write_manifest(manifest, layout.clip_manifest_path())
 
 		# Optional visual QA (Checkpoint 2.5): write a mat-space footpath PNG.
 		try:
@@ -72,7 +78,10 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 		print(
 			f"[roll-tracker] Stage D dispatcher completed run_until={run_until} outputs="
 			f"[{layout.rel_to_clip_root(layout.tracklet_bank_frames_parquet())}, "
-			f"{layout.rel_to_clip_root(layout.tracklet_bank_summaries_parquet())}]"
+			f"{layout.rel_to_clip_root(layout.tracklet_bank_summaries_parquet())}, "
+			f"{layout.rel_to_clip_root(layout.d1_graph_nodes_parquet())}, "
+			f"{layout.rel_to_clip_root(layout.d1_graph_edges_parquet())}, "
+			f"{layout.rel_to_clip_root(layout.d1_segments_parquet())}]"
 		)
 		return outputs
 

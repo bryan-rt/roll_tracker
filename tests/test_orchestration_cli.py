@@ -126,6 +126,17 @@ def write_stage_c(layout: ClipOutputLayout, clip_id: str, camera_id: str):
 
 def write_stage_d(layout: ClipOutputLayout, clip_id: str, camera_id: str):
     layout.ensure_dirs_for_stage("D")
+    # Write minimal D1 graph artifacts for manifest validation
+    import pandas as pd
+    pd.DataFrame([
+        {"node_id": "n1", "node_type": "GROUP_TRACKLET", "capacity": 2, "start_frame": 0, "end_frame": 0, "payload_json": "{}"}
+    ]).to_parquet(layout.d1_graph_nodes_parquet(), index=False)
+    pd.DataFrame([
+        {"edge_id": "e1", "edge_type": "MERGE", "u": "n1", "v": "n1", "capacity": 2, "payload_json": "{}"}
+    ]).to_parquet(layout.d1_graph_edges_parquet(), index=False)
+    pd.DataFrame([
+        {"segment_type": "group", "base_tracklet_id": "t1", "start_frame": 0, "end_frame": 0, "k": 0, "node_id": "n1", "capacity": 2, "payload_json": "{}"}
+    ]).to_parquet(layout.d1_segments_parquet(), index=False)
     # D0/D2 completion path: emit minimal valid tracklet bank tables.
     bf = pd.DataFrame(
         [
@@ -325,6 +336,11 @@ def test_ingest_path_validation_camera_mismatch(clip_env):
 
 
 def test_run_creates_manifest_and_audit(monkeypatch, clip_env, tmp_path):
+    # Patch video probe to avoid OpenCV errors on dummy file
+    monkeypatch.setattr(
+        "bjj_pipeline.stages.orchestration.pipeline._probe_video_meta_opencv",
+        lambda path: (30.0, 60, 2000)
+    )
     # Patch all stage runs to write minimal outputs
     # Ensure homography present for Stage A preflight
     monkeypatch.chdir(tmp_path)

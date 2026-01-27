@@ -19,6 +19,9 @@ StageLetter = Literal["A", "B", "C", "D", "E", "F"]
 
 @dataclass(frozen=True)
 class ClipOutputLayout:
+    def tracklet_bank_summaries_parquet(self) -> Path:
+        """Canonical Stage D tracklet bank summaries artifact path."""
+        return self.stage_dir("D") / "tracklet_bank_summaries.parquet"
     """
     Canonical layout for a single clip's outputs.
 
@@ -114,8 +117,18 @@ class ClipOutputLayout:
     def tracklet_bank_frames_parquet(self) -> Path:
         return self.stage_dir("D") / "tracklet_bank_frames.parquet"
 
-    def tracklet_bank_summaries_parquet(self) -> Path:
-        return self.stage_dir("D") / "tracklet_bank_summaries.parquet"
+
+    # ---- Stage D1 (graph construction) ----
+    # Canonical (solver-agnostic) graph artifacts for downstream D2 (costing) and D3 (solving).
+    # We keep a "d1_" prefix for clarity/provenance.
+    def d1_graph_nodes_parquet(self) -> Path:
+        return self.stage_dir("D") / "d1_graph_nodes.parquet"
+
+    def d1_graph_edges_parquet(self) -> Path:
+        return self.stage_dir("D") / "d1_graph_edges.parquet"
+
+    def d1_segments_parquet(self) -> Path:
+        return self.stage_dir("D") / "d1_segments.parquet"
 
     # ---- Stage E ----
     def match_sessions_jsonl(self) -> Path:

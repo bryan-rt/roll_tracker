@@ -19,7 +19,20 @@
       - `must_link(tracklet_id -> tag:<id>)` anchors
       - `cannot_link(tracklet_id <-> tracklet_id)` conflicts (symmetric)
 
-**D1 must model these as hard constraints on the graph / flow feasibility.**
+**Clarification (POC-locked):**
+
+D1 treats identity hints as **annotations and logical infeasibility guards**, not as full
+identity enforcement.
+
+Specifically:
+- `must_link` constraints are **carried forward as annotations** for downstream enforcement
+   (D3) and are *not* used to prune or force edges in D1.
+- `cannot_link` constraints are used **only** to prune *logically impossible*
+   **SOLO → SOLO continuation edges**, where a continuation edge explicitly represents
+   a same-identity hypothesis.
+
+No other edge types (GROUP, MERGE, SPLIT, BIRTH, DEATH) are pruned based on identity hints.
+Final identity feasibility is enforced exclusively in D3.
 
 
 ## Update: F0 + F3 are complete (locked constraints)
@@ -82,7 +95,216 @@ Stages must:
 3) Register artifact paths in the manifest
 4) Validate outputs via `f0_validate.py` before claiming completion
 
+
+# D1 Completion Addendum — 2026-01-25
+
+This addendum records the **final design decisions, invariants, and domain-specific reasoning**
+that were validated during D1 implementation and artifact review.
+
+It is intended to:
+- prevent accidental regression in future refactors
+- give D2/D3 workers correct mental models
+- document *why* certain logic exists (not just *what* exists)
+
 ---
+
+## D1 Purpose (clarified and locked)
+
+D1 exists to **enumerate all temporally and spatially plausible identity hypotheses**
+given raw tracklets and hard identity constraints.
+
+D1 **does not**:
+- score identity hypotheses
+- choose between competing hypotheses
+- enforce final identity decisions
+
+D1 **does**:
+- model ambiguity explicitly
+- preserve alternative explanations
+- encode temporal capacity constraints for downstream solvers
+
+This separation is non-negotiable for correctness.
+
+---
+
+## Lifespan segmentation (MANDATORY)
+
+**Decision:** `enable_lifespan_segmentation = true` is mandatory for POC and beyond.
+
+### Rationale
+In grappling domains (BJJ / wrestling):
+- meaningful identity events occur *inside* long-lived tracklets
+- merges and splits are not aligned with tracklet start/end
+- long occlusions (seconds to minutes) are common and expected
+
+Therefore, treating a tracklet as a single atomic node is incorrect.
+
+### Implementation invariant
+Each carrier tracklet is deterministically segmented into:
+- `SOLO` segments (capacity = 1)
+- `GROUP` segments (capacity = 2)
+
+Segments are:
+- contiguous
+- non-overlapping
+- ordered by time
+
+Downstream workers must treat segments — not raw tracklets — as the true graph nodes.
+
+---
+
+## Semantics of GROUP segments (critical)
+
+A `GROUP` segment represents **identity ambiguity**, not tracker failure.
+
+Specifically:
+- capacity > 1 means multiple people may be represented by a single carrier
+- no identity assignment is implied or decided
+- ambiguity is intentionally preserved for MCF / ILP resolution
+
+GROUP does **not** mean:
+- poor detection
+- incorrect tracking
+- persons are merged permanently
+
+This distinction is essential for D2 cost modeling and D3 solving.
+
+---
+
+## Event classes D1 is designed to capture (validated)
+
+D1 explicitly supports all of the following:
+
+1) **Start-group → later split**
+   - video begins with two people in one bbox
+   - split may occur long after start
+
+2) **Merge → occlusion → delayed split**
+   - merge and split separated by long temporal gaps
+
+3) **Never-merge individuals**
+   - remain SOLO for entire lifespan
+
+4) **Merge without split before video end**
+   - modeled as `merge_open_end`
+   - identity intentionally unresolved
+
+All four cases were observed in real artifacts and verified.
+
+---
+
+## Group span clamping (bug fix, now locked)
+
+### Correct invariant
+Group spans must be clamped to the *carrier tracklet lifespan*:
+
+```
+group_start = max(group_start_raw, carrier.start_frame)
+group_end   = min(group_end_raw,   carrier.end_frame)
+```
+
+### Reason
+Carriers may persist across:
+- multiple merges
+- multiple splits
+- partial occlusions
+
+Group spans must never exceed the carrier’s actual temporal support.
+
+This fix is considered **correct and final**.
+
+---
+
+## Split search horizon (domain-specific decision)
+
+`split_search_horizon_frames` defines:
+> how long after a merge we are willing to associate a reappearance as a split
+
+### Grappling-specific reasoning
+- partners may be fully occluded for tens of seconds
+- spatial continuity matters more than short-term temporal proximity
+
+Therefore:
+- the horizon must be **large but finite**
+- not infinite (avoid pathological matches)
+- not small (would miss valid splits)
+
+Tuning this is a **domain modeling choice**, not a bug fix.
+
+---
+
+## Other D1 gates (how to think about them)
+
+### `merge_trigger_max_age_frames`
+Acts as a **noise guard**, not an identity decision.
+
+Purpose:
+- prevents stale disappearances from creating false merges
+- limits influence of detector dropouts
+
+It should be tuned conservatively and treated as a sanity filter.
+
+---
+
+### `max_continue_gap_frames`
+Purely a **graph sanity constraint**.
+
+It:
+- prevents absurd temporal jumps
+- does *not* encode identity likelihood
+
+Identity plausibility belongs in **D2 costs**, not D1 gating.
+
+---
+
+## Identity constraints (C2 integration — clarified)
+
+Stage C constraints are treated as **hard feasibility constraints**:
+
+- `must_link(tracklet → tag:<id>)`
+   - enforces shared identity across segments
+
+- `cannot_link(tracklet ↔ tracklet)`
+   - forbids shared identity in any valid flow
+
+**Clarification of responsibility split:**
+
+- D1 **does not enforce identity feasibility globally**
+- D1 **does not collapse ambiguity**
+- D1 **does not force assignments**
+
+D1 only applies `cannot_link` when a graph edge *semantically asserts identity sameness*
+(i.e., SOLO → SOLO continuation).
+
+All other uses of identity hints — including must-link enforcement, multi-edge feasibility,
+and final identity resolution — are the responsibility of **D3**.
+
+---
+
+## Explicit non-responsibilities of D1 (locked)
+
+D1 must **not**:
+- assign costs (D2)
+- decide identity (D3)
+- collapse ambiguity early
+- globally enforce identity feasibility
+- infer births/deaths beyond structural arcs
+
+If future work appears to “need” this, the fix belongs downstream.
+
+---
+
+## D1 status
+
+✅ Graph structure complete  
+✅ Domain cases covered  
+✅ Ambiguity preserved correctly  
+✅ Ready for D2 cost modeling and D3 solving  
+
+D1 is considered **POC-complete**.
+
+Future work should build *on top of* this structure, not revise it.
+
 
 ## Standard context: full pipeline (POC, offline, BJJ practice)
 

@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field, ConfigDict, field_validator
 # 0.3.0 bump: allow Stage A to optionally persist lightweight masks (YOLO-seg)
 # and to persist per-frame geometry fields in parquet (u_px/v_px/x_m/y_m/...)
 # while keeping backwards compatibility (columns are optional).
-SCHEMA_VERSION_DEFAULT = "0.3.0"
+SCHEMA_VERSION_DEFAULT = "0.4.0"
 
 StageLetter = Literal["A", "B", "C", "D", "E", "F"]
 Severity = Literal["debug", "info", "warn", "error"]
