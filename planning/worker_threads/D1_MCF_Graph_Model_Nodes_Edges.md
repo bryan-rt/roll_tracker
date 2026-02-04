@@ -1,3 +1,25 @@
+# 2026-01-27 Update: Implementation Reality Check
+
+## Canonical D1 Outputs (F0-locked, solver-agnostic)
+D1 now produces three canonical artifacts, defined in F0 and used by both MCF and ILP solvers:
+- `stage_D/d1_graph_nodes.parquet`
+- `stage_D/d1_graph_edges.parquet`
+- `stage_D/d1_segments.parquet`
+
+Schemas are versioned and centrally defined in F0 (`f0_parquet.py`). All fields required for downstream solvers and pricing are present.
+
+## Identity/AprilTag Integration
+- D1 node and edge schemas include join keys and identity-hint fields (`base_tracklet_id`, `segment_type`, `must_link_anchor_key`, etc.).
+- These enable direct joining with Stage C AprilTag/identity payloads for pricing and constraint enforcement.
+
+## Extensibility for ReID/RGB
+- The `payload_json` field in D1 artifacts is a lossless, forwards-compatible container for future additions (e.g., RGB crops, ReID embeddings).
+
+## Debug and Validation
+- D1 writes audit/debug artifacts for traceability.
+- All outputs are validated against F0 contracts before completion.
+
+*The rest of this document remains accurate and reflects the current implementation. See F0 for authoritative schemas and update this doc if any contract changes are made in code.*
 # D1 — MCF Graph Model (Nodes/Edges)
 
 ## Addendum — 2026-01-18 (POC reality check: A+C online; Stage B deferred; C2 constraints live)

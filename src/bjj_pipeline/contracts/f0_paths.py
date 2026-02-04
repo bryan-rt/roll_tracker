@@ -130,6 +130,15 @@ class ClipOutputLayout:
     def d1_segments_parquet(self) -> Path:
         return self.stage_dir("D") / "d1_segments.parquet"
 
+    # ---- Stage D2 (costs + constraints; solver-agnostic) ----
+    def d2_edge_costs_parquet(self) -> Path:
+        """Canonical Stage D2 per-edge cost table (one row per D1 edge)."""
+        return self.stage_dir("D") / "d2_edge_costs.parquet"
+
+    def d2_constraints_json(self) -> Path:
+        """Canonical Stage D2 normalized identity constraint spec (solver-agnostic)."""
+        return self.stage_dir("D") / "d2_constraints.json"
+
     # ---- Stage E ----
     def match_sessions_jsonl(self) -> Path:
         return self.stage_dir("E") / "match_sessions.jsonl"
