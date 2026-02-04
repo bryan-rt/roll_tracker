@@ -105,6 +105,45 @@ def _make_min_tracklet_summaries_df() -> pd.DataFrame:
 	)
 
 
+def _make_min_d2_edge_costs_df() -> pd.DataFrame:
+	return pd.DataFrame(
+		[
+			{
+				"edge_id": "e0",
+				"edge_type": "EdgeType.CONTINUE",
+				"src_node_id": "n0",
+				"dst_node_id": "n1",
+				"is_allowed": True,
+				"disallow_reasons_json": "[]",
+				"dt_frames": 3,
+				"dt_s": 0.1,
+				"dist_m": 0.2,
+				"v_req_mps": 2.0,
+				"dist_norm": 0.5,
+				"contact_rel": 0.9,
+				"endpoint_flagged": False,
+				"term_env": 0.01,
+				"term_time": 0.01,
+				"term_vreq": 0.0,
+				"term_missing_geom": 0.0,
+				"term_flags": 0.0,
+				"term_group_coherence": 0.0,
+				"term_birth_prior": 0.0,
+				"term_death_prior": 0.0,
+				"term_merge_prior": 0.0,
+				"term_split_prior": 0.0,
+				"total_cost": 0.02,
+			}
+		]
+	)
+
+
+def test_parquet_schema_ok_d2_edge_costs() -> None:
+	df = _make_min_d2_edge_costs_df()
+	pq.validate_df_schema_by_key(df, "d2_edge_costs")
+	v.validate_d2_edge_costs_df(df)
+
+
 def _make_min_person_tracks_df() -> pd.DataFrame:
 	return pd.DataFrame(
 		[

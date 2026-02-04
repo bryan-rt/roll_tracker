@@ -1,4 +1,4 @@
-# D3 — MCF Solver Implementation Plan
+# D3 — Solver Wiring + Feasibility Enforcement (MCF/ILP)
 
 
 ## Update: F0 + F3 are complete (locked constraints)
@@ -148,18 +148,31 @@ This worker implements the actual solver wiring for Stage D using:
 - **Birth/death + mat-zone gating** defined in **D5**
 - Optional post-pass ILP refinement in **D6** (deferred unless explicitly enabled)
 
+### Critical update (post-D1 CP2 + D2 completion)
+- D1 graph artifacts are now **canonical and F0-locked**:
+   - `stage_D/d1_graph_nodes.parquet`
+   - `stage_D/d1_graph_edges.parquet`
+- D2 produces **canonical solver inputs** (D3 must consume; must not recompute):
+   - `stage_D/d2_edge_costs.parquet`
+   - `stage_D/d2_constraints.json`
+
 ### POC execution model (locked)
 - Stage D runs **offline** (artifact-driven) after multiplex_AC completes.
 - Stage D must not depend on Stage B (deferred).
 
-### Inputs (authoritative)
-From Stage A:
-- `stage_A/tracklet_frames.parquet` (frame-level geometry incl. `x_m,y_m,vx_m,vy_m,on_mat,contact_conf`)
-- `stage_A/tracklet_summaries.parquet` (track spans; start/end frames)
-- `stage_A/contact_points.parquet` (join-friendly baseline geometry; not required for solver wiring if frames has endpoints)
+### Inputs (authoritative, POC)
+Stage D3 must read upstream inputs **via manifest** and treat the following as the solver’s authoritative surfaces:
 
-From Stage C:
-- `stage_C/identity_hints.jsonl` (must_link + cannot_link constraints)
+From Stage D (D1 canonical graph):
+- `stage_D/d1_graph_nodes.parquet` (typed nodes/segments incl. SOURCE/SINK, SOLO/GROUP, capacities, segment metadata)
+- `stage_D/d1_graph_edges.parquet` (typed edges incl. `edge_type`, capacities, and `dt_frames` for CONTINUE only)
+
+From Stage D (D2 canonical costs + normalized constraints):
+- `stage_D/d2_edge_costs.parquet` (per-edge scalar cost + term breakdown + allowed/disallowed + reason codes)
+- `stage_D/d2_constraints.json` (normalized `must_link_groups` + `cannot_link_pairs`, deterministic ordering)
+
+From Stage D (optional enrichment only; not required for graph/cost definition):
+- `stage_D/tracklet_bank_frames.parquet` (D0 bank; traceability/join helpers if needed for person_tracks emission)
 
 ### Outputs (F0-locked)
 Stage D must write:
@@ -169,8 +182,8 @@ Stage D must write:
 
 ### Borrowed from roll_it_back (solver pattern) — adaptation rules
 We may reuse “MCF as primary stitcher” implementation ideas, but must adapt to roll_tracker contracts:
-- roll_tracker’s unit of stitching is **tracklet_id** from Stage A.
-- roll_tracker’s world coords are `x_m,y_m` (meters) and may be null for some frames.
+- roll_tracker’s unit of stitching (for the solver) is **D1 node_id / segment nodes** (SOLO/GROUP), not raw Stage-A tracklets.
+- roll_tracker’s world coords are `x_m,y_m` (meters) and may be null for some segments/endpoints; missing-geom policy is handled upstream in D2 and represented in `d2_edge_costs.parquet` as allow/disallow and/or penalties.
 - identity constraints are provided via C2 as **must_link(tag)** and **cannot_link(tracklet↔tracklet)**.
 We must not carry forward any assumptions from roll_it_back about:
 - different schema/IDs
@@ -185,23 +198,24 @@ Build a solver that is:
 - and can be “upgraded” (D6 ILP) without changing artifacts.
 
 ### Must include
-- A concrete solver backend choice for POC, with a clean abstraction so we can swap later:
-   - **POC recommendation:** OR-Tools min-cost flow if feasible with our constraint set; otherwise a deterministic two-phase approach:
-      1) MCF for association within feasible edges (no identity constraints yet)
-      2) apply must_link/cannot_link as hard merges/splits over the MCF result
-   - If identity constraints cannot be represented directly in the chosen MCF formulation, this worker must:
-      - document that limitation explicitly, and
-      - implement an evidence-based workaround that remains deterministic and auditable.
+- A concrete solver backend choice for POC, with a clean abstraction so we can swap later.
+  - **POC baseline checkpoints may start with MCF-like flow without hard identity constraints** (to validate wiring).
+  - **However, the POC definition requires hard must_link/cannot_link enforcement in the final output.**
+  - Therefore D3 must deliver one of:
+    1) **Single-stage ILP** (recommended for POC correctness): encode flow + hard constraints directly.
+    2) **Two-stage approach** (allowed only if it is exact and auditable): a first solve to propose structure, followed by a second exact feasibility solve that enforces must_link/cannot_link (e.g., ILP repair/re-solve). If the second stage cannot satisfy constraints, fail-fast (no heuristic “fixes”).
+
+- **Non-negotiable:** Do not “enforce” hard constraints by huge negative costs. Constraints must be enforced as feasibility restrictions, or we fail-fast if infeasible.
 
 - Exact mapping from D1 objects to solver inputs:
    - node indexing strategy (stable, deterministic)
    - edge indexing strategy (stable, deterministic)
-   - cost vector construction using D2
+   - cost vector construction using D2 (join by `edge_id`; assert 1:1 coverage)
 
-- Exact handling of constraints from C2:
-   - must_link groups (tracklets anchored to the same tag must map to same person_id)
-   - cannot_link pairs (tracklets that must not share person_id)
-   - constraint consistency checks (audit-only; never “fix” silently)
+- Exact handling of constraints from D2 normalized spec:
+   - must_link groups (entities anchored to the same tag must map to the same final identity)
+   - cannot_link pairs (forbid co-assignment to the same identity)
+   - unsatisfiable detection + diagnostics (fail-fast; never “fix” silently)
 
 - Output emission rules:
    - deterministic person_id assignment (stable ordering)
@@ -216,72 +230,73 @@ Build a solver that is:
 
 ---
 
-## D3 — Proposed implementation plan (POC)
+## D3 — Proposed implementation plan (POC, checkpointed)
 
-### Step 1: Build “tracklet endpoint features” table (deterministic)
-From `tracklet_frames.parquet`, compute per-tracklet:
-- start_frame, end_frame
-- start (x,y,vx,vy,on_mat,contact_conf)
-- end (x,y,vx,vy,on_mat,contact_conf)
+### Step 0 (D3-POC-1): “Graph compiles” (no solving)
+Load canonical solver inputs and validate joins:
+- Read `d1_graph_nodes.parquet` and `d1_graph_edges.parquet`
+- Read `d2_edge_costs.parquet` and assert **1:1** join on `edge_id`
+- Read `d2_constraints.json` and validate canonical ordering/dedup invariants
 
-Rules:
-- endpoint rows chosen deterministically:
-   - start = first frame with non-null x/y (or first frame overall if missing policy is penalize)
-   - end   = last  frame with non-null x/y
-- if missing_geom_policy="disallow", exclude that tracklet from stitching graph and emit audit counts (do not silently include).
+Prune edges deterministically:
+- Drop edges marked disallowed by D2 (do not reinterpret)
+- Emit audit counts:
+   - counts by `edge_type`
+   - counts by disallow reason (if present)
+   - n_nodes (by node_type), n_edges_kept
 
-### Step 2: Candidate edge generation (delegated model from D1; filtered by D5)
-Generate candidate links (A -> B) only when:
-- B starts after A ends (dt >= 1 frame)
-- dt <= dt_max_s (config)
-- D5 gating allows the transition (mat zones / birth-death)
+**Exit condition:** audit-only run succeeds deterministically; no solver yet.
 
-### Step 3: Edge cost computation (D2)
-For each candidate edge:
-- compute edge features (dist_m, dt_s, vjump, reliability flags)
-- compute total edge cost + breakdown
+### Step 1 (D3-POC-2): “Solver runs (no hard constraints yet)”
+Goal: verify optimization wiring + capacity handling (especially GROUP nodes).
+- Use D1 nodes/edges + D2 costs after pruning disallowed edges
+- Solve a baseline min-cost flow style objective **without** hard must_link/cannot_link (temporarily)
+- Emit:
+   - `stage_D/audit.jsonl` with solver objective + flow stats
+   - placeholder but deterministic `identity_assignments.jsonl` and `person_tracks.parquet` (even if constraints not yet applied)
 
-Write audit quantiles for:
-- dt_s, dist_m, vjump, total_cost
+**Exit condition:** deterministic solve produces stable outputs; GROUP capacity behavior is validated (2 units can traverse GROUP spans).
 
-### Step 4: Solve association (MCF core)
-POC target: produce a set of disjoint paths over tracklets.
+### Step 2 (D3-POC-3): Integrate birth/death policy (D5-min)
+Goal: integrate birth/death constants without blocking the solver wiring.
+- If D5 is not implemented yet, use the D2 placeholder priors and record this explicitly in audit.
+- If D5-min exists, consume its constants/policy and apply them to BIRTH/DEATH edges deterministically.
 
-Implementation must define:
-- supply/demand conventions
-- path cost = sum(edge costs) + birth/death costs (D5)
-- disallow illegal edges by omitting them (not by huge cost, unless explicitly configured)
+**Exit condition:** solver still runs deterministically; birth/death totals appear sane in audit.
 
-### Step 5: Apply identity constraints (C2) to paths
-Regardless of whether the solver integrates constraints directly, the *final* result must satisfy:
-- must_link groups: all tracklets anchored to the same tag share person_id
-- cannot_link pairs: tracklets in the pair do not share person_id
+### Step 3 (D3-POC-4): Enforce hard constraints (must_link / cannot_link) with fail-fast UNSAT
+Goal: final POC correctness requirement.
+- Enforce **must_link** groups and **cannot_link** pairs as feasibility constraints.
+- If infeasible, fail-fast with audit diagnostics:
+   - which group/pair
+   - minimal implicated node_ids / base_tracklet_ids
+   - counts of constraints
 
-POC-safe enforcement approach (deterministic, audit-first):
-1) Build connected components of must_link (tag groups).
-2) Validate that no cannot_link exists within a must_link component:
-   - if violated, fail fast with audit event and list of offending tracklets/tags.
-3) When assigning person_ids:
-   - start from solved paths
-   - merge paths that touch the same must_link component
-   - if a merge would violate cannot_link, split deterministically and fail fast if unsplittable.
+Implementation options (choose one; document clearly):
+1) **Single-stage ILP (recommended):** encode flow + constraints directly.
+2) **Two-stage exact approach:** baseline propose + exact re-solve enforcing constraints (no heuristics).
 
-### Step 6: Emit artifacts
+**Exit condition:** produced outputs satisfy all constraints; deterministic; or fail-fast UNSAT with clear diagnostics.
+
+### Step 4: Emit artifacts (F0-locked)
 `identity_assignments.jsonl`:
 - one record per `person_id` with:
-   - list of source tracklet_ids
-   - anchored_tag_id (if must_link exists, else null)
-   - evidence summary (counts of must_links/cannot_links applied)
+   - list of member `node_id`s and underlying `base_tracklet_id`s
+   - anchored tag key (if any)
+   - constraint application summary (counts of must_link/cannot_link satisfied)
 
 `person_tracks.parquet`:
-- per-frame (or sampled) trajectory for each person_id
-- must include traceability columns back to source tracklet_id and original frame_index.
+- must include traceability back to:
+   - `person_id`
+   - source `base_tracklet_id`
+   - frame_index
+- D3 may use `tracklet_bank_frames.parquet` (D0) for per-frame geometry emission, but must not invent geometry.
 
-### Step 7: Validation hooks (must be implementable)
+### Step 5: Validation hooks (must be implementable)
 Stage D validation must check:
-- all referenced tracklet_ids exist in Stage A artifacts
-- must_link/cannot_link constraints satisfied in final assignments
-- person_tracks spans are consistent with source tracklet spans
+- all referenced `base_tracklet_id`s exist upstream (via manifest-registered artifacts)
+- all must_link/cannot_link constraints are satisfied in final assignments (or UNSAT fail-fast)
+- person_tracks spans are consistent with source spans (no out-of-range frames)
 
 ---
 
@@ -308,22 +323,28 @@ Produce deliverables that are directly usable by the Manager and by GitHub Copil
 ## Kickoff (what to do first in this worker thread)
 Please begin by producing:
 1) A **proposed solver wiring plan** (bullets), including:
-   - backend choice (OR-Tools vs NetworkX vs hybrid) with constraints implications
+   - backend choice (ILP recommended for hard constraints; MCF-only allowed only as an intermediate checkpoint) with clear constraints implications
    - deterministic indexing / ordering strategy
-   - constraint enforcement strategy (must_link/cannot_link) and fail-fast conditions
+   - constraint enforcement strategy using `d2_constraints.json` (must_link/cannot_link) and fail-fast UNSAT conditions
 2) A list of **questions / assumptions** you need confirmed (only if blocking).
 3) A draft **Interface Contract** for D3 code:
-   - functions/classes for:
-     - building endpoint summaries
-     - generating candidate edges
-     - running solve()
-     - applying constraints
-     - writing artifacts
+    - functions/classes for:
+       - loading canonical D1/D2 artifacts (manifest-driven)
+       - pruning disallowed edges (deterministic)
+       - running solve() for checkpoints (POC-2/3/4)
+       - enforcing hard constraints (exact; no heuristic penalties)
+       - writing F0-locked artifacts
    - acceptance tests (pytest) for must_link + cannot_link enforcement and determinism
 
 End your first response by asking me to review/approve the plan before you go deeper.
 
 Also include a bullet explicitly confirming alignment with the locked F0/F3 contracts (artifacts, paths, manifest).
+
+### POC checkpoints (must keep pipeline runnable)
+- D3-POC-1: graph compiles + joins + pruning (audit-only)
+- D3-POC-2: solver runs without hard constraints (wiring + GROUP capacity correctness)
+- D3-POC-3: birth/death costs integrated (D5-min or explicit placeholder)
+- D3-POC-4: hard constraints enforced (must_link/cannot_link) with UNSAT fail-fast
 
 ## Checkpoint discipline
 

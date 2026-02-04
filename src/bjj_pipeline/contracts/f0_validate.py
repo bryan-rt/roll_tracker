@@ -15,7 +15,9 @@ Policy:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
+import json
+import math
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 import pandas as pd
 
@@ -425,6 +427,93 @@ def validate_person_tracks_traceability(
         table_name="tracklet_frames",
     )
     _validate_fk_subset(child_trk, parent_trk, child_name="person_tracks(tracklet)", parent_name="tracklet_frames")
+
+
+def validate_d2_edge_costs_df(df: pd.DataFrame) -> None:
+    """Validate Stage D2 edge costs table (solver-agnostic).
+
+    D2 is intermediate (run_until=D2) and is validated by stage code.
+    """
+    pq.validate_df_schema_by_key(df, "d2_edge_costs")
+    if df.empty:
+        return
+
+    if df["edge_id"].isna().any():
+        raise ValidationError("d2_edge_costs: edge_id contains nulls")
+    if not df["edge_id"].is_unique:
+        raise ValidationError("d2_edge_costs: edge_id must be unique")
+
+    # is_allowed / reasons must be consistent
+    if df["is_allowed"].isna().any():
+        raise ValidationError("d2_edge_costs: is_allowed contains nulls")
+    if df["disallow_reasons_json"].isna().any():
+        raise ValidationError("d2_edge_costs: disallow_reasons_json contains nulls")
+
+    # Must be valid JSON lists; disallowed rows must have >=1 reason.
+    for i, (allowed, reasons_raw) in enumerate(zip(df["is_allowed"].tolist(), df["disallow_reasons_json"].tolist())):
+        try:
+            reasons = json.loads(reasons_raw)
+        except Exception as e:
+            raise ValidationError(f"d2_edge_costs: disallow_reasons_json is not valid JSON at row {i}: {e}") from e
+        if not isinstance(reasons, list):
+            raise ValidationError(f"d2_edge_costs: disallow_reasons_json must decode to a list (row {i})")
+        if (not allowed) and len(reasons) < 1:
+            raise ValidationError(f"d2_edge_costs: disallowed edge must include at least one reason (row {i})")
+
+    # total_cost must be finite (no NaN/inf); disallowed edges should use a large finite sentinel.
+    total = df["total_cost"].to_numpy(dtype=float)
+    if not (pd.notna(total).all() and (total == total).all()):
+        raise ValidationError("d2_edge_costs: total_cost contains NaN")
+    if not (total < float("inf")).all():
+        raise ValidationError("d2_edge_costs: total_cost contains inf")
+
+
+def validate_d2_constraints_json(obj: Dict[str, Any]) -> None:
+    """Validate normalized identity constraint spec produced by D2."""
+    if not isinstance(obj, dict):
+        raise ValidationError("d2_constraints: expected a dict")
+
+    must = obj.get("must_link_groups")
+    cannot = obj.get("cannot_link_pairs")
+    if must is None or cannot is None:
+        raise ValidationError("d2_constraints: missing must_link_groups or cannot_link_pairs")
+
+    if not isinstance(must, list):
+        raise ValidationError("d2_constraints: must_link_groups must be a list")
+    if not isinstance(cannot, list):
+        raise ValidationError("d2_constraints: cannot_link_pairs must be a list")
+
+    # determinism: groups sorted by anchor_key; tracklet_ids sorted
+    anchor_keys = []
+    for g in must:
+        if not isinstance(g, dict):
+            raise ValidationError("d2_constraints: must_link_groups entries must be dicts")
+        ak = g.get("anchor_key")
+        tids = g.get("tracklet_ids")
+        _require_non_empty_str(str(ak), name="d2_constraints.must_link_groups.anchor_key")
+        if not isinstance(tids, list) or not all(isinstance(t, str) for t in tids):
+            raise ValidationError("d2_constraints: must_link_groups.tracklet_ids must be a list[str]")
+        if tids != sorted(tids):
+            raise ValidationError(f"d2_constraints: tracklet_ids must be sorted for anchor_key={ak!r}")
+        anchor_keys.append(str(ak))
+    if anchor_keys != sorted(anchor_keys):
+        raise ValidationError("d2_constraints: must_link_groups must be sorted by anchor_key")
+
+    # cannot_link pairs: canonical order and unique, sorted
+    pairs = []
+    for p in cannot:
+        if not (isinstance(p, list) or isinstance(p, tuple)) or len(p) != 2:
+            raise ValidationError("d2_constraints: cannot_link_pairs entries must be [a,b]")
+        a, b = p
+        if not isinstance(a, str) or not isinstance(b, str):
+            raise ValidationError("d2_constraints: cannot_link_pairs ids must be strings")
+        if not (a < b):
+            raise ValidationError("d2_constraints: cannot_link_pairs must have a < b canonical ordering")
+        pairs.append((a, b))
+    if pairs != sorted(pairs):
+        raise ValidationError("d2_constraints: cannot_link_pairs must be sorted")
+    if len(set(pairs)) != len(pairs):
+        raise ValidationError("d2_constraints: cannot_link_pairs contains duplicates")
 
 
 # ----------------------------

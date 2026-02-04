@@ -20,6 +20,7 @@ from typing import Any, Dict
 from bjj_pipeline.contracts.f0_manifest import (
 	register_stage_D0_defaults,
 	register_stage_D1_defaults,
+	register_stage_D2_defaults,
 	write_manifest,
 )
 
@@ -65,6 +66,14 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 			run_d1(cfg=config, layout=layout, manifest=manifest)
 			register_stage_D1_defaults(manifest, layout)
 			write_manifest(manifest, layout.clip_manifest_path())
+
+			# D2: compute per-edge costs + normalized constraint spec (no solving)
+			if run_until in ("D2", "D6"):
+				from bjj_pipeline.stages.stitch.d2_run import run_d2
+
+				run_d2(config=config, inputs=inputs)
+				register_stage_D2_defaults(manifest, layout)
+				write_manifest(manifest, layout.clip_manifest_path())
 
 		# Optional visual QA (Checkpoint 2.5): write a mat-space footpath PNG.
 		try:

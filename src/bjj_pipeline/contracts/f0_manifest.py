@@ -27,6 +27,25 @@ def register_stage_D1_defaults(manifest: 'ClipManifest', layout: 'ClipOutputLayo
         content_type="application/parquet",
     )
 
+def register_stage_D2_defaults(manifest: 'ClipManifest', layout: 'ClipOutputLayout') -> None:
+    """Register canonical Stage D2 artifacts (cost table + constraint spec).
+
+    These artifacts are solver-agnostic inputs for D3 (MCF/ILP solving).
+    Call after writing the files.
+    """
+    manifest.register_artifact(
+        stage="D",
+        key="d2_edge_costs_parquet",
+        relpath=layout.rel_to_clip_root(layout.d2_edge_costs_parquet()),
+        content_type="application/parquet",
+    )
+    manifest.register_artifact(
+        stage="D",
+        key="d2_constraints_json",
+        relpath=layout.rel_to_clip_root(layout.d2_constraints_json()),
+        content_type="application/json",
+    )
+
 # ...existing code...
 
 # Place this after all class and helper function definitions

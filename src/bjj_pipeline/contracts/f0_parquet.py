@@ -71,6 +71,41 @@ D1_SEGMENTS_SPECS: List[ColSpec] = [
     ColSpec("payload_json", "string", nullable=False),
 ]
 
+# ---- Stage D2 edge costs (solver-agnostic; consumed by D3) ----
+D2_EDGE_COSTS_SPECS: List[ColSpec] = [
+    # linkage / identity
+    ColSpec("edge_id", "string", nullable=False),
+    ColSpec("edge_type", "string", nullable=False),
+    ColSpec("src_node_id", "string", nullable=False),
+    ColSpec("dst_node_id", "string", nullable=False),
+
+    # allow/disallow policy (D2 emits for transparency; D3 must enforce)
+    ColSpec("is_allowed", "bool", nullable=False),
+    ColSpec("disallow_reasons_json", "string", nullable=False),
+
+    # scalar features (nullable when not applicable)
+    ColSpec("dt_frames", "int", nullable=True),
+    ColSpec("dt_s", "float", nullable=True),
+    ColSpec("dist_m", "float", nullable=True),
+    ColSpec("v_req_mps", "float", nullable=True),
+    ColSpec("dist_norm", "float", nullable=True),
+    ColSpec("contact_rel", "float", nullable=True),
+    ColSpec("endpoint_flagged", "bool", nullable=False),
+
+    # term breakdowns (always present; use 0.0 when not applicable)
+    ColSpec("term_env", "float", nullable=False),
+    ColSpec("term_time", "float", nullable=False),
+    ColSpec("term_vreq", "float", nullable=False),
+    ColSpec("term_missing_geom", "float", nullable=False),
+    ColSpec("term_flags", "float", nullable=False),
+    ColSpec("term_group_coherence", "float", nullable=False),
+    ColSpec("term_birth_prior", "float", nullable=False),
+    ColSpec("term_death_prior", "float", nullable=False),
+    ColSpec("term_merge_prior", "float", nullable=False),
+    ColSpec("term_split_prior", "float", nullable=False),
+    ColSpec("total_cost", "float", nullable=False),
+]
+
 # Stage D1 (graph construction; solver-agnostic)
 PARQUET_SCHEMA_SPECS = {
     # ...existing code...
@@ -281,6 +316,7 @@ PARQUET_SCHEMAS: Dict[str, List[ColSpec]] = {
     "d1_graph_nodes": D1_GRAPH_NODES_SPECS,
     "d1_graph_edges": D1_GRAPH_EDGES_SPECS,
     "d1_segments": D1_SEGMENTS_SPECS,
+    "d2_edge_costs": D2_EDGE_COSTS_SPECS,
     "contact_points": CONTACT_POINTS_SPECS,
     "person_tracks": PERSON_TRACKS_SPECS,
 }

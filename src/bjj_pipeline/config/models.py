@@ -308,6 +308,57 @@ class StageD1Config(BaseModel):
     split_search_horizon_frames: int = Field(default=120, ge=0)
 
 
+class StageD2CostsConfig(BaseModel):
+    """Stage D2 configuration (costs + constraints; solver-agnostic).
+
+    Note: v_cost_scale_mps and v_hinge_mps default to Stage D0 kinematics v_max_mps
+    when unset, to avoid redundant speed knobs.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = Field(default=True)
+
+    # hard policies (locked for POC)
+    missing_geom_policy: str = Field(default="disallow", description="Only 'disallow' is supported for POC")
+    dt_max_s: float = Field(default=1.0, gt=0)
+
+    # motion normalization (non-redundant; derived by default)
+    v_cost_scale_mps: Optional[float] = Field(default=None, gt=0)
+    v_hinge_mps: Optional[float] = Field(default=None, gt=0)
+
+    w_time: float = Field(default=0.1, ge=0)
+    w_vreq: float = Field(default=1.0, ge=0)
+    base_env_cost: float = Field(default=0.01, ge=0)
+
+    # soft flags (from D0 CP3)
+    use_flags: bool = Field(default=True)
+    w_flags: float = Field(default=0.25, ge=0)
+
+    # contact reliability weighting
+    use_contact_rel: bool = Field(default=True)
+    contact_conf_floor: float = Field(default=0.25, ge=0, le=1.0)
+    contact_rel_alpha: float = Field(default=0.35, ge=0)
+
+    # merge/split coherence
+    bonus_group_coherent: float = Field(default=0.5, ge=0)
+    penalty_group_incoherent: float = Field(default=0.5, ge=0)
+
+    # edge priors (D5 will later refine birth/death policies)
+    birth_cost: float = Field(default=2.0, ge=0)
+    death_cost: float = Field(default=2.0, ge=0)
+    merge_prior: float = Field(default=0.1, ge=0)
+    split_prior: float = Field(default=0.1, ge=0)
+
+    @field_validator("missing_geom_policy")
+    @classmethod
+    def _validate_missing_geom_policy(cls, v: str) -> str:
+        allowed = {"disallow"}
+        if v not in allowed:
+            raise ValueError(f"stage_D.d2_costs.missing_geom_policy must be one of {sorted(allowed)} (got {v!r})")
+        return v
+
+
 class StageDConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -316,6 +367,7 @@ class StageDConfig(BaseModel):
     d0: Optional["StageD0Config"] = Field(default=None, description="Stage D0 cleanup configuration")
     qa: Optional["StageDQAConfig"] = Field(default=None, description="Stage D visual QA configuration")
     d1: Optional["StageD1Config"] = Field(default=None, description="Stage D1 graph build configuration")
+    d2_costs: Optional["StageD2CostsConfig"] = Field(default=None, description="Stage D2 costs + constraints configuration")
 
     @field_validator("run_until")
     @classmethod

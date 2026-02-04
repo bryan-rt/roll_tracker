@@ -779,28 +779,47 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 		# Canonical graph artifacts (always written)
 		nodes_rows: List[Dict[str, Any]] = []
 		for n in g.sorted_nodes():
-				nodes_rows.append(
-					{
-						"node_id": n.node_id,
-						"node_type": str(n.type),
-						"capacity": int(n.capacity),
-						"start_frame": n.start_frame,
-						"end_frame": n.end_frame,
-						"payload_json": json.dumps(n.payload, sort_keys=True),
-					}
-				)
+			nodes_rows.append(
+				{
+					"node_id": n.node_id,
+					"node_type": str(n.type),
+					"capacity": int(n.capacity),
+					"start_frame": n.start_frame,
+					"end_frame": n.end_frame,
+					# Solver-agnostic join keys / features for D2 pricing (redundant with payload_json).
+					"base_tracklet_id": n.payload.get("base_tracklet_id"),
+					"segment_type": n.payload.get("segment_type"),
+					"carrier_tracklet_id": n.payload.get("carrier_tracklet_id"),
+					"disappearing_tracklet_id": n.payload.get("disappearing_tracklet_id"),
+					"new_tracklet_id": n.payload.get("new_tracklet_id"),
+					"must_link_anchor_key": n.payload.get("must_link_anchor_key"),
+					"must_link_confidence": n.payload.get("must_link_confidence"),
+					"cannot_link_anchor_keys_json": json.dumps(
+						n.payload.get("cannot_link_anchor_keys", []), sort_keys=True
+					),
+					# Full structured payload (lossless; forwards compatible).
+					"payload_json": json.dumps(n.payload, sort_keys=True),
+				}
+			)
 		edges_rows: List[Dict[str, Any]] = []
 		for e in g.sorted_edges():
-				edges_rows.append(
-					{
-						"edge_id": e.edge_id,
-						"edge_type": str(e.type),
-						"u": e.u,
-						"v": e.v,
-						"capacity": int(e.capacity),
-						"payload_json": json.dumps(e.payload, sort_keys=True),
-					}
-				)
+			# Extract dt_frames, merge_end, split_start from payload if present, else None
+			dt_frames = e.payload.get("dt_frames")
+			merge_end = e.payload.get("merge_end")
+			split_start = e.payload.get("split_start")
+			edges_rows.append(
+				{
+					"edge_id": e.edge_id,
+					"edge_type": str(e.type),
+					"u": e.u,
+					"v": e.v,
+					"capacity": int(e.capacity),
+					"dt_frames": dt_frames if dt_frames is not None else None,
+					"merge_end": merge_end if merge_end is not None else None,
+					"split_start": split_start if split_start is not None else None,
+					"payload_json": json.dumps(e.payload, sort_keys=True),
+				}
+			)
 		segments_df = (pd.DataFrame(all_segments) if all_segments else pd.DataFrame([]))
 		if not segments_df.empty:
 			# Add payload_json column as required by schema
@@ -812,7 +831,24 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 		for col in ("start_frame", "end_frame"):
 			if col in nodes_df.columns:
 				nodes_df[col] = nodes_df[col].astype('Int64' if nodes_df[col].isnull().any() else int)
+		# Coerce must_link_confidence to float if present
+		if "must_link_confidence" in nodes_df.columns:
+			nodes_df["must_link_confidence"] = pd.to_numeric(nodes_df["must_link_confidence"], errors="coerce")
+		# Diagnostics for debugging
+		if nodes_df.empty:
+			print("[D1 DEBUG] nodes_df is empty before writing d1_graph_nodes.parquet")
+		else:
+			print("[D1 DEBUG] nodes_df columns and dtypes before write:\n", nodes_df.dtypes)
 		edges_df = pd.DataFrame(edges_rows)
+		# Coerce dt_frames, merge_end, split_start to Int64 (nullable int) if present
+		for col in ("dt_frames", "merge_end", "split_start"):
+			if col in edges_df.columns:
+				edges_df[col] = pd.to_numeric(edges_df[col], errors="coerce").astype('Int64')
+		# Diagnostics for debugging
+		if edges_df.empty:
+			print("[D1 DEBUG] edges_df is empty before writing d1_graph_edges.parquet")
+		else:
+			print("[D1 DEBUG] edges_df columns and dtypes before write:\n", edges_df.dtypes)
 		validate_df_schema_by_key(nodes_df, "d1_graph_nodes")
 		validate_df_schema_by_key(edges_df, "d1_graph_edges")
 		# empty is allowed early / for short clips

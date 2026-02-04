@@ -114,7 +114,7 @@ stages:
 
   stage_D:
     enabled: null
-    run_until: "D1"
+    run_until: "D2"
     d0:
       occlusion_repair:
         enable_normalized: true
@@ -186,6 +186,35 @@ stages:
       merge_disappear_gap_frames: 6
       split_dist_m: 1.0
       split_search_horizon_frames: 2700
+
+    # D2: per-edge costs + normalized identity constraints (solver-agnostic; no solving)
+    d2_costs:
+      enabled: true
+      missing_geom_policy: disallow
+      dt_max_s: 1.0
+
+      # motion normalization (defaults derived from stage_D.d0.kinematics.v_max_mps when null)
+      v_cost_scale_mps: null
+      v_hinge_mps: null
+
+      w_time: 0.1
+      w_vreq: 1.0
+      base_env_cost: 0.01
+
+      use_flags: true
+      w_flags: 0.25
+
+      use_contact_rel: true
+      contact_conf_floor: 0.25
+      contact_rel_alpha: 0.35
+
+      bonus_group_coherent: 0.5
+      penalty_group_incoherent: 0.5
+
+      birth_cost: 2.0
+      death_cost: 2.0
+      merge_prior: 0.1
+      split_prior: 0.1
 
   stage_E:
     enabled: null
