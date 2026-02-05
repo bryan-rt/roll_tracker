@@ -363,7 +363,11 @@ class StageDConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: Optional[bool] = Field(default=None)
-    run_until: str = Field(default="D0", description="Stage D dispatcher target: D0|D1|D2|D6")
+    run_until: str = Field(default="D0", description="Stage D dispatcher target: D0|D1|D2|D3|D6")
+    d3_checkpoint: str = Field(
+        default="POC_0",
+        description="Stage D3 internal checkpoint selector (POC_0..POC_4). Used only when run_until == D3.",
+    )
     d0: Optional["StageD0Config"] = Field(default=None, description="Stage D0 cleanup configuration")
     qa: Optional["StageDQAConfig"] = Field(default=None, description="Stage D visual QA configuration")
     d1: Optional["StageD1Config"] = Field(default=None, description="Stage D1 graph build configuration")
@@ -372,7 +376,7 @@ class StageDConfig(BaseModel):
     @field_validator("run_until")
     @classmethod
     def _validate_run_until(cls, v: str) -> str:
-        allowed = {"D0", "D1", "D2", "D6"}
+        allowed = {"D0", "D1", "D2", "D3", "D6"}
         if v not in allowed:
             raise ValueError(f"stage_D.run_until must be one of {sorted(allowed)} (got {v!r})")
         return v
