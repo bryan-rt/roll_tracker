@@ -46,8 +46,27 @@ def run_d3(*, config: Dict[str, Any], inputs: Dict[str, Any]) -> None:
 	if str(checkpoint) == "POC_0":
 		return
 
+	if str(checkpoint) == "POC_1":
+		from bjj_pipeline.stages.stitch.d3_ilp import solve_structure_ilp
+
+		# D3 — "explain each tracklet or pay a penalty": optional penalty from config.
+		penalty = _cfg_get(
+			config,
+			"stages.stage_D.d3.unexplained_tracklet_penalty",
+			_default := _cfg_get(config, "stage_D.d3.unexplained_tracklet_penalty", None),
+		)
+		res = solve_structure_ilp(
+			compiled=_,
+			layout=layout,
+			manifest=manifest,
+			checkpoint=str(checkpoint),
+			unexplained_tracklet_penalty=float(penalty) if penalty is not None else None,
+		)
+		_ = res  # reserved for later checkpoints
+		return
+
 	raise NotImplementedError(
 		f"Stage D3 checkpoint not implemented: {checkpoint!r}. "
-		"Supported today: ['POC_0']."
+		"Supported today: ['POC_0', 'POC_1']."
 	)
 

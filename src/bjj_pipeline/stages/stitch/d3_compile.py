@@ -187,6 +187,40 @@ def _count_disallow_reasons(costs_df: pd.DataFrame) -> Dict[str, int]:
 	return dict(sorted(counts.items(), key=lambda kv: kv[0]))
 
 
+def _debug_dir(layout: ClipOutputLayout) -> Path:
+	return layout.clip_root / "_debug"
+
+
+def _write_debug_compiled_inputs(
+	*, layout: ClipOutputLayout, edges_df: pd.DataFrame, costs_df: pd.DataFrame, constraints: Dict[str, Any], stats: Dict[str, Any]
+) -> Dict[str, str]:
+	"""Write pruned solver inputs to _debug for transparency.
+
+	Returns a dict of relative paths (relative to clip_root) suitable for audit logging.
+	"""
+	dbg = _debug_dir(layout)
+	dbg.mkdir(parents=True, exist_ok=True)
+	out_edges = dbg / "d3_compiled_edges_pruned.parquet"
+	out_costs = dbg / "d3_compiled_costs_pruned.parquet"
+	out_constraints = dbg / "d3_constraints_snapshot.json"
+	out_stats = dbg / "d3_compile_stats.json"
+
+	edges_df.to_parquet(out_edges, index=False)
+	costs_df.to_parquet(out_costs, index=False)
+	out_constraints.write_text(json.dumps(constraints, sort_keys=True, indent=2), encoding="utf-8")
+	out_stats.write_text(json.dumps(stats, sort_keys=True, indent=2), encoding="utf-8")
+
+	def rel(p: Path) -> str:
+		return str(p.relative_to(layout.clip_root))
+
+	return {
+		"d3_compiled_edges_pruned_parquet": rel(out_edges),
+		"d3_compiled_costs_pruned_parquet": rel(out_costs),
+		"d3_constraints_snapshot_json": rel(out_constraints),
+		"d3_compile_stats_json": rel(out_stats),
+	}
+
+
 def compile_solver_inputs(
 	*,
 	config: Dict[str, Any],
@@ -233,6 +267,14 @@ def compile_solver_inputs(
 		**prune_stats,
 	}
 
+	debug_outputs = _write_debug_compiled_inputs(
+		layout=layout,
+		edges_df=edges_pruned,
+		costs_df=costs_pruned,
+		constraints=d2_constraints,
+		stats=stats,
+	)
+
 	append_audit_event(
 		layout=layout,
 		event={
@@ -241,6 +283,7 @@ def compile_solver_inputs(
 			"camera_id": manifest.camera_id,
 			"checkpoint": checkpoint,
 			"stats": stats,
+			"debug_outputs": debug_outputs,
 		},
 	)
 
