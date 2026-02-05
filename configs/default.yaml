@@ -115,6 +115,7 @@ stages:
   stage_D:
     enabled: null
     run_until: "D3"
+    d3_checkpoint: "POC_1"
     d0:
       occlusion_repair:
         enable_normalized: true
@@ -181,10 +182,10 @@ stages:
       end_window_frames: 10
       # group-tracklet inference
       enable_group_nodes: true
-      merge_dist_m: 0.6
+      merge_dist_m: 1.5
       merge_end_sync_frames: 3
       merge_disappear_gap_frames: 6
-      split_dist_m: 1.0
+      split_dist_m: 2.0
       split_search_horizon_frames: 2700
 
     # D2: per-edge costs + normalized identity constraints (solver-agnostic; no solving)
@@ -215,6 +216,12 @@ stages:
       death_cost: 2.0
       merge_prior: 0.1
       split_prior: 0.1
+
+    d3:
+      # D3 — “explain each tracklet or pay a penalty”
+      # If a base tracklet_id appears in D1 nodes (SINGLE_TRACKLET), but the selected solution uses none
+      # of its nodes, we pay this penalty once per base_tracklet_id.
+      unexplained_tracklet_penalty: 5.0
 
   stage_E:
     enabled: null

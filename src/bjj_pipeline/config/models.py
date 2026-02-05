@@ -359,6 +359,18 @@ class StageD2CostsConfig(BaseModel):
         return v
 
 
+class StageD3Config(BaseModel):
+    """Stage D3 (solver) configuration."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    # "Explain each tracklet OR pay a penalty":
+    # We define a boolean per base_tracklet_id present in D1 SINGLE_TRACKLET nodes.
+    # If the solution uses zero flow through all nodes belonging to that base_tracklet_id,
+    # we pay this penalty (in cost units) once for that base_tracklet_id.
+    unexplained_tracklet_penalty: float = Field(default=5.0, ge=0.0)
+
+
 class StageDConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -372,6 +384,7 @@ class StageDConfig(BaseModel):
     qa: Optional["StageDQAConfig"] = Field(default=None, description="Stage D visual QA configuration")
     d1: Optional["StageD1Config"] = Field(default=None, description="Stage D1 graph build configuration")
     d2_costs: Optional["StageD2CostsConfig"] = Field(default=None, description="Stage D2 costs + constraints configuration")
+    d3: "StageD3Config" = Field(default_factory=StageD3Config, description="Stage D3 solver configuration")
 
     @field_validator("run_until")
     @classmethod
