@@ -52,7 +52,7 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 
 	outputs: Dict[str, Any] = {"run_until": run_until}
 
-	if run_until in ("D0", "D1", "D2", "D6"):
+	if run_until in ("D0", "D1", "D2", "D3", "D6"):
 		from bjj_pipeline.stages.stitch.d0_bank import run_d0
 
 		run_d0(config=config, layout=layout, manifest=manifest)
@@ -60,7 +60,7 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 		write_manifest(manifest, layout.clip_manifest_path())
 
 		# D1: construct candidate graph
-		if run_until in ("D1", "D2", "D6"):
+		if run_until in ("D1", "D2", "D3", "D6"):
 			from bjj_pipeline.stages.stitch.d1_graph_build import run_d1
 
 			run_d1(cfg=config, layout=layout, manifest=manifest)
@@ -68,11 +68,18 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 			write_manifest(manifest, layout.clip_manifest_path())
 
 			# D2: compute per-edge costs + normalized constraint spec (no solving)
-			if run_until in ("D2", "D6"):
+			if run_until in ("D2", "D3", "D6"):
 				from bjj_pipeline.stages.stitch.d2_run import run_d2
 
 				run_d2(config=config, inputs=inputs)
 				register_stage_D2_defaults(manifest, layout)
+				write_manifest(manifest, layout.clip_manifest_path())
+
+			# D3: solver compilation / validation foundation (audit-only in POC_0)
+			if run_until in ("D3", "D6"):
+				from bjj_pipeline.stages.stitch.solver import run_d3
+
+				run_d3(config=config, inputs=inputs)
 				write_manifest(manifest, layout.clip_manifest_path())
 
 		# Optional visual QA (Checkpoint 2.5): write a mat-space footpath PNG.
@@ -84,13 +91,31 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 			# Visual QA must never fail the pipeline; audit logging occurs inside the helper.
 			print(f"[roll-tracker] Stage D visual QA skipped due to error: {e}")
 
+		outs = [
+			layout.rel_to_clip_root(layout.tracklet_bank_frames_parquet()),
+			layout.rel_to_clip_root(layout.tracklet_bank_summaries_parquet()),
+		]
+		if run_until in ("D1", "D2", "D3", "D6"):
+			outs.extend(
+				[
+					layout.rel_to_clip_root(layout.d1_graph_nodes_parquet()),
+					layout.rel_to_clip_root(layout.d1_graph_edges_parquet()),
+					layout.rel_to_clip_root(layout.d1_segments_parquet()),
+				]
+			)
+		if run_until in ("D2", "D3", "D6"):
+			outs.extend(
+				[
+					layout.rel_to_clip_root(layout.d2_edge_costs_parquet()),
+					layout.rel_to_clip_root(layout.d2_constraints_json()),
+				]
+			)
+		if run_until in ("D3", "D6"):
+			outs.append(layout.rel_to_clip_root(layout.audit_jsonl("D")))
+
 		print(
 			f"[roll-tracker] Stage D dispatcher completed run_until={run_until} outputs="
-			f"[{layout.rel_to_clip_root(layout.tracklet_bank_frames_parquet())}, "
-			f"{layout.rel_to_clip_root(layout.tracklet_bank_summaries_parquet())}, "
-			f"{layout.rel_to_clip_root(layout.d1_graph_nodes_parquet())}, "
-			f"{layout.rel_to_clip_root(layout.d1_graph_edges_parquet())}, "
-			f"{layout.rel_to_clip_root(layout.d1_segments_parquet())}]"
+			f"[{', '.join(str(x) for x in outs)}]"
 		)
 		return outputs
 
