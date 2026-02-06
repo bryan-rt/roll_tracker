@@ -76,10 +76,18 @@ def run_d2(*, config: Dict[str, Any], inputs: Dict[str, Any]) -> None:
 	stage_d = _stage_d_dict(config)
 	d0 = stage_d.get("d0", {}) if isinstance(stage_d, dict) else {}
 	d0_kin = d0.get("kinematics", {}) if isinstance(d0, dict) else {}
+	d1_cfg = stage_d.get("d1", {}) if isinstance(stage_d, dict) else {}
 
 	d2_cfg = stage_d.get("d2_costs", {}) if isinstance(stage_d, dict) else {}
 	if not isinstance(d2_cfg, dict):
 		raise ValueError("stage_D.d2_costs must be a dict if provided")
+
+	# Surface D1 merge/split distance thresholds into D2 cfg so that
+	# MERGE/SPLIT geometry costs can be normalized by the same scales.
+	if isinstance(d1_cfg, dict):
+		for key in ("merge_dist_m", "split_dist_m"):
+			if key in d1_cfg and key not in d2_cfg:
+				d2_cfg[key] = d1_cfg[key]
 
 	enabled = bool(d2_cfg.get("enabled", True))
 	if not enabled:

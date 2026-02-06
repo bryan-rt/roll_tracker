@@ -123,6 +123,25 @@ def compute_edge_costs(
 	death_cost = float(cfg.get("death_cost", 2.0))
 	merge_prior = float(cfg.get("merge_prior", 0.1))
 	split_prior = float(cfg.get("split_prior", 0.1))
+	reconnect_extra_env_cost = float(cfg.get("reconnect_extra_env_cost", 0.0))
+	reconnect_w_z = float(cfg.get("reconnect_w_z", 1.0))
+	reconnect_w_time = float(cfg.get("reconnect_w_time", 0.0))
+
+	def _node_payload(node_id: str) -> Dict[str, Any]:
+		"""Return parsed payload_json for a D1 node, or {} on failure.
+
+		This helper is intentionally tolerant of missing columns so tests can
+		use minimal D1 node tables that omit payload_json.
+		"""
+		try:
+			n = nodes.loc[node_id]
+		except KeyError:
+			return {}
+		raw = n.get("payload_json", None)
+		try:
+			return json.loads(str(raw)) if not _is_nullish(raw) else {}
+		except Exception:
+			return {}
 
 	for _, e in edges.iterrows():
 		edge_id = str(e["edge_id"])
@@ -130,6 +149,12 @@ def compute_edge_costs(
 		et = _parse_edge_type(edge_type_raw)
 		u = str(e["u"])
 		v = str(e["v"])
+		payload_raw = e.get("payload_json", None)
+		try:
+			payload = json.loads(str(payload_raw)) if not _is_nullish(payload_raw) else {}
+		except Exception:
+			payload = {}
+		is_reconnect = bool(payload.get("reconnect", False))
 
 		is_allowed = True
 		reasons: List[str] = []
@@ -155,12 +180,12 @@ def compute_edge_costs(
 		contact_rel = None
 		endpoint_flagged = False
 
-		# dt gating (only if dt present)
+		# dt gating (only if dt present); allow larger dt for reconnect edges
 		if not _is_nullish(dt_frames):
 			try:
 				dt_frames_i = int(dt_frames)
 				dt_s = float(dt_frames_i) / float(fps)
-				if dt_s > dt_max_s:
+				if dt_s > dt_max_s and not is_reconnect:
 					is_allowed = False
 					reasons.append("dt_too_large")
 			except Exception:
@@ -200,7 +225,7 @@ def compute_edge_costs(
 				flagged = bool(b.get("speed_is_implausible", False) or b.get("accel_is_implausible", False))
 			return (x_eff, y_eff), conf_f, flagged
 
-		# CONTINUE edges: kinematic cost
+		# CONTINUE edges: kinematic cost (including reconnect edges marked in payload)
 		if et == "CONTINUE":
 			(uxy, uconf, uflag) = _endpoint_features(u, "u_end")
 			(vxy, vconf, vflag) = _endpoint_features(v, "v_start")
@@ -222,11 +247,28 @@ def compute_edge_costs(
 					v_req_mps = float(dist_m) / max(EPS, float(dt_s))
 					dist_norm = float(dist_m) / max(EPS, float(v_cost_scale_mps_resolved) * float(dt_s))
 
-					term_time = w_time * math.log1p(float(dt_s))
-					z = float(v_req_mps) / max(EPS, float(v_hinge_mps_resolved))
-					term_vreq = w_vreq * _hinge2(z)
+					if is_reconnect:
+						# Reconnect edges: elliptical time–space cost shaped by existing velocity scale.
+						v_max_for_reconnect = float(v_cost_scale_mps_resolved)
+						if v_req_mps > v_max_for_reconnect:
+							is_allowed = False
+							reasons.append("reconnect_speed_too_high")
+							term_missing_geom = DISALLOWED_EDGE_COST
+						else:
+							# Soft radius R(dt) = r0 + v_soft * dt, with v_soft ~ 0.5 * v_max.
+							r0 = 0.5
+							v_soft = 0.5 * v_max_for_reconnect
+							R = max(EPS, r0 + v_soft * float(dt_s))
+							z = float(dist_m) / R
+							term_env = base_env_cost + reconnect_extra_env_cost
+							term_time = reconnect_w_time * float(dt_s)
+							term_vreq = reconnect_w_z * max(0.0, z - 1.0) ** 2
+					else:
+						term_time = w_time * math.log1p(float(dt_s))
+						z = float(v_req_mps) / max(EPS, float(v_hinge_mps_resolved))
+						term_vreq = w_vreq * _hinge2(z)
 
-					# contact reliability scaling (gentle)
+					# contact reliability scaling (gentle; applies to both normal and reconnect)
 					if use_contact_rel:
 						rel = None
 						if uconf is not None and vconf is not None:
@@ -290,6 +332,40 @@ def compute_edge_costs(
 				term_merge_prior = merge_prior
 			else:
 				term_split_prior = split_prior
+
+			# Geometry-aware MERGE/SPLIT cost using D1 thresholds as scale.
+			# We reuse w_vreq so that distance penalties live on a similar
+			# scale to CONTINUE kinematic costs, without adding new knobs.
+			try:
+				alpha_ms = 1.0
+				w_ms_geom = alpha_ms * w_vreq
+				if w_ms_geom > 0.0:
+					if et == "MERGE":
+						grp_payload = _node_payload(v)
+						md = grp_payload.get("merge_dist_m", None)
+						thr = cfg.get("merge_dist_m", None)
+					elif et == "SPLIT":
+						grp_payload = _node_payload(u)
+						md = grp_payload.get("split_dist_m", None)
+						thr = cfg.get("split_dist_m", None)
+					else:
+						md = None
+						thr = None
+					if not _is_nullish(md) and not _is_nullish(thr):
+						try:
+							dm = float(md)
+							T = max(0.1, float(thr))
+							# Expose the distance feature for diagnostics.
+							if dist_m is None:
+								dist_m = dm
+							z = dm / max(EPS, T)
+							term_vreq += w_ms_geom * (z ** 2)
+						except Exception:
+							pass
+			except Exception:
+				# Geometry shaping must never compromise core MERGE/SPLIT
+				# coherence logic; fail closed by ignoring the extra term.
+				pass
 
 		# BIRTH / DEATH priors
 		if et == "BIRTH":

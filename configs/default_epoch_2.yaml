@@ -133,15 +133,15 @@ stages:
       v_cost_scale_mps: null
       v_hinge_mps: null
       w_time: 0.1
-      w_vreq: 1.0
+      w_vreq: 0.5
       base_env_cost: 0.01
       use_flags: true
       w_flags: 0.25
       use_contact_rel: true
       contact_conf_floor: 0.25
       contact_rel_alpha: 0.35
-      bonus_group_coherent: 1.125
-      penalty_group_incoherent: 1.125
+      bonus_group_coherent: 0.75
+      penalty_group_incoherent: 0.75
       birth_cost: 2.0
       death_cost: 2.0
       merge_prior: 0.1
