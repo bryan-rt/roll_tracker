@@ -1,0 +1,234 @@
+# Default pipeline config for roll-tracker
+
+# This file defines only safe, mechanical defaults. Stage-specific
+# thresholds should be provided by camera overrides under
+# configs/cameras/<camera_id>.yaml. All values here are optional and
+# can be overridden by camera or CLI overlay config.
+
+# Path conventions inside outputs/<clip_id>
+paths:
+  # Per-clip cache directory name (no writes happen unless stages use it)
+  cache_dir_name: "_cache"
+  # Optional debug directory name
+  debug_dir_name: "_debug"
+
+# Compute/runtime defaults
+compute:
+  device: cpu           # cpu or cuda
+  num_workers: 0        # parallel workers; 0 for inline
+  batch_size: 1         # generic batch size where applicable
+  use_sam: false        # enable SAM components if present
+  use_reid: false       # enable ReID components if present
+
+# Camera defaults (camera_id is typically provided via CLI)
+camera:
+  camera_id: cam01
+  fps: 30               # frames per second; override per camera as needed
+  # homography is not hard-coded here; managed via homography.json per camera
+  # roi, meters_per_pixel, mat dimensions can be provided in camera overrides
+  # roi: null
+  # meters_per_pixel: null
+  # mat_width: null
+  # mat_height: null
+
+# Stage configuration
+stages:
+  stage_A:
+    mode: real
+    # Frame stride; 0/None means no skipping. 1 is a safe POC default.
+    frame_stride: 1
+
+    detector:
+      # YOLO detection weights (required)
+      model_path: models/yolov8n.pt
+      # Optional YOLO segmentation weights. If missing at runtime, Stage A will
+      # fall back to deterministic bbox masks and emit an audit event.
+      seg_model_path: models/yolov8s-seg.pt
+      use_seg: true
+      conf: 0.25
+      imgsz: null
+      device: null
+
+    masks:
+      gate:
+        det_conf_min: 0.25
+        mask_quality_min: 0.40
+        min_area_frac: 0.10
+        max_area_frac: 1.10
+
+    tracker:
+      mode: botsort
+      with_reid: false
+      use_mask_bbox: true
+      params: {}
+      physics:
+        audit_only: true
+        max_speed_mps: 8.0
+
+  stage_B:
+    # Masks stage toggle; per-camera overrides can enable/disable.
+    enabled: null
+
+  stage_C:
+    # Tag extraction sampling. 0 means use all frames.
+    sample_frames_for_tags: 0
+
+    tag_family: "36h11"
+    c0_scheduler:
+      enabled: true
+      k_seek: 1
+      k_verify: 30
+      n_ramp: 60
+      gating:
+        enabled: true
+        bbox_pad_frac: 0.15
+        min_det_conf: 0.25
+        min_roi_side_px: 40
+        min_roi_area_px: 2500
+        require_on_mat: true
+        use_scannability_prior: true
+        prior_min: 0.2
+        prior_path: null
+        blur:
+          method: "laplacian_var"
+          min_var: 60.0
+        contrast:
+          method: "gray_std"
+          min_std: 18.0
+
+      # Milestone 4: cadence ramp-up triggers
+      triggers:
+        enabled: true
+        cooldown_frames: 15
+        extend_ramp_on_retrigger: true
+        overlap:
+          iou_thresh: 0.35
+          window_frames: 6
+        motion:
+          enabled: true
+          prefer_metric: true
+          dv_thresh_mps: 2.5
+          a_thresh_mps2: 12.0
+          dv_thresh_pxps: 250.0
+          a_thresh_pxps2: 1200.0
+
+  stage_D:
+    enabled: null
+    run_until: "D3"
+    d3_checkpoint: "POC_1"
+    d0:
+      occlusion_repair:
+        enable_normalized: true
+        # thresholds are normalized by rolling median baseline height
+        min_bottom_frac: 0.15
+        min_height_frac: 0.10
+        onset_window: 5
+        onset_min_frames: 1
+        recover_bottom_frac: 0.10
+        recover_height_frac: 0.08
+        recover_min_frames: 3
+        merge_gap_frames: 2
+        min_window_frames: 2
+        # null => no hard cap; audit span lengths and tune later
+        max_span_frames: null
+        dy2_px_min: 3.0
+      global_context:
+        # Evidence-only; does NOT gate repairs.
+        # If null, context metrics are omitted.
+        context_radius_m: null
+        candidate_radius_m: null
+      kinematics:
+        # CP3: flag-only kinematics derived from effective world coords (repaired-or-original).
+        enabled: true
+        # Human-plausibility thresholds used ONLY for flagging (no clamping/suppression).
+        v_max_mps: 8.0
+        a_max_mps2: 12.0
+
+    # Optional visual QA (Checkpoint 2.5): render a mat-space footpath PNG.
+    # Disabled by default to avoid extra work on every run; enable in an overlay
+    # or per-camera config when you want it.
+    qa:
+      enabled: false
+      group_by: auto            # auto|person|tracklet
+      prefer_repaired: true
+      output_name: stage_D_paths.png
+      mat_blueprint_path: configs/mat_blueprint.json
+      canvas_size_px: 800
+      margin_px: 24
+
+    # D1: graph construction (no costs, no solving)
+    d1:
+      enabled: true
+      # Enable intra-lifespan segmentation of carriers into SOLO/GROUP segments
+      enable_lifespan_segmentation: true
+      # Minimum duration for a GROUP segment (frames)
+      min_group_duration_frames: 10
+      # Suppress split triggers closer than this (frames)
+      min_split_separation_frames: 10
+      # Search window around trigger frame for carrier coordinates (frames)
+      carrier_coord_window_frames: 15
+      # Max allowed delay after disappearance to consider merge trigger (frames)
+      merge_trigger_max_age_frames: 90
+
+      # If true, write dev-only candidate artifacts under outputs/<clip_id>/_debug/.
+      # These are intentionally not part of the F0/F* public artifact contracts.
+      write_debug_graph_artifacts: true
+      # maximum allowed gap (in frames) for single→single continuation edges
+      # mainly relevant if enable_lifespan_segmentation is False
+      max_continue_gap_frames: 300
+      # endpoint extraction windows (frames)
+      # mainly relevant if enable_lifespan_segmentation is False
+      start_window_frames: 10
+      end_window_frames: 10
+      # group-tracklet inference
+      enable_group_nodes: true
+      merge_dist_m: 1.5
+      merge_end_sync_frames: 3
+      merge_disappear_gap_frames: 6
+      split_dist_m: 2.0
+      split_search_horizon_frames: 2700
+      reconnect_enabled: true
+
+    # D2: per-edge costs + normalized identity constraints (solver-agnostic; no solving)
+    d2_costs:
+      enabled: true
+      missing_geom_policy: disallow
+      dt_max_s: 1.0
+
+      # motion normalization (defaults derived from stage_D.d0.kinematics.v_max_mps when null)
+      v_cost_scale_mps: null
+      v_hinge_mps: null
+
+      w_time: 0.1
+      w_vreq: 1.0
+      base_env_cost: 0.01
+
+      use_flags: true
+      w_flags: 0.25
+
+      use_contact_rel: true
+      contact_conf_floor: 0.25
+      contact_rel_alpha: 0.35
+
+      bonus_group_coherent: 0.5
+      penalty_group_incoherent: 0.5
+
+      birth_cost: 2.0
+      death_cost: 2.0
+      merge_prior: 0.1
+      split_prior: 0.1
+      reconnect_extra_env_cost: 1.0
+      reconnect_w_z: 1.0
+      reconnect_w_time: 0.0
+
+    d3:
+      # D3 — “explain each tracklet or pay a penalty”
+      # If a base tracklet_id appears in D1 nodes (SINGLE_TRACKLET), but the selected solution uses none
+      # of its nodes, we pay this penalty once per base_tracklet_id.
+      unexplained_tracklet_penalty: 5.0
+
+  stage_E:
+    enabled: null
+
+  stage_F:
+    enabled: null

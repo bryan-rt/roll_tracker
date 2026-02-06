@@ -141,6 +141,10 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 	merge_disappear_gap_frames = int(d1_cfg.get("merge_disappear_gap_frames", 6))
 	split_dist_m = float(d1_cfg.get("split_dist_m", 0.60))
 	split_search_horizon_frames = int(d1_cfg.get("split_search_horizon_frames", 120))
+	reconnect_enabled = bool(d1_cfg.get("reconnect_enabled", False))
+
+	d0_kin_cfg = _cfg_get(cfg, "stages.stage_D.d0.kinematics", {}) or {}
+	v_max_mps = float(d0_kin_cfg.get("v_max_mps", 8.0))
 
 	fps, frame_count, duration_ms = _get_manifest_fields(manifest)
 	last_frame = (frame_count - 1) if frame_count is not None else None
@@ -282,6 +286,19 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 			used_repaired_frames += 1
 		return ((x, y), used_raw)
 
+	def _cannot_link_for(tid: str) -> List[str]:
+		row = ts_by_tid.get(tid)
+		if row is None:
+			return []
+		return _parse_json_list(row.get("cannot_link_anchor_keys_json", None))
+
+	def _must_link_key(tid: str) -> Optional[str]:
+		row = ts_by_tid.get(tid)
+		if row is None:
+			return None
+		val = row.get("must_link_anchor_key", None)
+		return str(val) if val not in (None, "", "null") else None
+
 	# =====================================================================
 	# NEW PATH: full-lifespan segmentation (SOLO/GROUP segments)
 	#
@@ -411,6 +428,7 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 		# ---- pair merges to splits to form GROUP spans per carrier ----
 		group_spans: List[Dict[str, Any]] = []
 		suppressed_group_spans: List[Dict[str, Any]] = []
+		reconnect_edges_debug: List[Dict[str, Any]] = []
 
 		for carrier in sorted({m["carrier"] for m in merge_triggers} | {s["carrier"] for s in split_triggers}):
 			# Carrier lifespan bounds are authoritative (from tracklet_bank_summaries).
@@ -705,6 +723,14 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 							"disappearing_tracklet_id": p.get("disappear", None),
 							"new_tracklet_id": p.get("new", None),
 							"kind": p.get("kind", None),
+							# Optional geometry/time metadata for downstream pricing (D2).
+							# These are derived during D1 group-span construction and are
+							# safe to surface via the node payload without changing the
+							# public parquet schema.
+							"merge_end": p.get("merge_end", None),
+							"split_start": p.get("split_start", None),
+							"merge_dist_m": p.get("merge_dist_m", None),
+							"split_dist_m": p.get("split_dist_m", None),
 						}
 					)
 
@@ -731,6 +757,86 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 						payload={"dt_frames": int(b["start_frame"]) - int(a["end_frame"])},
 					)
 				)
+
+		# ---- Occlusion reconnect edges between different base tracklets ----
+		if reconnect_enabled and fps is not None:
+			base_ids = sorted(ts_by_tid.keys())
+			for tn in base_ids:
+				row_n = ts_by_tid.get(tn)
+				if row_n is None:
+					continue
+				tn_end = int(row_n["end_frame"])
+				for tm in base_ids:
+					if tm == tn:
+						continue
+					row_m = ts_by_tid.get(tm)
+					if row_m is None:
+						continue
+					tm_start = int(row_m["start_frame"])
+					if tm_start <= tn_end:
+						continue
+					gap_frames = tm_start - tn_end
+					if gap_frames <= 0:
+						continue
+					# Reuse split_search_horizon_frames as an upper bound on reconnect gap.
+					if gap_frames > split_search_horizon_frames:
+						continue
+
+					# cannot-link pruning based on anchor keys (mirror legacy CONT logic)
+					mi = _must_link_key(tn)
+					mj = _must_link_key(tm)
+					if mj is not None and mj in set(_cannot_link_for(tn)):
+						continue
+					if mi is not None and mi in set(_cannot_link_for(tm)):
+						continue
+
+					# Endpoint positions
+					p_end = endpoints_end.get(tn)
+					p_start = endpoints_start.get(tm)
+					if p_end is None or p_start is None:
+						continue
+					dist = _dist_m(p_end[0], p_start[0])
+					dt_s = float(gap_frames) / float(fps)
+					if dt_s <= 0:
+						continue
+					speed_mps = float(dist) / max(1e-6, dt_s)
+					if speed_mps > float(v_max_mps):
+						continue
+
+					chain_n = segments_by_base.get(tn)
+					chain_m = segments_by_base.get(tm)
+					if not chain_n or not chain_m:
+						continue
+					u_node = str(chain_n[-1]["node_id"])
+					v_node = str(chain_m[0]["node_id"])
+					edge_id = f"E:CONT_RECONNECT:{u_node}->{v_node}"
+					payload = {
+						"dt_frames": int(gap_frames),
+						"reconnect": True,
+						"dt_s": float(dt_s),
+						"dist_m": float(dist),
+						"speed_mps": float(speed_mps),
+					}
+					g.add_edge(
+						GraphEdge(
+							edge_id=edge_id,
+							u=u_node,
+							v=v_node,
+							type=EdgeType.CONTINUE,
+							capacity=1,
+							payload=payload,
+						)
+					)
+					reconnect_edges_debug.append(
+						{
+							"from_tracklet_id": tn,
+							"to_tracklet_id": tm,
+							"gap_frames": int(gap_frames),
+							"dt_s": float(dt_s),
+							"dist_m": float(dist),
+							"speed_mps": float(speed_mps),
+						}
+					)
 
 		# MERGE edges: disappearing identity flows into the GROUP segment.
 		for gspan in group_spans:
@@ -879,6 +985,7 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 			(pd.DataFrame(split_triggers) if split_triggers else pd.DataFrame([])).to_parquet(debug_dir / "d1_split_triggers.parquet", index=False)
 			(pd.DataFrame(suppressed_split_triggers) if suppressed_split_triggers else pd.DataFrame([])).to_parquet(debug_dir / "d1_suppressed_split_triggers.parquet", index=False)
 			(pd.DataFrame(suppressed_group_spans) if suppressed_group_spans else pd.DataFrame([])).to_parquet(debug_dir / "d1_suppressed_group_spans.parquet", index=False)
+			(pd.DataFrame(reconnect_edges_debug) if reconnect_edges_debug else pd.DataFrame([])).to_parquet(debug_dir / "d1_reconnect_edges.parquet", index=False)
 
 			debug_outputs.update(
 				{
@@ -888,6 +995,7 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 					"d1_split_triggers_parquet": str(debug_dir / "d1_split_triggers.parquet"),
 					"d1_suppressed_split_triggers_parquet": str(debug_dir / "d1_suppressed_split_triggers.parquet"),
 					"d1_suppressed_group_spans_parquet": str(debug_dir / "d1_suppressed_group_spans.parquet"),
+					"d1_reconnect_edges_parquet": str(debug_dir / "d1_reconnect_edges.parquet"),
 				}
 			)
 

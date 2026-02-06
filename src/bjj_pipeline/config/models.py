@@ -306,6 +306,14 @@ class StageD1Config(BaseModel):
     merge_disappear_gap_frames: int = Field(default=6, ge=0)
     split_dist_m: float = Field(default=0.60, gt=0)
     split_search_horizon_frames: int = Field(default=120, ge=0)
+    # Optional occlusion reconnect proposals (between non-overlapping lifespans)
+    reconnect_enabled: bool = Field(
+        default=False,
+        description=(
+            "If true, propose CONT edges between base tracklets whose lifespans do not overlap "
+            "but are temporally and kinematically plausible reconnects."
+        ),
+    )
 
 
 class StageD2CostsConfig(BaseModel):
@@ -349,6 +357,23 @@ class StageD2CostsConfig(BaseModel):
     death_cost: float = Field(default=2.0, ge=0)
     merge_prior: float = Field(default=0.1, ge=0)
     split_prior: float = Field(default=0.1, ge=0)
+    # Reconnect edge shaping (tn -> tm after occlusion); applied only to edges
+    # explicitly marked as reconnects in D1 payloads.
+    reconnect_extra_env_cost: float = Field(
+        default=0.0,
+        ge=0,
+        description="Additional environment cost added only to reconnect edges.",
+    )
+    reconnect_w_z: float = Field(
+        default=1.0,
+        ge=0,
+        description="Weight for elliptical distance term on reconnect edges.",
+    )
+    reconnect_w_time: float = Field(
+        default=0.0,
+        ge=0,
+        description="Optional additional time penalty weight for reconnect edges (seconds).",
+    )
 
     @field_validator("missing_geom_policy")
     @classmethod
