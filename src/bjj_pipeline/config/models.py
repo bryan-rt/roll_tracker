@@ -315,6 +315,28 @@ class StageD1Config(BaseModel):
         ),
     )
 
+    reconnect_max_gap_frames: int = Field(
+        default=120,
+        ge=0,
+        description="Maximum allowed gap (in frames) for occlusion reconnect edge proposals (separate from split_search_horizon_frames).",
+    )
+    reconnect_boundary_on_mat_required: bool = Field(
+        default=True,
+        description=(
+            "If true, require each reconnect endpoint to have at least one on-mat frame within a small boundary window "
+            "around the tracklet end/start. Missing on_mat is treated as off-mat."
+        ),
+    )
+    reconnect_boundary_slack_frames: int = Field(
+        default=2,
+        ge=0,
+        description="Boundary window slack (frames) for reconnect endpoint on-mat requirement.",
+    )
+    reconnect_solo_only: bool = Field(
+        default=True,
+        description="If true, only propose reconnect edges from a SOLO end-segment to a SOLO start-segment (never across GROUP boundaries).",
+    )
+
 
 class StageD2CostsConfig(BaseModel):
     """Stage D2 configuration (costs + constraints; solver-agnostic).
@@ -330,6 +352,12 @@ class StageD2CostsConfig(BaseModel):
     # hard policies (locked for POC)
     missing_geom_policy: str = Field(default="disallow", description="Only 'disallow' is supported for POC")
     dt_max_s: float = Field(default=1.0, gt=0)
+
+    # Endpoint lookup window for CONTINUE edges: if the exact boundary frame is missing in
+    # tracklet_bank_frames (e.g., at SOLO/GROUP boundaries), D2 may search within +/- this
+    # many frames for the nearest available row for the carrier tracklet.
+    # None => resolved by the D2 runner (typically from stage_D.d1.carrier_coord_window_frames).
+    endpoint_search_window_frames: Optional[int] = Field(default=None, ge=0)
 
     # motion normalization (non-redundant; derived by default)
     v_cost_scale_mps: Optional[float] = Field(default=None, gt=0)
@@ -370,9 +398,40 @@ class StageD2CostsConfig(BaseModel):
         description="Weight for elliptical distance term on reconnect edges.",
     )
     reconnect_w_time: float = Field(
-        default=0.0,
+        default=0.35,
         ge=0,
         description="Optional additional time penalty weight for reconnect edges (seconds).",
+    )
+
+    # New reconnect shaping (teleportation guardrails). These keys are additive and do not
+    # remove the legacy reconnect_w_z / reconnect_w_time knobs for back-compat.
+    reconnect_v_max_mps: Optional[float] = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Maximum allowed required speed (m/s) for reconnect edges. If unset, defaults to stage_D.d0.kinematics.v_max_mps "
+            "via D2 runner resolution."
+        ),
+    )
+    reconnect_w_speed: float = Field(
+        default=1.0,
+        ge=0,
+        description="Weight for reconnect speed hinge term (applies to reconnect edges only).",
+    )
+    reconnect_speed_power: float = Field(
+        default=2.0,
+        gt=0,
+        description="Exponent for reconnect speed hinge (>=1 recommended).",
+    )
+    reconnect_dt_ref_s: float = Field(
+        default=0.75,
+        gt=0,
+        description="Reference dt (seconds) for reconnect convex time penalty normalization.",
+    )
+    reconnect_dt_power: float = Field(
+        default=2.2,
+        gt=0,
+        description="Exponent for reconnect convex time penalty (must be >1 for accelerating penalty).",
     )
 
     @field_validator("missing_geom_policy")

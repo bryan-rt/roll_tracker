@@ -53,8 +53,8 @@ def test_d2_missing_geom_disallow_logs_reason() -> None:
 	# remove one endpoint row -> missing geom
 	bank_frames = bank_frames[bank_frames["tracklet_id"] != "t1"].reset_index(drop=True)
 
-	cfg = {"dt_max_s": 1.0, "missing_geom_policy": "disallow"}
-	out = compute_edge_costs(
+	cfg = {"dt_max_s": 1.0, "missing_geom_policy": "disallow", "endpoint_search_window_frames": 0}
+	out, _ = compute_edge_costs(
 			d1_edges=d1_edges,
 			d1_nodes=d1_nodes,
 			bank_frames=bank_frames,
@@ -79,9 +79,10 @@ def test_d2_cost_increases_with_distance() -> None:
 		"base_env_cost": 0.0,
 		"use_contact_rel": False,
 		"use_flags": False,
+		"endpoint_search_window_frames": 0,
 	}
 	# baseline: dist=1.0
-	out1 = compute_edge_costs(
+	out1, _ = compute_edge_costs(
 			d1_edges=d1_edges,
 			d1_nodes=d1_nodes,
 			bank_frames=bank_frames,
@@ -95,7 +96,7 @@ def test_d2_cost_increases_with_distance() -> None:
 	bank_frames2 = bank_frames.copy()
 	bank_frames2.loc[bank_frames2["tracklet_id"] == "t1", "x_m"] = 2.0
 
-	out2 = compute_edge_costs(
+	out2, _ = compute_edge_costs(
 			d1_edges=d1_edges,
 			d1_nodes=d1_nodes,
 			bank_frames=bank_frames2,
@@ -120,9 +121,10 @@ def test_d2_contact_rel_gentle_scaling() -> None:
 		"contact_conf_floor": 0.25,
 		"contact_rel_alpha": 0.35,
 		"use_flags": False,
+		"endpoint_search_window_frames": 0,
 	}
 
-	out_hi = compute_edge_costs(
+	out_hi, _ = compute_edge_costs(
 			d1_edges=d1_edges,
 			d1_nodes=d1_nodes,
 			bank_frames=bank_frames,
@@ -135,7 +137,7 @@ def test_d2_contact_rel_gentle_scaling() -> None:
 	bank_low = bank_frames.copy()
 	bank_low.loc[:, "contact_conf"] = 0.25
 
-	out_lo = compute_edge_costs(
+	out_lo, _ = compute_edge_costs(
 			d1_edges=d1_edges,
 			d1_nodes=d1_nodes,
 			bank_frames=bank_low,
@@ -157,8 +159,8 @@ def test_d2_disallow_reasons_canonical_order() -> None:
 	d1_edges = d1_edges.copy()
 	d1_edges.loc[0, "dt_frames"] = 20
 
-	cfg = {"dt_max_s": 1.0, "missing_geom_policy": "disallow"}
-	out = compute_edge_costs(
+	cfg = {"dt_max_s": 1.0, "missing_geom_policy": "disallow", "endpoint_search_window_frames": 0}
+	out, _ = compute_edge_costs(
 		d1_edges=d1_edges,
 		d1_nodes=d1_nodes,
 		bank_frames=bank_frames,

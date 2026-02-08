@@ -142,6 +142,10 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 	split_dist_m = float(d1_cfg.get("split_dist_m", 0.60))
 	split_search_horizon_frames = int(d1_cfg.get("split_search_horizon_frames", 120))
 	reconnect_enabled = bool(d1_cfg.get("reconnect_enabled", False))
+	reconnect_max_gap_frames = int(d1_cfg.get("reconnect_max_gap_frames", 120))
+	reconnect_boundary_on_mat_required = bool(d1_cfg.get("reconnect_boundary_on_mat_required", True))
+	reconnect_boundary_slack_frames = int(d1_cfg.get("reconnect_boundary_slack_frames", 2))
+	reconnect_solo_only = bool(d1_cfg.get("reconnect_solo_only", True))
 
 	d0_kin_cfg = _cfg_get(cfg, "stages.stage_D.d0.kinematics", {}) or {}
 	v_max_mps = float(d0_kin_cfg.get("v_max_mps", 8.0))
@@ -264,6 +268,36 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 			return ((x, y), used_raw)
 		missing_endpoint_coords += 1
 		return None
+
+	def _boundary_on_mat_ok(tid: str, which: str) -> bool:
+		"""Return True if boundary window contains at least one on-mat frame.
+
+		Missing on_mat is treated as off-mat for this check (teleportation guardrail).
+		"""
+		row = ts_by_tid.get(tid)
+		if row is None:
+			return False
+		gdf = frames_by_tid.get(tid)
+		if gdf is None:
+			return False
+		try:
+			if which == "end":
+				frame = int(row["end_frame"])
+				sf = frame - reconnect_boundary_slack_frames
+				ef = frame
+			else:
+				frame = int(row["start_frame"])
+				sf = frame
+				ef = frame + reconnect_boundary_slack_frames
+		except Exception:
+			return False
+		window = gdf[(gdf["frame_index"] >= sf) & (gdf["frame_index"] <= ef)]
+		for _, fr in window.iterrows():
+			# IMPORTANT: missing on_mat => treat as NOT on-mat.
+			val = fr.get("on_mat", None)
+			if val is True:
+				return True
+		return False
 
 	def carrier_pos_at_frame(tid: str, frame_idx: int) -> Optional[Tuple[Tuple[float, float], bool]]:
 		nonlocal used_raw_frames, used_repaired_frames
@@ -778,8 +812,8 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 					gap_frames = tm_start - tn_end
 					if gap_frames <= 0:
 						continue
-					# Reuse split_search_horizon_frames as an upper bound on reconnect gap.
-					if gap_frames > split_search_horizon_frames:
+					# Hard cap reconnect gap (separate from split horizon).
+					if gap_frames > reconnect_max_gap_frames:
 						continue
 
 					# cannot-link pruning based on anchor keys (mirror legacy CONT logic)
@@ -795,6 +829,11 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 					p_start = endpoints_start.get(tm)
 					if p_end is None or p_start is None:
 						continue
+					if reconnect_boundary_on_mat_required:
+						if not _boundary_on_mat_ok(tn, "end"):
+							continue
+						if not _boundary_on_mat_ok(tm, "start"):
+							continue
 					dist = _dist_m(p_end[0], p_start[0])
 					dt_s = float(gap_frames) / float(fps)
 					if dt_s <= 0:
@@ -807,6 +846,11 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 					chain_m = segments_by_base.get(tm)
 					if not chain_n or not chain_m:
 						continue
+					if reconnect_solo_only:
+						if str(chain_n[-1].get("segment_type", "")) != "SOLO":
+							continue
+						if str(chain_m[0].get("segment_type", "")) != "SOLO":
+							continue
 					u_node = str(chain_n[-1]["node_id"])
 					v_node = str(chain_m[0]["node_id"])
 					edge_id = f"E:CONT_RECONNECT:{u_node}->{v_node}"
