@@ -89,6 +89,22 @@ def run_d2(*, config: Dict[str, Any], inputs: Dict[str, Any]) -> None:
 			if key in d1_cfg and key not in d2_cfg:
 				d2_cfg[key] = d1_cfg[key]
 
+	# Resolve endpoint_search_window_frames for D2 endpoint geometry lookup.
+	# Prefer explicit D2 config; otherwise mirror D1 carrier_coord_window_frames.
+	endpoint_window_source: str | None = None
+	if "endpoint_search_window_frames" in d2_cfg and d2_cfg.get("endpoint_search_window_frames") is not None:
+		d2_cfg["endpoint_search_window_frames"] = int(d2_cfg["endpoint_search_window_frames"])
+		endpoint_window_source = "stage_D.d2_costs.endpoint_search_window_frames"
+	elif isinstance(d1_cfg, dict) and d1_cfg.get("carrier_coord_window_frames") is not None:
+		d2_cfg["endpoint_search_window_frames"] = int(d1_cfg["carrier_coord_window_frames"])
+		endpoint_window_source = "stage_D.d1.carrier_coord_window_frames"
+	else:
+		raise ValueError(
+			"D2 requires endpoint_search_window_frames; set stage_D.d2_costs.endpoint_search_window_frames "
+			"or stage_D.d1.carrier_coord_window_frames"
+		)
+	endpoint_search_window_frames_resolved = int(d2_cfg["endpoint_search_window_frames"])
+
 	enabled = bool(d2_cfg.get("enabled", True))
 	if not enabled:
 		_write_audit_event(
@@ -124,6 +140,17 @@ def run_d2(*, config: Dict[str, Any], inputs: Dict[str, Any]) -> None:
 		v_hinge_mps_resolved = float(v_hinge_mps)
 		v_hinge_source = "stage_D.d2_costs.v_hinge_mps"
 
+	# Resolve reconnect speed threshold (do not assume v_cost_scale_mps is a threshold).
+	reconnect_v_max_mps = d2_cfg.get("reconnect_v_max_mps", None)
+	if reconnect_v_max_mps is None:
+		reconnect_v_max_mps_resolved = d0_vmax
+		reconnect_v_max_source = "stage_D.d0.kinematics.v_max_mps"
+	else:
+		reconnect_v_max_mps_resolved = float(reconnect_v_max_mps)
+		reconnect_v_max_source = "stage_D.d2_costs.reconnect_v_max_mps"
+	# Ensure downstream cost code sees a concrete value (back-compat: key already exists in config model).
+	d2_cfg["reconnect_v_max_mps"] = reconnect_v_max_mps_resolved
+
 	# Audit resolved config + derivations
 	_write_audit_event(
 			audit_path,
@@ -134,7 +161,11 @@ def run_d2(*, config: Dict[str, Any], inputs: Dict[str, Any]) -> None:
 				"v_cost_scale_mps_resolved": v_cost_scale_mps_resolved,
 				"v_cost_scale_mps_source": v_cost_scale_source,
 				"v_hinge_mps_resolved": v_hinge_mps_resolved,
+				"reconnect_v_max_mps_resolved": reconnect_v_max_mps_resolved,
+				"reconnect_v_max_source": reconnect_v_max_source,
 				"v_hinge_mps_source": v_hinge_source,
+				"endpoint_search_window_frames_resolved": endpoint_search_window_frames_resolved,
+				"endpoint_search_window_frames_source": endpoint_window_source,
 				"fps": fps,
 			},
 	)
@@ -208,7 +239,7 @@ def run_d2(*, config: Dict[str, Any], inputs: Dict[str, Any]) -> None:
 	)
 
 	# Compute per-edge costs
-	costs_df = compute_edge_costs(
+	costs_df, endpoint_stats = compute_edge_costs(
 			d1_edges=d1_edges,
 			d1_nodes=d1_nodes,
 			bank_frames=bank_frames,
@@ -216,6 +247,16 @@ def run_d2(*, config: Dict[str, Any], inputs: Dict[str, Any]) -> None:
 			cfg=d2_cfg,
 			v_cost_scale_mps_resolved=v_cost_scale_mps_resolved,
 			v_hinge_mps_resolved=v_hinge_mps_resolved,
+	)
+
+	# Summarize endpoint lookup behavior (contract-safe: audit only; do not add parquet columns).
+	_write_audit_event(
+			audit_path,
+			{
+				"artifact_type": "d2_endpoint_lookup_summary",
+				"created_at_ms": _now_ms(),
+				**endpoint_stats,
+			},
 	)
 
 	# Validate before writing

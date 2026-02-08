@@ -83,7 +83,7 @@ def compute_edge_costs(
 	cfg: Dict[str, Any],
 	v_cost_scale_mps_resolved: float,
 	v_hinge_mps_resolved: float,
-) -> pd.DataFrame:
+) -> Tuple[pd.DataFrame, Dict[str, Any]]:
 	"""Compute per-edge costs for every D1 edge (one output row per edge_id)."""
 	# Deterministic ordering
 	edges = d1_edges.copy()
@@ -96,6 +96,14 @@ def compute_edge_costs(
 	bank_key = bank[["tracklet_id", "frame_index"]].astype({"tracklet_id": "string", "frame_index": "int64"})
 	bank_index = pd.MultiIndex.from_frame(bank_key, names=["tracklet_id", "frame_index"])
 	bank.index = bank_index
+	# Precompute available frames per tracklet for bounded nearest-frame lookup.
+	# This avoids brittle exact-frame requirements at SOLO/GROUP boundaries.
+	_tmp = bank_key.copy()
+	frames_by_tid: Dict[str, np.ndarray] = (
+		_tmp.groupby("tracklet_id")["frame_index"]
+		.apply(lambda s: np.sort(s.unique()))
+		.to_dict()
+	)
 
 	rows: List[Dict[str, Any]] = []
 
@@ -103,6 +111,21 @@ def compute_edge_costs(
 	missing_geom_policy = cfg.get("missing_geom_policy", "disallow")
 	if missing_geom_policy != "disallow":
 		raise ValueError(f"D2 only supports missing_geom_policy='disallow' for POC (got {missing_geom_policy!r})")
+
+	# Endpoint lookup policy: for CONTINUE edges we need endpoint geometry at node boundaries.
+	# Exact boundary frames can be missing in tracklet_bank_frames (e.g., at SOLO/GROUP boundaries),
+	# so we allow a bounded nearest-frame fallback within +/- endpoint_search_window_frames.
+	if "endpoint_search_window_frames" not in cfg:
+		raise ValueError(
+			"D2 requires endpoint_search_window_frames in cfg (resolved in d2_run.py; do not default silently in costs.py)"
+		)
+	endpoint_search_window_frames = int(cfg["endpoint_search_window_frames"])
+	if endpoint_search_window_frames < 0:
+		raise ValueError(f"endpoint_search_window_frames must be >=0 (got {endpoint_search_window_frames})")
+
+	endpoint_exact_hits = 0
+	endpoint_fallback_hits = 0
+	endpoint_misses = 0
 
 	# weights
 	w_time = float(cfg.get("w_time", 0.1))
@@ -126,6 +149,11 @@ def compute_edge_costs(
 	reconnect_extra_env_cost = float(cfg.get("reconnect_extra_env_cost", 0.0))
 	reconnect_w_z = float(cfg.get("reconnect_w_z", 1.0))
 	reconnect_w_time = float(cfg.get("reconnect_w_time", 0.0))
+	reconnect_v_max_mps = float(cfg.get("reconnect_v_max_mps", v_hinge_mps_resolved))
+	reconnect_w_speed = float(cfg.get("reconnect_w_speed", 1.0))
+	reconnect_speed_power = float(cfg.get("reconnect_speed_power", 2.0))
+	reconnect_dt_ref_s = float(cfg.get("reconnect_dt_ref_s", 0.75))
+	reconnect_dt_power = float(cfg.get("reconnect_dt_power", 2.2))
 
 	def _node_payload(node_id: str) -> Dict[str, Any]:
 		"""Return parsed payload_json for a D1 node, or {} on failure.
@@ -194,7 +222,58 @@ def compute_edge_costs(
 				reasons.append("dt_invalid")
 
 		# endpoint lookups for kinematic features (only when needed)
+		def _lookup_bank_row_near(*, tid: str, frame_i_req: int) -> Tuple[pd.Series | None, int | None, bool]:
+			"""Lookup bank row for (tid, frame), with bounded nearest-frame fallback.
+
+			Tie-breaks deterministically: prefer smallest |delta|; on ties prefer earlier frame.
+			"""
+			# Exact hit
+			try:
+				b = bank.loc[(tid, frame_i_req)]
+				return b, frame_i_req, False
+			except KeyError:
+				pass
+
+			if endpoint_search_window_frames == 0:
+				return None, None, False
+
+			frames = frames_by_tid.get(tid, None)
+			if frames is None or len(frames) == 0:
+				return None, None, False
+
+			lo = frame_i_req - endpoint_search_window_frames
+			hi = frame_i_req + endpoint_search_window_frames
+
+			# Use searchsorted to find nearest candidates.
+			j = int(np.searchsorted(frames, frame_i_req))
+			candidates: List[int] = []
+			if 0 <= j < len(frames):
+				candidates.append(int(frames[j]))
+			if 0 <= j - 1 < len(frames):
+				candidates.append(int(frames[j - 1]))
+
+			best_frame: int | None = None
+			best_abs: int | None = None
+			for fi in candidates:
+				if fi < lo or fi > hi:
+					continue
+				absd = abs(fi - frame_i_req)
+				if best_abs is None or absd < best_abs or (absd == best_abs and (best_frame is None or fi < best_frame)):
+					best_abs = absd
+					best_frame = fi
+
+			if best_frame is None:
+				return None, None, False
+
+			try:
+				b = bank.loc[(tid, int(best_frame))]
+			except KeyError:
+				# Should not happen if frames_by_tid is built from bank_key, but stay safe.
+				return None, None, False
+			return b, int(best_frame), True
+
 		def _endpoint_features(node_id: str, which: str) -> Tuple[Tuple[float | None, float | None], float | None, bool]:
+			nonlocal endpoint_exact_hits, endpoint_fallback_hits, endpoint_misses
 			n = nodes.loc[node_id]  # raises KeyError if missing: hard fail (schema/graph bug)
 			tid = n.get("base_tracklet_id", None)
 			if _is_nullish(tid):
@@ -208,10 +287,14 @@ def compute_edge_costs(
 				frame_i = int(frame)
 			except Exception:
 				return (None, None), None, False
-			try:
-				b = bank.loc[(tid, frame_i)]
-			except KeyError:
+			b, frame_i_used, used_fallback = _lookup_bank_row_near(tid=tid, frame_i_req=frame_i)
+			if b is None:
+				endpoint_misses += 1
 				return (None, None), None, False
+			if used_fallback:
+				endpoint_fallback_hits += 1
+			else:
+				endpoint_exact_hits += 1
 			x_eff, y_eff = _effective_xy(b)
 			conf = b.get("contact_conf", None)
 			conf_f = None
@@ -248,21 +331,49 @@ def compute_edge_costs(
 					dist_norm = float(dist_m) / max(EPS, float(v_cost_scale_mps_resolved) * float(dt_s))
 
 					if is_reconnect:
-						# Reconnect edges: elliptical time–space cost shaped by existing velocity scale.
-						v_max_for_reconnect = float(v_cost_scale_mps_resolved)
-						if v_req_mps > v_max_for_reconnect:
+						# Reconnect edges (occlusion only): monotone, convex dt penalty + speed hinge.
+						# Prefer D1 payload geometry to stay consistent with D1 endpoint selection.
+						dt_s_eff = dt_s
+						dist_eff = dist_m
+						v_req_eff = v_req_mps
+						try:
+							p_dt_s = payload.get("dt_s", None)
+							p_dist_m = payload.get("dist_m", None)
+							p_v = payload.get("speed_mps", None)
+							if not _is_nullish(p_dt_s):
+								dt_s_eff = float(p_dt_s)
+							if not _is_nullish(p_dist_m):
+								dist_eff = float(p_dist_m)
+							if not _is_nullish(p_v):
+								v_req_eff = float(p_v)
+						except Exception:
+							# Fall back to bank-derived features.
+							pass
+						if dt_s_eff is None or dt_s_eff <= EPS or dist_eff is None:
 							is_allowed = False
-							reasons.append("reconnect_speed_too_high")
+							reasons.append("reconnect_missing_or_invalid_geom")
 							term_missing_geom = DISALLOWED_EDGE_COST
 						else:
-							# Soft radius R(dt) = r0 + v_soft * dt, with v_soft ~ 0.5 * v_max.
-							r0 = 0.5
-							v_soft = 0.5 * v_max_for_reconnect
-							R = max(EPS, r0 + v_soft * float(dt_s))
-							z = float(dist_m) / R
-							term_env = base_env_cost + reconnect_extra_env_cost
-							term_time = reconnect_w_time * float(dt_s)
-							term_vreq = reconnect_w_z * max(0.0, z - 1.0) ** 2
+							# Compute v_req if not provided.
+							if v_req_eff is None:
+								v_req_eff = float(dist_eff) / max(EPS, float(dt_s_eff))
+							if float(v_req_eff) > float(reconnect_v_max_mps):
+								is_allowed = False
+								reasons.append("reconnect_speed_too_high")
+								term_missing_geom = DISALLOWED_EDGE_COST
+							else:
+								term_env = base_env_cost + reconnect_extra_env_cost
+								# Convex time penalty: strictly increasing in dt, dominated for long gaps.
+								dt_norm = float(dt_s_eff) / max(EPS, float(reconnect_dt_ref_s))
+								term_time = reconnect_w_time * (dt_norm ** float(reconnect_dt_power))
+								# Speed hinge around reconnect_v_max_mps (clear threshold semantics).
+								zv = float(v_req_eff) / max(EPS, float(reconnect_v_max_mps))
+								term_vreq = reconnect_w_speed * (max(0.0, zv - 1.0) ** float(reconnect_speed_power))
+								# Keep scalar features consistent with the chosen geometry.
+								dt_s = float(dt_s_eff)
+								dist_m = float(dist_eff)
+								v_req_mps = float(v_req_eff)
+								dist_norm = float(dist_m) / max(EPS, float(reconnect_v_max_mps) * float(dt_s))
 					else:
 						term_time = w_time * math.log1p(float(dt_s))
 						z = float(v_req_mps) / max(EPS, float(v_hinge_mps_resolved))
@@ -435,5 +546,12 @@ def compute_edge_costs(
 	if "dt_frames" in out_df.columns:
 		# Use nullable Int64 so schema family "int" is preserved while allowing NA.
 		out_df["dt_frames"] = out_df["dt_frames"].astype("Int64")
-	return out_df
+	endpoint_stats: Dict[str, Any] = {
+		"endpoint_search_window_frames": int(endpoint_search_window_frames),
+		"endpoint_exact_hits": int(endpoint_exact_hits),
+		"endpoint_fallback_hits": int(endpoint_fallback_hits),
+		"endpoint_misses": int(endpoint_misses),
+		"endpoint_requests_total": int(endpoint_exact_hits + endpoint_fallback_hits + endpoint_misses),
+	}
+	return out_df, endpoint_stats
 

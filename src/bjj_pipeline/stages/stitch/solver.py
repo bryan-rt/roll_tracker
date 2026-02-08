@@ -50,6 +50,14 @@ def run_d3(*, config: Dict[str, Any], inputs: Dict[str, Any]) -> None:
 		from bjj_pipeline.stages.stitch.d3_ilp import solve_structure_ilp
 
 		# D3 — "explain each tracklet or pay a penalty": optional penalty from config.
+		# D3 — GROUP_TRACKLET boundary substitute window (frames)
+		gbw = _cfg_get(
+			config,
+			"stages.stage_D.d3.group_boundary_window_frames",
+			_default_gbw := _cfg_get(config, "stage_D.d3.group_boundary_window_frames", None),
+		)
+		gbw_i = int(gbw) if gbw is not None else 10
+
 		penalty = _cfg_get(
 			config,
 			"stages.stage_D.d3.unexplained_tracklet_penalty",
@@ -61,6 +69,7 @@ def run_d3(*, config: Dict[str, Any], inputs: Dict[str, Any]) -> None:
 			manifest=manifest,
 			checkpoint=str(checkpoint),
 			unexplained_tracklet_penalty=float(penalty) if penalty is not None else None,
+			group_boundary_window_frames=int(gbw_i),
 		)
 		_ = res  # reserved for later checkpoints
 		return

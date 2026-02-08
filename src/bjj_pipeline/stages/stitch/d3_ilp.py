@@ -14,9 +14,10 @@ from __future__ import annotations
 import time
 import json
 import math
+import statistics
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Set, Tuple
 
 import pandas as pd
 from ortools.sat.python import cp_model
@@ -253,8 +254,15 @@ def _find_unique_node_id(nodes_df: pd.DataFrame, *, node_type: str) -> str:
 	return str(m.iloc[0]["node_id"])
 
 
+
 def solve_structure_ilp_core(
-	*, nodes_df: pd.DataFrame, edges_df: pd.DataFrame, costs_df: pd.DataFrame, unexplained_tracklet_penalty: float | None = None
+	*,
+	nodes_df: pd.DataFrame,
+	edges_df: pd.DataFrame,
+	costs_df: pd.DataFrame,
+	constraints: Dict[str, Any] | None = None,
+	unexplained_tracklet_penalty: float | None = None,
+	group_boundary_window_frames: int = 10,
 ) -> ILPResult:
 	"""Pure core solver used by POC_1 (unit-test friendly; no I/O)."""
 	start = time.time()
@@ -286,6 +294,34 @@ def solve_structure_ilp_core(
 
 	source_id = _find_unique_node_id(nodes, node_type="NodeType.SOURCE")
 	sink_id = _find_unique_node_id(nodes, node_type="NodeType.SINK")
+
+	# Default unexplained-tracklet penalty (stable, config-overridable).
+	# Manager-locked rule: do NOT derive from max edge costs.
+	# Use a stable default ≈ 3–5×(birth + death); we pick 4× as midpoint.
+	if unexplained_tracklet_penalty is None:
+		# Only compute a default when the clip contains track nodes (otherwise keep disabled).
+		has_track_nodes_tmp = nodes["node_type"].astype(str).isin(
+			["NodeType.SINGLE_TRACKLET", "NodeType.GROUP_TRACKLET"]
+		).any()
+		if has_track_nodes_tmp:
+			birth_costs: List[float] = []
+			death_costs: List[float] = []
+			if "edge_id" in costs_df.columns and "total_cost" in costs_df.columns:
+				for _, r in costs_df.iterrows():
+					eid = str(r["edge_id"])
+					c = float(r["total_cost"])
+					if eid.startswith("E:BIRTH:"):
+						birth_costs.append(c)
+					elif eid.startswith("E:DEATH:"):
+						death_costs.append(c)
+			birth_med = float(statistics.median(birth_costs)) if len(birth_costs) > 0 else 0.0
+			death_med = float(statistics.median(death_costs)) if len(death_costs) > 0 else 0.0
+			base = birth_med + death_med
+			if base > 0.0:
+				unexplained_tracklet_penalty = 4.0 * base
+			else:
+				# Conservative fallback if birth/death edges are absent in this graph.
+				unexplained_tracklet_penalty = 1000.0
 
 	# Deterministic edge ordering
 	edges = edges.sort_values(["edge_id"], kind="mergesort").reset_index(drop=True)
@@ -325,6 +361,18 @@ def solve_structure_ilp_core(
 	# Pre-index node rows for caps / tracklet grouping
 	nodes_ix = nodes.set_index("node_id", drop=False)
 
+	# Tracklet usage vars (base_tracklet_id). Used for coverage + identity constraints.
+	use_tid: Dict[str, cp_model.IntVar] = {}
+	# Index SINGLE_TRACKLET nodes by base_tracklet_id
+	single_nodes: List[str] = []
+	if "base_tracklet_id" in nodes.columns and "node_type" in nodes.columns:
+		single = nodes[nodes["node_type"].astype(str) == "NodeType.SINGLE_TRACKLET"].copy()
+		if "base_tracklet_id" in single.columns:
+			single["base_tracklet_id"] = single["base_tracklet_id"].astype(str)
+			for tid in sorted(single["base_tracklet_id"].unique().tolist()):
+				use_tid[str(tid)] = model.NewBoolVar(f"tid_used_{tid}")
+			single_nodes = [str(x) for x in single["node_id"].astype(str).tolist()]
+
 	# Non-terminal nodes: conservation + capacity
 	for _, n in nodes.iterrows():
 		nid = str(n["node_id"])
@@ -337,6 +385,13 @@ def solve_structure_ilp_core(
 		model.Add(sum(ins) == sum(outs))
 		model.Add(sum(ins) <= cap_n)
 		model.Add(sum(outs) <= cap_n)
+
+	# Inflow expressions (useful for coverage / identity constraints).
+	flow_in_by_node: Dict[str, Any] = {}
+	for _, n in nodes.iterrows():
+		nid = str(n["node_id"])
+		ins = [var_by_edge[eid] for eid in in_edges[nid]]
+		flow_in_by_node[nid] = sum(ins) if len(ins) > 0 else 0
 
 	# Terminals: balance total flow (let K be decided by costs)
 	src_out = [var_by_edge[eid] for eid in out_edges[source_id]]
@@ -352,57 +407,332 @@ def solve_structure_ilp_core(
 		model.Add(sum(src_out) >= 1)
 
 	# ------------------------------------------------------------
-	# "Explain each tracklet OR pay a penalty"
+	# GROUP_TRACKLET semantics (Worker G)
 	#
-	# We define "explained" over base_tracklet_id appearing in SINGLE_TRACKLET nodes.
-	# A tracklet is explained iff the solution routes >0 flow through ANY node with that base_tracklet_id.
-	# Otherwise, we pay unexplained_tracklet_penalty once per base_tracklet_id.
+	# Hard constraints that restore semantic meaning of overlap episodes:
+	#  - GROUP_TRACKLET usage is 0-or-2 (never 1).
+	#  - When a GROUP_TRACKLET is used, the carrier participant must traverse via the
+	#    deterministic chain CONT edge(s), and the second participant must traverse via
+	#    the group MERGE/SPLIT structure, except for boundary substitutes:
+	#      - Start boundary: second participant already present at t=0 (extra BIRTH capacity).
+	#      - End boundary: still merged at end (extra DEATH capacity).
 	#
-	# This makes the number of paths K emerge from data: the solver will create additional SOURCE→SINK
-	# paths when it’s cheaper than leaving tracklets unexplained.
+	# If required MERGE/SPLIT/BIRTH/DEATH/CONT edges are missing for a group episode,
+	# we force group usage to 0 (never make the model infeasible).
+	# ------------------------------------------------------------
+	if group_boundary_window_frames < 0:
+		raise ValueError("group_boundary_window_frames must be >= 0")
+
+	# Clip boundary frames (for boundary substitutes)
+	track_nodes = nodes[nodes["node_type"].astype(str).isin(["NodeType.SINGLE_TRACKLET", "NodeType.GROUP_TRACKLET"])].copy()
+	clip_first_frame = 0
+	clip_last_frame = 0
+	if len(track_nodes) > 0 and "end_frame" in track_nodes.columns:
+		end_frames = pd.to_numeric(track_nodes["end_frame"], errors="coerce").dropna()
+		if len(end_frames) > 0:
+			clip_last_frame = int(end_frames.max())
+
+	# Edge-type lookup for adjacency filtering
+	edge_type_by_id: Dict[str, str] = {}
+	for _, e in edges.iterrows():
+		edge_type_by_id[str(e["edge_id"])] = str(e.get("edge_type"))
+
+	# ------------------------------------------------------------
+	# Segment connectivity constraint (Worker I)
+	# For structural SINGLE_TRACKLET→SINGLE_TRACKLET edges that connect
+	# segments of the SAME base_tracklet_id, enforce directed joint-usage
+	# along time: flow_in[v] >= flow_in[u].
+	# (Equality is too strong and can over-constrain valid graphs.)
+	# ------------------------------------------------------------
+	if "base_tracklet_id" in nodes.columns and "node_type" in nodes.columns:
+		single_ix = nodes[nodes["node_type"].astype(str) == "NodeType.SINGLE_TRACKLET"].set_index("node_id", drop=False)
+		# Map node_id -> base_tracklet_id for SINGLE_TRACKLET nodes
+		node_base: Dict[str, str] = {}
+		for nid, r in single_ix.iterrows():
+			bt = r.get("base_tracklet_id", None)
+			if bt is None or (isinstance(bt, float) and math.isnan(bt)):
+				continue
+			node_base[str(r["node_id"])] = str(bt)
+		for _, e in edges.iterrows():
+			u = str(e["u"])
+			v = str(e["v"])
+			etype = str(e.get("edge_type"))
+			# "structural (non-group)" constraint applied only on CONTINUE edges
+			# where both endpoints are SINGLE_TRACKLET and share base_tracklet_id.
+			if etype != "EdgeType.CONTINUE":
+				continue
+			bu = node_base.get(u, None)
+			bv = node_base.get(v, None)
+			if bu is None or bv is None:
+				continue
+			if bu != bv:
+				continue
+			# Directed implication along time.
+			model.Add(flow_in_by_node[v] >= flow_in_by_node[u])
+
+	# ------------------------------------------------------------
+	# Cannot-link enforcement (Worker I)
+	# Semantics (PM-confirmed): cannot-link means "must not be the same entity".
+	# Implemented structurally by forbidding identity-continuation edges (EdgeType.CONTINUE)
+	# that stitch across the cannot-link pair.
+	# ------------------------------------------------------------
+	if constraints is not None:
+		cl_pairs = constraints.get("cannot_link_pairs", None)
+		if isinstance(cl_pairs, list) and len(cl_pairs) > 0:
+			# Precompute SINGLE_TRACKLET node -> base_tracklet_id mapping (if available).
+			node_base2: Dict[str, str] = {}
+			if "base_tracklet_id" in nodes.columns and "node_type" in nodes.columns:
+				single2 = nodes[nodes["node_type"].astype(str) == "NodeType.SINGLE_TRACKLET"].copy()
+				if "base_tracklet_id" in single2.columns:
+					single2["base_tracklet_id"] = single2["base_tracklet_id"].astype(str)
+					for _, r in single2.iterrows():
+						node_base2[str(r["node_id"])] = str(r["base_tracklet_id"])
+				# Disable only CONTINUE edges crossing the pair.
+				for pair in cl_pairs:
+					if not (isinstance(pair, (list, tuple)) and len(pair) == 2):
+						continue
+					a = str(pair[0])
+					b = str(pair[1])
+					for _, e in edges.iterrows():
+						etype = str(e.get("edge_type"))
+						if etype != "EdgeType.CONTINUE":
+							continue
+						u = str(e["u"])
+						v = str(e["v"])
+						bu = node_base2.get(u, None)
+						bv = node_base2.get(v, None)
+						if bu is None or bv is None:
+							continue
+						if (bu == a and bv == b) or (bu == b and bv == a):
+							eid = str(e["edge_id"])
+							if eid in var_by_edge:
+								model.Add(var_by_edge[eid] == 0)
+
+		# ------------------------------------------------------------
+		# Precompute CONTINUE edges by base-tracklet pair (SINGLE↔SINGLE only).
+		# Used for safe, conditional group-derived tightening without relying on CONTINUE(d,n).
+		# ------------------------------------------------------------
+		node_base_single: Dict[str, str] = {}
+		if "base_tracklet_id" in nodes.columns and "node_type" in nodes.columns:
+			single_tmp = nodes[nodes["node_type"].astype(str) == "NodeType.SINGLE_TRACKLET"].copy()
+			if len(single_tmp) > 0 and "base_tracklet_id" in single_tmp.columns:
+				single_tmp["node_id"] = single_tmp["node_id"].astype(str)
+				single_tmp["base_tracklet_id"] = single_tmp["base_tracklet_id"].astype(str)
+				for _, r in single_tmp.iterrows():
+					node_base_single[str(r["node_id"])] = str(r["base_tracklet_id"])
+
+		def _pair_key(a: str, b: str) -> Tuple[str, str]:
+			return (a, b) if a <= b else (b, a)
+
+		continue_edges_by_pair: Dict[Tuple[str, str], List[str]] = {}
+		if len(node_base_single) > 0:
+			for _, e in edges.iterrows():
+				etype = str(e.get("edge_type"))
+				if etype != "EdgeType.CONTINUE":
+					continue
+				u = str(e["u"])
+				v = str(e["v"])
+				bu = node_base_single.get(u, None)
+				bv = node_base_single.get(v, None)
+				if bu is None or bv is None:
+					continue
+				# Skip same-base segment connectivity; handled elsewhere.
+				if bu == bv:
+					continue
+				key = _pair_key(bu, bv)
+				eid = str(e["edge_id"])
+				if eid in var_by_edge:
+					continue_edges_by_pair.setdefault(key, []).append(eid)
+
+		def _continue_eids(a: str, b: str) -> List[str]:
+			return continue_edges_by_pair.get(_pair_key(a, b), [])
+
+		# Optional: AprilTag-derived must-link pairs can supersede group-derived cannot-links.
+		tag_must_link: Set[Tuple[str, str]] = set()
+		if constraints is not None:
+			tml = constraints.get("tag_must_link_pairs", None)
+			if isinstance(tml, list):
+				for pair in tml:
+					if isinstance(pair, (list, tuple)) and len(pair) == 2:
+						tag_must_link.add(_pair_key(str(pair[0]), str(pair[1])))
+
+	# For each GROUP_TRACKLET node, enforce structural overlap semantics
+	if "carrier_tracklet_id" in nodes.columns and "node_type" in nodes.columns:
+		groups = nodes[nodes["node_type"].astype(str) == "NodeType.GROUP_TRACKLET"].copy()
+		for _, gn in groups.iterrows():
+			gid = str(gn["node_id"])
+
+			used = model.NewBoolVar(f"g_used_{gid}")
+
+			# Total flow through group is either 0 or 2.
+			in_vars = [var_by_edge[eid] for eid in in_edges.get(gid, [])]
+			model.Add(sum(in_vars) == 2 * used)
+
+			# Determine boundary eligibility
+			gs = gn.get("start_frame", None)
+			ge = gn.get("end_frame", None)
+			try:
+				gs_i = int(gs) if gs is not None and not (isinstance(gs, float) and math.isnan(gs)) else None
+			except Exception:
+				gs_i = None
+			try:
+				ge_i = int(ge) if ge is not None and not (isinstance(ge, float) and math.isnan(ge)) else None
+			except Exception:
+				ge_i = None
+
+			is_start_boundary = bool(gs_i is not None and gs_i <= (clip_first_frame + int(group_boundary_window_frames) - 1))
+			is_end_boundary = bool(ge_i is not None and ge_i >= (clip_last_frame - int(group_boundary_window_frames) + 1))
+
+			# Helper: pick deterministic carrier-chain CONT edges (exclude reconnect edges)
+			cont_in = [eid for eid in in_edges.get(gid, []) if str(eid).startswith("E:CONT:") and edge_type_by_id.get(str(eid)) == "EdgeType.CONTINUE"]
+			cont_out = [eid for eid in out_edges.get(gid, []) if str(eid).startswith("E:CONT:") and edge_type_by_id.get(str(eid)) == "EdgeType.CONTINUE"]
+
+			# There should be at most one chain CONT in/out; if multiple exist, keep the first by edge_id ordering.
+			cont_in_eid = cont_in[0] if len(cont_in) > 0 else None
+			cont_out_eid = cont_out[0] if len(cont_out) > 0 else None
+
+			# Second participant structural edges
+			merge_in = [eid for eid in in_edges.get(gid, []) if edge_type_by_id.get(str(eid)) == "EdgeType.MERGE"]
+			split_out = [eid for eid in out_edges.get(gid, []) if edge_type_by_id.get(str(eid)) == "EdgeType.SPLIT"]
+			birth_in = f"E:BIRTH:{gid}"
+			death_out = f"E:DEATH:{gid}"
+			local_start_boundary = (cont_in_eid is None) and (birth_in in var_by_edge)
+
+			# Metadata flags
+			disp = gn.get("disappearing_tracklet_id", None)
+			new_tid = gn.get("new_tracklet_id", None)
+			has_disp = disp is not None and pd.notna(disp) and str(disp) != "none"
+			has_new = new_tid is not None and pd.notna(new_tid) and str(new_tid) != "none"
+
+			# ------------------------------------------------------------
+			# Safe group-based identity tightening (PM-owned, stable):
+			# When a group episode is USED, prevent the carrier identity from being
+			# stitched (via CONTINUE) to the other participant tids implied by the group.
+			#
+			# This does NOT require CONTINUE(d,n) to exist.
+			# It only disables CONTINUE edges for (carrier, disappearing) and (carrier, new),
+			# gated by group usage. AprilTag-derived must-links (if provided) supersede.
+			# ------------------------------------------------------------
+			def _norm_tid(x: Any) -> str | None:
+				if x is None:
+					return None
+				if isinstance(x, float) and math.isnan(x):
+					return None
+				s = str(x)
+				if s == "none":
+					return None
+				return s
+
+			c_tid = _norm_tid(gn.get("carrier_tracklet_id", None))
+			d_tid = _norm_tid(gn.get("disappearing_tracklet_id", None))
+			n_tid = _norm_tid(gn.get("new_tracklet_id", None))
+
+			# Carrier cannot-link to disappearing/new, conditional on group usage.
+			for a, b in ((c_tid, d_tid), (c_tid, n_tid)):
+				if a is None or b is None:
+					continue
+				key = _pair_key(str(a), str(b))
+				# If AprilTag evidence says these must-link, do not apply group-derived cannot-link.
+				if key in tag_must_link:
+					continue
+				for eid in _continue_eids(str(a), str(b)):
+					model.Add(var_by_edge[eid] == 0).OnlyEnforceIf(used)
+
+			# Carrier participant must traverse via chain CONT when not at boundaries.
+			if cont_in_eid is not None:
+				model.Add(var_by_edge[cont_in_eid] == used)
+			else:
+				# Start of carrier chain: carrier enters via BIRTH
+				if birth_in in var_by_edge:
+					# When used, both participants are present at start-boundary (2 units via BIRTH)
+					model.Add(var_by_edge[birth_in] == 2 * used)
+				else:
+					model.Add(used == 0)
+
+			if cont_out_eid is not None:
+				model.Add(var_by_edge[cont_out_eid] == used)
+			else:
+				# End of carrier chain: carrier exits via DEATH
+				if death_out in var_by_edge:
+					model.Add(var_by_edge[death_out] == 2 * used)
+				else:
+					model.Add(used == 0)
+
+			# Second participant must enter via MERGE unless start-boundary substitute applies.
+			if has_disp:
+				if len(merge_in) == 0:
+					model.Add(used == 0)
+				else:
+					# D1 emits exactly one MERGE edge into this group segment.
+					model.Add(var_by_edge[merge_in[0]] == used)
+					# Disallow any additional MERGE edges if present.
+					for extra in merge_in[1:]:
+						model.Add(var_by_edge[extra] == 0)
+			else:
+				# No disappearing participant: legal if group is at start boundary OR if the carrier's first
+				# observation begins already-merged (local_start_boundary: no CONT-in, but BIRTH exists).
+				if not (is_start_boundary or local_start_boundary):
+					model.Add(used == 0)
+				# Disallow MERGE edges in this case.
+				for eid in merge_in:
+					model.Add(var_by_edge[eid] == 0)
+
+			# Second participant must exit via SPLIT unless end-boundary substitute applies.
+			if has_new:
+				if len(split_out) == 0:
+					model.Add(used == 0)
+				else:
+					model.Add(var_by_edge[split_out[0]] == used)
+					# Split ownership (implication): if group is used, the new tracklet must be considered used.
+					tid_new = str(new_tid)
+					if tid_new in use_tid:
+						model.Add(used <= use_tid[tid_new])
+					else:
+						use_tid[tid_new] = model.NewBoolVar(f"tid_used_{tid_new}")
+						model.Add(used <= use_tid[tid_new])
+					for extra in split_out[1:]:
+						model.Add(var_by_edge[extra] == 0)
+			else:
+				# No new participant: only legal if group is at end boundary.
+				if not is_end_boundary:
+					model.Add(used == 0)
+				for eid in split_out:
+					model.Add(var_by_edge[eid] == 0)
+
+	# ------------------------------------------------------------
+	# Coverage policy (Worker I, manager-locked)
+	#
+	# Soft coverage with strong penalty:
+	#  - use_tid[tid] ∈ {0,1} indicates whether base tracklet tid is included in the explanation.
+	#  - For each segment node n in tid: flow_in[n] <= use_tid[tid]
+	#  - If use_tid[tid]=1, at least one segment is used: sum_n flow_in[n] >= use_tid[tid]
+	#  - Penalize dropped tracklets once per base_tracklet_id: penalty * (1 - use_tid[tid])
 	# ------------------------------------------------------------
 	tracklet_penalty_scaled: int | None = None
-	explained_var_by_tid: Dict[str, cp_model.IntVar] = {}
-	unexplained_var_by_tid: Dict[str, cp_model.IntVar] = {}
+	drop_var_by_tid: Dict[str, cp_model.IntVar] = {}
 
-	if unexplained_tracklet_penalty is not None and unexplained_tracklet_penalty > 0:
+	if unexplained_tracklet_penalty is not None and float(unexplained_tracklet_penalty) > 0:
 		tracklet_penalty_scaled = int(round(float(unexplained_tracklet_penalty) * float(scale)))
 
 		if "base_tracklet_id" in nodes.columns and "node_type" in nodes.columns:
 			single = nodes[nodes["node_type"].astype(str) == "NodeType.SINGLE_TRACKLET"].copy()
 			single["base_tracklet_id"] = single["base_tracklet_id"].astype(str)
 
-			# group nodes by base_tracklet_id
 			for tid, grp in single.groupby("base_tracklet_id", sort=True):
+				tid = str(tid)
+				# Ensure var exists even if precomputed block didn't create it (defensive).
+				if tid not in use_tid:
+					use_tid[tid] = model.NewBoolVar(f"tid_used_{tid}")
 				node_list = [str(x) for x in grp["node_id"].astype(str).tolist()]
-				# total flow through tid: sum of inflows over all nodes in this tid
-				flow_terms = []
-				M = 0
+				# Per-segment: flow_in <= use_tid
 				for nid in node_list:
-					# Node cap upper-bounds flow through node
-					try:
-						cap_n = int(nodes_ix.loc[nid]["capacity"])
-					except Exception:
-						cap_n = 1
-					M += max(1, cap_n)
-					for eid in in_edges.get(nid, []):
-						flow_terms.append(var_by_edge[eid])
-
-				# If no inflow terms (shouldn’t happen in valid graph), skip
-				if len(flow_terms) == 0:
-					continue
-
-				explained = model.NewBoolVar(f"tid_explained_{tid}")
-				unexplained = model.NewBoolVar(f"tid_unexplained_{tid}")
-				model.Add(explained + unexplained == 1)
-
-				# If explained=1 => total_flow >= 1 ; if explained=0 => total_flow == 0
-				total_flow = sum(flow_terms)
-				model.Add(total_flow >= 1).OnlyEnforceIf(explained)
-				model.Add(total_flow == 0).OnlyEnforceIf(explained.Not())
-
-				explained_var_by_tid[str(tid)] = explained
-				unexplained_var_by_tid[str(tid)] = unexplained
+					model.Add(flow_in_by_node[nid] <= use_tid[tid])
+				# If used, at least one segment must carry flow.
+				model.Add(sum(flow_in_by_node[nid] for nid in node_list) >= use_tid[tid])
+				# Drop var and linkage
+				drop = model.NewBoolVar(f"tid_drop_{tid}")
+				model.Add(drop + use_tid[tid] == 1)
+				drop_var_by_tid[tid] = drop
 
 	# Objective
 	terms = []
@@ -412,8 +742,8 @@ def solve_structure_ilp_core(
 		terms.append(coef * var_by_edge[eid])
 	# Add unexplained-tracklet penalties (if enabled)
 	if tracklet_penalty_scaled is not None and tracklet_penalty_scaled > 0:
-		for tid, unex in unexplained_var_by_tid.items():
-			terms.append(int(tracklet_penalty_scaled) * unex)
+		for tid, drop in drop_var_by_tid.items():
+			terms.append(int(tracklet_penalty_scaled) * drop)
 	model.Minimize(sum(terms))
 
 	solver = cp_model.CpSolver()
@@ -443,16 +773,15 @@ def solve_structure_ilp_core(
 		obj_scaled = int(round(solver.ObjectiveValue()))
 		obj_value = float(obj_scaled) / float(scale)
 
-	n_tracklets_total = int(len(unexplained_var_by_tid))
+	n_tracklets_total = int(len(drop_var_by_tid))
 	n_tracklets_explained = 0
 	n_tracklets_unexplained = 0
 	if status in ("OPTIMAL", "FEASIBLE") and n_tracklets_total > 0:
-		for tid, ex in explained_var_by_tid.items():
-			if int(solver.Value(ex)) == 1:
-				n_tracklets_explained += 1
-		for tid, unex in unexplained_var_by_tid.items():
-			if int(solver.Value(unex)) == 1:
+		for tid, drop in drop_var_by_tid.items():
+			if int(solver.Value(drop)) == 1:
 				n_tracklets_unexplained += 1
+			else:
+				n_tracklets_explained += 1
 
 	return ILPResult(
 		status=status,
@@ -474,15 +803,24 @@ def solve_structure_ilp_core(
 	)
 
 
+
 def solve_structure_ilp(
-	*, compiled: CompiledInputs, layout: ClipOutputLayout, manifest: ClipManifest, checkpoint: str, unexplained_tracklet_penalty: float | None = None
+	*,
+	compiled: CompiledInputs,
+	layout: ClipOutputLayout,
+	manifest: ClipManifest,
+	checkpoint: str,
+	unexplained_tracklet_penalty: float | None = None,
+	group_boundary_window_frames: int = 10,
 ) -> ILPResult:
 	"""POC_1 wrapper: solve + write debug outputs + audit summary."""
 	res = solve_structure_ilp_core(
 		nodes_df=compiled.nodes_df,
 		edges_df=compiled.edges_df,
 		costs_df=compiled.costs_df,
+		constraints=compiled.constraints,
 		unexplained_tracklet_penalty=unexplained_tracklet_penalty,
+		group_boundary_window_frames=int(group_boundary_window_frames),
 	)
 
 	dbg = _debug_dir(layout)
