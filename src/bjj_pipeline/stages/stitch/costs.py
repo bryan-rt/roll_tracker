@@ -139,8 +139,42 @@ def compute_edge_costs(
 	contact_conf_floor = float(cfg.get("contact_conf_floor", 0.25))
 	contact_rel_alpha = float(cfg.get("contact_rel_alpha", 0.35))
 
-	bonus_group_coherent = float(cfg.get("bonus_group_coherent", 0.5))
-	penalty_group_incoherent = float(cfg.get("penalty_group_incoherent", 0.5))
+	def _pos_float(x: Any) -> float | None:
+		"""Parse a non-negative float, returning None for nullish/invalid."""
+		if _is_nullish(x):
+			return None
+		try:
+			v = float(x)
+		except Exception:
+			return None
+		if math.isnan(v):
+			return None
+		return max(0.0, v)
+
+	# Positive-only merge/split coherence costs (preferred).
+	coherent_merge_cost = _pos_float(cfg.get("coherent_merge_cost", None))
+	incoherent_merge_cost = _pos_float(cfg.get("incoherent_merge_cost", None))
+	coherent_split_cost = _pos_float(cfg.get("coherent_split_cost", None))
+	incoherent_split_cost = _pos_float(cfg.get("incoherent_split_cost", None))
+
+	# Back-compat: if new keys are absent, derive from legacy bonus/penalty keys.
+	if coherent_merge_cost is None or incoherent_merge_cost is None:
+		legacy_bonus = _pos_float(cfg.get("bonus_group_coherent", 0.0))
+		legacy_penalty = _pos_float(cfg.get("penalty_group_incoherent", 0.0))
+		# legacy bonus was previously applied as a negative reward; convert to a small positive cost
+		# (default 0.0 if unspecified).
+		try:
+			legacy_bonus_raw = float(cfg.get("bonus_group_coherent", 0.0))
+		except Exception:
+			legacy_bonus_raw = 0.0
+		coherent_merge_cost = max(0.0, -legacy_bonus_raw) if coherent_merge_cost is None else coherent_merge_cost
+		incoherent_merge_cost = float(legacy_penalty or 0.0) if incoherent_merge_cost is None else incoherent_merge_cost
+
+	# Split defaults mirror merge if unspecified.
+	if coherent_split_cost is None:
+		coherent_split_cost = float(coherent_merge_cost)
+	if incoherent_split_cost is None:
+		incoherent_split_cost = float(incoherent_merge_cost)
 
 	birth_cost = float(cfg.get("birth_cost", 2.0))
 	death_cost = float(cfg.get("death_cost", 2.0))
@@ -149,6 +183,15 @@ def compute_edge_costs(
 	reconnect_extra_env_cost = float(cfg.get("reconnect_extra_env_cost", 0.0))
 	reconnect_w_z = float(cfg.get("reconnect_w_z", 1.0))
 	reconnect_w_time = float(cfg.get("reconnect_w_time", 0.0))
+	# Soft Option B: reconnect edges shadowed by a coherent MERGE/SPLIT chain.
+	shadowed_reconnect_policy = str(cfg.get("shadowed_reconnect_policy", "disallow"))
+	if shadowed_reconnect_policy not in ("disallow", "penalize", "allow"):
+		raise ValueError(
+			f"shadowed_reconnect_policy must be one of disallow|penalize|allow (got {shadowed_reconnect_policy!r})"
+		)
+	shadowed_reconnect_penalty = float(cfg.get("shadowed_reconnect_penalty", 10.0))
+	if shadowed_reconnect_penalty < 0:
+		raise ValueError(f"shadowed_reconnect_penalty must be >=0 (got {shadowed_reconnect_penalty!r})")
 	reconnect_v_max_mps = float(cfg.get("reconnect_v_max_mps", v_hinge_mps_resolved))
 	reconnect_w_speed = float(cfg.get("reconnect_w_speed", 1.0))
 	reconnect_speed_power = float(cfg.get("reconnect_speed_power", 2.0))
@@ -183,6 +226,7 @@ def compute_edge_costs(
 		except Exception:
 			payload = {}
 		is_reconnect = bool(payload.get("reconnect", False))
+		is_shadowed_reconnect = bool(payload.get("shadowed_by_group_chain", False))
 
 		is_allowed = True
 		reasons: List[str] = []
@@ -331,6 +375,17 @@ def compute_edge_costs(
 					dist_norm = float(dist_m) / max(EPS, float(v_cost_scale_mps_resolved) * float(dt_s))
 
 					if is_reconnect:
+						# Soft Option B: if this reconnect is shadowed by a coherent MERGE/SPLIT chain,
+						# either disallow it outright or penalize it so it only wins when necessary.
+						if is_shadowed_reconnect:
+							if shadowed_reconnect_policy == "disallow":
+								is_allowed = False
+								reasons.append("shadowed_by_group_chain")
+								# Mark as disallowed (handled by the unified not-allowed total_cost branch).
+							elif shadowed_reconnect_policy == "penalize":
+								term_env = float(term_env) + float(shadowed_reconnect_penalty)
+							# "allow" => no-op
+
 						# Reconnect edges (occlusion only): monotone, convex dt penalty + speed hinge.
 						# Prefer D1 payload geometry to stay consistent with D1 endpoint selection.
 						dt_s_eff = dt_s
@@ -435,9 +490,19 @@ def compute_edge_costs(
 
 			cc = _coherence_case()
 			if cc == "coherent":
-				term_group_coherence = -bonus_group_coherent
+				# Positive-only: coherent structure is slightly costly (never rewarded).
+				if et == "MERGE":
+					term_group_coherence = float(coherent_merge_cost)
+				else:
+					term_group_coherence = float(coherent_split_cost)
 			elif cc == "incoherent":
-				term_group_coherence = penalty_group_incoherent
+				# Positive-only: incoherent structure is expensive.
+				if et == "MERGE":
+					term_group_coherence = float(incoherent_merge_cost)
+				else:
+					term_group_coherence = float(incoherent_split_cost)
+			else:
+				term_group_coherence = 0.0
 
 			if et == "MERGE":
 				term_merge_prior = merge_prior

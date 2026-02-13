@@ -147,6 +147,12 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 	reconnect_boundary_slack_frames = int(d1_cfg.get("reconnect_boundary_slack_frames", 2))
 	reconnect_solo_only = bool(d1_cfg.get("reconnect_solo_only", True))
 
+	# Hard gate: if a new tracklet is born at the image border (based on u_px/v_px),
+	# do not treat it as a split-out of an existing carrier. This prevents false
+	# start_merged GROUP spans from entrance coincidences (Case 2).
+	split_border_gate_enabled = bool(d1_cfg.get("split_border_gate_enabled", True))
+	split_border_margin_px = int(d1_cfg.get("split_border_margin_px", 40))
+
 	d0_kin_cfg = _cfg_get(cfg, "stages.stage_D.d0.kinematics", {}) or {}
 	v_max_mps = float(d0_kin_cfg.get("v_max_mps", 8.0))
 
@@ -191,14 +197,71 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 	ts["start_frame"] = ts["start_frame"].astype(int)
 	ts["end_frame"] = ts["end_frame"].astype(int)
 
-	# Optional identity columns that D0 aggregates for us.
-	if "must_link_anchor_key" not in ts.columns:
-		ts["must_link_anchor_key"] = None
-	if "cannot_link_anchor_keys_json" not in ts.columns:
-		ts["cannot_link_anchor_keys_json"] = None
+	# Identity evidence (AprilTag pings) is time-local and is NOT consumed at D1
+	# in this checkpoint. D1 only constructs the segmentation graph. D2/D3 are
+	# responsible for binding and enforcing identity evidence.
 
 	# pre-index summaries for fast lookup
 	ts_by_tid = {r["tracklet_id"]: r for _, r in ts.iterrows()}
+
+	# Precompute observed pixel-space bounds for border gating.
+	# We do not have video frame dimensions in the D0 bank artifacts, so we use
+	# the observed u_px/v_px extent across the clip as a deterministic proxy.
+	# This is sufficient for the intended entrance suppression: entrants born at
+	# the extreme observed left/right/top/bottom are treated as border-born.
+	border_uv_bounds = None  # (u_min, u_max, v_min, v_max)
+	start_uv_by_tid: Dict[str, Tuple[float, float]] = {}
+	if split_border_gate_enabled:
+		# If pixel coordinates are unavailable (e.g., unit tests with minimal fixtures),
+		# silently disable the border gate rather than failing hard.
+		if "u_px" not in tf.columns or "v_px" not in tf.columns:
+			split_border_gate_enabled = False
+		else:
+			uv = tf[["u_px", "v_px"]].dropna()
+			if len(uv) == 0:
+				# No usable coordinates; disable gate.
+				split_border_gate_enabled = False
+			else:
+				u_min = float(uv["u_px"].min())
+				u_max = float(uv["u_px"].max())
+				v_min = float(uv["v_px"].min())
+				v_max = float(uv["v_px"].max())
+				border_uv_bounds = (u_min, u_max, v_min, v_max)
+
+				# Map each tracklet_id -> (u_px, v_px) at its start_frame when available.
+				start_frames = ts[["tracklet_id", "start_frame"]].copy()
+				start_frames["tracklet_id"] = start_frames["tracklet_id"].astype(str)
+				start_frames["start_frame"] = start_frames["start_frame"].astype(int)
+				tf_uv = tf[["tracklet_id", "frame_index", "u_px", "v_px"]].copy()
+				tf_uv["tracklet_id"] = tf_uv["tracklet_id"].astype(str)
+				tf_uv["frame_index"] = tf_uv["frame_index"].astype(int)
+				merged = tf_uv.merge(
+					start_frames,
+					left_on=["tracklet_id", "frame_index"],
+					right_on=["tracklet_id", "start_frame"],
+					how="inner",
+				)
+				if len(merged) > 0:
+					merged = merged.sort_values(["tracklet_id"], kind="mergesort").drop_duplicates("tracklet_id")
+					for _, r in merged.iterrows():
+						tid = str(r["tracklet_id"])
+						upx = r.get("u_px", None)
+						vpx = r.get("v_px", None)
+						if upx is None or vpx is None or (pd.isna(upx) or pd.isna(vpx)):
+							continue
+						start_uv_by_tid[tid] = (float(upx), float(vpx))
+
+	def _is_border_born_tid(tid: str) -> bool:
+		"""True if tid's start_frame contact point lies within split_border_margin_px of observed bounds."""
+		if not split_border_gate_enabled or border_uv_bounds is None:
+			return False
+		uv0 = start_uv_by_tid.get(str(tid))
+		if uv0 is None:
+			return False
+		u, v = uv0
+		u_min, u_max, v_min, v_max = border_uv_bounds
+		m = float(split_border_margin_px)
+		return bool((u <= u_min + m) or (u >= u_max - m) or (v <= v_min + m) or (v >= v_max - m))
 
 	# frames grouped
 	tf = tf.sort_values(["tracklet_id", "frame_index"], kind="mergesort")
@@ -409,6 +472,9 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 			if new_ep is None:
 				continue
 			new_xy = new_ep[0]
+			# Hard border gate: border-born tracklets cannot induce split triggers.
+			if _is_border_born_tid(str(new_tid)):
+				continue
 			for carrier, crow in ts_by_tid.items():
 				if carrier == new_tid:
 					continue
@@ -731,10 +797,6 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 		g.add_node(GraphNode(node_id="SINK", type=NodeType.SINK, capacity=0, start_frame=None, end_frame=None, payload={}))
 
 		for tid, chain in segments_by_base.items():
-			base_row = ts_by_tid.get(tid)
-			must_key = base_row.get("must_link_anchor_key", None) if base_row is not None else None
-			cannot_keys = _parse_json_list(base_row.get("cannot_link_anchor_keys_json", None)) if base_row is not None else []
-
 			for seg in chain:
 				node_id = str(seg["node_id"])
 				seg_type = str(seg["segment_type"])
@@ -742,15 +804,24 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 				end_f = int(seg["end_frame"])
 				cap = int(seg["capacity"])
 
+				# D3 binds pings to nodes using (member_tracklet_ids, start_frame, end_frame).
 				payload = {
 					"tracklet_id": tid,
 					"base_tracklet_id": tid,
 					"segment_type": seg_type,
-					"must_link_anchor_key": must_key,
-					"cannot_link_anchor_keys": cannot_keys,
+					"member_tracklet_ids": [tid],
 				}
 				if seg_type == "GROUP":
 					p = seg["payload"]
+					members: List[str] = []
+					for cand in [tid, p.get("disappear", None), p.get("new", None)]:
+						if cand is None:
+							continue
+						cand_s = str(cand)
+						if cand_s and cand_s != "none" and cand_s not in members:
+							members.append(cand_s)
+					# Deterministic ordering for member ids.
+					payload["member_tracklet_ids"] = sorted(members)
 					payload.update(
 						{
 							"carrier_tracklet_id": tid,
@@ -794,6 +865,42 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 
 		# ---- Occlusion reconnect edges between different base tracklets ----
 		if reconnect_enabled and fps is not None:
+			# Soft Option B: annotate reconnect candidates when a coherent MERGE/SPLIT chain exists.
+			# We only shadow when both disappearing and new tracklet ids are present (coherent span).
+			shadow_witness_by_pair: Dict[Tuple[str, str], Dict[str, Any]] = {}
+			for gs in group_spans:
+				try:
+					disp = gs.get("disappear", None)
+					new = gs.get("new", None)
+					merge_end = gs.get("merge_end", None)
+					split_start = gs.get("split_start", None)
+					if disp is None or new is None or merge_end is None or split_start is None:
+						continue
+					carrier = str(gs.get("carrier"))
+					gs0 = int(gs.get("group_start"))
+					ge0 = int(gs.get("group_end"))
+					group_node_id = f"G:{gs0}-{ge0}:carrier={carrier}:d={str(disp)}:n={str(new)}"
+					key = (str(disp), str(new))
+					w = {
+						"group_node_id": group_node_id,
+						"carrier_tracklet_id": carrier,
+						"disappearing_tracklet_id": str(disp),
+						"new_tracklet_id": str(new),
+						"group_start": int(gs0),
+						"group_end": int(ge0),
+						"merge_end": int(merge_end),
+						"split_start": int(split_start),
+					}
+					# Deterministic choice if multiple spans map to same (disp,new): pick earliest group_start, then group_end.
+					if key not in shadow_witness_by_pair:
+						shadow_witness_by_pair[key] = w
+					else:
+						prev = shadow_witness_by_pair[key]
+						if (w["group_start"], w["group_end"]) < (int(prev.get("group_start", 1 << 30)), int(prev.get("group_end", 1 << 30))):
+							shadow_witness_by_pair[key] = w
+				except Exception:
+					# Shadowing must never block reconnect generation.
+					continue
 			base_ids = sorted(ts_by_tid.keys())
 			for tn in base_ids:
 				row_n = ts_by_tid.get(tn)
@@ -849,10 +956,16 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 					if reconnect_solo_only:
 						if str(chain_n[-1].get("segment_type", "")) != "SOLO":
 							continue
-						if str(chain_m[0].get("segment_type", "")) != "SOLO":
+						# Destination may begin with GROUP; reconnect targets the first SOLO segment.
+						dest_seg = None
+						for seg in chain_m:
+							if str(seg.get("segment_type", "")) == "SOLO":
+								dest_seg = seg
+								break
+						if dest_seg is None:
 							continue
 					u_node = str(chain_n[-1]["node_id"])
-					v_node = str(chain_m[0]["node_id"])
+					v_node = str((dest_seg or chain_m[0])["node_id"])
 					edge_id = f"E:CONT_RECONNECT:{u_node}->{v_node}"
 					payload = {
 						"dt_frames": int(gap_frames),
@@ -861,6 +974,12 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 						"dist_m": float(dist),
 						"speed_mps": float(speed_mps),
 					}
+					w = shadow_witness_by_pair.get((str(tn), str(tm)))
+					if w is not None:
+						payload["shadowed_by_group_chain"] = True
+						payload["shadow_witness"] = w
+					else:
+						payload["shadowed_by_group_chain"] = False
 					g.add_edge(
 						GraphEdge(
 							edge_id=edge_id,
@@ -879,6 +998,8 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 							"dt_s": float(dt_s),
 							"dist_m": float(dist),
 							"speed_mps": float(speed_mps),
+							"shadowed_by_group_chain": bool(payload.get("shadowed_by_group_chain", False)),
+							"shadow_group_node_id": (payload.get("shadow_witness", {}) or {}).get("group_node_id", None),
 						}
 					)
 

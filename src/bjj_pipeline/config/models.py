@@ -306,6 +306,9 @@ class StageD1Config(BaseModel):
     merge_disappear_gap_frames: int = Field(default=6, ge=0)
     split_dist_m: float = Field(default=0.60, gt=0)
     split_search_horizon_frames: int = Field(default=120, ge=0)
+    # Hard gate: new tracklets born at the image border cannot induce split triggers.
+    split_border_gate_enabled: bool = Field(default=True)
+    split_border_margin_px: int = Field(default=40, ge=0)
     # Optional occlusion reconnect proposals (between non-overlapping lifespans)
     reconnect_enabled: bool = Field(
         default=False,
@@ -377,6 +380,15 @@ class StageD2CostsConfig(BaseModel):
     contact_rel_alpha: float = Field(default=0.35, ge=0)
 
     # merge/split coherence
+    # merge/split coherence (positive-only system; preferred)
+    coherent_merge_cost: float = Field(default=0.05, ge=0)
+    incoherent_merge_cost: float = Field(default=1.5, ge=0)
+    # If unset, split defaults mirror merge.
+    coherent_split_cost: Optional[float] = Field(default=None, ge=0)
+    incoherent_split_cost: Optional[float] = Field(default=None, ge=0)
+
+    # Deprecated (backward compatibility): older configs used a negative reward for coherent structure.
+    # If coherent_* keys are present, these are ignored by D2 costs logic.
     bonus_group_coherent: float = Field(default=0.5, ge=0)
     penalty_group_incoherent: float = Field(default=0.5, ge=0)
 
@@ -401,6 +413,18 @@ class StageD2CostsConfig(BaseModel):
         default=0.35,
         ge=0,
         description="Optional additional time penalty weight for reconnect edges (seconds).",
+    )
+
+    # Soft Option B: when a reconnect edge is shadowed by a coherent MERGE/SPLIT chain
+    # (annotated in D1 payload), choose how D2 handles it.
+    shadowed_reconnect_policy: str = Field(
+        default="disallow",
+        description="Policy for reconnect edges shadowed by a coherent group chain: disallow|penalize|allow",
+    )
+    shadowed_reconnect_penalty: float = Field(
+        default=10.0,
+        ge=0,
+        description="Additive penalty applied to shadowed reconnect edges when policy=penalize.",
     )
 
     # New reconnect shaping (teleportation guardrails). These keys are additive and do not
@@ -453,6 +477,20 @@ class StageD3Config(BaseModel):
     # If the solution uses zero flow through all nodes belonging to that base_tracklet_id,
     # we pay this penalty (in cost units) once for that base_tracklet_id.
     unexplained_tracklet_penalty: float = Field(default=5.0, ge=0.0)
+
+    # Tag fragmentation (time-separated): penalty for starting a new fragment of the same
+    # AprilTag across disconnected time windows. Larger values prefer continuity when possible
+    # but still allow multiple disjoint fragments to avoid infeasibility.
+    tag_fragment_start_penalty: float = Field(default=2500.0, ge=0.0)
+
+    # POC_2_TAGS (Option B): penalty for leaving a ping-bound GROUP_TRACKLET unexplained.
+    # When >0, forced GROUP pings are not hard-must-use; instead we add this penalty
+    # for each required group ping that is not carried by any used GROUP node.
+    unexplained_group_ping_penalty: float = Field(default=5000.0, ge=0.0)
+
+    # Frames near the start/end of the clip considered "boundary" for group gating logic
+    # in D3. This is read in stages/stitch/solver.py and consumed by d3_ilp.py.
+    group_boundary_window_frames: int = Field(default=10, ge=0)
 
 
 class StageDConfig(BaseModel):

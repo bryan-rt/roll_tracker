@@ -63,12 +63,58 @@ def run_d3(*, config: Dict[str, Any], inputs: Dict[str, Any]) -> None:
 			"stages.stage_D.d3.unexplained_tracklet_penalty",
 			_default := _cfg_get(config, "stage_D.d3.unexplained_tracklet_penalty", None),
 		)
+		# Tag fragmentation (time-separated): penalty per new fragment start
+		tag_frag_pen = _cfg_get(
+			config,
+			"stages.stage_D.d3.tag_fragment_start_penalty",
+			_default2 := _cfg_get(config, "stage_D.d3.tag_fragment_start_penalty", None),
+		)
+		tag_frag_pen_f = float(tag_frag_pen) if tag_frag_pen is not None else None
 		res = solve_structure_ilp(
 			compiled=_,
 			layout=layout,
 			manifest=manifest,
 			checkpoint=str(checkpoint),
 			unexplained_tracklet_penalty=float(penalty) if penalty is not None else None,
+			tag_fragment_start_penalty=tag_frag_pen_f,
+			tag_overlap_enforced=True,
+			group_boundary_window_frames=int(gbw_i),
+		)
+		_ = res  # reserved for later checkpoints
+		return
+
+	if str(checkpoint) == "POC_2_TAGS":
+		from bjj_pipeline.stages.stitch.d3_ilp import solve_structure_ilp_tags
+
+		# D3 — "explain each tracklet or pay a penalty": optional penalty from config.
+		# D3 — GROUP_TRACKLET boundary substitute window (frames)
+		gbw = _cfg_get(
+			config,
+			"stages.stage_D.d3.group_boundary_window_frames",
+			_default_gbw := _cfg_get(config, "stage_D.d3.group_boundary_window_frames", None),
+		)
+		gbw_i = int(gbw) if gbw is not None else 10
+
+		penalty = _cfg_get(
+			config,
+			"stages.stage_D.d3.unexplained_tracklet_penalty",
+			_default := _cfg_get(config, "stage_D.d3.unexplained_tracklet_penalty", None),
+		)
+		# Tag fragmentation (time-separated): penalty per new fragment start
+		tag_frag_pen = _cfg_get(
+			config,
+			"stages.stage_D.d3.tag_fragment_start_penalty",
+			_default2 := _cfg_get(config, "stage_D.d3.tag_fragment_start_penalty", None),
+		)
+		tag_frag_pen_f = float(tag_frag_pen) if tag_frag_pen is not None else None
+		res = solve_structure_ilp_tags(
+			compiled=_
+			,layout=layout,
+			manifest=manifest,
+			checkpoint=str(checkpoint),
+			unexplained_tracklet_penalty=float(penalty) if penalty is not None else None,
+			tag_fragment_start_penalty=tag_frag_pen_f,
+			tag_overlap_enforced=True,
 			group_boundary_window_frames=int(gbw_i),
 		)
 		_ = res  # reserved for later checkpoints
@@ -76,6 +122,6 @@ def run_d3(*, config: Dict[str, Any], inputs: Dict[str, Any]) -> None:
 
 	raise NotImplementedError(
 		f"Stage D3 checkpoint not implemented: {checkpoint!r}. "
-		"Supported today: ['POC_0', 'POC_1']."
+		"Supported today: ['POC_0', 'POC_1', 'POC_2_TAGS']."
 	)
 

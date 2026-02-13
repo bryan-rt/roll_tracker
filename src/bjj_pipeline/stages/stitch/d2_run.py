@@ -259,6 +259,53 @@ def run_d2(*, config: Dict[str, Any], inputs: Dict[str, Any]) -> None:
 			},
 	)
 
+	# Soft Option B summary: shadowed reconnect candidates
+	try:
+		allowed_by_edge_id = costs_df.set_index("edge_id")["is_allowed"].to_dict()
+		n_reconnect_edges_total = 0
+		n_shadowed_reconnect_edges_total = 0
+		n_shadowed_reconnect_edges_allowed = 0
+		n_shadowed_reconnect_edges_disallowed = 0
+		for _, er in d1_edges.iterrows():
+			raw = er.get("payload_json", None)
+			try:
+				p = json.loads(str(raw)) if raw is not None and str(raw) != "nan" else {}
+			except Exception:
+				p = {}
+			if not isinstance(p, dict):
+				continue
+			if bool(p.get("reconnect", False)):
+				n_reconnect_edges_total += 1
+				if bool(p.get("shadowed_by_group_chain", False)):
+					n_shadowed_reconnect_edges_total += 1
+					is_allowed_edge = bool(allowed_by_edge_id.get(str(er.get("edge_id")), False))
+					if is_allowed_edge:
+						n_shadowed_reconnect_edges_allowed += 1
+					else:
+						n_shadowed_reconnect_edges_disallowed += 1
+		_write_audit_event(
+			audit_path,
+			{
+				"artifact_type": "d2_shadowed_reconnect_summary",
+				"created_at_ms": _now_ms(),
+				"n_reconnect_edges_total": int(n_reconnect_edges_total),
+				"n_shadowed_reconnect_edges_total": int(n_shadowed_reconnect_edges_total),
+				"n_shadowed_reconnect_edges_allowed": int(n_shadowed_reconnect_edges_allowed),
+				"n_shadowed_reconnect_edges_disallowed": int(n_shadowed_reconnect_edges_disallowed),
+				"shadowed_reconnect_policy": str(d2_cfg.get("shadowed_reconnect_policy", "disallow")),
+				"shadowed_reconnect_penalty": float(d2_cfg.get("shadowed_reconnect_penalty", 10.0)),
+			},
+		)
+	except Exception as e:
+		_write_audit_event(
+			audit_path,
+			{
+				"artifact_type": "d2_shadowed_reconnect_summary",
+				"created_at_ms": _now_ms(),
+				"error": str(e),
+			},
+		)
+
 	# Validate before writing
 	v.validate_d2_edge_costs_df(costs_df)
 	v.validate_d2_constraints_json(constraints)

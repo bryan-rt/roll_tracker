@@ -2,11 +2,11 @@
 
 Responsibilities in Checkpoint 1:
 	- Create per-frame and per-tracklet bank tables under stage_D/
-	- Join Stage C identity_hints.jsonl into the TRACKLET-LEVEL bank (summaries)
+	- Preserve Stage C identity_hints.jsonl records losslessly (do NOT collapse pings)
 	- Write a minimal deterministic stage_D/audit.jsonl
 
 No geometry repair is performed in this checkpoint; bank tables are pass-through
-from Stage A plus identity-hint aggregation.
+from Stage A with identity hints preserved losslessly for downstream stages.
 """
 
 from __future__ import annotations
@@ -42,6 +42,15 @@ def _write_audit_event(audit_path: Path, event: Dict[str, Any]) -> None:
 
 @dataclass(frozen=True)
 class HintAgg:
+	"""Lossless identity hint aggregation (no time-collapsing).
+
+	We intentionally do NOT compute tracklet-global labels from time-local pings.
+	Downstream stages (D1/D2/D3) are responsible for binding/propagating
+	identity evidence at the node/time level.
+	
+	We keep the historical columns for backward compatibility, but they are left
+	unset (None).
+	"""
 	identity_hints_json: Optional[str]
 	must_link_anchor_key: Optional[str]
 	must_link_confidence: Optional[float]
@@ -49,13 +58,15 @@ class HintAgg:
 
 
 def _aggregate_identity_hints(records: List[Dict[str, Any]]) -> Dict[str, HintAgg]:
-	"""Aggregate identity_hints.jsonl records into tracklet-level summary fields.
+	"""Aggregate identity_hints.jsonl records into tracklet-level bank fields.
 
 	Deterministic policy:
-	  - identity_hints_json: JSON list of all records for the tracklet, sorted by:
-	      (constraint, -confidence, anchor_key, tag_id/evidence stable json)
-	  - must_link_*: choose best must_link by (-confidence, anchor_key)
-	  - cannot_link_anchor_keys_json: sorted unique anchor_keys for cannot_link
+	  - identity_hints_json: JSON list of all records for the tracklet, stably sorted.
+	 
+	IMPORTANT:
+	  - We do NOT compute a "best" must_link label or cannot_link list here.
+	    Collapsing time-local hints into tracklet-global labels undermines the goal
+	    of using sparse pings to constrain ILP chains.
 	"""
 	by_tid: Dict[str, List[Dict[str, Any]]] = {}
 	for r in records:
@@ -83,36 +94,16 @@ def _aggregate_identity_hints(records: List[Dict[str, Any]]) -> Dict[str, HintAg
 		recs_sorted = sorted(recs, key=_k)
 		identity_hints_json = json.dumps(recs_sorted, sort_keys=True)
 
-		# best must_link
-		must = [r for r in recs if str(r.get("constraint", "")) == "must_link"]
+		# Historical summary columns are intentionally left unset in this checkpoint.
 		must_best_key: Optional[str] = None
 		must_best_conf: Optional[float] = None
-		if must:
-			def _mk(rr: Dict[str, Any]) -> Tuple[float, str]:
-				conf = rr.get("confidence", 0.0)
-				try:
-					cf = float(conf)
-				except Exception:
-					cf = 0.0
-				return (-cf, str(rr.get("anchor_key", "")))
-
-			best = sorted(must, key=_mk)[0]
-			must_best_key = str(best.get("anchor_key", "")) or None
-			try:
-				must_best_conf = float(best.get("confidence", 0.0))
-			except Exception:
-				must_best_conf = None
-
-		# cannot_link anchors
-		cannot = [r for r in recs if str(r.get("constraint", "")) == "cannot_link"]
-		cannot_keys = sorted({str(r.get("anchor_key", "")) for r in cannot if str(r.get("anchor_key", ""))})
-		cannot_json = json.dumps(cannot_keys, sort_keys=True) if cannot_keys else None
+		cannot_json: Optional[str] = None
 
 		out[tid] = HintAgg(
 			identity_hints_json=identity_hints_json,
-			must_link_anchor_key=must_best_key,
-			must_link_confidence=must_best_conf,
-			cannot_link_anchor_keys_json=cannot_json,
+			must_link_anchor_key=None,
+			must_link_confidence=None,
+			cannot_link_anchor_keys_json=None,
 		)
 	return out
 
