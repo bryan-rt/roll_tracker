@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import pandas as pd
 
@@ -33,6 +33,13 @@ class CompiledInputs:
 	costs_df: pd.DataFrame
 	constraints: Dict[str, Any]
 	stats: Dict[str, Any]
+
+
+@dataclass(frozen=True)
+class CompiledConstraints:
+	must_link_groups: List[Dict[str, Any]]
+	cannot_link_pairs: List[Tuple[str, str]]
+	tag_pings: Optional[List[Dict[str, Any]]]
 
 
 def _abs_path(layout: ClipOutputLayout, relpath: str) -> Path:
@@ -219,6 +226,68 @@ def _write_debug_compiled_inputs(
 		"d3_constraints_snapshot_json": rel(out_constraints),
 		"d3_compile_stats_json": rel(out_stats),
 	}
+
+
+def compile_constraints(raw: Dict[str, Any]) -> CompiledConstraints:
+	"""Normalize raw D2 constraints into a solver-friendly structure.
+
+	This is a thin wrapper over the canonical D2 format that:
+		- converts cannot_link_pairs lists into (a, b) tuples
+		- optionally normalizes tag_pings into a sorted, deduped list
+	"""
+	must_link_groups = raw.get("must_link_groups") or []
+	cannot_link_pairs_raw = raw.get("cannot_link_pairs") or []
+	tag_pings_raw = raw.get("tag_pings")
+
+	# cannot_link_pairs: ensure list of [a,b] and canonicalize to tuples
+	cannot_pairs: List[Tuple[str, str]] = []
+	for p in cannot_link_pairs_raw:
+		if not isinstance(p, list) or len(p) != 2:
+			raise ValueError("constraints.cannot_link_pairs must be a list of [a,b] pairs")
+		a, b = str(p[0]), str(p[1])
+		if not (a < b):
+			raise ValueError(f"constraints.cannot_link_pairs contains non-canonical pair: [{a},{b}]")
+		cannot_pairs.append((a, b))
+	if cannot_pairs != sorted(cannot_pairs):
+		raise ValueError("constraints.cannot_link_pairs not sorted")
+	if len(cannot_pairs) != len(set(cannot_pairs)):
+		raise ValueError("constraints.cannot_link_pairs contains duplicates")
+
+	# Optional tag_pings: sorted, deduped list of dicts.
+	tag_pings: Optional[List[Dict[str, Any]]]
+	if tag_pings_raw is None:
+		tag_pings = None
+	else:
+		if not isinstance(tag_pings_raw, list):
+			raise ValueError("constraints.tag_pings must be a list if present")
+		seen_keys = set()
+		canonical: List[Dict[str, Any]] = []
+		for rec in tag_pings_raw:
+			if not isinstance(rec, dict):
+				raise ValueError("constraints.tag_pings entries must be dicts")
+			tracklet_id = rec.get("tracklet_id")
+			anchor_key = rec.get("anchor_key")
+			fi = rec.get("frame_index")
+			if not isinstance(tracklet_id, str) or not isinstance(anchor_key, str) or not isinstance(fi, int):
+				raise ValueError(
+					"constraints.tag_pings entries must have string tracklet_id, string anchor_key, int frame_index"
+				)
+			key = (tracklet_id, anchor_key, fi)
+			if key in seen_keys:
+				continue
+			seen_keys.add(key)
+			out = {"tracklet_id": tracklet_id, "anchor_key": anchor_key, "frame_index": fi}
+			if "confidence" in rec and rec["confidence"] is not None:
+				out["confidence"] = float(rec["confidence"])
+			canonical.append(out)
+		canonical.sort(key=lambda r: (r["frame_index"], r["anchor_key"], r["tracklet_id"]))
+		tag_pings = canonical
+
+	return CompiledConstraints(
+		must_link_groups=must_link_groups,
+		cannot_link_pairs=cannot_pairs,
+		tag_pings=tag_pings,
+	)
 
 
 def compile_solver_inputs(
