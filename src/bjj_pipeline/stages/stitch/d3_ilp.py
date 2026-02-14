@@ -1158,6 +1158,7 @@ def solve_structure_ilp_core(
 	tag_solution_out: Dict[str, Any] | None = None,
 	unexplained_tracklet_penalty: float | None = None,
 	unexplained_group_ping_penalty: float | None = None,
+	unexplained_solo_ping_penalty: float | None = None,
 	# Tag fragmentation (time-separated): prefer continuity but allow multiple disjoint fragments
 	tag_fragment_start_penalty: float | None = None,
 	tag_overlap_enforced: bool = True,
@@ -1314,6 +1315,7 @@ def solve_structure_ilp_core(
 	# ---- POC_2_TAGS: SOLO label variables + constraints ----
 	# We intentionally label ONLY capacity=1 SINGLE_TRACKLET nodes in v1.
 	u_solo: Dict[str, cp_model.IntVar] = {}
+	miss_solo_ping: Dict[str, cp_model.IntVar] = {}
 	y_solo: Dict[Tuple[str, str], cp_model.IntVar] = {}
 	if enforce_solo_labels:
 		if labels_domain is None:
@@ -1350,12 +1352,17 @@ def solve_structure_ilp_core(
 				y_solo[(nid, k)] = y
 				row.append(y)
 			model.Add(sum(row) == u)
-			# Hard ping binding (if any)
+			# Soft ping binding (if any): either explain the ping by using the node
+			# with the required label, or pay a miss penalty.
 			req = forced_solo_node_labels.get(nid)
 			if req is not None:
 				model.Add(y_solo[(nid, str(req))] == u)
-				# Segments with a ping must be explained (used) by the solution.
-				model.Add(u == 1)
+				# Ping coverage is soft: use if feasible; otherwise allow a miss with penalty.
+				nid_safe = str(nid).replace(":", "_")
+				miss = model.NewBoolVar(f"miss_solo_ping_{nid_safe}")
+				miss_solo_ping[nid] = miss
+				# Either use the node (u==1) or pay a miss penalty (miss==1).
+				model.Add(u + miss == 1)
 
 		# Continuity across selected SOLO->SOLO CONTINUE edges
 		if "edge_type" in edges.columns:
@@ -1384,6 +1391,7 @@ def solve_structure_ilp_core(
 		# ---- POC_2_TAGS: GROUP label variables + constraints ----
 		# Group nodes may carry up to two concrete tags (partner identities). UNKNOWN is implicit.
 		u_group: Dict[str, cp_model.IntVar] = {}
+		miss_group_ping: Dict[Tuple[str, str], cp_model.IntVar] = {}
 		y_group: Dict[Tuple[str, str], cp_model.IntVar] = {}
 		if forced_group_node_labels is None:
 			forced_group_node_labels = {}
@@ -1414,14 +1422,18 @@ def solve_structure_ilp_core(
 			# Capacity: at most two tags if used.
 			model.Add(sum(row) <= 2 * u)
 
-			# Hard ping binding(s) (if any): group must be used and must carry each required tag.
+			# Soft ping binding(s) (if any): group must carry each required tag OR pay a miss penalty.
 			reqs = forced_group_node_labels.get(gid, set())
 			if len(reqs) > 2:
 				raise ValueError(f"POC_2_TAGS group node cannot carry >2 forced tags: {gid} tags={sorted(reqs)}")
 			for req in sorted({str(x) for x in reqs}, key=_stable_tag_sort_key):
-				model.Add(y_group[(gid, req)] == u)
-				# Segments with a ping must be explained (used) by the solution.
-				model.Add(u == 1)
+				# Ping coverage is soft: require the tag to be carried OR pay a miss penalty.
+				# If miss==0, then y_group==1 which implies u==1 via y<=u.
+				gid_safe = str(gid).replace(":", "_")
+				req_safe = str(req).replace(":", "_")
+				miss = model.NewBoolVar(f"miss_group_ping_{gid_safe}_{req_safe}")
+				miss_group_ping[(gid, req)] = miss
+				model.Add(y_group[(gid, req)] + miss == 1)
 
 		# Identity propagation across SOLO<->GROUP edges when an edge is used.
 		# If a labeled SOLO node connects to a GROUP node via a selected edge, then the GROUP must include that label.
@@ -1930,6 +1942,25 @@ def solve_structure_ilp_core(
 	if tracklet_penalty_scaled is not None and tracklet_penalty_scaled > 0:
 		for tid, drop in drop_var_by_tid.items():
 			terms.append(int(tracklet_penalty_scaled) * drop)
+
+	# Add ping-miss penalties (soft coverage for ping-bound nodes)
+	if (
+		unexplained_solo_ping_penalty is not None
+		and float(unexplained_solo_ping_penalty) > 0
+		and len(miss_solo_ping) > 0
+	):
+		pen_scaled = int(round(float(unexplained_solo_ping_penalty) * float(scale)))
+		for nid, miss in miss_solo_ping.items():
+			terms.append(int(pen_scaled) * miss)
+	if (
+		unexplained_group_ping_penalty is not None
+		and float(unexplained_group_ping_penalty) > 0
+		and len(miss_group_ping) > 0
+	):
+		pen_scaled = int(round(float(unexplained_group_ping_penalty) * float(scale)))
+		for (gid, req), miss in miss_group_ping.items():
+			terms.append(int(pen_scaled) * miss)
+
 	# Add tag-fragment-start penalties (time-separated fragmentation)
 	if tag_fragment_start_penalty is not None and float(tag_fragment_start_penalty) > 0 and len(frag_start_vars) > 0:
 		pen_scaled = int(round(float(tag_fragment_start_penalty) * float(scale)))
@@ -1981,7 +2012,7 @@ def solve_structure_ilp_core(
 	dropped_tracklet_ids = sorted(dropped_tracklet_ids)
 	explained_tracklet_ids = sorted(explained_tracklet_ids)
 
-	# POC_2_TAGS transparency: report label assignments for used SOLO nodes.
+	# POC_2_TAGS transparency: report label assignments and ping coverage diagnostics for used nodes.
 	if enforce_solo_labels and tag_solution_out is not None:
 		info: Dict[str, Any] = {
 			"labels_domain": [str(k) for k in (labels_domain or [])],
@@ -1994,6 +2025,10 @@ def solve_structure_ilp_core(
 			"tag_fragment_start_penalty": float(tag_fragment_start_penalty) if tag_fragment_start_penalty is not None else None,
 			"n_fragment_starts_total": None,
 			"n_fragment_starts_by_tag": {},
+			"n_missed_solo_pings": 0,
+			"n_missed_group_pings": 0,
+			"missed_solo_pings": [],
+			"missed_group_pings": [],
 		}
 		if status in ("OPTIMAL", "FEASIBLE"):
 			rows: List[Dict[str, Any]] = []
@@ -2032,8 +2067,27 @@ def solve_structure_ilp_core(
 					total += int(c)
 				info["n_fragment_starts_total"] = int(total)
 				info["n_fragment_starts_by_tag"] = by_tag
-		tag_solution_out.clear()
-		tag_solution_out.update(info)
+
+			# Missed ping diagnostics (soft coverage)
+			ms: List[Dict[str, Any]] = []
+			for nid, miss in sorted(miss_solo_ping.items(), key=lambda kv: kv[0]):
+				if int(solver.Value(miss)) == 1:
+					ms.append({"node_id": str(nid), "required_label": str((forced_solo_node_labels or {}).get(nid))})
+			mg: List[Dict[str, Any]] = []
+			for (gid, req), miss in sorted(miss_group_ping.items(), key=lambda kv: (kv[0][0], kv[0][1])):
+				if int(solver.Value(miss)) == 1:
+					mg.append({"node_id": str(gid), "required_label": str(req)})
+			info["missed_solo_pings"] = ms
+			info["missed_group_pings"] = mg
+			info["n_missed_solo_pings"] = int(len(ms))
+			info["n_missed_group_pings"] = int(len(mg))
+
+		if tag_solution_out is not None:
+			# Preserve any upstream fields already populated by the wrapper (e.g., penalty scaling / ref costs).
+			existing = dict(tag_solution_out)
+			existing.update(info)
+			tag_solution_out.clear()
+			tag_solution_out.update(existing)
 
 	return ILPResult(
 		status=status,
@@ -2173,10 +2227,20 @@ def solve_structure_ilp_tags(
 	manifest: ClipManifest,
 	checkpoint: str,
 	unexplained_tracklet_penalty: float | None = None,
+	unexplained_group_ping_penalty: float | None = None,
 	# Tag fragmentation (time-separated): prefer continuity but allow multiple disjoint fragments
 	tag_fragment_start_penalty: float | None = None,
 	tag_overlap_enforced: bool = True,
 	group_boundary_window_frames: int = 10,
+	# Professional penalty scaling (optional; if omitted, fall back to absolute penalties)
+	penalty_ref_edge_cost_quantile: float | None = None,
+	penalty_ref_edge_cost_min: float | None = None,
+	solo_ping_miss_penalty_mult: float | None = None,
+	group_ping_miss_penalty_mult: float | None = None,
+	solo_ping_miss_penalty_abs: float | None = None,
+	group_ping_miss_penalty_abs: float | None = None,
+	tag_fragment_start_penalty_mult: float | None = None,
+	tag_fragment_start_penalty_abs: float | None = None,
 ) -> ILPResult:
 	"""POC_2_TAGS wrapper: solve with SOLO label enforcement + write debug outputs + audit summary.
 
@@ -2186,7 +2250,7 @@ def solve_structure_ilp_tags(
 	- GROUP_TRACKLET nodes may carry up to two concrete labels (partner identities); UNKNOWN is implicit.
 	- Prefer time-local tag_pings from D2 constraints when available.
 	- Fall back to Stage C identity_hints.jsonl when tag_pings are absent.
-	- Ping-bound nodes (SOLO or GROUP) must be explained (used) by the solver.
+	- Ping-bound nodes (SOLO or GROUP) are *strongly preferred* to be explained; misses incur penalties.
 	- Selected SOLO->SOLO CONTINUE edges enforce label equality.
 	- Selected SOLO<->GROUP edges propagate labels into the GROUP node.
 	"""
@@ -2249,13 +2313,58 @@ def solve_structure_ilp_tags(
 
 	tag_solution: Dict[str, Any] = {}
 
+	# --- Professional penalty scaling (reference edge cost) ---
+	# Compute reference edge cost from allowed edges. Use p95 by default.
+	try:
+		q = float(penalty_ref_edge_cost_quantile) if penalty_ref_edge_cost_quantile is not None else 0.95
+	except Exception:
+		q = 0.95
+	try:
+		ref_min = float(penalty_ref_edge_cost_min) if penalty_ref_edge_cost_min is not None else 0.01
+	except Exception:
+		ref_min = 0.01
+	ref_edge_cost = None
+	if "total_cost" in compiled.costs_df.columns and len(compiled.costs_df) > 0:
+		try:
+			ref_edge_cost = float(compiled.costs_df["total_cost"].quantile(q))
+		except Exception:
+			ref_edge_cost = None
+	if ref_edge_cost is None or not math.isfinite(ref_edge_cost):
+		ref_edge_cost = ref_min
+	ref_edge_cost = max(float(ref_edge_cost), float(ref_min))
+
+	# Effective penalties (cost units). Abs overrides take precedence.
+	eff_solo_miss = solo_ping_miss_penalty_abs
+	if eff_solo_miss is None:
+		eff_solo_miss = (
+			float(solo_ping_miss_penalty_mult) if solo_ping_miss_penalty_mult is not None else 50.0
+		) * ref_edge_cost
+
+	eff_group_miss = group_ping_miss_penalty_abs
+	if eff_group_miss is None:
+		if group_ping_miss_penalty_mult is not None:
+			eff_group_miss = float(group_ping_miss_penalty_mult) * ref_edge_cost
+		else:
+			# Legacy fallback: preserve previous unexplained_group_ping_penalty behavior when multipliers are not set.
+			eff_group_miss = unexplained_group_ping_penalty if unexplained_group_ping_penalty is not None else 5000.0
+
+	eff_frag = tag_fragment_start_penalty_abs
+	if eff_frag is None:
+		if tag_fragment_start_penalty_mult is not None:
+			eff_frag = float(tag_fragment_start_penalty_mult) * ref_edge_cost
+		else:
+			# Legacy fallback: preserve absolute tag_fragment_start_penalty when multipliers are not set.
+			eff_frag = tag_fragment_start_penalty if tag_fragment_start_penalty is not None else 2500.0
+
 	res = solve_structure_ilp_core(
 		nodes_df=compiled.nodes_df,
 		edges_df=compiled.edges_df,
 		costs_df=compiled.costs_df,
 		constraints=compiled.constraints,
 		unexplained_tracklet_penalty=unexplained_tracklet_penalty,
-		tag_fragment_start_penalty=tag_fragment_start_penalty,
+		unexplained_group_ping_penalty=float(eff_group_miss),
+		unexplained_solo_ping_penalty=float(eff_solo_miss),
+		tag_fragment_start_penalty=float(eff_frag),
 		tag_overlap_enforced=bool(tag_overlap_enforced),
 		group_boundary_window_frames=int(group_boundary_window_frames),
 		enforce_solo_labels=True,
@@ -2321,6 +2430,12 @@ def solve_structure_ilp_tags(
 		"n_identity_hints": int(len(identity_hints)),
 		"n_tag_hints": int(len(tag_hints)),
 		"n_tag_pings": int(n_tag_pings),
+		"penalty_ref_edge_cost_quantile": float(q),
+		"penalty_ref_edge_cost_min": float(ref_min),
+		"ref_edge_cost": float(ref_edge_cost),
+		"solo_ping_miss_penalty_cost": float(eff_solo_miss),
+		"group_ping_miss_penalty_cost": float(eff_group_miss),
+		"tag_fragment_start_penalty_cost": float(eff_frag),
 		"tag_source": str(tag_source),
 		"binding_ledger": binding_ledger,
 		"n_unbound_tag_pings": int(len(unbound)),

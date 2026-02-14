@@ -488,6 +488,25 @@ class StageD3Config(BaseModel):
     # for each required group ping that is not carried by any used GROUP node.
     unexplained_group_ping_penalty: float = Field(default=5000.0, ge=0.0)
 
+    # Penalty reference: compute a per-clip reference edge cost (default p95 of allowed edge total_cost)
+    # and scale soft penalties as multipliers of that reference. This keeps behavior stable across clips.
+    penalty_ref_edge_cost_quantile: float = Field(default=0.95, ge=0.0, le=1.0)
+    penalty_ref_edge_cost_min: float = Field(default=0.01, ge=0.0)
+
+    # Ping miss penalties (soft): prefer using ping-bound nodes, but allow missing when required to avoid infeasibility.
+    # These are expressed as multipliers of the reference edge cost (unless the *_abs override is provided).
+    solo_ping_miss_penalty_mult: float = Field(default=50.0, ge=0.0)
+    group_ping_miss_penalty_mult: float = Field(default=60.0, ge=0.0)
+    # Optional absolute overrides (cost units). When set, they take precedence over multipliers.
+    solo_ping_miss_penalty_abs: float | None = Field(default=None, ge=0.0)
+    group_ping_miss_penalty_abs: float | None = Field(default=None, ge=0.0)
+
+    # Fragment start penalty scaling: prefer continuity of the same tag across time.
+    # When tag_fragment_start_penalty_abs is set it takes precedence; otherwise use
+    # tag_fragment_start_penalty_mult * ref_edge_cost.
+    tag_fragment_start_penalty_mult: float = Field(default=20.0, ge=0.0)
+    tag_fragment_start_penalty_abs: float | None = Field(default=None, ge=0.0)
+
     # Frames near the start/end of the clip considered "boundary" for group gating logic
     # in D3. This is read in stages/stitch/solver.py and consumed by d3_ilp.py.
     group_boundary_window_frames: int = Field(default=10, ge=0)

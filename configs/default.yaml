@@ -255,6 +255,22 @@ stages:
       unexplained_tracklet_penalty: 15.0
       # D3 — tag fragmentation (time-separated): penalty per new fragment start
       tag_fragment_start_penalty: 2500.0
+
+      # Professional penalty scaling: penalties are computed per-clip as multipliers of a reference edge cost.
+      # Reference edge cost is computed from allowed edges (default p95 of total_cost).
+      penalty_ref_edge_cost_quantile: 0.95
+      penalty_ref_edge_cost_min: 0.01
+
+      # Ping miss penalties (soft): prefer using ping-bound nodes but allow misses to avoid infeasibility.
+      solo_ping_miss_penalty_mult: 50.0
+      group_ping_miss_penalty_mult: 60.0
+      # Optional absolute overrides (normally left unset):
+      # solo_ping_miss_penalty_abs: null
+      # group_ping_miss_penalty_abs: null
+
+      # Fragment start penalty scaling (prefer continuity when feasible):
+      tag_fragment_start_penalty_mult: 20.0
+      # tag_fragment_start_penalty_abs: null
       group_boundary_window_frames: 10
       # POC_2_TAGS (Option B): penalty for leaving ping-bound GROUP nodes unexplained
       unexplained_group_ping_penalty: 5000.0
