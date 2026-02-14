@@ -63,6 +63,11 @@ def run_d3(*, config: Dict[str, Any], inputs: Dict[str, Any]) -> None:
 			"stages.stage_D.d3.unexplained_tracklet_penalty",
 			_default := _cfg_get(config, "stage_D.d3.unexplained_tracklet_penalty", None),
 		)
+		unexplained_group_ping_penalty = _cfg_get(
+			config,
+			"stages.stage_D.d3.unexplained_group_ping_penalty",
+			_cfg_get(config, "stage_D.d3.unexplained_group_ping_penalty", 5000.0),
+		)
 		# Tag fragmentation (time-separated): penalty per new fragment start
 		tag_frag_pen = _cfg_get(
 			config,
@@ -100,22 +105,86 @@ def run_d3(*, config: Dict[str, Any], inputs: Dict[str, Any]) -> None:
 			"stages.stage_D.d3.unexplained_tracklet_penalty",
 			_default := _cfg_get(config, "stage_D.d3.unexplained_tracklet_penalty", None),
 		)
-		# Tag fragmentation (time-separated): penalty per new fragment start
+		unexplained_group_ping_penalty = _cfg_get(
+			config,
+			"stages.stage_D.d3.unexplained_group_ping_penalty",
+			_cfg_get(config, "stage_D.d3.unexplained_group_ping_penalty", 5000.0),
+		)
+		# Tag fragmentation (time-separated): penalty per new fragment start (legacy absolute)
 		tag_frag_pen = _cfg_get(
 			config,
 			"stages.stage_D.d3.tag_fragment_start_penalty",
-			_default2 := _cfg_get(config, "stage_D.d3.tag_fragment_start_penalty", None),
+			_default2 := _cfg_get(config, "stage_D.d3.tag_fragment_start_penalty", 2500.0),
 		)
-		tag_frag_pen_f = float(tag_frag_pen) if tag_frag_pen is not None else None
+		tag_frag_pen_f = float(tag_frag_pen)
+
+		# Penalty scaling (professional): reference edge cost quantile/min and multiplier/abs knobs
+		ref_q = _cfg_get(
+			config,
+			"stages.stage_D.d3.penalty_ref_edge_cost_quantile",
+			_cfg_get(config, "stage_D.d3.penalty_ref_edge_cost_quantile", None),
+		)
+		ref_min = _cfg_get(
+			config,
+			"stages.stage_D.d3.penalty_ref_edge_cost_min",
+			_cfg_get(config, "stage_D.d3.penalty_ref_edge_cost_min", None),
+		)
+		solo_mult = _cfg_get(
+			config,
+			"stages.stage_D.d3.solo_ping_miss_penalty_mult",
+			_cfg_get(config, "stage_D.d3.solo_ping_miss_penalty_mult", None),
+		)
+		group_mult = _cfg_get(
+			config,
+			"stages.stage_D.d3.group_ping_miss_penalty_mult",
+			_cfg_get(config, "stage_D.d3.group_ping_miss_penalty_mult", None),
+		)
+		solo_abs = _cfg_get(
+			config,
+			"stages.stage_D.d3.solo_ping_miss_penalty_abs",
+			_cfg_get(config, "stage_D.d3.solo_ping_miss_penalty_abs", None),
+		)
+		group_abs = _cfg_get(
+			config,
+			"stages.stage_D.d3.group_ping_miss_penalty_abs",
+			_cfg_get(config, "stage_D.d3.group_ping_miss_penalty_abs", None),
+		)
+		frag_mult = _cfg_get(
+			config,
+			"stages.stage_D.d3.tag_fragment_start_penalty_mult",
+			_cfg_get(config, "stage_D.d3.tag_fragment_start_penalty_mult", None),
+		)
+		frag_abs = _cfg_get(
+			config,
+			"stages.stage_D.d3.tag_fragment_start_penalty_abs",
+			_cfg_get(config, "stage_D.d3.tag_fragment_start_penalty_abs", None),
+		)
+		ref_q_f = float(ref_q) if ref_q is not None else None
+		ref_min_f = float(ref_min) if ref_min is not None else None
+		solo_mult_f = float(solo_mult) if solo_mult is not None else None
+		group_mult_f = float(group_mult) if group_mult is not None else None
+		solo_abs_f = float(solo_abs) if solo_abs is not None else None
+		group_abs_f = float(group_abs) if group_abs is not None else None
+		frag_mult_f = float(frag_mult) if frag_mult is not None else None
+		frag_abs_f = float(frag_abs) if frag_abs is not None else None
 		res = solve_structure_ilp_tags(
-			compiled=_
-			,layout=layout,
+			compiled=_,
+			layout=layout,
 			manifest=manifest,
 			checkpoint=str(checkpoint),
 			unexplained_tracklet_penalty=float(penalty) if penalty is not None else None,
+			unexplained_group_ping_penalty=float(unexplained_group_ping_penalty) if unexplained_group_ping_penalty is not None else None,
 			tag_fragment_start_penalty=tag_frag_pen_f,
 			tag_overlap_enforced=True,
 			group_boundary_window_frames=int(gbw_i),
+			penalty_ref_edge_cost_quantile=ref_q_f,
+			penalty_ref_edge_cost_min=ref_min_f,
+			solo_ping_miss_penalty_mult=solo_mult_f,
+			group_ping_miss_penalty_mult=group_mult_f,
+			solo_ping_miss_penalty_abs=solo_abs_f,
+			group_ping_miss_penalty_abs=group_abs_f,
+			tag_fragment_start_penalty_mult=frag_mult_f,
+			tag_fragment_start_penalty_abs=frag_abs_f,
 		)
 		_ = res  # reserved for later checkpoints
 		return
