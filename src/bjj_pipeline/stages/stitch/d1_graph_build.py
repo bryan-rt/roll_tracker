@@ -115,6 +115,55 @@ def _get_manifest_fields(manifest: Any) -> Tuple[Optional[float], Optional[int],
 	return fps, frame_count, duration_ms
 
 
+def _get_manifest_video_path(manifest: Any) -> Optional[str]:
+	"""Extract input_video_path from manifest (dict or ClipManifest)."""
+	if hasattr(manifest, "input_video_path"):
+		val = getattr(manifest, "input_video_path")
+	elif isinstance(manifest, dict):
+		val = manifest.get("input_video_path")
+	else:
+		val = None
+	if val is None:
+		return None
+	try:
+		return str(val)
+	except Exception:
+		return None
+
+
+def _probe_video_wh(video_path: str) -> Optional[Tuple[int, int]]:
+	"""Probe (width,height) from a video file using OpenCV. Returns None on failure."""
+	try:
+		import cv2  # type: ignore
+	except Exception:
+		return None
+
+	cap = None
+	try:
+		cap = cv2.VideoCapture(str(video_path))
+		if not cap or (hasattr(cap, "isOpened") and not cap.isOpened()):
+			return None
+
+		w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+		h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+		if w <= 0 or h <= 0:
+			ok, frame = cap.read()
+			if ok and frame is not None and hasattr(frame, "shape") and len(frame.shape) >= 2:
+				h, w = int(frame.shape[0]), int(frame.shape[1])
+
+		if w <= 0 or h <= 0:
+			return None
+		return (w, h)
+	except Exception:
+		return None
+	finally:
+		if cap is not None:
+			try:
+				cap.release()
+			except Exception:
+				pass
+
+
 def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 	"""Build the candidate graph for D1.
 
@@ -141,11 +190,24 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 	merge_disappear_gap_frames = int(d1_cfg.get("merge_disappear_gap_frames", 6))
 	split_dist_m = float(d1_cfg.get("split_dist_m", 0.60))
 	split_search_horizon_frames = int(d1_cfg.get("split_search_horizon_frames", 120))
+	suppress_start_merged_if_entrance_like = bool(d1_cfg.get("suppress_start_merged_if_entrance_like", True))
 	reconnect_enabled = bool(d1_cfg.get("reconnect_enabled", False))
-	reconnect_max_gap_frames = int(d1_cfg.get("reconnect_max_gap_frames", 120))
+	reconnect_max_gap_frames = int(d1_cfg.get("reconnect_max_gap_frames", 250))
 	reconnect_boundary_on_mat_required = bool(d1_cfg.get("reconnect_boundary_on_mat_required", True))
 	reconnect_boundary_slack_frames = int(d1_cfg.get("reconnect_boundary_slack_frames", 2))
 	reconnect_solo_only = bool(d1_cfg.get("reconnect_solo_only", True))
+	reconnect_allow_group_source = bool(d1_cfg.get("reconnect_allow_group_source", True))
+
+	# Promotion rule (group-capacity continuation through occlusion)
+	# If a CONT_RECONNECT candidate comes from a GROUP node into a SOLO node and there is no
+	# strong evidence of a second nearby SOLO birth, promote the destination node to GROUP.
+	promote_group_reconnect_enabled = bool(d1_cfg.get("promote_group_reconnect_enabled", False))
+	promote_group_reconnect_nearby_start_window_frames = int(
+		d1_cfg.get("promote_group_reconnect_nearby_start_window_frames", 30)
+	)
+	promote_group_reconnect_nearby_dist_m = float(
+		d1_cfg.get("promote_group_reconnect_nearby_dist_m", merge_dist_m)
+	)
 
 	# Hard gate: if a new tracklet is born at the image border (based on u_px/v_px),
 	# do not treat it as a split-out of an existing carrier. This prevents false
@@ -211,6 +273,9 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 	# the extreme observed left/right/top/bottom are treated as border-born.
 	border_uv_bounds = None  # (u_min, u_max, v_min, v_max)
 	start_uv_by_tid: Dict[str, Tuple[float, float]] = {}
+	border_gate_mode: str = "disabled_missing_uv"
+	frame_wh: Optional[Tuple[int, int]] = None
+	entrance_uv_series_by_tid: Dict[str, List[Tuple[float, float]]] = {}
 	if split_border_gate_enabled:
 		# If pixel coordinates are unavailable (e.g., unit tests with minimal fixtures),
 		# silently disable the border gate rather than failing hard.
@@ -221,6 +286,7 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 			if len(uv) == 0:
 				# No usable coordinates; disable gate.
 				split_border_gate_enabled = False
+				border_gate_mode = "disabled_empty_uv"
 			else:
 				u_min = float(uv["u_px"].min())
 				u_max = float(uv["u_px"].max())
@@ -232,10 +298,10 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 				start_frames = ts[["tracklet_id", "start_frame"]].copy()
 				start_frames["tracklet_id"] = start_frames["tracklet_id"].astype(str)
 				start_frames["start_frame"] = start_frames["start_frame"].astype(int)
-				tf_uv = tf[["tracklet_id", "frame_index", "u_px", "v_px"]].copy()
-				tf_uv["tracklet_id"] = tf_uv["tracklet_id"].astype(str)
-				tf_uv["frame_index"] = tf_uv["frame_index"].astype(int)
-				merged = tf_uv.merge(
+				tf_uv0 = tf[["tracklet_id", "frame_index", "u_px", "v_px"]].copy()
+				tf_uv0["tracklet_id"] = tf_uv0["tracklet_id"].astype(str)
+				tf_uv0["frame_index"] = tf_uv0["frame_index"].astype(int)
+				merged = tf_uv0.merge(
 					start_frames,
 					left_on=["tracklet_id", "frame_index"],
 					right_on=["tracklet_id", "start_frame"],
@@ -251,17 +317,107 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 							continue
 						start_uv_by_tid[tid] = (float(upx), float(vpx))
 
-	def _is_border_born_tid(tid: str) -> bool:
-		"""True if tid's start_frame contact point lies within split_border_margin_px of observed bounds."""
-		if not split_border_gate_enabled or border_uv_bounds is None:
+				# Enriched entrance diagnostics: true video bounds when available + early-series samples.
+				video_path = _get_manifest_video_path(manifest)
+				frame_wh = _probe_video_wh(video_path) if video_path else None
+				if frame_wh is not None:
+					border_gate_mode = "video_bounds"
+				else:
+					border_gate_mode = "observed_bounds_fallback"
+
+				# Build per-tid early (u_px, v_px) samples for entrance classification.
+				k_frames = int(d1_cfg.get("split_entrance_k_frames", 10))
+				k_frames = max(1, k_frames)
+				tf_uv = tf[["tracklet_id", "frame_index", "u_px", "v_px"]].copy()
+				tf_uv["tracklet_id"] = tf_uv["tracklet_id"].astype(str)
+				tf_uv["frame_index"] = tf_uv["frame_index"].astype(int)
+				tf_uv = tf_uv.sort_values(["tracklet_id", "frame_index"], kind="mergesort")
+				for tid, row in ts_by_tid.items():
+					sf = int(row["start_frame"])
+					gdf = tf_uv[tf_uv["tracklet_id"] == tid]
+					if len(gdf) == 0:
+						continue
+					window = gdf[(gdf["frame_index"] >= sf) & (gdf["frame_index"] < (sf + k_frames))]
+					if len(window) == 0:
+						continue
+					samples: List[Tuple[float, float]] = []
+					for _, r in window.iterrows():
+						upx = r.get("u_px", None)
+						vpx = r.get("v_px", None)
+						if upx is None or vpx is None or (pd.isna(upx) or pd.isna(vpx)):
+							continue
+						samples.append((float(upx), float(vpx)))
+						if len(samples) >= k_frames:
+							break
+					if samples:
+						entrance_uv_series_by_tid[tid] = samples
+
+	def _entrance_border_distance_px(u: float, v: float) -> Optional[float]:
+		"""Distance (px) to nearest image border (true bounds preferred)."""
+		if frame_wh is not None:
+			w, h = frame_wh
+			u_c = min(max(u, 0.0), float(max(0, w - 1)))
+			v_c = min(max(v, 0.0), float(max(0, h - 1)))
+			return float(min(u_c, float(w - 1) - u_c, v_c, float(h - 1) - v_c))
+		if bool(d1_cfg.get("split_entrance_allow_observed_fallback", True)) and border_uv_bounds is not None:
+			u_min, u_max, v_min, v_max = border_uv_bounds
+			return float(min(u - u_min, u_max - u, v - v_min, v_max - v))
+		return None
+
+	def _entrance_diagnostics(tid: str) -> Optional[Dict[str, Any]]:
+		if not split_border_gate_enabled:
+			return None
+		samples = entrance_uv_series_by_tid.get(str(tid))
+		if not samples:
+			return None
+		ds: List[float] = []
+		for (u, v) in samples:
+			d = _entrance_border_distance_px(u, v)
+			if d is None or not math.isfinite(float(d)):
+				continue
+			ds.append(float(d))
+		if not ds:
+			return None
+		return {
+			"n_samples": int(len(ds)),
+			"d0_px": float(ds[0]),
+			"d_last_px": float(ds[-1]),
+			"mode": str(border_gate_mode),
+			"frame_wh": tuple(frame_wh) if frame_wh is not None else None,
+			"margin_px": int(split_border_margin_px),
+			"min_inward_px": int(d1_cfg.get("split_entrance_min_inward_px", 20)),
+			"min_samples": int(d1_cfg.get("split_entrance_min_samples", 3)),
+			"k_frames": int(d1_cfg.get("split_entrance_k_frames", 10)),
+		}
+
+	def _is_entrance_like_tid(tid: str) -> bool:
+		"""True if tid appears to enter from off-screen: starts near border and moves inward."""
+		if not split_border_gate_enabled:
 			return False
-		uv0 = start_uv_by_tid.get(str(tid))
-		if uv0 is None:
+		diag = _entrance_diagnostics(str(tid))
+		if diag is None:
 			return False
-		u, v = uv0
-		u_min, u_max, v_min, v_max = border_uv_bounds
-		m = float(split_border_margin_px)
-		return bool((u <= u_min + m) or (u >= u_max - m) or (v <= v_min + m) or (v >= v_max - m))
+		min_samples = int(diag.get("min_samples", 3))
+		if int(diag.get("n_samples", 0)) < max(1, min_samples):
+			return False
+		d0 = float(diag.get("d0_px", 1e9))
+		d_last = float(diag.get("d_last_px", 1e9))
+
+		margin_px = float(diag.get("margin_px", split_border_margin_px))
+		min_inward = float(diag.get("min_inward_px", 20))
+
+		gate_logic = str(diag.get("gate_logic", d1_cfg.get("split_entrance_gate_logic", "or"))).lower().strip()
+		inward_margin_px = float(
+			diag.get("inward_margin_px", d1_cfg.get("split_entrance_inward_margin_px", int(margin_px + 30)))
+		)
+
+		border_spawn = bool(d0 <= margin_px)
+		moved_inward = bool((d0 <= inward_margin_px) and ((d_last - d0) >= min_inward))
+
+		if gate_logic == "and":
+			return bool(border_spawn and moved_inward)
+		# default: "or"
+		return bool(border_spawn or moved_inward)
 
 	# frames grouped
 	tf = tf.sort_values(["tracklet_id", "frame_index"], kind="mergesort")
@@ -466,14 +622,25 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 
 		# ---- split triggers: new tid starts while carrier exists, close in space ----
 		split_triggers_raw: List[Dict[str, Any]] = []
+		suppressed_split_triggers_entrance: List[Dict[str, Any]] = []
 		for new_tid, nrow in ts_by_tid.items():
 			n_start = int(nrow["start_frame"])
 			new_ep = endpoints_start.get(new_tid)
 			if new_ep is None:
 				continue
 			new_xy = new_ep[0]
-			# Hard border gate: border-born tracklets cannot induce split triggers.
-			if _is_border_born_tid(str(new_tid)):
+			# Entrance-like gate: tracklets that appear to ENTER the image from off-screen
+			# should not induce split triggers (prevents false group spans from entrance coincidences).
+			if _is_entrance_like_tid(str(new_tid)):
+				diag = _entrance_diagnostics(str(new_tid)) or {}
+				suppressed_split_triggers_entrance.append(
+					{
+						"new": str(new_tid),
+						"split_frame": int(n_start),
+						"reason": "suppressed_entrance_like",
+						"entrance": diag,
+					}
+				)
 				continue
 			for carrier, crow in ts_by_tid.items():
 				if carrier == new_tid:
@@ -529,6 +696,7 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 		group_spans: List[Dict[str, Any]] = []
 		suppressed_group_spans: List[Dict[str, Any]] = []
 		reconnect_edges_debug: List[Dict[str, Any]] = []
+		suppressed_start_merged_entrance: List[Dict[str, Any]] = []
 
 		for carrier in sorted({m["carrier"] for m in merge_triggers} | {s["carrier"] for s in split_triggers}):
 			# Carrier lifespan bounds are authoritative (from tracklet_bank_summaries).
@@ -547,63 +715,78 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 				if int(first_split["split_frame"]) <= split_search_horizon_frames:
 					has_prior_merge = any(int(m["merge_frame"]) <= int(first_split["split_frame"]) for m in merges)
 					if not has_prior_merge:
-						gs_raw = 0
-						ge_raw = int(first_split["split_frame"]) - 1
-						gs = max(gs_raw, cs)
-						ge = min(ge_raw, ce)
-						if ge < gs:
-							suppressed_group_spans.append(
-								{
-									"kind": "start_merged",
-									"carrier": carrier,
-									"disappear": None,
-									"new": first_split["new"],
-									"group_start_raw": gs_raw,
-									"group_end_raw": ge_raw,
-									"group_start": gs,
-									"group_end": ge,
-									"merge_end": None,
-									"split_start": int(first_split["split_frame"]),
-									"merge_dist_m": None,
-									"split_dist_m": float(first_split["split_dist_m"]),
-									"reason": "invalid_after_clamp",
-								}
-							)
-						elif (ge - gs + 1) >= min_group_duration_frames:
-							group_spans.append(
-								{
-									"kind": "start_merged",
-									"carrier": carrier,
-									"disappear": None,
-									"new": first_split["new"],
-									"group_start_raw": gs_raw,
-									"group_end_raw": ge_raw,
-									"group_start": gs,
-									"group_end": ge,
-									"merge_end": None,
-									"split_start": int(first_split["split_frame"]),
-									"merge_dist_m": None,
-									"split_dist_m": float(first_split["split_dist_m"]),
-								}
-							)
-						else:
-							suppressed_group_spans.append(
-								{
-									"kind": "start_merged",
-									"carrier": carrier,
-									"disappear": None,
-									"new": first_split["new"],
-									"group_start_raw": gs_raw,
-									"group_end_raw": ge_raw,
-									"group_start": gs,
-									"group_end": ge,
-									"merge_end": None,
-									"split_start": int(first_split["split_frame"]),
-									"merge_dist_m": None,
-									"split_dist_m": float(first_split["split_dist_m"]),
-									"reason": "too_short",
-								}
-							)
+							suppress_start = False
+							new_tid = str(first_split["new"])
+							if suppress_start_merged_if_entrance_like and _is_entrance_like_tid(new_tid):
+								diag = _entrance_diagnostics(new_tid) or {}
+								suppress_start = True
+								suppressed_start_merged_entrance.append(
+									{
+										"carrier": str(carrier),
+										"new": new_tid,
+										"split_frame": int(first_split["split_frame"]),
+										"reason": "suppressed_start_merged_entrance_like_new",
+										"entrance": diag,
+									}
+								)
+							if not suppress_start:
+								gs_raw = 0
+								ge_raw = int(first_split["split_frame"]) - 1
+								gs = max(gs_raw, cs)
+								ge = min(ge_raw, ce)
+								if ge < gs:
+									suppressed_group_spans.append(
+										{
+											"kind": "start_merged",
+											"carrier": carrier,
+											"disappear": None,
+											"new": first_split["new"],
+											"group_start_raw": gs_raw,
+											"group_end_raw": ge_raw,
+											"group_start": gs,
+											"group_end": ge,
+											"merge_end": None,
+											"split_start": int(first_split["split_frame"]),
+											"merge_dist_m": None,
+											"split_dist_m": float(first_split["split_dist_m"]),
+											"reason": "invalid_after_clamp",
+										}
+									)
+								elif (ge - gs + 1) >= min_group_duration_frames:
+									group_spans.append(
+										{
+											"kind": "start_merged",
+											"carrier": carrier,
+											"disappear": None,
+											"new": first_split["new"],
+											"group_start_raw": gs_raw,
+											"group_end_raw": ge_raw,
+											"group_start": gs,
+											"group_end": ge,
+											"merge_end": None,
+											"split_start": int(first_split["split_frame"]),
+											"merge_dist_m": None,
+											"split_dist_m": float(first_split["split_dist_m"]),
+										}
+									)
+								else:
+									suppressed_group_spans.append(
+										{
+											"kind": "start_merged",
+											"carrier": carrier,
+											"disappear": None,
+											"new": first_split["new"],
+											"group_start_raw": gs_raw,
+											"group_end_raw": ge_raw,
+											"group_start": gs,
+											"group_end": ge,
+											"merge_end": None,
+											"split_start": int(first_split["split_frame"]),
+											"merge_dist_m": None,
+											"split_dist_m": float(first_split["split_dist_m"]),
+											"reason": "too_short",
+										}
+									)
 
 			used_split_idx: set = set()
 			cursor_end: Optional[int] = None
@@ -865,6 +1048,33 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 
 		# ---- Occlusion reconnect edges between different base tracklets ----
 		if reconnect_enabled and fps is not None:
+			def _count_nearby_births(
+				*,
+				dest_tid: str,
+				dest_start_frame: int,
+				dest_start_xy_m: tuple[float, float],
+			) -> int:
+				"""Count other tracklets that start near dest in time+space (evidence of 2-person re-entry)."""
+				cnt = 0
+				for other_tid, other_ts in ts_by_tid.items():
+					if other_tid == dest_tid:
+						continue
+					other_start_frame = int(other_ts["start_frame"])
+					if (
+						abs(other_start_frame - dest_start_frame)
+						> promote_group_reconnect_nearby_start_window_frames
+					):
+						continue
+					other_start = endpoints_start.get(other_tid)
+					if other_start is None:
+						continue
+					(other_xy_m, _other_used_raw) = other_start
+					if other_xy_m is None:
+						continue
+					if _dist_m(other_xy_m, dest_start_xy_m) <= promote_group_reconnect_nearby_dist_m:
+						cnt += 1
+				return cnt
+
 			# Soft Option B: annotate reconnect candidates when a coherent MERGE/SPLIT chain exists.
 			# We only shadow when both disappearing and new tracklet ids are present (coherent span).
 			shadow_witness_by_pair: Dict[Tuple[str, str], Dict[str, Any]] = {}
@@ -902,6 +1112,52 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 					# Shadowing must never block reconnect generation.
 					continue
 			base_ids = sorted(ts_by_tid.keys())
+
+			# -----------------------------------------------------------------
+			# Reconnect-only "promotion" (groupish capacity overlay)
+			#
+			# IMPORTANT:
+			# - We do NOT mutate node type/capacity.
+			# - We do NOT mutate SOURCE/SINK birth/death capacities.
+			# - We only allow capacity=2 on CONT_RECONNECT edges when a SOLO node
+			#   is acting as a continuation of a GROUP chain through occlusion.
+			# - We compute promotions via a fixed-point loop so it can propagate
+			#   (e.g. G->t11 makes t11 groupish, then t11->t14 can also become groupish).
+			#
+			# Firewall:
+			# Do not promote a destination base tracklet that participates in any
+			# explicit group span (carrier/disappear/new) — those semantics are already
+			# represented by real GROUP nodes and MERGE/SPLIT edges.
+			# -----------------------------------------------------------------
+			tracklets_in_group_spans: set[str] = set()
+			for gs in group_spans:
+				try:
+					for k in ("carrier", "disappear", "new"):
+						v = gs.get(k, None)
+						if v is None:
+							continue
+						vs = str(v)
+						if vs and vs != "none":
+							tracklets_in_group_spans.add(vs)
+				except Exception:
+					continue
+
+			# Each candidate describes a possible CONT_RECONNECT edge between two base tracklets.
+			# We build these first, then apply the promotion loop, then materialize edges once.
+			reconnect_candidates: List[Dict[str, Any]] = []
+
+			def _pick_dest_segment_for_tm(*, tm: str, require_solo: bool = True) -> Optional[Dict[str, Any]]:
+				chain_m = segments_by_base.get(tm)
+				if not chain_m:
+					return None
+				if require_solo:
+					for seg in chain_m:
+						if str(seg.get("segment_type", "")) == "SOLO":
+							return seg
+					return None
+				# fallback: first segment (caller must decide if allowed)
+				return chain_m[0]
+
 			for tn in base_ids:
 				row_n = ts_by_tid.get(tn)
 				if row_n is None:
@@ -950,58 +1206,211 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 						continue
 
 					chain_n = segments_by_base.get(tn)
-					chain_m = segments_by_base.get(tm)
-					if not chain_n or not chain_m:
+					if not chain_n:
 						continue
+
+					u_seg = chain_n[-1]
+					src_seg_type = str(u_seg.get("segment_type", ""))
+					src_is_solo = (src_seg_type == "SOLO")
+					src_is_group = (src_seg_type == "GROUP")
+
 					if reconnect_solo_only:
-						if str(chain_n[-1].get("segment_type", "")) != "SOLO":
+						if not (src_is_solo or (src_is_group and reconnect_allow_group_source)):
 							continue
-						# Destination may begin with GROUP; reconnect targets the first SOLO segment.
-						dest_seg = None
-						for seg in chain_m:
-							if str(seg.get("segment_type", "")) == "SOLO":
-								dest_seg = seg
-								break
-						if dest_seg is None:
+
+					# Destination selection:
+					# Prefer SOLO destination segments when available.
+					dest_seg = _pick_dest_segment_for_tm(tm=tm, require_solo=True)
+					if dest_seg is None:
+						# If tm has no SOLO segments, allow GROUP destination only for GROUP->GROUP when enabled.
+						if src_is_group and reconnect_allow_group_source:
+							dest_seg = _pick_dest_segment_for_tm(tm=tm, require_solo=False)
+							if dest_seg is None:
+								continue
+							if str(dest_seg.get("segment_type", "")) != "GROUP":
+								continue
+						else:
 							continue
-					u_node = str(chain_n[-1]["node_id"])
-					v_node = str((dest_seg or chain_m[0])["node_id"])
-					edge_id = f"E:CONT_RECONNECT:{u_node}->{v_node}"
-					payload = {
-						"dt_frames": int(gap_frames),
-						"reconnect": True,
-						"dt_s": float(dt_s),
-						"dist_m": float(dist),
-						"speed_mps": float(speed_mps),
-					}
-					w = shadow_witness_by_pair.get((str(tn), str(tm)))
-					if w is not None:
-						payload["shadowed_by_group_chain"] = True
-						payload["shadow_witness"] = w
-					else:
-						payload["shadowed_by_group_chain"] = False
-					g.add_edge(
-						GraphEdge(
-							edge_id=edge_id,
-							u=u_node,
-							v=v_node,
-							type=EdgeType.CONTINUE,
-							capacity=1,
-							payload=payload,
-						)
-					)
-					reconnect_edges_debug.append(
+
+					u_node = str(u_seg["node_id"])
+					v_node = str(dest_seg["node_id"])
+					dest_seg_type = str(dest_seg.get("segment_type", ""))
+
+					reconnect_candidates.append(
 						{
-							"from_tracklet_id": tn,
-							"to_tracklet_id": tm,
+							"tn": str(tn),
+							"tm": str(tm),
+							"tn_end": int(tn_end),
+							"tm_start": int(tm_start),
 							"gap_frames": int(gap_frames),
 							"dt_s": float(dt_s),
 							"dist_m": float(dist),
 							"speed_mps": float(speed_mps),
-							"shadowed_by_group_chain": bool(payload.get("shadowed_by_group_chain", False)),
-							"shadow_group_node_id": (payload.get("shadow_witness", {}) or {}).get("group_node_id", None),
+							"u_node": u_node,
+							"v_node": v_node,
+							"src_seg_type": src_seg_type,
+							"dest_seg_type": dest_seg_type,
 						}
 					)
+
+			# Deterministic iteration order for both promotion + edge materialization.
+			reconnect_candidates.sort(
+				key=lambda c: (
+					int(c["tn_end"]),
+					int(c["tm_start"]),
+					str(c["tn"]),
+					str(c["tm"]),
+					str(c["u_node"]),
+					str(c["v_node"]),
+				),
+			)
+
+			# Fixed-point loop: compute which SOLO nodes should be treated as "groupish"
+			# (capacity=2) for reconnect edges ONLY.
+			promoted_groupish_nodes: set[str] = set()
+			if promote_group_reconnect_enabled and reconnect_candidates:
+				changed = True
+				max_iters = int(d1_cfg.get("promote_group_reconnect_max_iters", 25))
+				it = 0
+				while changed and it < max_iters:
+					changed = False
+					it += 1
+					for cand in reconnect_candidates:
+						# Only promote SOLO destinations (never mutate true GROUP nodes).
+						if str(cand.get("dest_seg_type")) != "SOLO":
+							continue
+						tm = str(cand["tm"])
+						v_node = str(cand["v_node"])
+
+						# Firewall: do not promote destinations whose base tracklet participates in group spans.
+						if tm in tracklets_in_group_spans:
+							continue
+
+						# Source must be groupish (true GROUP segment OR previously promoted).
+						u_node = str(cand["u_node"])
+						src_groupish = bool(str(cand.get("src_seg_type")) == "GROUP" or (u_node in promoted_groupish_nodes))
+						if not src_groupish:
+							continue
+
+						# Require reconnect into the *start* of tm (within slack)
+						# and into the chosen dest segment start (within slack).
+						try:
+							tm_start = int(cand["tm_start"])
+							dest_start_frame = int(ts_by_tid[tm]["start_frame"])
+						except Exception:
+							continue
+						if abs(dest_start_frame - tm_start) > reconnect_boundary_slack_frames:
+							continue
+
+						# If the chosen dest segment isn't anchored at tm_start, skip promotion.
+						# (We only want "group continuation through occlusion", not mid-life promotions.)
+						try:
+							dest_seg_chain = segments_by_base.get(tm, [])
+							dest_seg_obj = None
+							for seg in dest_seg_chain:
+								if str(seg.get("node_id")) == v_node:
+									dest_seg_obj = seg
+									break
+							if dest_seg_obj is None:
+								continue
+							if abs(int(dest_seg_obj["start_frame"]) - tm_start) > reconnect_boundary_slack_frames:
+								continue
+						except Exception:
+							continue
+
+						# Nearby birth evidence: if there is another SOLO start near tm, treat as 2-person re-entry.
+						start_rec = endpoints_start.get(tm)
+						if start_rec is None:
+							continue
+						(tm_start_xy_m, _tm_used_raw) = start_rec
+						if tm_start_xy_m is None:
+							continue
+						nearby = _count_nearby_births(
+												dest_tid=tm,
+												dest_start_frame=tm_start,
+												dest_start_xy_m=tm_start_xy_m,
+											)
+						if nearby != 0:
+							continue
+
+						if v_node not in promoted_groupish_nodes:
+							promoted_groupish_nodes.add(v_node)
+							changed = True
+
+			# Materialize CONT_RECONNECT edges with capacity determined by:
+			# - true GROUP segment endpoints => capacity 2
+			# - promoted groupish SOLO nodes => capacity 2 (reconnect-only overlay)
+			#
+			# NOTE (POC_2_TAGS gate):
+			# Current POC requires ALL CONTINUE edges (including reconnect variants)
+			# to have capacity=1. We therefore encode "desired capacity" only in payload.
+			# Downstream (D3) may optionally interpret desired_capacity once the gate is lifted.
+			for cand in reconnect_candidates:
+				tn = str(cand["tn"])
+				tm = str(cand["tm"])
+				u_node = str(cand["u_node"])
+				v_node = str(cand["v_node"])
+
+				src_seg_type = str(cand.get("src_seg_type", ""))
+				dest_seg_type = str(cand.get("dest_seg_type", ""))
+
+				src_groupish = bool(src_seg_type == "GROUP" or (u_node in promoted_groupish_nodes))
+				dest_groupish = bool(dest_seg_type == "GROUP" or (v_node in promoted_groupish_nodes))
+
+				cap_u = 2 if src_groupish else 1
+				cap_v = 2 if dest_groupish else 1
+				desired_cap = min(cap_u, cap_v)
+				emit_cap = 1  # hard-gated by POC_2_TAGS: CONTINUE edges must be capacity=1
+
+				edge_id = f"E:CONT_RECONNECT:{u_node}->{v_node}"
+				payload = {
+					"dt_frames": int(cand["gap_frames"]),
+					"reconnect": True,
+					"dt_s": float(cand["dt_s"]),
+					"dist_m": float(cand["dist_m"]),
+					"speed_mps": float(cand["speed_mps"]),
+					"desired_capacity": int(desired_cap),
+					# Debug/traceability:
+					"src_groupish": bool(src_groupish),
+					"dest_groupish": bool(dest_groupish),
+					"promoted_src": bool(u_node in promoted_groupish_nodes),
+					"promoted_dest": bool(v_node in promoted_groupish_nodes),
+				}
+				w = shadow_witness_by_pair.get((str(tn), str(tm)))
+				if w is not None:
+					payload["shadowed_by_group_chain"] = True
+					payload["shadow_witness"] = w
+				else:
+					payload["shadowed_by_group_chain"] = False
+
+				g.add_edge(
+					GraphEdge(
+						edge_id=edge_id,
+						u=u_node,
+						v=v_node,
+						type=EdgeType.CONTINUE,
+						capacity=int(emit_cap),
+						payload=payload,
+					)
+				)
+				reconnect_edges_debug.append(
+					{
+						"from_tracklet_id": tn,
+						"to_tracklet_id": tm,
+						"gap_frames": int(cand["gap_frames"]),
+						"dt_s": float(cand["dt_s"]),
+						"dist_m": float(cand["dist_m"]),
+						"speed_mps": float(cand["speed_mps"]),
+							"capacity": int(emit_cap),
+							"desired_capacity": int(desired_cap),
+						"src_groupish": bool(src_groupish),
+						"dest_groupish": bool(dest_groupish),
+						"promoted_src": bool(u_node in promoted_groupish_nodes),
+						"promoted_dest": bool(v_node in promoted_groupish_nodes),
+						"shadowed_by_group_chain": bool(payload.get("shadowed_by_group_chain", False)),
+						"shadow_group_node_id": (payload.get("shadow_witness", {}) or {}).get("group_node_id", None),
+					}
+				)
 
 		# MERGE edges: disappearing identity flows into the GROUP segment.
 		for gspan in group_spans:
@@ -1149,6 +1558,14 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 			(pd.DataFrame(merge_triggers) if merge_triggers else pd.DataFrame([])).to_parquet(debug_dir / "d1_merge_triggers.parquet", index=False)
 			(pd.DataFrame(split_triggers) if split_triggers else pd.DataFrame([])).to_parquet(debug_dir / "d1_split_triggers.parquet", index=False)
 			(pd.DataFrame(suppressed_split_triggers) if suppressed_split_triggers else pd.DataFrame([])).to_parquet(debug_dir / "d1_suppressed_split_triggers.parquet", index=False)
+			(pd.DataFrame(suppressed_split_triggers_entrance) if suppressed_split_triggers_entrance else pd.DataFrame([])).to_parquet(
+				debug_dir / "d1_suppressed_split_triggers_entrance.parquet",
+				index=False,
+			)
+			(pd.DataFrame(suppressed_start_merged_entrance) if suppressed_start_merged_entrance else pd.DataFrame([])).to_parquet(
+				debug_dir / "d1_suppressed_start_merged_entrance.parquet",
+				index=False,
+			)
 			(pd.DataFrame(suppressed_group_spans) if suppressed_group_spans else pd.DataFrame([])).to_parquet(debug_dir / "d1_suppressed_group_spans.parquet", index=False)
 			(pd.DataFrame(reconnect_edges_debug) if reconnect_edges_debug else pd.DataFrame([])).to_parquet(debug_dir / "d1_reconnect_edges.parquet", index=False)
 
@@ -1159,6 +1576,10 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 					"d1_merge_triggers_parquet": str(debug_dir / "d1_merge_triggers.parquet"),
 					"d1_split_triggers_parquet": str(debug_dir / "d1_split_triggers.parquet"),
 					"d1_suppressed_split_triggers_parquet": str(debug_dir / "d1_suppressed_split_triggers.parquet"),
+					"d1_suppressed_split_triggers_entrance_parquet": str(
+						debug_dir / "d1_suppressed_split_triggers_entrance.parquet"
+					),
+					"d1_suppressed_start_merged_entrance_parquet": str(debug_dir / "d1_suppressed_start_merged_entrance.parquet"),
 					"d1_suppressed_group_spans_parquet": str(debug_dir / "d1_suppressed_group_spans.parquet"),
 					"d1_reconnect_edges_parquet": str(debug_dir / "d1_reconnect_edges.parquet"),
 				}
@@ -1173,6 +1594,20 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 				"stage": "D1",
 				"ts_ms": _now_ms(),
 				"manifest": {"fps": fps, "frame_count": frame_count, "duration_ms": duration_ms},
+				"video": {
+					"input_video_path": _get_manifest_video_path(manifest),
+					"frame_wh": tuple(frame_wh) if frame_wh is not None else None,
+				},
+				"border_gate": {
+					"enabled": bool(split_border_gate_enabled),
+					"mode": str(border_gate_mode),
+					"margin_px": int(split_border_margin_px),
+					"entrance_k_frames": int(d1_cfg.get("split_entrance_k_frames", 10)),
+					"entrance_min_samples": int(d1_cfg.get("split_entrance_min_samples", 3)),
+					"entrance_min_inward_px": int(d1_cfg.get("split_entrance_min_inward_px", 20)),
+					"suppress_start_merged_if_entrance_like": bool(suppress_start_merged_if_entrance_like),
+					"allow_observed_fallback": bool(d1_cfg.get("split_entrance_allow_observed_fallback", True)),
+				},
 				"graph": {
 					"n_nodes": len(g.nodes),
 					"n_edges": len(g.edges),

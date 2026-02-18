@@ -309,6 +309,14 @@ class StageD1Config(BaseModel):
     # Hard gate: new tracklets born at the image border cannot induce split triggers.
     split_border_gate_enabled: bool = Field(default=True)
     split_border_margin_px: int = Field(default=40, ge=0)
+    # Entrance-like suppression (refines naive border-born check).
+    # A tracklet is treated as an "entrance" only if it starts near the true image border
+    # and moves inward over its first K frames.
+    split_entrance_k_frames: int = Field(default=10, ge=0)
+    split_entrance_min_samples: int = Field(default=3, ge=0)
+    split_entrance_min_inward_px: int = Field(default=20, ge=0)
+    split_entrance_allow_observed_fallback: bool = Field(default=True)
+    suppress_start_merged_if_entrance_like: bool = Field(default=True)
     # Optional occlusion reconnect proposals (between non-overlapping lifespans)
     reconnect_enabled: bool = Field(
         default=False,
@@ -338,6 +346,28 @@ class StageD1Config(BaseModel):
     reconnect_solo_only: bool = Field(
         default=True,
         description="If true, only propose reconnect edges from a SOLO end-segment to a SOLO start-segment (never across GROUP boundaries).",
+    )
+    # Optional promotion of reconnect destinations from SOLO to GROUP when evidence suggests
+    # a 2-person re-entry is continuing through occlusion.
+    promote_group_reconnect_enabled: bool = Field(
+        default=False,
+        description=(
+            "If true, allow GROUP->SOLO reconnects to promote the SOLO destination segment to a GROUP node "
+            "when there is no nearby second SOLO birth (continuing group-capacity through occlusion)."
+        ),
+    )
+    promote_group_reconnect_nearby_start_window_frames: int = Field(
+        default=30,
+        ge=0,
+        description="Time window (frames) for counting nearby SOLO births around a reconnect destination start.",
+    )
+    promote_group_reconnect_nearby_dist_m: Optional[float] = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Max spatial distance (meters) to consider another SOLO birth 'nearby' for promotion; "
+            "defaults to merge_dist_m when unset."
+        ),
     )
 
 
