@@ -190,7 +190,23 @@ stages:
       # Hard gate: border-born tracklets cannot induce split triggers (Case 2)
       split_border_gate_enabled: true
       split_border_margin_px: 40
+      # Entrance-like suppression (replaces naive border-born check).
+      # A tracklet is treated as an "entrance" only if it starts near the true image border
+      # and moves inward over its first K frames.
+      split_entrance_k_frames: 10
+      split_entrance_min_samples: 3
+      split_entrance_min_inward_px: 20
+      split_entrance_allow_observed_fallback: true
+      # Suppress clip-start GROUP births if the split-inducing tracklet appears to ENTER from the border.
+      suppress_start_merged_if_entrance_like: true
       reconnect_enabled: true
+
+      # Promotion: continue group-capacity through occlusion when only one solo re-entry is observed.
+      # If a reconnect edge comes from a GROUP segment into a SOLO segment that begins at the tracklet's
+      # start, and there is no other nearby SOLO birth, promote the destination segment to GROUP.
+      promote_group_reconnect_enabled: true
+      promote_group_reconnect_nearby_start_window_frames: 30
+      # promote_group_reconnect_nearby_dist_m: 0.75  # optional; defaults to merge_dist_m
 
     # D2: per-edge costs + normalized identity constraints (solver-agnostic; no solving)
     d2_costs:

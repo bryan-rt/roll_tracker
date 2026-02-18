@@ -1,16 +1,35 @@
  {
-    "entity_1": {"t1","split from t1 to t4"},
-    {"april_tag_found_in": "none"};
-    "entity_2": {"t1", "merge with t4","split from t4 to t9", "merge with t4","split from t4 to t10","merge with t4", "split from t4 to t13"},
-    {"april_tag_found_in": "none"};
-    "entity_3": {"t5","merge with t6","split from t6 to t16",},
-    {"april_tag_found_in": "none"};
-    "entity_4": {"t6",},
-    {"april_tag_found_in": "none"};
-    "entity_5": {"t2", "t15"},
-    {"april_tag_found_in": "none"};
-    "entity_6": {"t3","merge with t8 or occluded","t3","t11", "t14"},
-    {"april_tag_found_in": "none"};
-    "entity_7": {"t3", "split from t3 to t7","merge with t3", "split from t3 to t8","t11","t14"},
-    {"april_tag_found_in": "none"};
+    "Entity 1 & 2": {
+		group t1,
+        split into solo t1 & solo t4, 
+        t1 merges into t4 or becomes occluded,
+        t4 splits into t9 and t4 or solo t4 continues and solo t1 continue reconnect with solo t9,
+		t9 merges with t4 and then splits to t9 and t10 or t9 solo continue reconnects with t10,
+		t10 merges with t4 and splits into t4 and t13 or solo continue reconnects with t13,
+		t13 merges with t4 and dies as a group or t13 dies solo a little early and t4 dies shortly after
+}	
+
+    "entity 3 & 4": {
+		solo t5 and solo t6,
+		t5 merges with t6,
+		t6 splits into t6 and t16
+}
+
+    "entity 5": {
+		t2 continue reconnects with t15
+}
+
+
+
+    "entity 6 & 7": {
+		group t3,
+		t3 splits into t3 and t7,
+		t7 merges into t3 group,
+		t3 group splits into t3 and t8,
+		t8 merges into t3 group,
+		t3 group gets occluded,
+		t11 is the group continuation of group t3,
+		t14 is the group continuation of group t11
+}
+
 }
