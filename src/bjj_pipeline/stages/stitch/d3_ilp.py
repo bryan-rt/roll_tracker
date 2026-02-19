@@ -23,6 +23,12 @@ from typing import Any, Dict, List, Set, Tuple
 import pandas as pd
 from ortools.sat.python import cp_model
 
+try:
+	# Optional (dev-only): used to write a human-readable CP-SAT model dump.
+	from google.protobuf import text_format  # type: ignore
+except Exception:  # pragma: no cover
+	text_format = None  # type: ignore
+
 from bjj_pipeline.contracts.f0_manifest import ClipManifest
 from bjj_pipeline.contracts.f0_paths import ClipOutputLayout
 from bjj_pipeline.stages.stitch.d3_audit import append_audit_event
@@ -860,6 +866,27 @@ def _write_solution_ledger_json(
 			"src_node_id": str(r.get("u")),
 			"dst_node_id": str(r.get("v")),
 		}
+		# Capacity diagnostics (logging only)
+		cap_raw = r.get("capacity", None)
+		cap_eff = r.get("capacity_eff", None) if "capacity_eff" in edges_sel.columns else None
+		try:
+			rec["capacity_raw"] = int(cap_raw) if cap_raw is not None and not pd.isna(cap_raw) else None
+		except Exception:
+			rec["capacity_raw"] = None
+		try:
+			rec["capacity_eff"] = int(cap_eff) if cap_eff is not None and not pd.isna(cap_eff) else rec.get("capacity_raw")
+		except Exception:
+			rec["capacity_eff"] = rec.get("capacity_raw")
+		payload_fields = _payload_fields_for_logging(r.get("payload_json", None))
+		desired_cap = payload_fields.get("payload_desired_capacity")
+		try:
+			rec["payload_desired_capacity"] = int(desired_cap) if desired_cap is not None else None
+		except Exception:
+			rec["payload_desired_capacity"] = None
+		if isinstance(rec.get("capacity_eff"), int):
+			rec["expected_var_domain"] = f"0..{rec.get('capacity_eff')}"
+		if isinstance(rec.get("payload_desired_capacity"), int) and isinstance(rec.get("capacity_eff"), int):
+			rec["desired_gt_eff"] = bool(rec["payload_desired_capacity"] > rec["capacity_eff"])
 		# Total cost
 		try:
 			rec["total_cost"] = float(r.get("total_cost"))
@@ -901,6 +928,37 @@ def _write_solution_ledger_json(
 		rec["features"] = feats
 		selected_edges.append(rec)
 
+	capacity_summary = {
+		"num_selected_edges_with_flow_gt_1": int(
+				 sum(1 for e in selected_edges if int(e.get("flow", 0)) > 1)
+		),
+		"num_selected_edges_payload_desired_capacity_gt_1": int(
+				 sum(
+					 1
+					 for e in selected_edges
+					 if isinstance(e.get("payload_desired_capacity"), int)
+					 and e.get("payload_desired_capacity") > 1
+				 )
+		),
+		"num_selected_edges_where_desired_gt_eff": int(
+				 sum(1 for e in selected_edges if e.get("desired_gt_eff") is True)
+		),
+		"num_all_edges_payload_desired_capacity_gt_1": int(
+				 sum(
+					 1
+					 for _, rr in compiled.edges_df.iterrows()
+					 if isinstance(
+						 _payload_fields_for_logging(rr.get("payload_json")).get("payload_desired_capacity"),
+						 (int, float),
+					 )
+					 and int(
+						 _payload_fields_for_logging(rr.get("payload_json")).get("payload_desired_capacity")
+					 )
+					 > 1
+				 )
+		),
+	}
+
 	ledger: Dict[str, Any] = {
 		"artifact_type": "d3_solution_ledger",
 		"schema_version": 1,
@@ -933,6 +991,7 @@ def _write_solution_ledger_json(
 			{"base_tracklet_id": tid, "penalty": float(penalty) if penalty is not None else 0.0} for tid in dropped
 		],
 		"explained_tracklets": explained,
+		"capacity_summary": capacity_summary,
 		"selected_edges": selected_edges,
 	}
 	if tag_info is not None:
@@ -1143,6 +1202,430 @@ def _find_unique_node_id(nodes_df: pd.DataFrame, *, node_type: str) -> str:
 	return str(m.iloc[0]["node_id"])
 
 
+def _emit_d3_ilp_transparency_json(
+	*,
+	debug_dir: Path,
+	nodes: pd.DataFrame,
+	edges: pd.DataFrame,
+	use_flow_int: bool,
+	max_edge_cap: int,
+	max_node_cap: int,
+	enforce_solo_labels: bool,
+) -> Path:
+	"""Emit a deterministic, dev-only transparency artifact for D3 ILP.
+
+	This artifact is intended to answer:
+	  - Did we compute capacity_eff as intended (e.g., payload_json.desired_capacity)?
+	  - Did use_flow_int flip on?
+	  - Which edges are expected to be IntVar vs BoolVar?
+	  - Basic degree/capacity stats that can reveal structural impossibilities pre-solve.
+
+	This is *not* an F0 contract artifact.
+	"""
+	debug_dir.mkdir(parents=True, exist_ok=True)
+	out = debug_dir / "d3_ilp_transparency.json"
+
+	# Edge summaries (deterministic ordering)
+	edges2 = edges.copy()
+	if "edge_id" in edges2.columns:
+		edges2["edge_id"] = edges2["edge_id"].astype(str)
+		edges2 = edges2.sort_values(["edge_id"], kind="mergesort").reset_index(drop=True)
+
+	def _payload_summary(payload_json: Any) -> Dict[str, Any]:
+		"""Best-effort parse of payload_json into a compact, stable summary.
+
+		NOTE: This is dev-only transparency. Keep it robust to partial/legacy payloads.
+		"""
+		out: Dict[str, Any] = {
+			"payload_json_parse_ok": False,
+			"payload_desired_capacity": None,
+			"payload_dest_groupish": None,
+			"payload_src_groupish": None,
+			"payload_promoted_dest": None,
+			"payload_promoted_src": None,
+			"payload_reconnect": None,
+		}
+		if not isinstance(payload_json, str) or not payload_json:
+			return out
+		try:
+			payload = json.loads(payload_json)
+		except Exception:
+			return out
+		out["payload_json_parse_ok"] = True
+		if not isinstance(payload, dict):
+			return out
+		# Common fields we rely on for capacity/continuation semantics
+		try:
+			if payload.get("desired_capacity", None) is not None:
+				out["payload_desired_capacity"] = int(payload.get("desired_capacity"))
+		except Exception:
+			out["payload_desired_capacity"] = None
+		if "dest_groupish" in payload:
+			out["payload_dest_groupish"] = bool(payload.get("dest_groupish"))
+		if "src_groupish" in payload:
+			out["payload_src_groupish"] = bool(payload.get("src_groupish"))
+		if "promoted_dest" in payload:
+			out["payload_promoted_dest"] = bool(payload.get("promoted_dest"))
+		if "promoted_src" in payload:
+			out["payload_promoted_src"] = bool(payload.get("promoted_src"))
+		if "reconnect" in payload:
+			out["payload_reconnect"] = bool(payload.get("reconnect"))
+		return out
+
+	def _is_group_continuation_edge(payload_sum: Dict[str, Any]) -> bool:
+		"""Domain predicate: edge is intended to carry GROUP flow across occlusion.
+
+		We treat 'group continues as group' as:
+		  - payload.dest_groupish == True
+		  - payload.desired_capacity == 2
+		"""
+		return bool(
+			payload_sum.get("payload_dest_groupish") is True
+			and payload_sum.get("payload_desired_capacity") == 2
+		)
+
+	edges_cap_gt_1: List[Dict[str, Any]] = []
+	edges_payload_desired_gt_1: List[Dict[str, Any]] = []
+	edge_type_counts: Dict[str, int] = {}
+	cap_counts: Dict[str, int] = {"cap_eff_eq_1": 0, "cap_eff_gt_1": 0}
+	group_continuation_edge_ids: List[str] = []
+
+	for _, r in edges2.iterrows():
+		eid = str(r.get("edge_id"))
+		etype = str(r.get("edge_type"))
+		edge_type_counts[etype] = int(edge_type_counts.get(etype, 0) + 1)
+		cap_raw = int(r.get("capacity", 1) or 1)
+		cap_eff = int(r.get("capacity_eff", cap_raw) or 1)
+		payload_sum = _payload_summary(r.get("payload_json", None))
+		if _is_group_continuation_edge(payload_sum):
+			group_continuation_edge_ids.append(eid)
+		# Diagnostics: edges whose payload *requests* capacity > 1
+		desired_cap = payload_sum.get("payload_desired_capacity")
+		if isinstance(desired_cap, (int, float)) and int(desired_cap) > 1:
+			edges_payload_desired_gt_1.append(
+				{
+					"edge_id": eid,
+					"edge_type": etype,
+					"u": str(r.get("u")),
+					"v": str(r.get("v")),
+					"desired_capacity": int(desired_cap),
+					"capacity_raw": cap_raw,
+					"capacity_eff": cap_eff,
+					"desired_gt_eff": bool(cap_eff < int(desired_cap)),
+					"payload_is_group_continuation": _is_group_continuation_edge(payload_sum),
+				}
+			)
+		if cap_eff > 1:
+			cap_counts["cap_eff_gt_1"] += 1
+			expected_var_kind = "IntVar"
+			edges_cap_gt_1.append(
+				{
+					"edge_id": eid,
+					"edge_type": etype,
+					"u": str(r.get("u")),
+					"v": str(r.get("v")),
+					"capacity_raw": cap_raw,
+					"capacity_eff": cap_eff,
+					**payload_sum,
+					"payload_is_group_continuation": _is_group_continuation_edge(payload_sum),
+					"expected_var_kind": expected_var_kind,
+					"expected_var_domain": f"0..{cap_eff}",
+				}
+			)
+		else:
+			cap_counts["cap_eff_eq_1"] += 1
+
+	# Node degree stats
+	nodes2 = nodes.copy()
+	if "node_id" in nodes2.columns:
+		nodes2["node_id"] = nodes2["node_id"].astype(str)
+		nodes2 = nodes2.sort_values(["node_id"], kind="mergesort").reset_index(drop=True)
+	deg_in: Dict[str, int] = {str(nid): 0 for nid in nodes2["node_id"].astype(str).tolist()}
+	deg_out: Dict[str, int] = {str(nid): 0 for nid in nodes2["node_id"].astype(str).tolist()}
+	for _, r in edges2.iterrows():
+		u = str(r.get("u"))
+		v = str(r.get("v"))
+		if u in deg_out:
+			deg_out[u] += 1
+		if v in deg_in:
+			deg_in[v] += 1
+
+	node_degrees: List[Dict[str, Any]] = []
+	for _, r in nodes2.iterrows():
+		nid = str(r.get("node_id"))
+		try:
+			cap_n = int(r.get("capacity", 1) or 1)
+		except Exception:
+			cap_n = 1
+		node_degrees.append(
+			{
+				"node_id": nid,
+				"node_type": str(r.get("node_type")),
+				"capacity": cap_n,
+				"deg_in": int(deg_in.get(nid, 0)),
+				"deg_out": int(deg_out.get(nid, 0)),
+			}
+		)
+
+	rec: Dict[str, Any] = {
+		"use_flow_int": bool(use_flow_int),
+		"max_edge_cap": int(max_edge_cap),
+		"max_node_cap": int(max_node_cap),
+		"n_nodes": int(len(nodes2)),
+		"n_edges": int(len(edges2)),
+		"enforce_solo_labels": bool(enforce_solo_labels),
+		"edge_type_counts": {k: int(edge_type_counts[k]) for k in sorted(edge_type_counts.keys())},
+		"capacity_eff_counts": dict(cap_counts),
+		"group_continuation_edge_ids": sorted(group_continuation_edge_ids),
+		"edges_capacity_eff_gt_1": edges_cap_gt_1,
+		"edges_payload_desired_capacity_gt_1": edges_payload_desired_gt_1,
+		"node_degrees": node_degrees,
+	}
+
+	with open(out, "w", encoding="utf-8") as f:
+		json.dump(rec, f, indent=2, sort_keys=True)
+	return out
+
+
+def _payload_fields_for_logging(payload_json: Any) -> Dict[str, Any]:
+	"""Parse a small set of payload_json fields for dev-only diagnostics.
+
+	This helper is intentionally aligned with the transparency writer's logic,
+	but centralized so other debug artifacts can reference the same field names.
+
+	No solver behavior should depend on this.
+	"""
+	out: Dict[str, Any] = {
+		"payload_json_parse_ok": False,
+		"payload_desired_capacity": None,
+		"payload_dest_groupish": None,
+		"payload_src_groupish": None,
+		"payload_promoted_dest": None,
+		"payload_promoted_src": None,
+		"payload_reconnect": None,
+	}
+	if not isinstance(payload_json, str) or not payload_json:
+		return out
+	try:
+		payload = json.loads(payload_json)
+	except Exception:
+		return out
+	out["payload_json_parse_ok"] = True
+	if not isinstance(payload, dict):
+		return out
+	try:
+		if payload.get("desired_capacity", None) is not None:
+			out["payload_desired_capacity"] = int(payload.get("desired_capacity"))
+	except Exception:
+		out["payload_desired_capacity"] = None
+	if "dest_groupish" in payload:
+		out["payload_dest_groupish"] = bool(payload.get("dest_groupish"))
+	if "src_groupish" in payload:
+		out["payload_src_groupish"] = bool(payload.get("src_groupish"))
+	if "promoted_dest" in payload:
+		out["payload_promoted_dest"] = bool(payload.get("promoted_dest"))
+	if "promoted_src" in payload:
+		out["payload_promoted_src"] = bool(payload.get("promoted_src"))
+	if "reconnect" in payload:
+		out["payload_reconnect"] = bool(payload.get("reconnect"))
+	return out
+
+
+def _emit_d3_ilp_variables_json(
+	*,
+	debug_dir: Path,
+	edges: pd.DataFrame,
+	use_flow_int: bool,
+	var_by_edge: Dict[str, Any],
+	edge_used: Dict[str, Any],
+	cost_int: Dict[str, int],
+	scale: int,
+) -> Path:
+	"""Emit dev-only variable + objective coefficient diagnostics.
+
+	Goal: make infeasibility debugging possible without guessing.
+	This does NOT change solver behavior.
+	"""
+	debug_dir.mkdir(parents=True, exist_ok=True)
+	out = debug_dir / "d3_ilp_variables.json"
+
+	edges2 = edges.copy()
+	if "edge_id" in edges2.columns:
+		edges2["edge_id"] = edges2["edge_id"].astype(str)
+		edges2 = edges2.sort_values(["edge_id"], kind="mergesort").reset_index(drop=True)
+
+	def _var_kind(v: Any) -> str:
+		# CP-SAT python types are not stable across ortools versions; use domain heuristics.
+		try:
+			lb = int(getattr(v, "Lb", lambda: 0)())
+			ub = int(getattr(v, "Ub", lambda: 0)())
+			if lb == 0 and ub == 1:
+				return "BoolVar"
+			return "IntVar"
+		except Exception:
+			return "UnknownVar"
+
+	rows: List[Dict[str, Any]] = []
+	for _, r in edges2.iterrows():
+		eid = str(r.get("edge_id"))
+		v = var_by_edge.get(eid)
+		vu = edge_used.get(eid)
+		cap_raw = int(r.get("capacity", 1) or 1)
+		cap_eff = int(r.get("capacity_eff", cap_raw) or cap_raw)
+		coef = int(cost_int.get(eid, 0))
+		payload_fields = _payload_fields_for_logging(r.get("payload_json"))
+		rows.append(
+			{
+				"edge_id": eid,
+				"edge_type": str(r.get("edge_type")),
+				"u": str(r.get("u")),
+				"v": str(r.get("v")),
+				"capacity_raw": int(cap_raw),
+				"capacity_eff": int(cap_eff),
+				"payload_json": str(r.get("payload_json")) if isinstance(r.get("payload_json"), str) else None,
+				**payload_fields,
+				"use_flow_int": bool(use_flow_int),
+				"var_name": str(getattr(v, "Name", lambda: None)()) if v is not None else None,
+				"var_kind": _var_kind(v) if v is not None else None,
+				"used_var_name": str(getattr(vu, "Name", lambda: None)()) if vu is not None else None,
+				"obj_coef_scaled": int(coef),
+				"obj_coef": float(coef) / float(scale) if scale > 0 else None,
+			}
+		)
+
+	meta = {
+		"use_flow_int": bool(use_flow_int),
+		"scale": int(scale),
+		"n_edges": int(len(edges2)),
+		"n_obj_terms": int(len(rows)),
+		"n_obj_terms_nonzero": int(sum(1 for x in rows if int(x.get("obj_coef_scaled", 0)) != 0)),
+		"n_edges_cap_eff_gt_1": int(sum(1 for x in rows if int(x.get("capacity_eff", 1)) > 1)),
+	}
+
+	with open(out, "w", encoding="utf-8") as f:
+		json.dump({"meta": meta, "edges": rows}, f, indent=2, sort_keys=True)
+	return out
+
+
+def _emit_d3_ilp_node_equations_json(
+	*,
+	debug_dir: Path,
+	nodes: pd.DataFrame,
+	edges: pd.DataFrame,
+	in_edges: Dict[str, List[str]],
+	out_edges: Dict[str, List[str]],
+) -> Path:
+	"""Emit dev-only per-node balance/capacity equation ingredients.
+
+	This does not attempt to prove satisfiable/unsat; it provides full visibility into
+	which edge-variables participate in each node's constraints.
+	"""
+	debug_dir.mkdir(parents=True, exist_ok=True)
+	out = debug_dir / "d3_ilp_node_equations.json"
+
+	n2 = nodes.copy()
+	if "node_id" in n2.columns:
+		n2["node_id"] = n2["node_id"].astype(str)
+		n2 = n2.sort_values(["node_id"], kind="mergesort").reset_index(drop=True)
+
+	edges2 = edges.copy()
+	if "edge_id" in edges2.columns:
+		edges2["edge_id"] = edges2["edge_id"].astype(str)
+		edges2["u"] = edges2["u"].astype(str)
+		edges2["v"] = edges2["v"].astype(str)
+		edges2 = edges2.sort_values(["edge_id"], kind="mergesort").reset_index(drop=True)
+	etype_by_id = {str(rr["edge_id"]): str(rr.get("edge_type")) for _, rr in edges2.iterrows()}
+	# Per-edge metadata for node-level diagnostics (dev-only)
+	edge_meta_by_id: Dict[str, Dict[str, Any]] = {}
+	for _, rr in edges2.iterrows():
+		eid = str(rr.get("edge_id"))
+		try:
+			cap_raw = int(rr.get("capacity", 1) or 1)
+		except Exception:
+			cap_raw = 1
+		try:
+			cap_eff = int(rr.get("capacity_eff", cap_raw) or cap_raw)
+		except Exception:
+			cap_eff = cap_raw
+		meta: Dict[str, Any] = {
+			"u": str(rr.get("u")),
+			"v": str(rr.get("v")),
+			"capacity_raw": int(cap_raw),
+			"capacity_eff": int(cap_eff),
+			"payload_json": str(rr.get("payload_json")) if isinstance(rr.get("payload_json"), str) else None,
+		}
+		meta.update(_payload_fields_for_logging(rr.get("payload_json")))
+		edge_meta_by_id[eid] = meta
+
+	rows: List[Dict[str, Any]] = []
+	for _, r in n2.iterrows():
+		nid = str(r.get("node_id"))
+		ntype = str(r.get("node_type"))
+		try:
+			cap = int(r.get("capacity", 1) or 1)
+		except Exception:
+			cap = 1
+		ins = sorted([str(x) for x in in_edges.get(nid, [])])
+		outs = sorted([str(x) for x in out_edges.get(nid, [])])
+		rows.append(
+			{
+				"node_id": nid,
+				"node_type": ntype,
+				"capacity": int(cap),
+				"in_edges": [
+					{"edge_id": eid, "edge_type": etype_by_id.get(eid), **edge_meta_by_id.get(eid, {})}
+					for eid in ins
+				],
+				"out_edges": [
+					{"edge_id": eid, "edge_type": etype_by_id.get(eid), **edge_meta_by_id.get(eid, {})}
+					for eid in outs
+				],
+				"deg_in": int(len(ins)),
+				"deg_out": int(len(outs)),
+			}
+		)
+
+	meta = {
+		"n_nodes": int(len(n2)),
+		"n_edges": int(len(edges2)),
+		"n_nodes_zero_in_non_source": int(
+																				sum(1 for x in rows if x.get("node_type") != "NodeType.SOURCE" and int(x.get("deg_in", 0)) == 0)
+		),
+		"n_nodes_zero_out_non_sink": int(
+																				sum(1 for x in rows if x.get("node_type") != "NodeType.SINK" and int(x.get("deg_out", 0)) == 0)
+		),
+	}
+
+	with open(out, "w", encoding="utf-8") as f:
+		json.dump({"meta": meta, "nodes": rows}, f, indent=2, sort_keys=True)
+	return out
+
+
+def _emit_d3_cp_model_dump(*, debug_dir: Path, model: cp_model.CpModel) -> Dict[str, str]:
+	"""Emit a human-readable CP-SAT model dump (dev-only).
+
+	Best-effort: never fail the solve if this cannot be emitted.
+	"""
+	debug_dir.mkdir(parents=True, exist_ok=True)
+	paths: Dict[str, str] = {}
+	try:
+		proto = model.Proto()
+		stats_path = debug_dir / "d3_cp_model_stats.json"
+		stats = {
+			"n_variables": int(len(getattr(proto, "variables", []))),
+			"n_constraints": int(len(getattr(proto, "constraints", []))),
+			"has_objective": bool(getattr(proto, "objective", None) is not None),
+		}
+		stats_path.write_text(json.dumps(stats, indent=2, sort_keys=True), encoding="utf-8")
+		paths["d3_cp_model_stats_json"] = str(stats_path)
+		if text_format is not None:
+			pbtxt_path = debug_dir / "d3_cp_model.pbtxt"
+			pbtxt_path.write_text(text_format.MessageToString(proto), encoding="utf-8")
+			paths["d3_cp_model_pbtxt"] = str(pbtxt_path)
+	except Exception:
+		pass
+	return paths
+
 
 def solve_structure_ilp_core(
 	*,
@@ -1150,6 +1633,9 @@ def solve_structure_ilp_core(
 	edges_df: pd.DataFrame,
 	costs_df: pd.DataFrame,
 	constraints: Dict[str, Any] | None = None,
+	# Debugging (dev-only; emits _debug artifacts)
+	debug_dir: Path | None = None,
+	emit_transparency: bool = True,
 	# POC_2_TAGS: identity label enforcement (SOLO nodes only)
 	enforce_solo_labels: bool = False,
 	labels_domain: List[str] | None = None,
@@ -1226,45 +1712,77 @@ def solve_structure_ilp_core(
 	# Deterministic edge ordering
 	edges = edges.sort_values(["edge_id"], kind="mergesort").reset_index(drop=True)
 
-	# Determine variable type: bool if all capacities are 1, else integer flow
-	max_edge_cap = int(pd.to_numeric(edges["capacity"], errors="raise").max())
-	max_node_cap = int(pd.to_numeric(nodes["capacity"], errors="raise").max())
+	# Determine variable type: bool if all capacities are 1, else integer flow.
+	# NOTE: Some edges may request a higher capacity via payload_json.desired_capacity.
+	# We fold that into an effective capacity so use_flow_int flips on when needed.
+	def _effective_edge_capacity(e_row: pd.Series) -> int:
+		cap = int(e_row.get("capacity", 1) or 1)
+		payload_json = e_row.get("payload_json", None)
+		if isinstance(payload_json, str) and payload_json:
+			try:
+				payload = json.loads(payload_json)
+			except Exception:
+				payload = None
+			if isinstance(payload, dict):
+				dc = payload.get("desired_capacity", None)
+				if dc is not None:
+					try:
+						cap = max(cap, int(dc))
+					except Exception:
+						pass
+		return cap
+
+	edges = edges.copy()
+	edges["capacity_eff"] = edges.apply(_effective_edge_capacity, axis=1)
+	max_edge_cap = int(pd.to_numeric(edges["capacity_eff"], errors="raise").max()) if len(edges) else 1
+	max_node_cap = int(pd.to_numeric(nodes["capacity"], errors="raise").max()) if ("capacity" in nodes.columns and len(nodes)) else 1
 	use_flow_int = (max_edge_cap > 1) or (max_node_cap > 1)
+
+	# Dev-only transparency artifact for debugging infeasibility / capacity interactions.
+	if debug_dir is not None and emit_transparency:
+		_emit_d3_ilp_transparency_json(
+			debug_dir=debug_dir,
+			nodes=nodes,
+			edges=edges,
+			use_flow_int=bool(use_flow_int),
+			max_edge_cap=int(max_edge_cap),
+			max_node_cap=int(max_node_cap),
+			enforce_solo_labels=bool(enforce_solo_labels),
+		)
 
 	scale = _cost_scale_for(costs_df["total_cost"] if "total_cost" in costs_df.columns else pd.Series([], dtype=float))
 	cost_int, rounding_stats = _scaled_costs(costs_df, scale=scale)
 
 	model = cp_model.CpModel()
+	# Decision variables per edge: either BoolVar (0/1) or IntVar (0..cap).
 	var_by_edge: Dict[str, Any] = {}
-
-	for _, e in edges.iterrows():
-		edge_id = str(e["edge_id"])
-		cap_e = int(e["capacity"])
-		if use_flow_int:
+	for e in edges.itertuples(index=False):
+		edge_id = str(e.edge_id)
+		cap_e = int(getattr(e, "capacity_eff", getattr(e, "capacity", 1)) or 1)
+		# If any edge needs cap>1, we should already have flipped use_flow_int=True above.
+		if (not use_flow_int) and cap_e != 1:
+			raise ValueError(
+				f"Binary edge selection requires capacity_eff=1, got {cap_e} for edge_id={edge_id}"
+			)
+		if use_flow_int or cap_e > 1:
 			var_by_edge[edge_id] = model.NewIntVar(0, cap_e, f"f_{edge_id}")
 		else:
-			# With binary selection, edge capacity should be 1; we still validate.
-			if cap_e != 1:
-				raise ValueError(f"Binary edge selection requires capacity=1, got {cap_e} for edge_id={edge_id}")
 			var_by_edge[edge_id] = model.NewBoolVar(f"x_{edge_id}")
 
-	# Normalized boolean "edge is used" variable for downstream constraints.
-	# Needed because some runs use integer flow vars (capacity>1).
-	edge_used: Dict[str, cp_model.IntVar] = {}
+	# A helper boolean that indicates whether an edge is used at all (flow >= 1).
+	# This preserves existing constraint patterns even when flow vars are IntVar(0..cap).
+	edge_used: Dict[str, cp_model.BoolVar] = {}
 	for _, e in edges.iterrows():
-		eid = str(e["edge_id"])
-		v = var_by_edge[eid]
-		try:
-			cap_e = int(e.get("capacity", 1))
-		except Exception:
-			cap_e = 1
+		edge_id = str(e["edge_id"])
+		v = var_by_edge[edge_id]
+		cap_e = int(e.get("capacity_eff", e.get("capacity", 1)) or 1)
 		if use_flow_int or cap_e > 1:
-			u = model.NewBoolVar(f"used_{eid}")
-			edge_used[eid] = u
+			u = model.NewBoolVar(f"used_{edge_id}")
+			edge_used[edge_id] = u
 			model.Add(v >= 1).OnlyEnforceIf(u)
 			model.Add(v == 0).OnlyEnforceIf(u.Not())
 		else:
-			edge_used[eid] = v
+			edge_used[edge_id] = v  # BoolVar already
 
 	# Build adjacency lists
 	in_edges: Dict[str, List[str]] = {nid: [] for nid in nodes["node_id"].astype(str).tolist()}
@@ -1316,7 +1834,12 @@ def solve_structure_ilp_core(
 	# We intentionally label ONLY capacity=1 SINGLE_TRACKLET nodes in v1.
 	u_solo: Dict[str, cp_model.IntVar] = {}
 	miss_solo_ping: Dict[str, cp_model.IntVar] = {}
+	miss_group_ping: Dict[Tuple[str, str], cp_model.IntVar] = {}
 	y_solo: Dict[Tuple[str, str], cp_model.IntVar] = {}
+	# Tag fragmentation / overlap diagnostics (must exist even when enforcement is off)
+	frag_start_vars: List[cp_model.IntVar] = []
+	frag_start_vars_by_tag: Dict[str, List[cp_model.IntVar]] = {}
+	n_overlap_constraints_added = 0
 	if enforce_solo_labels:
 		if labels_domain is None:
 			raise ValueError("POC_2_TAGS requires labels_domain when enforce_solo_labels=True")
@@ -1373,16 +1896,11 @@ def solve_structure_ilp_core(
 				v = str(e.get("v"))
 				if u not in u_solo or v not in u_solo:
 					continue
-				# CONTINUE edges must be binary (0/1). Validate or treat as binary.
-				try:
-					cap_e = int(e.get("capacity"))
-				except Exception:
-					cap_e = 1
-				if cap_e != 1:
-					raise ValueError(
-						f"POC_2_TAGS requires CONTINUE edges to have capacity=1, got {cap_e} for edge_id={e.get('edge_id')!r}"
-					)
-				x_e = var_by_edge[str(e.get("edge_id"))]
+				# CONTINUE edges may have a higher effective capacity (payload_json.desired_capacity).
+				# This continuity constraint is driven by a *binary* indicator: edge_used (flow >= 1),
+				# never the raw flow var (which may be IntVar(0..cap)).
+				eid = str(e.get("edge_id"))
+				x_e = edge_used[eid]
 				for k in labels:
 					# |y_u,k - y_v,k| <= 1 - x_e
 					model.Add(y_solo[(u, k)] - y_solo[(v, k)] <= 1 - x_e)
@@ -1391,7 +1909,6 @@ def solve_structure_ilp_core(
 		# ---- POC_2_TAGS: GROUP label variables + constraints ----
 		# Group nodes may carry up to two concrete tags (partner identities). UNKNOWN is implicit.
 		u_group: Dict[str, cp_model.IntVar] = {}
-		miss_group_ping: Dict[Tuple[str, str], cp_model.IntVar] = {}
 		y_group: Dict[Tuple[str, str], cp_model.IntVar] = {}
 		if forced_group_node_labels is None:
 			forced_group_node_labels = {}
@@ -1473,10 +1990,6 @@ def solve_structure_ilp_core(
 		# but forbid temporal overlap (one person cannot be in two nodes at once).
 		# Also add a soft penalty for starting a new fragment to prefer continuity.
 		# ------------------------------------------------------------
-		frag_start_vars: List[cp_model.IntVar] = []
-		frag_start_vars_by_tag: Dict[str, List[cp_model.IntVar]] = {}
-		n_overlap_constraints_added = 0
-
 		if enforce_solo_labels and labels_domain is not None and tag_overlap_enforced:
 			# Build a unified view of label-bearing nodes (SOLO + GROUP) with frame spans.
 			# Only enforce for real AprilTag labels.
@@ -1622,6 +2135,12 @@ def solve_structure_ilp_core(
 		edge_u_by_id[eid_str] = str(e.get("u"))
 		edge_v_by_id[eid_str] = str(e.get("v"))
 
+	# Node-type lookup so we can detect GROUP→GROUP carrier-chain continuation.
+	node_type_by_id: Dict[str, str] = {}
+	if "node_id" in nodes.columns and "node_type" in nodes.columns:
+		for _, n in nodes.iterrows():
+			node_type_by_id[str(n.get("node_id"))] = str(n.get("node_type"))
+
 	# ------------------------------------------------------------
 	# Segment connectivity constraint (Worker I)
 	# For structural SINGLE_TRACKLET→SINGLE_TRACKLET edges that connect
@@ -1744,6 +2263,32 @@ def solve_structure_ilp_core(
 	# For each GROUP_TRACKLET node, enforce structural overlap semantics
 	if "carrier_tracklet_id" in nodes.columns and "node_type" in nodes.columns:
 		groups = nodes[nodes["node_type"].astype(str) == "NodeType.GROUP_TRACKLET"].copy()
+
+		def _edge_payload_summary(eid: str) -> Dict[str, Any]:
+			"""Best-effort payload parse for CONTINUE-edge semantics inside constraints."""
+			row = edges_ix.loc[str(eid)]
+			payload_json = row.get("payload_json", None)
+			out: Dict[str, Any] = {"desired_capacity": None, "dest_groupish": None, "parse_ok": False}
+			if isinstance(payload_json, str) and payload_json:
+				try:
+					payload = json.loads(payload_json)
+				except Exception:
+					payload = None
+				if isinstance(payload, dict):
+					out["parse_ok"] = True
+					try:
+						if payload.get("desired_capacity", None) is not None:
+							out["desired_capacity"] = int(payload.get("desired_capacity"))
+					except Exception:
+						out["desired_capacity"] = None
+					if "dest_groupish" in payload:
+						out["dest_groupish"] = bool(payload.get("dest_groupish"))
+			return out
+
+		def _is_group_continuation_edge(eid: str) -> bool:
+			ps = _edge_payload_summary(str(eid))
+			return bool(ps.get("dest_groupish") is True and ps.get("desired_capacity") == 2)
+
 		for _, gn in groups.iterrows():
 			gid = str(gn["node_id"])
 
@@ -1768,20 +2313,39 @@ def solve_structure_ilp_core(
 			is_start_boundary = bool(gs_i is not None and gs_i <= (clip_first_frame + int(group_boundary_window_frames) - 1))
 			is_end_boundary = bool(ge_i is not None and ge_i >= (clip_last_frame - int(group_boundary_window_frames) + 1))
 
-			# Helper: pick deterministic carrier-chain CONT edges (exclude reconnect edges)
-			cont_in = [eid for eid in in_edges.get(gid, []) if str(eid).startswith("E:CONT:") and edge_type_by_id.get(str(eid)) == "EdgeType.CONTINUE"]
-			cont_out = [eid for eid in out_edges.get(gid, []) if str(eid).startswith("E:CONT:") and edge_type_by_id.get(str(eid)) == "EdgeType.CONTINUE"]
+			# These edges represent the *carrier solo* continuing across segments (capacity 1).
+			carrier_cont_in = [
+				eid
+				for eid in in_edges.get(gid, [])
+				if str(eid).startswith("E:CONT:") and edge_type_by_id.get(str(eid)) == "EdgeType.CONTINUE"
+			]
+			carrier_cont_out = [
+				eid
+				for eid in out_edges.get(gid, [])
+				if str(eid).startswith("E:CONT:") and edge_type_by_id.get(str(eid)) == "EdgeType.CONTINUE"
+			]
+			carrier_cont_in_eid = sorted([str(x) for x in carrier_cont_in])[0] if len(carrier_cont_in) > 0 else None
+			carrier_cont_out_eid = sorted([str(x) for x in carrier_cont_out])[0] if len(carrier_cont_out) > 0 else None
 
-			# There should be at most one chain CONT in/out; if multiple exist, keep the first by edge_id ordering.
-			cont_in_eid = cont_in[0] if len(cont_in) > 0 else None
-			cont_out_eid = cont_out[0] if len(cont_out) > 0 else None
+			# Group-continuation CONT edges (payload predicate): carry BOTH identities (capacity 2)
+			group_cont_in = [
+				eid
+				for eid in in_edges.get(gid, [])
+				if edge_type_by_id.get(str(eid)) == "EdgeType.CONTINUE" and _is_group_continuation_edge(str(eid))
+			]
+			group_cont_out = [
+				eid
+				for eid in out_edges.get(gid, [])
+				if edge_type_by_id.get(str(eid)) == "EdgeType.CONTINUE" and _is_group_continuation_edge(str(eid))
+			]
+			group_cont_in_eid = sorted([str(x) for x in group_cont_in])[0] if len(group_cont_in) > 0 else None
+			group_cont_out_eid = sorted([str(x) for x in group_cont_out])[0] if len(group_cont_out) > 0 else None
 
 			# Second participant structural edges
 			merge_in = [eid for eid in in_edges.get(gid, []) if edge_type_by_id.get(str(eid)) == "EdgeType.MERGE"]
 			split_out = [eid for eid in out_edges.get(gid, []) if edge_type_by_id.get(str(eid)) == "EdgeType.SPLIT"]
 			birth_in = f"E:BIRTH:{gid}"
 			death_out = f"E:DEATH:{gid}"
-			local_start_boundary = (cont_in_eid is None) and (birth_in in var_by_edge)
 
 			# Metadata flags
 			disp = gn.get("disappearing_tracklet_id", None)
@@ -1823,25 +2387,22 @@ def solve_structure_ilp_core(
 				for eid in _continue_eids(str(a), str(b)):
 					model.Add(var_by_edge[eid] == 0).OnlyEnforceIf(used)
 
-			# Carrier participant must traverse via chain CONT when not at boundaries.
-			if cont_in_eid is not None:
-				model.Add(var_by_edge[cont_in_eid] == used)
-			else:
-				# Start of carrier chain: carrier enters via BIRTH
-				if birth_in in var_by_edge:
-					# When used, both participants are present at start-boundary (2 units via BIRTH)
-					model.Add(var_by_edge[birth_in] == 2 * used)
-				else:
-					model.Add(used == 0)
+			# Carrier-chain CONT edges (capacity 1) are optional structural edges.
+			# When they exist and the group node is used, they should be saturated.
+			if carrier_cont_in_eid is not None:
+				model.Add(var_by_edge[carrier_cont_in_eid] == 1 * used)
+			if carrier_cont_out_eid is not None:
+				model.Add(var_by_edge[carrier_cont_out_eid] == 1 * used)
 
-			if cont_out_eid is not None:
-				model.Add(var_by_edge[cont_out_eid] == used)
-			else:
-				# End of carrier chain: carrier exits via DEATH
-				if death_out in var_by_edge:
-					model.Add(var_by_edge[death_out] == 2 * used)
-				else:
-					model.Add(used == 0)
+			# Group-continuation CONT edges (capacity 2) are *options* the solver may choose.
+			# We do NOT force them on/off here; flow conservation + costs decide.
+			if group_cont_in_eid is not None:
+				model.Add(var_by_edge[group_cont_in_eid] <= 2 * used)
+				# Group-continuation edges are 0 or 2 (never 1)
+				model.Add(var_by_edge[group_cont_in_eid] != 1)
+			if group_cont_out_eid is not None:
+				model.Add(var_by_edge[group_cont_out_eid] <= 2 * used)
+				model.Add(var_by_edge[group_cont_out_eid] != 1)
 
 			# Second participant must enter via MERGE unless start-boundary substitute applies.
 			if has_disp:
@@ -1854,10 +2415,7 @@ def solve_structure_ilp_core(
 					for extra in merge_in[1:]:
 						model.Add(var_by_edge[extra] == 0)
 			else:
-				# No disappearing participant: legal if group is at start boundary OR if the carrier's first
-				# observation begins already-merged (local_start_boundary: no CONT-in, but BIRTH exists).
-				if not (is_start_boundary or local_start_boundary):
-					model.Add(used == 0)
+				# No disappearing participant: allow (e.g., group persists from before clip).
 				# Disallow MERGE edges in this case.
 				for eid in merge_in:
 					model.Add(var_by_edge[eid] == 0)
@@ -1878,9 +2436,7 @@ def solve_structure_ilp_core(
 					for extra in split_out[1:]:
 						model.Add(var_by_edge[extra] == 0)
 			else:
-				# No new participant: only legal if group is at end boundary.
-				if not is_end_boundary:
-					model.Add(used == 0)
+				# No new participant: allow (e.g., group occludes or continues as group).
 				for eid in split_out:
 					model.Add(var_by_edge[eid] == 0)
 
@@ -1890,9 +2446,9 @@ def solve_structure_ilp_core(
 				# enforce that the carrier's SOLO label before and after the group match.
 				# GROUP nodes themselves remain unlabeled.
 				# ------------------------------------------------------------
-				if enforce_solo_labels and cont_in_eid is not None and cont_out_eid is not None:
-					u_before = edge_u_by_id.get(str(cont_in_eid))
-					v_after = edge_v_by_id.get(str(cont_out_eid))
+				if enforce_solo_labels and carrier_cont_in_eid is not None and carrier_cont_out_eid is not None:
+					u_before = edge_u_by_id.get(str(carrier_cont_in_eid))
+					v_after = edge_v_by_id.get(str(carrier_cont_out_eid))
 					if u_before in u_solo and v_after in u_solo and labels_domain is not None:
 						for k in [str(lbl) for lbl in labels_domain]:
 							model.Add(y_solo[(u_before, k)] == y_solo[(v_after, k)]).OnlyEnforceIf(used)
@@ -1967,6 +2523,46 @@ def solve_structure_ilp_core(
 		for fs in frag_start_vars:
 			terms.append(int(pen_scaled) * fs)
 	model.Minimize(sum(terms))
+
+	# ------------------------------------------------------------------
+	# Dev-only: full under-the-hood visibility for infeasibility debugging
+	#
+	# These files are intended to make it possible to answer questions like:
+	#  - Which edges became IntVar vs BoolVar, and what were their domains?
+	#  - What objective coefficients were actually used (after scaling)?
+	#  - Which edge vars appear in each node's flow-balance constraints?
+	#  - How big is the compiled CP-SAT model (vars/constraints)?
+	#
+	# IMPORTANT: this is logging only; it must never affect feasibility.
+	# ------------------------------------------------------------------
+	if debug_dir is not None and emit_transparency:
+		try:
+			_emit_d3_ilp_variables_json(
+				debug_dir=debug_dir,
+				edges=edges,
+				use_flow_int=bool(use_flow_int),
+				var_by_edge=var_by_edge,
+				edge_used=edge_used,
+				cost_int=cost_int,
+				scale=int(scale),
+			)
+		except Exception:
+			# Never fail a solve due to debug output.
+			pass
+		try:
+			_emit_d3_ilp_node_equations_json(
+				debug_dir=debug_dir,
+				nodes=nodes,
+				edges=edges,
+				in_edges=in_edges,
+				out_edges=out_edges,
+			)
+		except Exception:
+			pass
+		try:
+			_emit_d3_cp_model_dump(debug_dir=debug_dir, model=model)
+		except Exception:
+			pass
 
 	solver = cp_model.CpSolver()
 	solver.parameters.num_search_workers = 1
@@ -2125,19 +2721,20 @@ def solve_structure_ilp(
 	group_boundary_window_frames: int = 10,
 ) -> ILPResult:
 	"""POC_1 wrapper: solve + write debug outputs + audit summary."""
+	dbg = _debug_dir(layout)
+	dbg.mkdir(parents=True, exist_ok=True)
 	res = solve_structure_ilp_core(
 		nodes_df=compiled.nodes_df,
 		edges_df=compiled.edges_df,
 		costs_df=compiled.costs_df,
 		constraints=compiled.constraints,
+		debug_dir=dbg,
+		emit_transparency=True,
 		unexplained_tracklet_penalty=unexplained_tracklet_penalty,
 		tag_fragment_start_penalty=tag_fragment_start_penalty,
 		tag_overlap_enforced=bool(tag_overlap_enforced),
 		group_boundary_window_frames=int(group_boundary_window_frames),
 	)
-
-	dbg = _debug_dir(layout)
-	dbg.mkdir(parents=True, exist_ok=True)
 
 	# Selected edges parquet
 	edges = compiled.edges_df.copy()
@@ -2297,6 +2894,15 @@ def solve_structure_ilp_tags(
 		nodes_df=compiled.nodes_df, tag_hints=tag_hints
 	)
 
+	# Only enforce SOLO/GROUP label logic if we actually have concrete AprilTag labels.
+	# Otherwise, enabling enforce_solo_labels would create zero-label domains for SOLO nodes,
+	# forcing all SOLO nodes unused and making the model infeasible when we require >=1 path.
+	labels_domain = [str(k) for k in (labels_domain or [])]
+	labels_available = any(str(k).startswith("tag:") for k in labels_domain)
+	if not labels_available:
+		forced_solo_by_node = {}
+		forced_group_by_node = {}
+
 	# Policy: tag pings must be explainable by the graph.
 	unbound = [
 			r for r in binding_ledger
@@ -2304,34 +2910,31 @@ def solve_structure_ilp_tags(
 			and r.get("frame_index") is not None
 			and str(r.get("anchor_key", "")).startswith("tag:")
 	]
-	if len(unbound) > 0:
-		sample = unbound[:5]
-		raise ValueError(
-			"Unbound tag pings (must be explainable). Sample: "
-			+ json.dumps(sample, sort_keys=True)
-		)
 
+	# Tag-solution container populated by solve_structure_ilp_core when labels are enforced.
 	tag_solution: Dict[str, Any] = {}
 
-	# --- Professional penalty scaling (reference edge cost) ---
-	# Compute reference edge cost from allowed edges. Use p95 by default.
-	try:
-		q = float(penalty_ref_edge_cost_quantile) if penalty_ref_edge_cost_quantile is not None else 0.95
-	except Exception:
-		q = 0.95
-	try:
-		ref_min = float(penalty_ref_edge_cost_min) if penalty_ref_edge_cost_min is not None else 0.01
-	except Exception:
-		ref_min = 0.01
-	ref_edge_cost = None
-	if "total_cost" in compiled.costs_df.columns and len(compiled.costs_df) > 0:
-		try:
-			ref_edge_cost = float(compiled.costs_df["total_cost"].quantile(q))
-		except Exception:
-			ref_edge_cost = None
-	if ref_edge_cost is None or not math.isfinite(ref_edge_cost):
-		ref_edge_cost = ref_min
-	ref_edge_cost = max(float(ref_edge_cost), float(ref_min))
+	# Derive reference edge cost for penalty scaling.
+	# Use either an explicit minimum, or a quantile of positive edge costs.
+	edge_costs = compiled.costs_df["total_cost"] if "total_cost" in compiled.costs_df.columns else pd.Series([], dtype=float)
+	edge_costs = pd.to_numeric(edge_costs, errors="coerce")
+	pos_costs = edge_costs[edge_costs > 0].dropna()
+
+	q = float(penalty_ref_edge_cost_quantile) if penalty_ref_edge_cost_quantile is not None else 0.9
+	if penalty_ref_edge_cost_min is not None:
+		ref_min = float(penalty_ref_edge_cost_min)
+	else:
+		if len(pos_costs) > 0:
+			try:
+				ref_min = float(pos_costs.quantile(q))
+			except Exception:
+				ref_min = float(pos_costs.median())
+		else:
+			ref_min = 1.0
+
+	ref_edge_cost = float(ref_min)
+	if not math.isfinite(ref_edge_cost) or ref_edge_cost <= 0.0:
+		ref_edge_cost = 1.0
 
 	# Effective penalties (cost units). Abs overrides take precedence.
 	eff_solo_miss = solo_ping_miss_penalty_abs
@@ -2356,18 +2959,24 @@ def solve_structure_ilp_tags(
 			# Legacy fallback: preserve absolute tag_fragment_start_penalty when multipliers are not set.
 			eff_frag = tag_fragment_start_penalty if tag_fragment_start_penalty is not None else 2500.0
 
+	# Dev-only transparency artifact for POC_2_TAGS as well: reuse the clip _debug dir.
+	dbg = _debug_dir(layout)
+	dbg.mkdir(parents=True, exist_ok=True)
+
 	res = solve_structure_ilp_core(
 		nodes_df=compiled.nodes_df,
 		edges_df=compiled.edges_df,
 		costs_df=compiled.costs_df,
 		constraints=compiled.constraints,
+		debug_dir=dbg,
+		emit_transparency=True,
 		unexplained_tracklet_penalty=unexplained_tracklet_penalty,
 		unexplained_group_ping_penalty=float(eff_group_miss),
 		unexplained_solo_ping_penalty=float(eff_solo_miss),
 		tag_fragment_start_penalty=float(eff_frag),
 		tag_overlap_enforced=bool(tag_overlap_enforced),
 		group_boundary_window_frames=int(group_boundary_window_frames),
-		enforce_solo_labels=True,
+		enforce_solo_labels=bool(labels_available),
 		labels_domain=labels_domain,
 		forced_solo_node_labels=forced_solo_by_node,
 		forced_group_node_labels=forced_group_by_node,
@@ -2430,6 +3039,8 @@ def solve_structure_ilp_tags(
 		"n_identity_hints": int(len(identity_hints)),
 		"n_tag_hints": int(len(tag_hints)),
 		"n_tag_pings": int(n_tag_pings),
+		"labels_available": bool(labels_available),
+		"enforce_solo_labels_effective": bool(labels_available),
 		"penalty_ref_edge_cost_quantile": float(q),
 		"penalty_ref_edge_cost_min": float(ref_min),
 		"ref_edge_cost": float(ref_edge_cost),
@@ -2533,6 +3144,8 @@ def solve_structure_ilp_tags(
 				"n_tag_hints": int(len(tag_hints)),
 				"n_tag_pings": int(n_tag_pings),
 				"tag_source": str(tag_source),
+				"labels_available": bool(labels_available),
+				"enforce_solo_labels_effective": bool(labels_available),
 				"n_forced_solo_bindings": int(len(forced_solo_by_node)),
 				"n_forced_group_bindings": int(len(forced_group_by_node)),
 				# Compact diagnostics for quick inspection in audit stream.

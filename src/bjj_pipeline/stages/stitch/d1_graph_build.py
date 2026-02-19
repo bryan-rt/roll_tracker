@@ -562,7 +562,7 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 	if enable_group_nodes and enable_lifespan_segmentation and last_frame is not None:
 		# Precompute endpoints for disappear/new using existing helpers.
 		endpoints_end: Dict[str, Optional[Tuple[Tuple[float, float], bool]]] = {}
-		endpoints_start: Dict[str, Optional[Tuple[float, float], bool]] = {}
+		endpoints_start: Dict[str, Optional[Tuple[Tuple[float, float], bool]]] = {}
 		for tid in sorted(ts_by_tid.keys()):
 			endpoints_end[tid] = endpoint_end(tid)
 			endpoints_start[tid] = endpoint_start(tid)
