@@ -209,6 +209,12 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 		d1_cfg.get("promote_group_reconnect_nearby_dist_m", merge_dist_m)
 	)
 
+	# Optional: promote boundary (SOURCE/SINK) edges for promoted groupish SOLO nodes.
+	# This is a narrow, debug-first gate: we only mutate birth/death payloads for nodes
+	# already promoted_groupish_nodes by the reconnect promotion rule.
+	promote_group_boundary_caps_enabled = bool(d1_cfg.get("promote_group_boundary_caps_enabled", True))
+	promote_group_boundary_caps_desired_capacity = int(d1_cfg.get("promote_group_boundary_caps_desired_capacity", 2))
+
 	# Hard gate: if a new tracklet is born at the image border (based on u_px/v_px),
 	# do not treat it as a split-out of an existing carrier. This prevents false
 	# start_merged GROUP spans from entrance coincidences (Case 2).
@@ -1336,6 +1342,39 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 						if v_node not in promoted_groupish_nodes:
 							promoted_groupish_nodes.add(v_node)
 							changed = True
+
+				# Optional: promote boundary (SOURCE/SINK) edges for promoted groupish SOLO nodes.
+				#
+				# Rationale: birth/death edges are created earlier with empty payloads; if a SOLO node
+				# is promoted_groupish_nodes (capacity=2 intent), we must also allow 2 units to enter
+				# and/or exit via SOURCE/SINK. D3 interprets desired_capacity via capacity_eff and
+				# lifts node_cap_eff accordingly.
+				if promote_group_boundary_caps_enabled and promoted_groupish_nodes:
+					for nid in sorted(promoted_groupish_nodes):
+						nid_s = str(nid)
+						# Only mutate SOLO segment nodes (never true GROUP nodes).
+						if not nid_s.startswith("T:"):
+							continue
+						desired_cap = int(promote_group_boundary_caps_desired_capacity)
+						payload = {
+							"groupish": True,
+							"desired_capacity": desired_cap,
+							"promoted_boundary_cap": True,
+							"promotion_reason": "promoted_groupish_nodes",
+						}
+						for kind in ("BIRTH", "DEATH"):
+							eid = f"E:{kind}:{nid_s}"
+							e_old = g.edges.get(eid)
+							if e_old is None:
+								continue
+							g.edges[eid] = GraphEdge(
+								edge_id=e_old.edge_id,
+								u=e_old.u,
+								v=e_old.v,
+								type=e_old.type,
+								capacity=int(e_old.capacity),
+								payload=dict(payload),
+							)
 
 			# Materialize CONT_RECONNECT edges with capacity determined by:
 			# - true GROUP segment endpoints => capacity 2

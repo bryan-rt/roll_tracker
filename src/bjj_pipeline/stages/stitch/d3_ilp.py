@@ -868,21 +868,35 @@ def _write_solution_ledger_json(
 		}
 		# Capacity diagnostics (logging only)
 		cap_raw = r.get("capacity", None)
-		cap_eff = r.get("capacity_eff", None) if "capacity_eff" in edges_sel.columns else None
+		cap_eff_df = r.get("capacity_eff", None) if "capacity_eff" in edges_sel.columns else None
 		try:
 			rec["capacity_raw"] = int(cap_raw) if cap_raw is not None and not pd.isna(cap_raw) else None
 		except Exception:
 			rec["capacity_raw"] = None
-		try:
-			rec["capacity_eff"] = int(cap_eff) if cap_eff is not None and not pd.isna(cap_eff) else rec.get("capacity_raw")
-		except Exception:
-			rec["capacity_eff"] = rec.get("capacity_raw")
 		payload_fields = _payload_fields_for_logging(r.get("payload_json", None))
 		desired_cap = payload_fields.get("payload_desired_capacity")
 		try:
 			rec["payload_desired_capacity"] = int(desired_cap) if desired_cap is not None else None
 		except Exception:
 			rec["payload_desired_capacity"] = None
+
+		# IMPORTANT: For ledger consistency, compute effective capacity the same way the solver does:
+		# capacity_eff := max(capacity_raw, payload_desired_capacity) when payload_desired_capacity is present.
+		# Fall back to dataframe capacity_eff only if desired_capacity is missing.
+		cap_eff_calc: int | None = None
+		try:
+			if isinstance(rec.get("capacity_raw"), int) and isinstance(rec.get("payload_desired_capacity"), int):
+				cap_eff_calc = max(int(rec["capacity_raw"]), int(rec["payload_desired_capacity"]))
+		except Exception:
+			cap_eff_calc = None
+		if cap_eff_calc is None:
+			try:
+				cap_eff_calc = int(cap_eff_df) if cap_eff_df is not None and not pd.isna(cap_eff_df) else None
+			except Exception:
+				cap_eff_calc = None
+		if cap_eff_calc is None:
+			cap_eff_calc = rec.get("capacity_raw")
+		rec["capacity_eff"] = cap_eff_calc
 		if isinstance(rec.get("capacity_eff"), int):
 			rec["expected_var_domain"] = f"0..{rec.get('capacity_eff')}"
 		if isinstance(rec.get("payload_desired_capacity"), int) and isinstance(rec.get("capacity_eff"), int):
@@ -1211,6 +1225,9 @@ def _emit_d3_ilp_transparency_json(
 	max_edge_cap: int,
 	max_node_cap: int,
 	enforce_solo_labels: bool,
+	node_cap_eff: Dict[str, int],
+	node_incident_max_edge_cap_eff: Dict[str, int],
+	node_cap_drivers: Dict[str, List[str]],
 ) -> Path:
 	"""Emit a deterministic, dev-only transparency artifact for D3 ILP.
 
@@ -1362,6 +1379,10 @@ def _emit_d3_ilp_transparency_json(
 				"node_id": nid,
 				"node_type": str(r.get("node_type")),
 				"capacity": cap_n,
+				"capacity_raw": cap_n,
+				"capacity_eff": int(node_cap_eff.get(nid, cap_n)),
+				"incident_max_edge_cap_eff": int(node_incident_max_edge_cap_eff.get(nid, 1)),
+				"cap_eff_driven_by_edges": list(node_cap_drivers.get(nid, [])),
 				"deg_in": int(deg_in.get(nid, 0)),
 				"deg_out": int(deg_out.get(nid, 0)),
 			}
@@ -1514,6 +1535,9 @@ def _emit_d3_ilp_node_equations_json(
 	edges: pd.DataFrame,
 	in_edges: Dict[str, List[str]],
 	out_edges: Dict[str, List[str]],
+	node_cap_eff: Dict[str, int],
+	node_incident_max_edge_cap_eff: Dict[str, int],
+	node_cap_drivers: Dict[str, List[str]],
 ) -> Path:
 	"""Emit dev-only per-node balance/capacity equation ingredients.
 
@@ -1572,6 +1596,10 @@ def _emit_d3_ilp_node_equations_json(
 				"node_id": nid,
 				"node_type": ntype,
 				"capacity": int(cap),
+				"capacity_raw": int(cap),
+				"capacity_eff": int(node_cap_eff.get(nid, cap)),
+				"incident_max_edge_cap_eff": int(node_incident_max_edge_cap_eff.get(nid, 1)),
+				"cap_eff_driven_by_edges": list(node_cap_drivers.get(nid, [])),
 				"in_edges": [
 					{"edge_id": eid, "edge_type": etype_by_id.get(eid), **edge_meta_by_id.get(eid, {})}
 					for eid in ins
@@ -1738,18 +1766,6 @@ def solve_structure_ilp_core(
 	max_node_cap = int(pd.to_numeric(nodes["capacity"], errors="raise").max()) if ("capacity" in nodes.columns and len(nodes)) else 1
 	use_flow_int = (max_edge_cap > 1) or (max_node_cap > 1)
 
-	# Dev-only transparency artifact for debugging infeasibility / capacity interactions.
-	if debug_dir is not None and emit_transparency:
-		_emit_d3_ilp_transparency_json(
-			debug_dir=debug_dir,
-			nodes=nodes,
-			edges=edges,
-			use_flow_int=bool(use_flow_int),
-			max_edge_cap=int(max_edge_cap),
-			max_node_cap=int(max_node_cap),
-			enforce_solo_labels=bool(enforce_solo_labels),
-		)
-
 	scale = _cost_scale_for(costs_df["total_cost"] if "total_cost" in costs_df.columns else pd.Series([], dtype=float))
 	cost_int, rounding_stats = _scaled_costs(costs_df, scale=scale)
 
@@ -1798,6 +1814,72 @@ def solve_structure_ilp_core(
 	nodes_ix = nodes.set_index("node_id", drop=False)
 	edges_ix = edges.set_index("edge_id", drop=False)
 
+	# Effective node capacity: allow nodes to carry >1 units of flow when any incident
+	# edge has an effective capacity >1 (e.g., promoted/groupish arrivals).
+	#
+	# This is critical for "promoted" SINGLE_TRACKLET nodes (like T:t11/T:t14) that are
+	# still represented as NodeType.SINGLE_TRACKLET in D1 but may need to carry 2 units
+	# of flow to support group-to-group continuity.
+	node_cap_eff: Dict[str, int] = {}
+	for _, n in nodes.iterrows():
+		nid = str(n["node_id"])
+		cap_base = int(n.get("capacity", 1) or 1)
+		inc = 1
+		for eid in in_edges.get(nid, []):
+			try:
+				inc = max(inc, int(edges_ix.loc[eid].get("capacity_eff", edges_ix.loc[eid].get("capacity", 1)) or 1))
+			except Exception:
+				pass
+		for eid in out_edges.get(nid, []):
+			try:
+				inc = max(inc, int(edges_ix.loc[eid].get("capacity_eff", edges_ix.loc[eid].get("capacity", 1)) or 1))
+			except Exception:
+				pass
+		node_cap_eff[nid] = max(cap_base, inc)
+
+	# For debugging: record which incident edge(s) drive node_cap_eff above the raw node capacity.
+	node_incident_max_edge_cap_eff: Dict[str, int] = {}
+	node_cap_drivers: Dict[str, List[str]] = {}
+	for _, n in nodes.iterrows():
+		nid = str(n["node_id"])
+		cap_base = int(n.get("capacity", 1) or 1)
+		incident_eids = list(in_edges.get(nid, [])) + list(out_edges.get(nid, []))
+		inc_max = 1
+		for eid in incident_eids:
+			try:
+				inc_max = max(inc_max, int(edges_ix.loc[eid].get("capacity_eff", edges_ix.loc[eid].get("capacity", 1)) or 1))
+			except Exception:
+				pass
+		node_incident_max_edge_cap_eff[nid] = int(inc_max)
+		if inc_max > cap_base:
+			drivers: List[str] = []
+			for eid in incident_eids:
+				try:
+					cap_e = int(edges_ix.loc[eid].get("capacity_eff", edges_ix.loc[eid].get("capacity", 1)) or 1)
+				except Exception:
+					cap_e = 1
+				if cap_e == inc_max:
+					drivers.append(str(eid))
+			node_cap_drivers[nid] = sorted(set(drivers))
+		else:
+			node_cap_drivers[nid] = []
+
+	# Dev-only transparency artifact for debugging infeasibility / capacity interactions.
+	# Emit after node_cap_eff is computed so the artifact can report effective node capacities.
+	if debug_dir is not None and emit_transparency:
+		_emit_d3_ilp_transparency_json(
+			debug_dir=debug_dir,
+			nodes=nodes,
+			edges=edges,
+			use_flow_int=bool(use_flow_int),
+			max_edge_cap=int(max_edge_cap),
+			max_node_cap=int(max_node_cap),
+			enforce_solo_labels=bool(enforce_solo_labels),
+			node_cap_eff=node_cap_eff,
+			node_incident_max_edge_cap_eff=node_incident_max_edge_cap_eff,
+			node_cap_drivers=node_cap_drivers,
+		)
+
 	# Tracklet usage vars (base_tracklet_id). Used for coverage + identity constraints.
 	use_tid: Dict[str, cp_model.IntVar] = {}
 	# Index SINGLE_TRACKLET nodes by base_tracklet_id
@@ -1816,7 +1898,7 @@ def solve_structure_ilp_core(
 		ntype = str(n["node_type"])
 		if ntype in ("NodeType.SOURCE", "NodeType.SINK"):
 			continue
-		cap_n = int(n["capacity"])
+		cap_n = int(node_cap_eff.get(nid, int(n.get("capacity", 1) or 1)))
 		ins = [var_by_edge[eid] for eid in in_edges[nid]]
 		outs = [var_by_edge[eid] for eid in out_edges[nid]]
 		model.Add(sum(ins) == sum(outs))
@@ -1856,11 +1938,9 @@ def solve_structure_ilp_core(
 		solo_nodes_df["node_id"] = solo_nodes_df["node_id"].astype(str)
 		# Create u_n and y_{n,k} for each SOLO node.
 		for nid in sorted([str(x) for x in solo_nodes_df["node_id"].tolist()]):
-			# capacity=1 enforced by contracts; still validate defensively.
-			try:
-				cap_n = int(nodes_ix.loc[nid]["capacity"])
-			except Exception:
-				cap_n = 1
+			# capacity=1 is required for SOLO labeling. Use *effective* node capacity so
+			# promoted/groupish SINGLE_TRACKLET nodes (cap_eff=2) are excluded.
+			cap_n = int(node_cap_eff.get(nid, 1))
 			if cap_n != 1:
 				continue
 			u = model.NewBoolVar(f"u_solo_{nid}")
