@@ -425,6 +425,29 @@ class StageD2CostsConfig(BaseModel):
     # edge priors (D5 will later refine birth/death policies)
     birth_cost: float = Field(default=2.0, ge=0)
     death_cost: float = Field(default=2.0, ge=0)
+
+    # --- Smart birth/death priors (D2) ---
+    # Make "implausible" births/deaths expensive unless the tracklet appears to
+    # enter/exit the frame, or is near the clip boundary (near start/end).
+    #
+    # Applied as additive penalties on top of birth_cost/death_cost.
+    birth_non_entrance_add_cost: float = Field(default=8.0, ge=0)
+    death_non_exit_add_cost: float = Field(default=8.0, ge=0)
+
+    # Near-clip boundary windows (in frames).
+    near_clip_start_frames: int = Field(default=15, ge=0)
+    near_clip_end_frames: int = Field(default=15, ge=0)
+
+    # Border evidence for entrance/exit-like detection.
+    # Uses u_px/v_px samples from the tracklet frame bank.
+    border_gate_enabled: bool = Field(default=True)
+    border_margin_px: int = Field(default=40, ge=0)
+    entrance_k_frames: int = Field(default=10, ge=0)
+    exit_k_frames: int = Field(default=10, ge=0)
+    entrance_min_inward_px: float = Field(default=20.0, ge=0)
+    exit_min_outward_px: float = Field(default=20.0, ge=0)
+    entrance_min_samples: int = Field(default=3, ge=0)
+    exit_min_samples: int = Field(default=3, ge=0)
     merge_prior: float = Field(default=0.1, ge=0)
     split_prior: float = Field(default=0.1, ge=0)
     # Reconnect edge shaping (tn -> tm after occlusion); applied only to edges
