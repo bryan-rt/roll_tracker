@@ -2610,9 +2610,14 @@ def solve_structure_ilp_core(
 				if tid not in use_tid:
 					use_tid[tid] = model.NewBoolVar(f"tid_used_{tid}")
 				node_list = [str(x) for x in grp["node_id"].astype(str).tolist()]
-				# Per-segment: flow_in <= use_tid
+				# Per-segment: flow_in <= node_cap_eff[nid] * use_tid
+				# This preserves the original behavior for capacity_eff == 1 while
+				# allowing promoted SINGLE_TRACKLET nodes (e.g., group-continuation
+				# arrivals) to legally carry multiple units of flow when their
+				# effective capacity has been raised.
 				for nid in node_list:
-					model.Add(flow_in_by_node[nid] <= use_tid[tid])
+					cap_n = int(node_cap_eff.get(nid, 1))
+					model.Add(flow_in_by_node[nid] <= cap_n * use_tid[tid])
 				# If used, at least one segment must carry flow.
 				model.Add(sum(flow_in_by_node[nid] for nid in node_list) >= use_tid[tid])
 				# Drop var and linkage
