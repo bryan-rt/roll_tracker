@@ -1461,6 +1461,7 @@ def _emit_d3_ilp_variables_json(
 	edge_used: Dict[str, Any],
 	cost_int: Dict[str, int],
 	scale: int,
+	costs_df: pd.DataFrame | None = None,
 ) -> Path:
 	"""Emit dev-only variable + objective coefficient diagnostics.
 
@@ -1474,6 +1475,25 @@ def _emit_d3_ilp_variables_json(
 	if "edge_id" in edges2.columns:
 		edges2["edge_id"] = edges2["edge_id"].astype(str)
 		edges2 = edges2.sort_values(["edge_id"], kind="mergesort").reset_index(drop=True)
+
+	# Optional: indexed view of per-edge cost terms/features from D2.
+	costs_index: Dict[str, Dict[str, Any]] = {}
+	term_cols: List[str] = []
+	feature_cols: List[str] = []
+	if costs_df is not None and len(costs_df) > 0 and "edge_id" in costs_df.columns:
+		costs = costs_df.copy()
+		costs["edge_id"] = costs["edge_id"].astype(str)
+		term_cols = [c for c in costs.columns if c.startswith("term_")]
+		feature_cols = [
+			c
+			for c in ["dt_frames", "dt_s", "dist_m", "v_req_mps", "dist_norm", "contact_rel", "endpoint_flagged"]
+			if c in costs.columns
+		]
+		value_cols = [c for c in ["total_cost", *term_cols, *feature_cols] if c in costs.columns]
+		# Build a lightweight index: edge_id -> selected scalar fields.
+		for _, crow in costs.iterrows():
+			eid = str(crow["edge_id"])
+			costs_index[eid] = {c: crow.get(c) for c in value_cols}
 
 	def _var_kind(v: Any) -> str:
 		# CP-SAT python types are not stable across ortools versions; use domain heuristics.
@@ -1495,6 +1515,37 @@ def _emit_d3_ilp_variables_json(
 		cap_eff = int(r.get("capacity_eff", cap_raw) or cap_raw)
 		coef = int(cost_int.get(eid, 0))
 		payload_fields = _payload_fields_for_logging(r.get("payload_json"))
+		# Attach any available per-edge cost terms/features from costs_df.
+		cost_fields: Dict[str, Any] = {}
+		if eid in costs_index:
+			cinfo = costs_index[eid]
+			# Scalar total_cost
+			if "total_cost" in cinfo and cinfo["total_cost"] is not None:
+				try:
+					cost_fields["total_cost"] = float(cinfo["total_cost"])
+				except Exception:
+					cost_fields["total_cost"] = cinfo["total_cost"]
+			# Individual term_* columns
+			for col in term_cols:
+				val = cinfo.get(col)
+				if val is None:
+					continue
+				try:
+					cost_fields[col] = float(val)
+				except Exception:
+					cost_fields[col] = val
+			# Selected feature columns for context
+			for col in feature_cols:
+				val = cinfo.get(col)
+				if val is None:
+					continue
+				if isinstance(val, (int, float, bool, str)):
+					cost_fields[col] = val
+				else:
+					try:
+						cost_fields[col] = float(val)
+					except Exception:
+						cost_fields[col] = str(val)
 		rows.append(
 			{
 				"edge_id": eid,
@@ -1505,6 +1556,7 @@ def _emit_d3_ilp_variables_json(
 				"capacity_eff": int(cap_eff),
 				"payload_json": str(r.get("payload_json")) if isinstance(r.get("payload_json"), str) else None,
 				**payload_fields,
+				**cost_fields,
 				"use_flow_int": bool(use_flow_int),
 				"var_name": str(getattr(v, "Name", lambda: None)()) if v is not None else None,
 				"var_kind": _var_kind(v) if v is not None else None,
@@ -2625,6 +2677,7 @@ def solve_structure_ilp_core(
 				edge_used=edge_used,
 				cost_int=cost_int,
 				scale=int(scale),
+				costs_df=costs_df,
 			)
 		except Exception:
 			# Never fail a solve due to debug output.

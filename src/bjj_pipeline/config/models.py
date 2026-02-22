@@ -448,6 +448,10 @@ class StageD2CostsConfig(BaseModel):
     exit_min_outward_px: float = Field(default=20.0, ge=0)
     entrance_min_samples: int = Field(default=3, ge=0)
     exit_min_samples: int = Field(default=3, ge=0)
+    # Gate logic for combining border proximity and inward/outward motion.
+    # "or" (default) keeps legacy behavior; "and" requires both cues.
+    entrance_gate_logic: str = Field(default="or")
+    exit_gate_logic: str = Field(default="or")
     merge_prior: float = Field(default=0.1, ge=0)
     split_prior: float = Field(default=0.1, ge=0)
     # Reconnect edge shaping (tn -> tm after occlusion); applied only to edges
