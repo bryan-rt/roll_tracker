@@ -105,6 +105,113 @@ def compute_edge_costs(
 		.to_dict()
 	)
 
+	# ---------------------------------------------------------------------
+	# Smart birth/death pricing support
+	#
+	# We compute four booleans per tracklet:
+	#   - near_clip_start / near_clip_end
+	#   - entrance_like / exit_like
+	# and then apply additive penalties to births/deaths that are neither
+	# near the clip boundary nor have border evidence.
+	#
+	# This mirrors the heuristics developed in D1/D3, but is re-computed here in D2
+	# so pricing can evolve without perturbing graph topology.
+	# ---------------------------------------------------------------------
+
+	bank_df = bank.reset_index(drop=True)
+	clip_start_frame = int(bank_df["frame_index"].min())
+	clip_end_frame = int(bank_df["frame_index"].max())
+
+	# Per-tracklet temporal extent (used for near_clip_start/end and for entrance/exit windows).
+	tid_start_end = bank_df.groupby("tracklet_id")["frame_index"].agg(["min", "max"]).to_dict("index")
+
+	def _node_id_to_tid(node_id: str):
+		# Solo nodes: T:<tid> or T:<tid>:s0:...
+		if node_id.startswith("T:"):
+			rest = node_id[2:]
+			return rest.split(":", 1)[0]
+		# Group nodes: G:...:carrier=<tid>:...
+		if node_id.startswith("G:") and "carrier=" in node_id:
+			try:
+				after = node_id.split("carrier=", 1)[1]
+				return after.split(":", 1)[0]
+			except Exception:
+				return None
+		return None
+
+	have_uv_px = ("u_px" in bank_df.columns) and ("v_px" in bank_df.columns)
+	if have_uv_px:
+		u_min = float(bank_df["u_px"].min())
+		u_max = float(bank_df["u_px"].max())
+		v_min = float(bank_df["v_px"].min())
+		v_max = float(bank_df["v_px"].max())
+	else:
+		u_min = u_max = v_min = v_max = float("nan")
+
+	def _border_dist_px(u_px: float, v_px: float) -> float:
+		# Distance to the nearest border using observed bounds.
+		# Smaller is "closer to border".
+		if not have_uv_px:
+			return float("inf")
+		return min(u_px - u_min, u_max - u_px, v_px - v_min, v_max - v_px)
+
+	border_gate_enabled = bool(cfg.get("border_gate_enabled", True))
+	border_margin_px = float(cfg.get("border_margin_px", 40))
+	entrance_k_frames = int(cfg.get("entrance_k_frames", 10))
+	exit_k_frames = int(cfg.get("exit_k_frames", 10))
+	entrance_min_inward_px = float(cfg.get("entrance_min_inward_px", 20.0))
+	exit_min_outward_px = float(cfg.get("exit_min_outward_px", 20.0))
+	entrance_min_samples = int(cfg.get("entrance_min_samples", 3))
+	exit_min_samples = int(cfg.get("exit_min_samples", 3))
+	near_clip_start_frames = int(cfg.get("near_clip_start_frames", 15))
+	near_clip_end_frames = int(cfg.get("near_clip_end_frames", 15))
+
+	def _near_clip_start_tid(tid: str) -> bool:
+		if tid not in tid_start_end:
+			return False
+		start_f = int(tid_start_end[tid]["min"])
+		return (start_f - clip_start_frame) <= near_clip_start_frames
+
+	def _near_clip_end_tid(tid: str) -> bool:
+		if tid not in tid_start_end:
+			return False
+		end_f = int(tid_start_end[tid]["max"])
+		return (clip_end_frame - end_f) <= near_clip_end_frames
+
+	def _is_entrance_like_tid(tid: str) -> bool:
+		if (not border_gate_enabled) or (not have_uv_px):
+			return False
+		if tid not in tid_start_end:
+			return False
+		start_f = int(tid_start_end[tid]["min"])
+		win_end = start_f + max(entrance_k_frames, 0)
+		df = bank_df[(bank_df["tracklet_id"] == tid) & (bank_df["frame_index"] >= start_f) & (bank_df["frame_index"] <= win_end)]
+		if len(df) < entrance_min_samples:
+			return False
+		df = df.sort_values("frame_index")
+		d0 = _border_dist_px(float(df.iloc[0]["u_px"]), float(df.iloc[0]["v_px"]))
+		d1 = _border_dist_px(float(df.iloc[-1]["u_px"]), float(df.iloc[-1]["v_px"]))
+		near_border = d0 <= border_margin_px
+		moved_inward = (d1 - d0) >= entrance_min_inward_px
+		return bool(near_border or moved_inward)
+
+	def _is_exit_like_tid(tid: str) -> bool:
+		if (not border_gate_enabled) or (not have_uv_px):
+			return False
+		if tid not in tid_start_end:
+			return False
+		end_f = int(tid_start_end[tid]["max"])
+		win_start = end_f - max(exit_k_frames, 0)
+		df = bank_df[(bank_df["tracklet_id"] == tid) & (bank_df["frame_index"] >= win_start) & (bank_df["frame_index"] <= end_f)]
+		if len(df) < exit_min_samples:
+			return False
+		df = df.sort_values("frame_index")
+		d0 = _border_dist_px(float(df.iloc[0]["u_px"]), float(df.iloc[0]["v_px"]))
+		d1 = _border_dist_px(float(df.iloc[-1]["u_px"]), float(df.iloc[-1]["v_px"]))
+		near_border = d1 <= border_margin_px
+		moved_outward = (d0 - d1) >= exit_min_outward_px
+		return bool(near_border or moved_outward)
+
 	rows: List[Dict[str, Any]] = []
 
 	dt_max_s = float(cfg.get("dt_max_s", 1.0))
@@ -178,6 +285,8 @@ def compute_edge_costs(
 
 	birth_cost = float(cfg.get("birth_cost", 2.0))
 	death_cost = float(cfg.get("death_cost", 2.0))
+	birth_non_entrance_add = float(cfg.get("birth_non_entrance_add_cost", 8.0))
+	death_non_exit_add = float(cfg.get("death_non_exit_add_cost", 8.0))
 	merge_prior = float(cfg.get("merge_prior", 0.1))
 	split_prior = float(cfg.get("split_prior", 0.1))
 	reconnect_extra_env_cost = float(cfg.get("reconnect_extra_env_cost", 0.0))
@@ -546,8 +655,24 @@ def compute_edge_costs(
 		# BIRTH / DEATH priors
 		if et == "BIRTH":
 			term_birth_prior = birth_cost
+			# Smart birth pricing: penalize births that are neither near the clip start
+			# nor have entrance-like border evidence.
+			dst_tid = _node_id_to_tid(str(v))
+			if dst_tid is not None:
+				near_start = _near_clip_start_tid(dst_tid)
+				entrance_like = _is_entrance_like_tid(dst_tid)
+				if not (near_start or entrance_like):
+					term_birth_prior += birth_non_entrance_add
 		if et == "DEATH":
 			term_death_prior = death_cost
+			# Smart death pricing: penalize deaths that are neither near the clip end
+			# nor have exit-like border evidence.
+			src_tid = _node_id_to_tid(str(u))
+			if src_tid is not None:
+				near_end = _near_clip_end_tid(src_tid)
+				exit_like = _is_exit_like_tid(src_tid)
+				if not (near_end or exit_like):
+					term_death_prior += death_non_exit_add
 
 		# if disallowed, set a finite sentinel total_cost for safety
 		if not is_allowed:

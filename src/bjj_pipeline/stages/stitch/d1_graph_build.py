@@ -214,6 +214,25 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 	# already promoted_groupish_nodes by the reconnect promotion rule.
 	promote_group_boundary_caps_enabled = bool(d1_cfg.get("promote_group_boundary_caps_enabled", True))
 	promote_group_boundary_caps_desired_capacity = int(d1_cfg.get("promote_group_boundary_caps_desired_capacity", 2))
+	# When enabled, require evidence that the SOLO tracklet enters/leaves via the frame boundary
+	# and is near the start/end of the clip before promoting SOURCE/SINK edges.
+	promote_group_boundary_caps_require_boundary_evidence = bool(
+		d1_cfg.get("promote_group_boundary_caps_require_boundary_evidence", True)
+	)
+	promote_group_boundary_caps_near_start_frames = int(
+		d1_cfg.get("promote_group_boundary_caps_near_start_frames", 30)
+	)
+	promote_group_boundary_caps_near_end_frames = int(
+		d1_cfg.get("promote_group_boundary_caps_near_end_frames", 30)
+	)
+	promote_group_boundary_caps_k_frames = int(d1_cfg.get("promote_group_boundary_caps_k_frames", 10))
+	promote_group_boundary_caps_min_samples = int(d1_cfg.get("promote_group_boundary_caps_min_samples", 3))
+	# Default border margin (px) used by boundary-cap evidence gating. We intentionally
+	# do not reference split_border_margin_px here because it is read below.
+	promote_group_boundary_caps_border_margin_px = int(d1_cfg.get("promote_group_boundary_caps_border_margin_px", 40))
+	promote_group_boundary_caps_min_outward_px = int(
+		d1_cfg.get("promote_group_boundary_caps_min_outward_px", 20)
+	)
 
 	# Hard gate: if a new tracklet is born at the image border (based on u_px/v_px),
 	# do not treat it as a split-out of an existing carrier. This prevents false
@@ -282,6 +301,7 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 	border_gate_mode: str = "disabled_missing_uv"
 	frame_wh: Optional[Tuple[int, int]] = None
 	entrance_uv_series_by_tid: Dict[str, List[Tuple[float, float]]] = {}
+	exit_uv_series_by_tid: Dict[str, List[Tuple[float, float]]] = {}
 	if split_border_gate_enabled:
 		# If pixel coordinates are unavailable (e.g., unit tests with minimal fixtures),
 		# silently disable the border gate rather than failing hard.
@@ -358,6 +378,29 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 					if samples:
 						entrance_uv_series_by_tid[tid] = samples
 
+				# Build per-tid late (u_px, v_px) samples for exit classification used by boundary-cap promotion.
+				k_exit = max(1, int(promote_group_boundary_caps_k_frames))
+				for tid, row in ts_by_tid.items():
+					ef = int(row["end_frame"])
+					gdf = tf_uv[tf_uv["tracklet_id"] == tid]
+					if len(gdf) == 0:
+						continue
+					# Inclusive end window.
+					window = gdf[(gdf["frame_index"] <= ef) & (gdf["frame_index"] > (ef - k_exit))]
+					if len(window) == 0:
+						continue
+					samples2: List[Tuple[float, float]] = []
+					for _, r in window.iterrows():
+						upx = r.get("u_px", None)
+						vpx = r.get("v_px", None)
+						if upx is None or vpx is None or (pd.isna(upx) or pd.isna(vpx)):
+							continue
+						samples2.append((float(upx), float(vpx)))
+						if len(samples2) >= k_exit:
+							break
+					if samples2:
+						exit_uv_series_by_tid[tid] = samples2
+
 	def _entrance_border_distance_px(u: float, v: float) -> Optional[float]:
 		"""Distance (px) to nearest image border (true bounds preferred)."""
 		if frame_wh is not None:
@@ -425,9 +468,78 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 		# default: "or"
 		return bool(border_spawn or moved_inward)
 
+	def _exit_diagnostics(tid: str) -> Optional[Dict[str, Any]]:
+		if not split_border_gate_enabled:
+			return None
+		samples = exit_uv_series_by_tid.get(str(tid))
+		if not samples:
+			return None
+		ds: List[float] = []
+		for (u, v) in samples:
+			d = _entrance_border_distance_px(u, v)
+			if d is None or not math.isfinite(float(d)):
+				continue
+			ds.append(float(d))
+		if not ds:
+			return None
+		return {
+			"n_samples": int(len(ds)),
+			"d0_px": float(ds[0]),
+			"d_last_px": float(ds[-1]),
+			"mode": str(border_gate_mode),
+			"frame_wh": tuple(frame_wh) if frame_wh is not None else None,
+			"margin_px": int(promote_group_boundary_caps_border_margin_px),
+			"min_outward_px": int(promote_group_boundary_caps_min_outward_px),
+			"min_samples": int(promote_group_boundary_caps_min_samples),
+			"k_frames": int(promote_group_boundary_caps_k_frames),
+		}
+
+	def _is_exit_like_tid(tid: str) -> bool:
+		"""True if tid appears to leave off-screen: ends near border and/or moves outward."""
+		if not split_border_gate_enabled:
+			return False
+		diag = _exit_diagnostics(str(tid))
+		if diag is None:
+			return False
+		min_samples = int(diag.get("min_samples", 3))
+		if int(diag.get("n_samples", 0)) < max(1, min_samples):
+			return False
+		d0 = float(diag.get("d0_px", 1e9))
+		d_last = float(diag.get("d_last_px", 1e9))
+		margin_px = float(diag.get("margin_px", promote_group_boundary_caps_border_margin_px))
+		min_outward = float(diag.get("min_outward_px", 20))
+		border_exit = bool(d_last <= margin_px)
+		moved_outward = bool((d0 <= float(margin_px + 30)) and ((d0 - d_last) >= min_outward))
+		gate_logic = str(d1_cfg.get("promote_group_boundary_caps_exit_gate_logic", "or")).lower().strip()
+		if gate_logic == "and":
+			return bool(border_exit and moved_outward)
+		return bool(border_exit or moved_outward)
+
 	# frames grouped
 	tf = tf.sort_values(["tracklet_id", "frame_index"], kind="mergesort")
 	frames_by_tid: Dict[str, pd.DataFrame] = {tid: g for tid, g in tf.groupby("tracklet_id", sort=False)}
+
+	# clip frame bounds for boundary-cap gating
+	try:
+		clip_min_frame = int(tf["frame_index"].min()) if len(tf) else 0
+		clip_max_frame = int(tf["frame_index"].max()) if len(tf) else (int(last_frame) if last_frame is not None else 0)
+	except Exception:
+		clip_min_frame = 0
+		clip_max_frame = int(last_frame) if last_frame is not None else 0
+
+	def _near_clip_start_tid(tid: str) -> bool:
+		row = ts_by_tid.get(str(tid))
+		if row is None:
+			return False
+		sf = int(row["start_frame"])
+		return bool((sf - clip_min_frame) <= int(promote_group_boundary_caps_near_start_frames))
+
+	def _near_clip_end_tid(tid: str) -> bool:
+		row = ts_by_tid.get(str(tid))
+		if row is None:
+			return False
+		ef = int(row["end_frame"])
+		return bool((clip_max_frame - ef) <= int(promote_group_boundary_caps_near_end_frames))
 
 	# ---- endpoint helpers ----
 	used_raw_frames = 0
@@ -1350,11 +1462,33 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 				# and/or exit via SOURCE/SINK. D3 interprets desired_capacity via capacity_eff and
 				# lifts node_cap_eff accordingly.
 				if promote_group_boundary_caps_enabled and promoted_groupish_nodes:
+					# Local counters for audit/debugging (logging only).
+					n_birth_promoted = 0
+					n_death_promoted = 0
+					n_birth_blocked_not_near_start = 0
+					n_birth_blocked_not_entrance_like = 0
+					n_death_blocked_not_near_end = 0
+					n_death_blocked_not_exit_like = 0
+					n_blocked_missing_tid = 0
+
+					def _tid_from_solo_node_id(nid_s: str) -> Optional[str]:
+						if not isinstance(nid_s, str) or not nid_s.startswith("T:"):
+							return None
+						s = nid_s[len("T:") :]
+						if not s:
+							return None
+						return s.split(":", 1)[0]
+
 					for nid in sorted(promoted_groupish_nodes):
 						nid_s = str(nid)
 						# Only mutate SOLO segment nodes (never true GROUP nodes).
 						if not nid_s.startswith("T:"):
 							continue
+						tid = _tid_from_solo_node_id(nid_s)
+						if tid is None or tid not in ts_by_tid:
+							n_blocked_missing_tid += 1
+							continue
+
 						desired_cap = int(promote_group_boundary_caps_desired_capacity)
 						payload = {
 							"groupish": True,
@@ -1362,19 +1496,82 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 							"promoted_boundary_cap": True,
 							"promotion_reason": "promoted_groupish_nodes",
 						}
-						for kind in ("BIRTH", "DEATH"):
-							eid = f"E:{kind}:{nid_s}"
+
+						# Birth promotion gate.
+						allow_birth = True
+						if promote_group_boundary_caps_require_boundary_evidence:
+							# We want to allow boundary-cap promotion for births when:
+							#   near_start OR entrance_like
+							# This models both "clip starts mid-action" (near_start but not border-born)
+							# and "mid-clip entrance" (entrance_like but not near_start).
+							near_start = bool(_near_clip_start_tid(tid))
+							entrance_like = bool(_is_entrance_like_tid(tid))
+							if not (near_start or entrance_like):
+								allow_birth = False
+								# Keep counters informative: record which evidence was missing among blocked cases.
+								if not near_start:
+									n_birth_blocked_not_near_start += 1
+								if not entrance_like:
+									n_birth_blocked_not_entrance_like += 1
+						if allow_birth:
+							eid = f"E:BIRTH:{nid_s}"
 							e_old = g.edges.get(eid)
-							if e_old is None:
-								continue
-							g.edges[eid] = GraphEdge(
-								edge_id=e_old.edge_id,
-								u=e_old.u,
-								v=e_old.v,
-								type=e_old.type,
-								capacity=int(e_old.capacity),
-								payload=dict(payload),
-							)
+							if e_old is not None:
+								g.edges[eid] = GraphEdge(
+									edge_id=e_old.edge_id,
+									u=e_old.u,
+									v=e_old.v,
+									type=e_old.type,
+									capacity=int(e_old.capacity),
+									payload=dict(payload),
+								)
+								n_birth_promoted += 1
+
+						# Death promotion gate.
+						allow_death = True
+						if promote_group_boundary_caps_require_boundary_evidence:
+							# We want to allow boundary-cap promotion for deaths when:
+							#   near_end OR exit_like
+							# This models both "clip ends mid-action" (near_end but not border-exiting)
+							# and "mid-clip exit" (exit_like but not near_end).
+							near_end = bool(_near_clip_end_tid(tid))
+							exit_like = bool(_is_exit_like_tid(tid))
+							if not (near_end or exit_like):
+								allow_death = False
+								# Keep counters informative: record which evidence was missing among blocked cases.
+								if not near_end:
+									n_death_blocked_not_near_end += 1
+								if not exit_like:
+									n_death_blocked_not_exit_like += 1
+						if allow_death:
+							eid = f"E:DEATH:{nid_s}"
+							e_old = g.edges.get(eid)
+							if e_old is not None:
+								g.edges[eid] = GraphEdge(
+									edge_id=e_old.edge_id,
+									u=e_old.u,
+									v=e_old.v,
+									type=e_old.type,
+									capacity=int(e_old.capacity),
+									payload=dict(payload),
+								)
+								n_death_promoted += 1
+
+					try:
+						logger.info(
+							"D1 promote_group_boundary_caps: promoted birth=%d death=%d "
+							"blocked_birth(not_near_start=%d not_entrance_like=%d) "
+							"blocked_death(not_near_end=%d not_exit_like=%d) missing_tid=%d",
+							n_birth_promoted,
+							n_death_promoted,
+							n_birth_blocked_not_near_start,
+							n_birth_blocked_not_entrance_like,
+							n_death_blocked_not_near_end,
+							n_death_blocked_not_exit_like,
+							n_blocked_missing_tid,
+						)
+					except Exception:
+						pass
 
 			# Materialize CONT_RECONNECT edges with capacity determined by:
 			# - true GROUP segment endpoints => capacity 2
