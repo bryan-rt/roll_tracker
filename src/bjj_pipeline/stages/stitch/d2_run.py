@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -30,6 +30,7 @@ import pandas as pd
 from bjj_pipeline.contracts import f0_validate as v
 from bjj_pipeline.stages.stitch.costs import compute_edge_costs
 from bjj_pipeline.stages.stitch.d2_constraints import normalize_identity_constraints
+from bjj_pipeline.stages.stitch.d1_graph_build import _get_manifest_video_path, _probe_video_wh
 
 
 def _now_ms() -> int:
@@ -116,6 +117,16 @@ def run_d2(*, config: Dict[str, Any], inputs: Dict[str, Any]) -> None:
 	fps = float(getattr(manifest, "fps", None))
 	if fps <= 0:
 		raise ValueError(f"Manifest fps must be >0 (got {fps!r})")
+
+	# Prefer true video frame bounds for entrance/exit heuristics when available.
+	frame_wh: Optional[Tuple[int, int]] = None
+	video_path = _get_manifest_video_path(manifest)
+	if video_path is not None:
+		frame_wh = _probe_video_wh(video_path)
+	if frame_wh is not None:
+		# Plumb into D2 costs cfg; costs.compute_edge_costs will prefer these bounds
+		# over observed u_px/v_px extents when computing border distances.
+		d2_cfg["frame_wh"] = tuple(frame_wh)
 
 	# Resolve non-redundant speed params: default to D0 kinematics v_max_mps
 	d0_vmax = d0_kin.get("v_max_mps", None)

@@ -209,11 +209,27 @@ def _write_debug_compiled_inputs(
 	dbg.mkdir(parents=True, exist_ok=True)
 	out_edges = dbg / "d3_compiled_edges_pruned.parquet"
 	out_costs = dbg / "d3_compiled_costs_pruned.parquet"
+	out_costs_debug = dbg / "d3_compiled_costs_debug.jsonl"
 	out_constraints = dbg / "d3_constraints_snapshot.json"
 	out_stats = dbg / "d3_compile_stats.json"
 
 	edges_df.to_parquet(out_edges, index=False)
 	costs_df.to_parquet(out_costs, index=False)
+
+	# Optional: human-readable per-edge costs + features for debugging/tuning.
+	# We align rows with edges_df via shared indexing from _prune_disallowed_edges.
+	try:
+		combined = costs_df.copy()
+		# Attach structural fields from edges_df when available.
+		for col in ("u", "v", "edge_type", "capacity", "payload_json"):
+			if col in edges_df.columns and col not in combined.columns:
+				combined[col] = edges_df[col]
+		# JSON Lines is easier to grep and stream than parquet when debugging.
+		combined.to_json(out_costs_debug, orient="records", lines=True)
+	except Exception:
+		# Never fail compilation on debug output issues.
+		pass
+
 	out_constraints.write_text(json.dumps(constraints, sort_keys=True, indent=2), encoding="utf-8")
 	out_stats.write_text(json.dumps(stats, sort_keys=True, indent=2), encoding="utf-8")
 
@@ -223,6 +239,7 @@ def _write_debug_compiled_inputs(
 	return {
 		"d3_compiled_edges_pruned_parquet": rel(out_edges),
 		"d3_compiled_costs_pruned_parquet": rel(out_costs),
+		"d3_compiled_costs_debug_jsonl": rel(out_costs_debug),
 		"d3_constraints_snapshot_json": rel(out_constraints),
 		"d3_compile_stats_json": rel(out_stats),
 	}

@@ -140,7 +140,25 @@ def compute_edge_costs(
 		return None
 
 	have_uv_px = ("u_px" in bank_df.columns) and ("v_px" in bank_df.columns)
-	if have_uv_px:
+	# Prefer true video frame bounds when provided by D2 runner; fall back to
+	# observed u_px/v_px extents otherwise.
+	frame_wh = cfg.get("frame_wh", None)
+	use_video_bounds = False
+	video_w: float | None = None
+	video_h: float | None = None
+	if isinstance(frame_wh, (tuple, list)) and len(frame_wh) == 2:
+		try:
+			w_raw, h_raw = frame_wh
+			w = float(w_raw)
+			h = float(h_raw)
+			if w > 0 and h > 0:
+				use_video_bounds = True
+				video_w = w
+				video_h = h
+		except Exception:
+			use_video_bounds = False
+
+	if have_uv_px and not use_video_bounds:
 		u_min = float(bank_df["u_px"].min())
 		u_max = float(bank_df["u_px"].max())
 		v_min = float(bank_df["v_px"].min())
@@ -149,10 +167,21 @@ def compute_edge_costs(
 		u_min = u_max = v_min = v_max = float("nan")
 
 	def _border_dist_px(u_px: float, v_px: float) -> float:
-		# Distance to the nearest border using observed bounds.
-		# Smaller is "closer to border".
+		"""Distance (px) to nearest image border.
+
+		When frame_wh is available we use true video bounds; otherwise fall
+		back to observed u_px/v_px extents across the clip.
+		"""
 		if not have_uv_px:
 			return float("inf")
+		if use_video_bounds and video_w is not None and video_h is not None:
+			w = video_w
+			h = video_h
+			# Clamp into [0, w-1] x [0, h-1] before measuring distance.
+			u_c = min(max(float(u_px), 0.0), float(max(0, int(w) - 1)))
+			v_c = min(max(float(v_px), 0.0), float(max(0, int(h) - 1)))
+			return float(min(u_c, float(int(w) - 1) - u_c, v_c, float(int(h) - 1) - v_c))
+		# Observed-bounds fallback.
 		return min(u_px - u_min, u_max - u_px, v_px - v_min, v_max - v_px)
 
 	border_gate_enabled = bool(cfg.get("border_gate_enabled", True))
@@ -165,6 +194,12 @@ def compute_edge_costs(
 	exit_min_samples = int(cfg.get("exit_min_samples", 3))
 	near_clip_start_frames = int(cfg.get("near_clip_start_frames", 15))
 	near_clip_end_frames = int(cfg.get("near_clip_end_frames", 15))
+	entrance_gate_logic = str(cfg.get("entrance_gate_logic", "or")).lower().strip()
+	if entrance_gate_logic not in ("or", "and"):
+		entrance_gate_logic = "or"
+	exit_gate_logic = str(cfg.get("exit_gate_logic", "or")).lower().strip()
+	if exit_gate_logic not in ("or", "and"):
+		exit_gate_logic = "or"
 
 	def _near_clip_start_tid(tid: str) -> bool:
 		if tid not in tid_start_end:
@@ -193,6 +228,8 @@ def compute_edge_costs(
 		d1 = _border_dist_px(float(df.iloc[-1]["u_px"]), float(df.iloc[-1]["v_px"]))
 		near_border = d0 <= border_margin_px
 		moved_inward = (d1 - d0) >= entrance_min_inward_px
+		if entrance_gate_logic == "and":
+			return bool(near_border and moved_inward)
 		return bool(near_border or moved_inward)
 
 	def _is_exit_like_tid(tid: str) -> bool:
@@ -210,6 +247,8 @@ def compute_edge_costs(
 		d1 = _border_dist_px(float(df.iloc[-1]["u_px"]), float(df.iloc[-1]["v_px"]))
 		near_border = d1 <= border_margin_px
 		moved_outward = (d0 - d1) >= exit_min_outward_px
+		if exit_gate_logic == "and":
+			return bool(near_border and moved_outward)
 		return bool(near_border or moved_outward)
 
 	rows: List[Dict[str, Any]] = []
