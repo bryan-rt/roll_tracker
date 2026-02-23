@@ -26,11 +26,14 @@ def _cfg_get(cfg: Dict[str, Any], path: str, default: Any = None) -> Any:
 	return cur
 
 
-def run_d3(*, config: Dict[str, Any], inputs: Dict[str, Any]) -> None:
+
+def run_d3(*, config: Dict[str, Any], inputs: Dict[str, Any]) -> tuple[Any, Any]:
 	"""Run Stage D3 (checkpointed).
 
 	POC_0: compile + validate solver inputs (audit-only).
-	Later checkpoints will add ILP solving + final artifact emission.
+	POC_1/POC_2_TAGS: run ILP solve; returns solver result.
+	
+	Return: (compiled_inputs, ilp_result_or_None)
 	"""
 	layout = inputs["layout"]
 	manifest = inputs["manifest"]
@@ -44,7 +47,7 @@ def run_d3(*, config: Dict[str, Any], inputs: Dict[str, Any]) -> None:
 	_ = compile_solver_inputs(config=config, layout=layout, manifest=manifest, checkpoint=str(checkpoint))
 
 	if str(checkpoint) == "POC_0":
-		return
+		return (_, None)
 
 	if str(checkpoint) == "POC_1":
 		from bjj_pipeline.stages.stitch.d3_ilp import solve_structure_ilp
@@ -85,8 +88,7 @@ def run_d3(*, config: Dict[str, Any], inputs: Dict[str, Any]) -> None:
 			tag_overlap_enforced=True,
 			group_boundary_window_frames=int(gbw_i),
 		)
-		_ = res  # reserved for later checkpoints
-		return
+		return (_, res)
 
 	if str(checkpoint) == "POC_2_TAGS":
 		from bjj_pipeline.stages.stitch.d3_ilp import solve_structure_ilp_tags
@@ -186,8 +188,7 @@ def run_d3(*, config: Dict[str, Any], inputs: Dict[str, Any]) -> None:
 			tag_fragment_start_penalty_mult=frag_mult_f,
 			tag_fragment_start_penalty_abs=frag_abs_f,
 		)
-		_ = res  # reserved for later checkpoints
-		return
+		return (_, res)
 
 	raise NotImplementedError(
 		f"Stage D3 checkpoint not implemented: {checkpoint!r}. "

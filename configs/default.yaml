@@ -114,7 +114,7 @@ stages:
 
   stage_D:
     enabled: null
-    run_until: "D3"
+    run_until: "D4"
     d3_checkpoint: "POC_2_TAGS"
     d0:
       occlusion_repair:

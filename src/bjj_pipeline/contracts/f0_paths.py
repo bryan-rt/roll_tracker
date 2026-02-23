@@ -110,6 +110,14 @@ class ClipOutputLayout:
     def person_tracks_parquet(self) -> Path:
         return self.stage_dir("D") / "person_tracks.parquet"
 
+    def person_spans_parquet(self) -> Path:
+        """Optional Stage D4 helper artifact: per-person per-node span table.
+
+        Not part of the strict Stage D completion contract today, but useful for
+        Stage E (match detection) to understand effective-capacity spans.
+        """
+        return self.stage_dir("D") / "person_spans.parquet"
+
     def identity_assignments_jsonl(self) -> Path:
         # Produced after stitching (post-pass) but stored under stage_D outputs canonically
         return self.stage_dir("D") / "identity_assignments.jsonl"
