@@ -46,6 +46,38 @@ def register_stage_D2_defaults(manifest: 'ClipManifest', layout: 'ClipOutputLayo
         content_type="application/json",
     )
 
+
+
+def register_stage_D4_defaults(manifest: 'ClipManifest', layout: 'ClipOutputLayout') -> None:
+    """Register canonical Stage D4 artifacts (post-solve canonical outputs).
+
+    Stage D4 emits person-level tracks suitable for Stage E and (optionally)
+    identity assignment records.
+    Call after writing the files.
+    """
+    manifest.register_artifact(
+        stage="D",
+        key="person_tracks_parquet",
+        relpath=layout.rel_to_clip_root(layout.person_tracks_parquet()),
+        content_type="application/parquet",
+    )
+    manifest.register_artifact(
+        stage="D",
+        key="identity_assignments_jsonl",
+        relpath=layout.rel_to_clip_root(layout.identity_assignments_jsonl()),
+        content_type="application/jsonl",
+    )
+    # Optional helper artifact (not required by Stage D contract today).
+    try:
+        manifest.register_artifact(
+            stage="D",
+            key="person_spans_parquet",
+            relpath=layout.rel_to_clip_root(layout.person_spans_parquet()),
+            content_type="application/parquet",
+        )
+    except Exception:
+        pass
+
 # ...existing code...
 
 # Place this after all class and helper function definitions

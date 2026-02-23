@@ -1138,7 +1138,7 @@ def _extract_entity_paths_format_a(
 				"steps": steps,
 				"tracklets_in_order": tracklets_in_order,
 				"temporal_monotone_by_start_frame": bool(temporal_monotone),
-				"april_tag_found_in": None,
+				"april_tag_found_in": None,  # filled by _write_entities_format_a
 			}
 		)
 
@@ -1155,6 +1155,39 @@ def _write_entities_format_a(
 	entities = _extract_entity_paths_format_a(
 		nodes_df=compiled.nodes_df, edges_df=compiled.edges_df, flow_by_edge_id=res.flow_by_edge_id
 	)
+
+	# ---- AprilTag annotation (from D2 normalized constraints) ----
+	# We annotate an entity with any tag:<id> anchor_keys whose must-link group intersects
+	# any tracklet used in the entity path.
+	tag_by_tracklet: Dict[str, Set[str]] = {}
+	try:
+		groups = compiled.constraints.get("must_link_groups", [])
+		if isinstance(groups, list):
+			for g in groups:
+				if not isinstance(g, dict):
+					continue
+				anchor = g.get("anchor_key")
+				if not (isinstance(anchor, str) and anchor.startswith("tag:")):
+					continue
+				tids = g.get("tracklet_ids", [])
+				if not isinstance(tids, list):
+					continue
+				for tid in tids:
+					if isinstance(tid, str) and tid:
+						tag_by_tracklet.setdefault(tid, set()).add(anchor)
+	except Exception:
+		# Best-effort only; never break debug writing.
+		tag_by_tracklet = {}
+
+	for ent in entities:
+		tids = ent.get("tracklets_in_order", [])
+		found: Set[str] = set()
+		if isinstance(tids, list):
+			for tid in tids:
+				if isinstance(tid, str) and tid in tag_by_tracklet:
+					found |= tag_by_tracklet[tid]
+		ent["april_tag_found_in"] = sorted(found) if found else None
+
 	out = dbg / "d3_entities_format_a.json"
 	payload = {
 		"schema_version": 1,
