@@ -117,6 +117,10 @@ class StageAConfig(BaseModel):
     class MasksConfig(BaseModel):
         model_config = ConfigDict(extra="forbid")
 
+        write_yolo_masks: bool = Field(
+            default=False,
+            description="If true, write canonical Stage A mask NPZ blobs and set mask_ref",
+        )
         gate: "StageAConfig.MaskGateConfig" = Field(default_factory=lambda: StageAConfig.MaskGateConfig())
 
     class PhysicsConfig(BaseModel):
@@ -597,6 +601,11 @@ class StageEConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: Optional[bool] = Field(default=None)
+    # Maximum allowed gap (in frames) between cap2 seed intervals for the same
+    # unordered pair before we split into separate match sessions.
+    max_gap_frames: int = Field(default=30, ge=0)
+    # Confidence assigned to sessions in v1 (seed/merge based).
+    seed_confidence: float = Field(default=0.70, ge=0.0, le=1.0)
 
 
 class StageFConfig(BaseModel):
