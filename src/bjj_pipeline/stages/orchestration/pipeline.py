@@ -917,6 +917,18 @@ def run_pipeline(ingest_path: Path, camera_id: str, config: Dict[str, Any], *,
                 append_audit(layout, err)
                 raise PipelineError(f"Stage {stage_letter}/{stage_key} failed: {e}")
 
+        # Best-effort post-pipeline visualization using Stage D/E outputs.
+        # This is gated by the same --visualize flag as the multiplex_AC runner
+        # and is explicitly non-fatal to the core pipeline.
+        if visualize:
+            try:
+                from bjj_pipeline.viz.post_pipeline_annotator import render_post_pipeline_annotation
+
+                render_post_pipeline_annotation(manifest, layout)
+            except Exception:
+                # Do not fail the run if the dev-only annotator raises.
+                pass
+
         append_audit(layout, {
             "event": "run_finished",
             "timestamp": _now_ms(),

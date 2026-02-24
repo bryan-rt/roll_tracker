@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import time
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any, Dict, List, Set, Tuple
@@ -10,7 +11,9 @@ import numpy as np
 import pandas as pd
 
 from bjj_pipeline.contracts.f0_paths import ClipOutputLayout
+from bjj_pipeline.contracts.f0_models import SCHEMA_VERSION_DEFAULT
 from bjj_pipeline.contracts.f0_validate import (
+    validate_identity_assignments_records,
     validate_person_tracks_df,
 )
 from bjj_pipeline.stages.stitch.d3_audit import append_audit_event
@@ -399,34 +402,67 @@ def run_d4_emit(
     # ------------------------------------------------------------------
     # 5) Identity assignments (dominant tag + conflict logging)
     # ------------------------------------------------------------------
+    tag_groups_all = compiled.constraints.get("must_link_groups", [])
     tag_groups = [
         g
-        for g in compiled.constraints.get("must_link_groups", [])
+        for g in tag_groups_all
         if isinstance(g.get("anchor_key"), str)
         and g["anchor_key"].startswith("tag:")
     ]
 
-    identity_records = []
+    identity_records: List[Dict[str, Any]] = []
     conflicts = 0
 
-    if not person_tracks_df.empty and tag_groups:
+    # Diagnostics to explain empty outputs
+    tag_tracklet_ids: Set[str] = set()
+    tag_anchor_keys_sample: List[str] = []
+    for g in tag_groups:
+        ak = g.get("anchor_key")
+        if isinstance(ak, str) and len(tag_anchor_keys_sample) < 5:
+            tag_anchor_keys_sample.append(ak)
+        for tid in g.get("tracklet_ids", []) or []:
+            if isinstance(tid, str):
+                tag_tracklet_ids.add(tid)
+
+    person_tracklet_ids: Set[str] = set()
+    if not person_tracks_df.empty and "tracklet_id" in person_tracks_df.columns:
+        person_tracklet_ids = set(
+            str(x) for x in person_tracks_df["tracklet_id"].dropna().unique()
+        )
+
+    overlap_tracklet_ids = sorted(tag_tracklet_ids.intersection(person_tracklet_ids))
+    overlap_sample = overlap_tracklet_ids[:10]
+    person_tracklet_sample = sorted(list(person_tracklet_ids))[:10]
+    tag_tracklet_sample = sorted(list(tag_tracklet_ids))[:10]
+
+    identity_assignment_reason = "emitted"
+    if person_tracks_df.empty:
+        identity_assignment_reason = "no_person_tracks"
+    elif not tag_groups:
+        identity_assignment_reason = "no_tag_groups"
+    elif not overlap_tracklet_ids:
+        identity_assignment_reason = "no_tracklet_overlap_between_tags_and_tracks"
+
+    if identity_assignment_reason == "emitted":
         frame_counts = (
             person_tracks_df.groupby(["person_id", "tracklet_id"])
             .size()
             .to_dict()
         )
 
+        created_at_ms = int(time.time() * 1000)
+
         for person_id in person_tracks_df["person_id"].unique():
             tag_scores: Dict[str, int] = {}
             for g in tag_groups:
-                tag = g["anchor_key"]
-                overlap = set(g.get("tracklet_ids", []))
+                anchor_key = g["anchor_key"]  # e.g. "tag:1"
+                overlap = set(g.get("tracklet_ids", []) or [])
                 score = 0
                 for (pid, tid), cnt in frame_counts.items():
                     if pid == person_id and tid in overlap:
                         score += int(cnt)
                 if score > 0:
-                    tag_scores[tag] = score
+                    tag_scores[anchor_key] = score
 
             if not tag_scores:
                 continue
@@ -436,35 +472,52 @@ def run_d4_emit(
                 key=lambda kv: (-kv[1], kv[0]),
             )
 
-            dominant_tag, dominant_score = sorted_tags[0]
+            dominant_anchor_key, dominant_score = sorted_tags[0]
             total = sum(tag_scores.values())
 
-            evidence = {
+            # anchor_key="tag:1" -> tag_id="1" (string)
+            tag_id = (
+                dominant_anchor_key.split("tag:", 1)[1]
+                if "tag:" in dominant_anchor_key
+                else dominant_anchor_key
+            )
+
+            evidence: Dict[str, Any] = {
+                "anchor_key": dominant_anchor_key,
                 "tag_scores": tag_scores,
-                "dominant_score": dominant_score,
-                "total_tag_frames": total,
+                "dominant_score": int(dominant_score),
+                "total_tag_frames": int(total),
             }
 
             if len(sorted_tags) > 1:
                 conflicts += 1
                 evidence["conflicts"] = [
-                    {"tag": t, "score": s} for t, s in sorted_tags[1:]
+                    {"anchor_key": t, "score": int(s)} for t, s in sorted_tags[1:]
                 ]
 
             identity_records.append(
                 {
-                    "person_id": person_id,
-                    "anchor_key": dominant_tag,
-                    "confidence": float(dominant_score) / float(total)
+                    "schema_version": SCHEMA_VERSION_DEFAULT,
+                    "artifact_type": "identity_assignment",
+                    "clip_id": manifest.clip_id,
+                    "camera_id": manifest.camera_id,
+                    "pipeline_version": manifest.pipeline_version,
+                    "created_at_ms": created_at_ms,
+                    "person_id": str(person_id),
+                    "tag_id": str(tag_id),
+                    "assignment_confidence": float(dominant_score) / float(total)
                     if total > 0
                     else 1.0,
                     "evidence": evidence,
                 }
             )
 
-    with open(layout.identity_assignments_jsonl(), "w") as f:
+    # Validate + write JSONL (empty list is allowed)
+    validate_identity_assignments_records(identity_records, expected_clip_id=manifest.clip_id)
+
+    with open(layout.identity_assignments_jsonl(), "w", encoding="utf-8") as f:
         for rec in identity_records:
-            f.write(json.dumps(rec) + "\n")
+            f.write(json.dumps(rec, sort_keys=True) + "\n")
 
     # ------------------------------------------------------------------
     # 6) Audit summary
@@ -478,8 +531,19 @@ def run_d4_emit(
         "n_person_tracks_rows": len(person_tracks_df),
         "n_identity_assignments": len(identity_records),
         "n_tag_conflicts": conflicts,
-    }
 
+        # Diagnostics for identity assignment emptiness
+        "identity_assignment_reason": identity_assignment_reason,
+        "n_must_link_groups_total": len(tag_groups_all) if isinstance(tag_groups_all, list) else 0,
+        "n_tag_groups_tag_prefix": len(tag_groups),
+        "tag_group_anchor_keys_sample": tag_anchor_keys_sample,
+        "n_tag_group_unique_tracklet_ids": len(tag_tracklet_ids),
+        "tag_group_tracklet_ids_sample": tag_tracklet_sample,
+        "n_person_tracks_unique_tracklet_ids": len(person_tracklet_ids),
+        "person_tracks_tracklet_ids_sample": person_tracklet_sample,
+        "n_overlap_tracklet_ids": len(overlap_tracklet_ids),
+        "overlap_tracklet_ids_sample": overlap_sample,
+    }
     # append_audit_event in this repo is keyword-only; support the common signatures.
     try:
         append_audit_event(layout=layout, event=event)

@@ -335,8 +335,23 @@ class StageAProcessor:
                     last_timestamp_ms=int(timestamp_ms),
                 )
 
-            # Always write a canonical mask (yolo_seg if gated; otherwise bbox_fallback)
-            mask_ref = self.writer.write_mask_npz(frame_index=frame_index, detection_id=det.detection_id, mask=det.mask)
+                # Optional: write canonical mask NPZ (yolo_seg if gated; otherwise bbox_fallback).
+                # Controlled by stages.stage_A.masks.write_yolo_masks (default: False).
+                write_yolo_masks = bool(
+                    _cfg_get(
+                        self.cfg,
+                        "stages.stage_A.masks.write_yolo_masks",
+                        _cfg_get(self.cfg, "masks.write_yolo_masks", False),
+                    )
+                )
+                if write_yolo_masks:
+                    mask_ref = self.writer.write_mask_npz(
+                        frame_index=frame_index,
+                        detection_id=det.detection_id,
+                        mask=det.mask,
+                    )
+                else:
+                    mask_ref = None
 
             self.writer.append_detection_row(
                 frame_index=frame_index,
