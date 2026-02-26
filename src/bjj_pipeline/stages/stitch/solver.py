@@ -42,6 +42,14 @@ def run_d3(*, config: Dict[str, Any], inputs: Dict[str, Any]) -> tuple[Any, Any]
 	if checkpoint is None:
 		checkpoint = _cfg_get(config, "stage_D.d3_checkpoint", "POC_0")
 
+	# Solver implementation toggle: default to ilp1 for stability.
+	# ilp2 is an alternate implementation (e.g., multi-commodity per tag work).
+	solver_impl = _cfg_get(
+		config,
+		"stages.stage_D.d3.solver_impl",
+		_cfg_get(config, "stage_D.d3.solver_impl", "ilp1"),
+	)
+
 	from bjj_pipeline.stages.stitch.d3_compile import compile_solver_inputs
 
 	_ = compile_solver_inputs(config=config, layout=layout, manifest=manifest, checkpoint=str(checkpoint))
@@ -50,7 +58,10 @@ def run_d3(*, config: Dict[str, Any], inputs: Dict[str, Any]) -> tuple[Any, Any]
 		return (_, None)
 
 	if str(checkpoint) == "POC_1":
-		from bjj_pipeline.stages.stitch.d3_ilp import solve_structure_ilp
+		if str(solver_impl) == "ilp2":
+			from bjj_pipeline.stages.stitch.d3_ilp2 import solve_structure_ilp2 as solve_structure_ilp
+		else:
+			from bjj_pipeline.stages.stitch.d3_ilp import solve_structure_ilp
 
 		# D3 — "explain each tracklet or pay a penalty": optional penalty from config.
 		# D3 — GROUP_TRACKLET boundary substitute window (frames)
@@ -84,14 +95,17 @@ def run_d3(*, config: Dict[str, Any], inputs: Dict[str, Any]) -> tuple[Any, Any]
 			manifest=manifest,
 			checkpoint=str(checkpoint),
 			unexplained_tracklet_penalty=float(penalty) if penalty is not None else None,
-			tag_fragment_start_penalty=tag_frag_pen_f,
-			tag_overlap_enforced=True,
 			group_boundary_window_frames=int(gbw_i),
 		)
 		return (_, res)
 
 	if str(checkpoint) == "POC_2_TAGS":
-		from bjj_pipeline.stages.stitch.d3_ilp import solve_structure_ilp_tags
+		if str(solver_impl) == "ilp2":
+			# ilp2 is an alternate solver implementation (planned: full multi-commodity flow per tag).
+			# For now it should remain explicitly enabled only when you are ready to A/B test.
+			from bjj_pipeline.stages.stitch.d3_ilp2 import solve_structure_ilp2 as solve_structure_ilp_tags
+		else:
+			from bjj_pipeline.stages.stitch.d3_ilp import solve_structure_ilp_tags
 
 		# D3 — "explain each tracklet or pay a penalty": optional penalty from config.
 		# D3 — GROUP_TRACKLET boundary substitute window (frames)
@@ -175,18 +189,7 @@ def run_d3(*, config: Dict[str, Any], inputs: Dict[str, Any]) -> tuple[Any, Any]
 			manifest=manifest,
 			checkpoint=str(checkpoint),
 			unexplained_tracklet_penalty=float(penalty) if penalty is not None else None,
-			unexplained_group_ping_penalty=float(unexplained_group_ping_penalty) if unexplained_group_ping_penalty is not None else None,
-			tag_fragment_start_penalty=tag_frag_pen_f,
-			tag_overlap_enforced=True,
 			group_boundary_window_frames=int(gbw_i),
-			penalty_ref_edge_cost_quantile=ref_q_f,
-			penalty_ref_edge_cost_min=ref_min_f,
-			solo_ping_miss_penalty_mult=solo_mult_f,
-			group_ping_miss_penalty_mult=group_mult_f,
-			solo_ping_miss_penalty_abs=solo_abs_f,
-			group_ping_miss_penalty_abs=group_abs_f,
-			tag_fragment_start_penalty_mult=frag_mult_f,
-			tag_fragment_start_penalty_abs=frag_abs_f,
 		)
 		return (_, res)
 
