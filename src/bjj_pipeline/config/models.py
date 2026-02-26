@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union, Literal
 
 from pydantic import BaseModel, Field
 from pydantic import ConfigDict
@@ -532,6 +532,14 @@ class StageD3Config(BaseModel):
     """Stage D3 (solver) configuration."""
 
     model_config = ConfigDict(extra="forbid")
+
+    # D3 solver implementation toggle.
+    # - ilp1: existing implementation in d3_ilp.py (default / stable)
+    # - ilp2: alternate implementation in d3_ilp2.py (experimental; e.g. tag multi-commodity work)
+    solver_impl: Literal["ilp1", "ilp2"] = Field(
+        default="ilp1",
+        description="Select D3 solver backend implementation (ilp1|ilp2).",
+    )
 
     # "Explain each tracklet OR pay a penalty":
     # We define a boolean per base_tracklet_id present in D1 SINGLE_TRACKLET nodes.

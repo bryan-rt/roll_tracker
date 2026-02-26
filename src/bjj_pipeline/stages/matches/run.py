@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any, Dict, Optional
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -77,12 +78,193 @@ def _max_gap_frames(cfg: Dict[str, Any]) -> int:
 		return 30
 
 
+def _load_identity_assignments(
+	*, path: Path, expected_clip_id: str
+) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Any]]:
+	"""
+	Load stage_D/identity_assignments.jsonl and choose the best assignment per person_id.
+
+	Rule:
+	- choose max assignment_confidence
+	- tie-break by tag_id lexicographically
+	- log duplicate cases (returned in stats)
+	"""
+	best: Dict[str, Dict[str, Any]] = {}
+	all_counts: Dict[str, int] = {}
+	duplicate_details: List[Dict[str, Any]] = []
+
+	if not path.exists():
+		return best, {
+			"exists": False,
+			"n_lines": 0,
+			"n_records": 0,
+			"n_best": 0,
+			"n_persons_with_duplicates": 0,
+			"duplicate_samples": [],
+		}
+
+	n_lines = 0
+	n_records = 0
+
+	with path.open("r", encoding="utf-8") as f:
+		for line in f:
+			line = line.strip()
+			if not line:
+				continue
+			n_lines += 1
+			try:
+				rec = json.loads(line)
+			except Exception:
+				# ignore malformed lines; Stage D should be clean, but we won't crash E3
+				continue
+
+			if not isinstance(rec, dict):
+				continue
+
+			# Accept only the identity_assignment artifact type
+			if rec.get("artifact_type") != "identity_assignment":
+				continue
+
+			clip_id = rec.get("clip_id")
+			if isinstance(clip_id, str) and clip_id != expected_clip_id:
+				# Different clip in same file (shouldn't happen) -> ignore
+				continue
+
+			person_id = rec.get("person_id")
+			tag_id = rec.get("tag_id")
+			conf = rec.get("assignment_confidence")
+
+			if not isinstance(person_id, str) or not isinstance(tag_id, str):
+				continue
+			try:
+				conf_f = float(conf)
+			except Exception:
+				conf_f = 0.0
+
+			n_records += 1
+			all_counts[person_id] = all_counts.get(person_id, 0) + 1
+
+			# choose best by (confidence desc, tag_id asc)
+			key = (conf_f, tag_id)
+
+			prev = best.get(person_id)
+			if prev is None:
+				rec2 = dict(rec)
+				rec2["_cmp"] = key
+				best[person_id] = rec2
+			else:
+				prev_key = prev.get("_cmp", (0.0, ""))
+				if key[0] > prev_key[0] or (key[0] == prev_key[0] and key[1] < prev_key[1]):
+					duplicate_details.append(
+						{
+							"person_id": person_id,
+							"kept": {"tag_id": tag_id, "assignment_confidence": conf_f},
+							"dropped": {
+								"tag_id": prev.get("tag_id"),
+								"assignment_confidence": float(prev_key[0]),
+							},
+						}
+					)
+					rec2 = dict(rec)
+					rec2["_cmp"] = key
+					best[person_id] = rec2
+				else:
+					duplicate_details.append(
+						{
+							"person_id": person_id,
+							"kept": {"tag_id": prev.get("tag_id"), "assignment_confidence": float(prev_key[0])},
+							"dropped": {"tag_id": tag_id, "assignment_confidence": conf_f},
+						}
+					)
+
+	# clean internal field
+	for v in best.values():
+		v.pop("_cmp", None)
+
+	n_persons_with_dupes = sum(1 for _, c in all_counts.items() if c > 1)
+
+	# keep audit payload bounded
+	dup_samples = duplicate_details[:10]
+
+	return best, {
+		"exists": True,
+		"n_lines": int(n_lines),
+		"n_records": int(n_records),
+		"n_best": int(len(best)),
+		"n_persons_with_duplicates": int(n_persons_with_dupes),
+		"duplicate_samples": dup_samples,
+	}
+
+
+def _apply_identity_enrichment(
+	*,
+	match_records: List[Dict[str, Any]],
+	best_by_person_id: Dict[str, Dict[str, Any]],
+) -> Dict[str, int]:
+	"""
+	Mutates match_records in-place by adding explicit null fields:
+	  evidence.april_tag_id_a / evidence.april_tag_id_b
+	Also attaches confidence + anchor_key if present in identity assignment evidence.
+	"""
+	labeled_a = 0
+	labeled_b = 0
+	total = 0
+
+	for rec in match_records:
+		if not isinstance(rec, dict):
+			continue
+		if rec.get("artifact_type") != "match_session":
+			continue
+
+		total += 1
+		pa = rec.get("person_id_a")
+		pb = rec.get("person_id_b")
+
+		ev = rec.get("evidence")
+		if not isinstance(ev, dict):
+			ev = {}
+			rec["evidence"] = ev
+
+		# Defaults: explicit nulls
+		ev["april_tag_id_a"] = None
+		ev["april_tag_id_b"] = None
+		ev["april_assignment_confidence_a"] = None
+		ev["april_assignment_confidence_b"] = None
+		ev["april_anchor_key_a"] = None
+		ev["april_anchor_key_b"] = None
+
+		if isinstance(pa, str) and pa in best_by_person_id:
+			a = best_by_person_id[pa]
+			ev["april_tag_id_a"] = a.get("tag_id")
+			ev["april_assignment_confidence_a"] = a.get("assignment_confidence")
+			a_ev = a.get("evidence")
+			if isinstance(a_ev, dict):
+				ev["april_anchor_key_a"] = a_ev.get("anchor_key")
+			labeled_a += 1
+
+		if isinstance(pb, str) and pb in best_by_person_id:
+			b = best_by_person_id[pb]
+			ev["april_tag_id_b"] = b.get("tag_id")
+			ev["april_assignment_confidence_b"] = b.get("assignment_confidence")
+			b_ev = b.get("evidence")
+			if isinstance(b_ev, dict):
+				ev["april_anchor_key_b"] = b_ev.get("anchor_key")
+			labeled_b += 1
+
+	return {
+		"n_sessions": int(total),
+		"n_labeled_a": int(labeled_a),
+		"n_labeled_b": int(labeled_b),
+	}
+
+
 def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 	"""Orchestrator entrypoint.
 
 	E0: plumbing + audit
 	E1: seed extraction (cap2 nodes)
 	E2: merge seeds per unordered pair + emit match_sessions.jsonl
+	E3: enrich with April tag labels from stage_D/identity_assignments.jsonl
 	"""
 	layout = inputs["layout"]
 	manifest = inputs["manifest"]
@@ -206,6 +388,32 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 				},
 			}
 		)
+
+	# -------------------
+	# E3: enrichment (April tag labels)
+	# -------------------
+	identity_path = layout.identity_assignments_jsonl()
+	best_by_person_id, ia_stats = _load_identity_assignments(
+		path=identity_path,
+		expected_clip_id=manifest.clip_id,
+	)
+	enrich_stats = _apply_identity_enrichment(
+		match_records=records,
+		best_by_person_id=best_by_person_id,
+	)
+
+	append_audit_event(
+		layout=layout,
+		event={
+			"artifact_type": "e3_identity_enrichment_summary",
+			"created_at_ms": _now_ms(),
+			"clip_id": manifest.clip_id,
+			"camera_id": manifest.camera_id,
+			"identity_assignments_path": str(identity_path),
+			"identity_assignments_stats": ia_stats,
+			"enrichment_stats": enrich_stats,
+		},
+	)
 
 	validate_match_sessions_records(records, expected_clip_id=manifest.clip_id)
 
