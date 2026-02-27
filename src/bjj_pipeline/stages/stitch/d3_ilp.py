@@ -18,7 +18,7 @@ import statistics
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Set, Tuple
+from typing import Any, Dict, List, Set, Tuple, Callable, Optional
 
 import pandas as pd
 from ortools.sat.python import cp_model
@@ -1762,6 +1762,9 @@ def solve_structure_ilp_core(
 	tag_fragment_start_penalty: float | None = None,
 	tag_overlap_enforced: bool = True,
 	group_boundary_window_frames: int = 10,
+	# --- Optional hook points (used by ilp2 for MCF scaffolding) ---
+	model_hook: Optional[Callable[..., Any]] = None,
+	post_solve_hook: Optional[Callable[..., None]] = None,
 ) -> ILPResult:
 	"""Pure core solver used by POC_1 (unit-test friendly; no I/O)."""
 	start = time.time()
@@ -1996,6 +1999,33 @@ def solve_structure_ilp_core(
 		nid = str(n["node_id"])
 		ins = [var_by_edge[eid] for eid in in_edges[nid]]
 		flow_in_by_node[nid] = sum(ins) if len(ins) > 0 else 0
+
+	# ------------------------------------------------------------------
+	# Optional hook: allow callers (e.g., d3_ilp2) to augment the compiled identity
+	# model with extra variables/constraints (e.g., tag MCF gating). This hook must
+	# be non-essential: failures must not affect solve feasibility.
+	# ------------------------------------------------------------------
+	_hook_ctx: Any = None
+	if model_hook is not None:
+		try:
+			_hook_ctx = model_hook(
+				model=model,
+				nodes=nodes,
+				edges=edges,
+				costs_df=costs_df,
+				constraints=constraints,
+				var_by_edge=var_by_edge,
+				edge_used=edge_used,
+				in_edges=in_edges,
+				out_edges=out_edges,
+				node_cap_eff=node_cap_eff,
+				use_flow_int=bool(use_flow_int),
+				scale=int(scale),
+				cost_int=cost_int,
+				debug_dir=debug_dir,
+			)
+		except Exception:
+			_hook_ctx = None
 
 	# ---- POC_2_TAGS: SOLO label variables + constraints ----
 	# We intentionally label ONLY capacity=1 SINGLE_TRACKLET nodes in v1.
@@ -2761,6 +2791,24 @@ def solve_structure_ilp_core(
 	if status in ("OPTIMAL", "FEASIBLE"):
 		obj_scaled = int(round(solver.ObjectiveValue()))
 		obj_value = float(obj_scaled) / float(scale)
+
+	# Optional hook: post-solve inspection (e.g., read tag-flow vars and emit debug).
+	if post_solve_hook is not None:
+		try:
+			post_solve_hook(
+				solver=solver,
+				status=str(status),
+				model=model,
+				nodes=nodes,
+				edges=edges,
+				var_by_edge=var_by_edge,
+				edge_used=edge_used,
+				scale=int(scale),
+				debug_dir=debug_dir,
+				hook_ctx=_hook_ctx,
+			)
+		except Exception:
+			pass
 
 	n_tracklets_total = int(len(drop_var_by_tid))
 	n_tracklets_explained = 0
