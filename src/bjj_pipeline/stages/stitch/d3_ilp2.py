@@ -16,9 +16,10 @@ Initial scaffolding goal:
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
+from ortools.sat.python import cp_model  # type: ignore
 
 from bjj_pipeline.contracts.f0_manifest import ClipManifest
 from bjj_pipeline.contracts.f0_paths import ClipOutputLayout
@@ -28,7 +29,7 @@ from bjj_pipeline.stages.stitch.d3_compile import CompiledInputs
 # Breadcrumb constants (written into audit + debug ledger copy).
 _SOLVER_IMPL: str = "ilp2"
 _SOLVER_MODULE: str = __name__
-_SOLVER_VERSION: str = "ilp2a2_explain_or_penalize"
+_SOLVER_VERSION: str = "mcf1_gating_only"
 
 
 @dataclass(frozen=True)
@@ -781,7 +782,10 @@ def _emit_mcf_tag_paths(
 	identity_flow_by_edge: Dict[str, int],
 	tag_flow_by_tag_edge: Dict[str, Dict[str, int]],
 ) -> Path:
-	"""Emit `_debug/d3_mcf_tag_paths.json` (schema v0.1.0)."""
+	"""Emit `_debug/d3_mcf_tag_paths.json` (schema v0.1.0).
+
+	MCF-1: tag flow vars exist but are gated and minimized to zero (no enforcement yet).
+	"""
 	tags_out: Dict[str, Any] = {}
 	tags = (tag_inputs or {}).get("tags", {}) if isinstance(tag_inputs, dict) else {}
 	pings = (tag_inputs or {}).get("pings", []) if isinstance(tag_inputs, dict) else []
@@ -801,6 +805,7 @@ def _emit_mcf_tag_paths(
 		info = tags.get(tk, {})
 		pids = info.get("pings", []) if isinstance(info, dict) else []
 		status = "inactive" if not pids else "present"
+		notes = ["mcf1_gating_only", "tag_flow_minimized_to_zero"]
 		tag_edges = tag_flow_by_tag_edge.get(tk, {})
 		selected_edges = []
 		for eid, fval in sorted(tag_edges.items()):
@@ -813,9 +818,17 @@ def _emit_mcf_tag_paths(
 			"bound_nodes": sorted(set(bound_nodes_by_tag.get(tk, []))),
 			"selected_edges": selected_edges,
 			"visited_nodes": [],
-			"notes": [],
+			"notes": notes,
 		}
 
+	n_nonzero = int(
+			sum(
+				1
+				for tk in tag_flow_by_tag_edge
+				for _eid, v in (tag_flow_by_tag_edge.get(tk, {}) or {}).items()
+				if int(v) > 0
+			)
+		)
 	payload: Dict[str, Any] = {
 		"schema_version": "mcf_tag_paths_v0.1.0",
 		"clip_id": manifest.clip_id,
@@ -825,6 +838,8 @@ def _emit_mcf_tag_paths(
 		"solver_module": _SOLVER_MODULE,
 		"solver_version": _SOLVER_VERSION,
 		"summary": {
+			"mcf_checkpoint": "MCF-1",
+			"n_tag_flow_nonzero_edges_total": n_nonzero,
 			"n_tags": int(len(tags_out)),
 			"n_pings": int(len(pings) if isinstance(pings, list) else 0),
 			"n_bound_pings": int(sum(1 for x in (pings or []) if isinstance(x, dict) and (x.get("binding") or {}).get("status") == "bound")),
@@ -837,34 +852,6 @@ def _emit_mcf_tag_paths(
 	return out_path
 
 
-def _solve_identity_delegate_ilp1(
-	*,
-	nodes_df: pd.DataFrame,
-	edges_df: pd.DataFrame,
-	costs_df: pd.DataFrame,
-	constraints: Dict[str, Any] | None,
-	debug_dir: Path | None,
-	emit_transparency: bool,
-	unexplained_tracklet_penalty: float | None,
-	group_boundary_window_frames: int,
-) -> ILPResult:
-	"""Temporary escape hatch: run identity solve via ILP1 core."""
-	from bjj_pipeline.stages.stitch.d3_ilp import solve_structure_ilp_core as _core
-	from bjj_pipeline.stages.stitch.d3_ilp import ILPResult as _ILP1Result
-
-	res1: _ILP1Result = _core(
-		nodes_df=nodes_df,
-		edges_df=edges_df,
-		costs_df=costs_df,
-		constraints=constraints,
-		debug_dir=debug_dir,
-		emit_transparency=emit_transparency,
-		unexplained_tracklet_penalty=unexplained_tracklet_penalty,
-		group_boundary_window_frames=int(group_boundary_window_frames),
-	)
-	return ILPResult(**res1.__dict__)
-
-
 def _solve_identity_ilp2_identity_only(
 	*,
 	nodes_df: pd.DataFrame,
@@ -875,8 +862,9 @@ def _solve_identity_ilp2_identity_only(
 	emit_transparency: bool,
 	unexplained_tracklet_penalty: float | None,
 	group_boundary_window_frames: int,
-) -> ILPResult:
-	"""ILP2-A identity-only solver (no ILP1 delegation).
+	tag_inputs: Optional[Dict[str, Any]] = None,
+) -> Tuple[ILPResult, Dict[str, Dict[str, int]]]:
+	"""ILP2-A identity-only solver (standalone; no ILP1 delegation).
 
 	Model:
 	  - Edge flow variables x_e (cap=1) or f_e (0..cap) for cap>1
@@ -895,6 +883,9 @@ def _solve_identity_ilp2_identity_only(
 	nodes = nodes_df.copy()
 	edges = edges_df.copy()
 	costs = costs_df.copy()
+
+	tag_flow_vars: Dict[str, Dict[str, Any]] = {}
+	tag_flow_by_tag_edge: Dict[str, Dict[str, int]] = {}
 
 	_require_columns(nodes, name="d1_graph_nodes", cols=["node_id", "node_type", "capacity"])
 	_require_columns(edges, name="d1_graph_edges", cols=["edge_id", "u", "v", "edge_type", "capacity"])
@@ -963,14 +954,14 @@ def _solve_identity_ilp2_identity_only(
 		continue_edges_by_base_pair[k] = sorted(set(continue_edges_by_base_pair[k]))
 
 	# OR-Tools model
-	from ortools.sat.python import cp_model
-
 	model = cp_model.CpModel()
 	flow_var: Dict[str, Any] = {}
 	used_var: Dict[str, Any] = {}
 	explained_var_by_tid: Dict[str, Any] = {}
+	edge_ids_sorted: List[str] = []
 
-	for eid in edges["edge_id"].astype(str).tolist():
+	edge_ids_sorted = sorted(edges["edge_id"].astype(str).tolist())
+	for eid in edge_ids_sorted:
 		cap = int(edge_cap_eff.get(eid, 1))
 		if cap <= 1:
 			x = model.NewBoolVar(f"x[{eid}]")
@@ -1069,6 +1060,31 @@ def _solve_identity_ilp2_identity_only(
 	except Exception:
 		group_semantics_debug = None
 
+	# --- MCF-1: tag flow variables (gated only) ---
+	# Create tf[tag, edge] in [0..cap_eff(edge)] and enforce tf <= identity_flow(edge).
+	# Add tiny objective tiebreaker to minimize all tf to 0 for determinism (no behavior change).
+	tag_keys: List[str] = []
+	if isinstance(tag_inputs, dict):
+		tags_obj = tag_inputs.get("tags")
+		if isinstance(tags_obj, dict):
+			tag_keys = sorted([str(k) for k in tags_obj.keys()])
+
+	# Create vars only if tags are present.
+	if tag_keys:
+		tag_index = {tk: i for i, tk in enumerate(tag_keys)}
+		edge_index = {eid: i for i, eid in enumerate(edge_ids_sorted)}
+		for tk in tag_keys:
+			tag_flow_vars[tk] = {}
+			tag_flow_by_tag_edge[tk] = {}
+			ki = int(tag_index[tk])
+			for eid in edge_ids_sorted:
+				cap = int(edge_cap_eff.get(eid, 1))
+				ei = int(edge_index[eid])
+				tf = model.NewIntVar(0, cap, f"tf[k{ki},e{ei}]")
+				# Gating: tag flow can only ride on identity flow
+				model.Add(tf <= flow_var[eid])
+				tag_flow_vars[tk][eid] = tf
+
 	# --- ILP2-A2: Explain-or-penalize (coverage) ---
 	# If a base_tracklet_id appears in SINGLE_TRACKLET nodes, either explain it (use any incident edge)
 	# or pay a penalty once per base_tracklet_id.
@@ -1152,7 +1168,7 @@ def _solve_identity_ilp2_identity_only(
 
 	# Objective: minimize scaled costs * flow + penalties
 	terms: List[Any] = []
-	for eid in edges["edge_id"].astype(str).tolist():
+	for eid in edge_ids_sorted:
 		ci = int(scaled_cost.get(str(eid), 0))
 		if ci == 0:
 			continue
@@ -1162,6 +1178,12 @@ def _solve_identity_ilp2_identity_only(
 	if unexplained_tracklet_penalty is not None and penalty_scaled is not None and penalty_scaled > 0:
 		for tid, uvar in unexplained_var_by_tid.items():
 			terms.append(int(penalty_scaled) * uvar)
+
+	# MCF-1 determinism: minimize all tag flow vars (keeps identity solution unchanged)
+	if tag_keys:
+		for tk in tag_keys:
+			for eid in edge_ids_sorted:
+				terms.append(tag_flow_vars[tk][eid])  # coefficient 1
 
 	model.Minimize(sum(terms) if terms else 0)
 
@@ -1185,7 +1207,7 @@ def _solve_identity_ilp2_identity_only(
 	flow_by_edge: Dict[str, int] = {}
 	selected: List[str] = []
 	if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-		for eid in edges["edge_id"].astype(str).tolist():
+		for eid in edge_ids_sorted:
 			val = int(solver.Value(flow_var[eid]))
 			if val > 0:
 				flow_by_edge[str(eid)] = int(val)
@@ -1232,6 +1254,17 @@ def _solve_identity_ilp2_identity_only(
 	obj_scaled: Optional[int] = int(round(solver.ObjectiveValue())) if status in (cp_model.OPTIMAL, cp_model.FEASIBLE) else None
 	obj_value: Optional[float] = (float(obj_scaled) / float(scale)) if obj_scaled is not None and scale > 0 else None
 
+	# Read back tag flows (sparse: only store non-zeros)
+	if tag_keys and status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+		for tk in tag_keys:
+			for eid in edge_ids_sorted:
+				try:
+					v = int(solver.Value(tag_flow_vars[tk][eid]))
+				except Exception:
+					v = 0
+				if v > 0:
+					tag_flow_by_tag_edge.setdefault(tk, {})[eid] = int(v)
+
 	return ILPResult(
 		status=status_s,
 		objective_scaled=obj_scaled,
@@ -1251,7 +1284,7 @@ def _solve_identity_ilp2_identity_only(
 		n_tracklets_unexplained=int(len(dropped_ids)),
 		dropped_tracklet_ids=list(sorted(dropped_ids)),
 		explained_tracklet_ids=list(sorted(explained_ids)),
-	)
+	), tag_flow_by_tag_edge
 
 
 def solve_structure_ilp2_core(
@@ -1264,30 +1297,13 @@ def solve_structure_ilp2_core(
 	emit_transparency: bool = True,
 	unexplained_tracklet_penalty: float | None = None,
 	group_boundary_window_frames: int = 10,
-	identity_backend: str = "delegate_ilp1",
-	# --- MCF per tag (future) ---
-	# tag_pings: list[dict] | None = None,
-	# tag_miss_penalty: float | None = None,
-	# ...
-) -> ILPResult:
+	tag_inputs: Optional[Dict[str, Any]] = None,
+) -> Tuple[ILPResult, Dict[str, Dict[str, int]]]:
 	"""Core solver for ILP2.
 
-	Identity backend:
-	  - "delegate_ilp1": temporary while ILP2-A is built
-	  - "ilp2_identity_only": ILP2-A ground-up identity model
+	NOTE: This module is ILP2-only. ILP1 delegation is intentionally removed.
 	"""
-	if identity_backend == "ilp2_identity_only":
-		return _solve_identity_ilp2_identity_only(
-			nodes_df=nodes_df,
-			edges_df=edges_df,
-			costs_df=costs_df,
-			constraints=constraints,
-			debug_dir=debug_dir,
-			emit_transparency=emit_transparency,
-			unexplained_tracklet_penalty=unexplained_tracklet_penalty,
-			group_boundary_window_frames=int(group_boundary_window_frames),
-		)
-	return _solve_identity_delegate_ilp1(
+	return _solve_identity_ilp2_identity_only(
 		nodes_df=nodes_df,
 		edges_df=edges_df,
 		costs_df=costs_df,
@@ -1296,6 +1312,7 @@ def solve_structure_ilp2_core(
 		emit_transparency=emit_transparency,
 		unexplained_tracklet_penalty=unexplained_tracklet_penalty,
 		group_boundary_window_frames=int(group_boundary_window_frames),
+		tag_inputs=tag_inputs,
 	)
 
 
@@ -1329,7 +1346,7 @@ def solve_structure_ilp2(
 		tag_inputs = None
 
 	t0 = time.time()
-	res = solve_structure_ilp2_core(
+	res, tag_flow_by_tag_edge = solve_structure_ilp2_core(
 		nodes_df=compiled.nodes_df,
 		edges_df=compiled.edges_df,
 		costs_df=compiled.costs_df,
@@ -1338,7 +1355,7 @@ def solve_structure_ilp2(
 		emit_transparency=True,
 		unexplained_tracklet_penalty=unexplained_tracklet_penalty,
 		group_boundary_window_frames=int(group_boundary_window_frames),
-		identity_backend=("ilp2_identity_only" if checkpoint == "POC_1" else "delegate_ilp1"),
+		tag_inputs=tag_inputs,
 	)
 	elapsed_ms = int(round((time.time() - t0) * 1000.0))
 
@@ -1397,7 +1414,7 @@ def solve_structure_ilp2(
 			checkpoint=checkpoint,
 			tag_inputs=tag_inputs,
 			identity_flow_by_edge=res.flow_by_edge_id,
-			tag_flow_by_tag_edge={},
+			tag_flow_by_tag_edge=(tag_flow_by_tag_edge or {}),
 		)
 	except Exception:
 		out_mcf_paths = None
