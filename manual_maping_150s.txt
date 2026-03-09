@@ -1,0 +1,76 @@
+ {
+    "Entity 1 & 2": {
+		group t1,
+        split into solo t1 & solo t4, 
+        t1 merges into t4 or becomes occluded,
+        t4 splits into t9 and t4 or solo t4 continues and solo t1 continue reconnect with solo t9,
+		t9 merges with t4 and then splits to t9 and t10 or t9 solo continue reconnects with t10,
+		t10 merges with t4 and splits into t4 and t13 or solo continue reconnects with t13,
+		t13 merges with t4 and dies as a group or t13 dies solo a little early and t4 dies shortly after,
+        group t4 occludes and continues as group t19,
+        group t19 occludesand continues as group t20,
+        t20 splits into t20 and t23,
+        t20 either merges with t23 or continues as a solo node into t24,
+        t23 either persists as a solo node or it split from a group node into t24 and t23,
+        t31 seed ontop of t23 and t23 dies shortly after while t31 persists as a solo node,
+        t24 and t31 merge into t24 as a group node,
+        t24 dies as a group node from low yolo score and continues as a groupish node in t40,
+        t40 splits into t40 and t48,
+        t54 seeds on part of t40 covering part of the same person - t40 eventualy dies and t54 persists as a solo node of the same person,
+        t54 and t48 merge into t48 as a group node,
+        t48 splits into t57 and t48
+}	
+
+    "entity 3 & 4": {
+		solo t5 and solo t6,
+		t5 merges with t6,
+		t6 splits into t6 and t16,
+        t6 and t16 merge into t6,
+        t6 group splits into t6 and t22,
+        t6 occludes and continues as t29,
+        t29 and t22 merge into group t29,
+        t29 splits into t29 and t55,
+        t55 merges into t29 group,
+        t29 group occludes and continues as group t58
+}
+
+    "entity 5 & 6": {
+		t2 continue reconnects with t15,
+        t15 splits into t15 and t18,
+        t18 merges into t15 group,
+        t15 group splits into t15 and t21,
+        t21 merges into t15 group before t15 incorrectly jumps to a different group,
+        t26 group seeded where t15 used to be,
+        t26 dies and t30 continues,
+        t30 splits into t30 and t34,
+        t32 jumps from a different group ontop of t30 and eventually t32 dies while t30 persists as a solo node,
+        t35 jumps from other group ontop of t32 and t32 dies while t35 persists as a solo node,
+        t34 and t35 merge into group t35,
+        t35 splits into t35 and t39,
+        t35 and t39 merge into group t35,
+        t35 splits into t35 and t49,
+        t35 and t49 merge into group t35,
+        t35 dies as a group and continues as t56 as a group 
+}
+
+
+
+    "entity 7 & 8": {
+		group t3,
+		t3 splits into t3 and t7,
+		t7 merges into t3 group,
+		t3 group splits into t3 and t8,
+		t8 merges into t3 group,
+		t3 group gets occluded,
+		t11 is the group continuation of group t3,
+		t14 is the group continuation of group t11,
+        t14 group gets occluded,
+        t15 jumps to cover what used to be group t14,
+        t15 dies as a group and continues as a groupish node in t28,
+        t28 dies and continues as groupish node in t32,
+        t32 dies and continues as groupish node t41,
+        t41 dies and continues as groupish node t51,
+        t51 dies and continues as groupish node t59
+}
+
+}
