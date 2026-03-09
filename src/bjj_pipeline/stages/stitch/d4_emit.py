@@ -5,7 +5,7 @@ import math
 import time
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Any, Dict, List, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 import pandas as pd
@@ -43,6 +43,7 @@ def _extract_entity_paths_format_a(
     nodes_df: pd.DataFrame,
     edges_df: pd.DataFrame,
     flow_by_edge_id: Dict[str, int],
+    realized_group_pairings: Optional[List[Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Lightweight reimplementation of entity extraction using selected edges.
@@ -107,6 +108,38 @@ def _extract_entity_paths_format_a(
     for u in list(adj.keys()):
         adj[u].sort(key=_edge_sort_key)
 
+    # D3-guided pairing hints for capacity-2 GROUP/GROUPISH nodes.
+    # Keyed by (group_node_id, inbound_edge_id) -> preferred outbound_edge_id.
+    realized_group_pairings = realized_group_pairings or []
+    pair_hint_by_group_and_in_edge: Dict[tuple[str, str], str] = {}
+    for rec in realized_group_pairings:
+        if not isinstance(rec, dict):
+            continue
+        group_node_id = rec.get("group_node_id")
+        in_edge_id = rec.get("in_edge_id")
+        out_edge_id = rec.get("out_edge_id")
+        if group_node_id is None or in_edge_id is None or out_edge_id is None:
+            continue
+        k = (str(group_node_id), str(in_edge_id))
+        v = str(out_edge_id)
+        # Deterministic collision handling: keep lexicographically smallest out-edge.
+        if k not in pair_hint_by_group_and_in_edge or v < pair_hint_by_group_and_in_edge[k]:
+            pair_hint_by_group_and_in_edge[k] = v
+
+    def _pick_next_edge(*, curr_node: str, prev_edge_id: Optional[str]) -> Optional[Dict[str, Any]]:
+        # First try D3-guided pairing when traversing a GROUP/GROUPISH node via a known inbound edge.
+        if prev_edge_id is not None:
+            hinted = pair_hint_by_group_and_in_edge.get((str(curr_node), str(prev_edge_id)))
+            if hinted is not None and remaining.get(hinted, 0) > 0:
+                for cand in adj.get(curr_node, []):
+                    if str(cand["edge_id"]) == hinted:
+                        return cand
+        # Fallback to current deterministic greedy behavior.
+        for cand in adj.get(curr_node, []):
+            if remaining.get(cand["edge_id"], 0) > 0:
+                return cand
+        return None
+
     # Total number of path units is sum of flow on SOURCE outgoing edges (k definition)
     k = 0
     for er in adj.get("SOURCE", []):
@@ -117,19 +150,14 @@ def _extract_entity_paths_format_a(
     for _ in range(k):
         cur = "SOURCE"
         steps: List[Dict[str, Any]] = []
+        prev_edge_id: Optional[str] = None
 
         # Walk until SINK or dead-end
         guard = 0
         while cur != "SINK" and guard < 100000:
             guard += 1
 
-            outs = adj.get(cur, [])
-            # pick first edge with remaining flow
-            chosen = None
-            for er in outs:
-                if remaining.get(er["edge_id"], 0) > 0:
-                    chosen = er
-                    break
+            chosen = _pick_next_edge(curr_node=cur, prev_edge_id=prev_edge_id)
 
             if chosen is None:
                 # dead-end for this unit; stop path (shouldn't happen if graph is consistent)
@@ -150,6 +178,7 @@ def _extract_entity_paths_format_a(
                     "v_node": node_meta.get(v, {"node_id": v}),
                 }
             )
+            prev_edge_id = str(chosen["edge_id"])
             cur = v
 
         entities.append({"steps": steps})
@@ -250,6 +279,7 @@ def run_d4_emit(
         nodes_df=nodes_df,
         edges_df=edges_df,
         flow_by_edge_id=flow_by_edge_id,
+        realized_group_pairings=list(getattr(res, "realized_group_pairings", []) or []),
     )
 
     # ------------------------------------------------------------------

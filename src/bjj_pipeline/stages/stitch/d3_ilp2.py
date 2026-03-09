@@ -6,11 +6,12 @@ This module is an *alternate* D3 solver implementation intended to replace the
 current POC_2_TAGS "node label" formulation with a multi-commodity flow (MCF)
 overlay per AprilTag.
 
-Initial scaffolding goal:
-	- Provide a drop-in ILPResult and wrappers compatible with Stage D3/D4 wiring.
-	- Delegate to the existing d3_ilp.solve_structure_ilp_core for now, so we can
-		toggle between implementations without behavior changes.
-	- Keep this file intentionally small; port only what is needed as we migrate.
+Current goal:
+	- Provide a standalone ILP2 solver for Stage D3 with no ILP1 delegation.
+	- Solve identity flow on the D1 graph, then overlay binary per-tag commodity
+		threads constrained by identity flow capacity.
+	- Allow sparse AprilTag pings to bind to SINGLE / GROUP / GROUPISH nodes so
+		group-derived observations remain available to the solver and debug artifacts.
 """
 
 import time
@@ -29,7 +30,7 @@ from bjj_pipeline.stages.stitch.d3_compile import CompiledInputs
 # Breadcrumb constants (written into audit + debug ledger copy).
 _SOLVER_IMPL: str = "ilp2"
 _SOLVER_MODULE: str = __name__
-_SOLVER_VERSION: str = "mcf1_gating_only"
+_SOLVER_VERSION: str = "mcf3b_group_pair_steering"
 
 
 @dataclass(frozen=True)
@@ -61,6 +62,8 @@ class ILPResult:
 	# Deterministic lists for full transparency
 	dropped_tracklet_ids: List[str]
 	explained_tracklet_ids: List[str]
+	# D4 handoff: realized local in/out pairings through GROUP/GROUPISH nodes
+	realized_group_pairings: List[Dict[str, Any]]
 
 
 def _debug_dir(layout: ClipOutputLayout) -> Path:
@@ -306,6 +309,13 @@ def _emit_ilp2_group_semantics_debug(*, debug_dir: Path, payload: Dict[str, Any]
 def _emit_ilp2_explain_or_penalize_debug(*, debug_dir: Path, payload: Dict[str, Any]) -> Path:
 	"""Emit `_debug/d3_ilp2_explain_or_penalize.json` (dev-only evidence artifact)."""
 	out = debug_dir / "d3_ilp2_explain_or_penalize.json"
+	_write_json_atomic(path=out, payload=payload)
+	return out
+
+
+def _emit_ilp2_tag_pair_preferences_debug(*, debug_dir: Path, payload: Dict[str, Any]) -> Path:
+	"""Emit `_debug/d3_ilp2_tag_pair_preferences.json` for local tag-consistent pair steering."""
+	out = debug_dir / "d3_ilp2_tag_pair_preferences.json"
 	_write_json_atomic(path=out, payload=payload)
 	return out
 
@@ -653,7 +663,199 @@ def _extract_must_link_groups_from_constraints(constraints: Dict[str, Any] | Non
 			out[tk] = [str(x) for x in v]
 		else:
 			out[tk] = [str(v)]
+	for tk in list(out.keys()):
+		vals = []
+		for x in out.get(tk, []):
+			sx = str(x)
+			if sx.strip() == "" or sx.strip().lower() == "none":
+				continue
+			vals.append(sx)
+		out[tk] = sorted(set(vals))
 	return out
+
+def _infer_ping_miss_penalty_unscaled(*, constraints: Dict[str, Any] | None) -> float:
+	"""Best-effort ping miss penalty (unscaled float, before cost_scale).
+
+	Preference order (if present in constraints dict):
+	  1) solo_ping_miss_penalty_abs
+	  2) solo_ping_miss_penalty_mult * penalty_ref_edge_cost
+	  3) default 50.0
+
+	This keeps ILP2 runnable even when compile doesn't yet forward all config-derived fields.
+	"""
+	if not constraints or not isinstance(constraints, dict):
+		return 50.0
+	abs_v = constraints.get("solo_ping_miss_penalty_abs")
+	if abs_v is not None:
+		try:
+			return float(abs_v)
+		except Exception:
+			pass
+	mult_v = constraints.get("solo_ping_miss_penalty_mult")
+	ref_v = constraints.get("penalty_ref_edge_cost")
+	if mult_v is not None and ref_v is not None:
+		try:
+			return float(mult_v) * float(ref_v)
+		except Exception:
+			pass
+	return 50.0
+
+def _extract_bound_ping_records(tag_inputs: Dict[str, Any] | None) -> List[Dict[str, Any]]:
+	"""Return list of bound pings with (tag_key, ping_id, node_id).
+
+	Only pings with binding.status == "bound" and binding.chosen.node_id are returned.
+	"""
+	out: List[Dict[str, Any]] = []
+	if not isinstance(tag_inputs, dict):
+		return out
+	pings = tag_inputs.get("pings")
+	if not isinstance(pings, list):
+		return out
+	for p in pings:
+		if not isinstance(p, dict):
+			continue
+		b = p.get("binding") or {}
+		if not isinstance(b, dict):
+			continue
+		if str(b.get("status")) != "bound":
+			continue
+		ch = b.get("chosen") or {}
+		if not isinstance(ch, dict):
+			continue
+		node_id = ch.get("node_id")
+		if node_id is None:
+			continue
+		tag_key = p.get("tag_key")
+		ping_id = p.get("ping_id")
+		if tag_key is None or ping_id is None:
+			continue
+		source = p.get("source") or {}
+		if not isinstance(source, dict):
+			source = {}
+		chosen_node_type = ch.get("node_type")
+		match_role = ch.get("match_role")
+		frame_index = p.get("frame_index")
+		try:
+			frame_index_i = int(frame_index) if frame_index is not None else None
+		except Exception:
+			frame_index_i = None
+		out.append(
+			{
+				"tag_key": str(tag_key),
+				"ping_id": str(ping_id),
+				"node_id": str(node_id),
+				"node_type": (str(chosen_node_type) if chosen_node_type is not None else None),
+				"match_role": (str(match_role) if match_role is not None else None),
+				"frame_index": frame_index_i,
+				"raw_index": source.get("raw_index"),
+			}
+		)
+	# Deterministic ordering
+	out.sort(key=lambda r: (str(r["tag_key"]), str(r["ping_id"]), str(r["node_id"])))
+	return out
+
+
+def _build_tag_evidence_by_node(
+	*,
+	bound_pings: List[Dict[str, Any]],
+	tag_must_link_resolved_nodes: Dict[str, List[str]],
+) -> Dict[str, Dict[str, List[str]]]:
+	"""Collect graph-grounded tag evidence on nodes.
+
+	Returns:
+	  node_id -> tag_key -> sorted list of evidence source labels
+	"""
+	node_to_tags: Dict[str, Dict[str, List[str]]] = {}
+	for bp in bound_pings:
+		nid = bp.get("node_id")
+		tk = bp.get("tag_key")
+		if nid is None or tk is None:
+			continue
+		node_to_tags.setdefault(str(nid), {}).setdefault(str(tk), []).append("bound_ping")
+	for tk, node_ids in tag_must_link_resolved_nodes.items():
+		for nid in node_ids:
+			node_to_tags.setdefault(str(nid), {}).setdefault(str(tk), []).append("resolved_must_link")
+	for nid in list(node_to_tags.keys()):
+		for tk in list(node_to_tags[nid].keys()):
+			node_to_tags[nid][tk] = sorted(set(str(x) for x in node_to_tags[nid][tk]))
+	return node_to_tags
+
+
+def _build_group_tag_pair_preferences(
+	*,
+	nodes_df: pd.DataFrame,
+	edges_df: pd.DataFrame,
+	in_edges_by_node: Dict[str, List[str]],
+	out_edges_by_node: Dict[str, List[str]],
+	edge_u: Dict[str, str],
+	edge_v: Dict[str, str],
+	edge_type: Dict[str, str],
+	node_tag_evidence: Dict[str, Dict[str, List[str]]],
+) -> List[Dict[str, Any]]:
+	"""Build preferred local in/out pairings through GROUP/GROUPISH nodes.
+
+	A preferred pairing is created when the source node of an inbound edge and the
+	destination node of an outbound edge both carry evidence for the same tag.
+	"""
+	node_type_by_id: Dict[str, str] = {}
+	for _, row in nodes_df.iterrows():
+		node_type_by_id[str(row["node_id"])] = str(row["node_type"])
+
+	records: List[Dict[str, Any]] = []
+	seen: set[tuple[str, str, str, str]] = set()
+	for _, row in nodes_df.iterrows():
+		group_nid = str(row["node_id"])
+		group_nt = str(row["node_type"])
+		if group_nt not in ("NodeType.GROUP_TRACKLET", "NodeType.GROUPISH_TRACKLET"):
+			continue
+		in_edges = sorted(set(str(e) for e in (in_edges_by_node.get(group_nid, []) or [])))
+		out_edges = sorted(set(str(e) for e in (out_edges_by_node.get(group_nid, []) or [])))
+		for in_eid in in_edges:
+			in_src = str(edge_u.get(in_eid, ""))
+			if in_src in ("", "SOURCE", "SINK", group_nid):
+				continue
+			in_src_nt = node_type_by_id.get(in_src, "UNKNOWN")
+			if in_src_nt == "UNKNOWN":
+				continue
+			in_tags = node_tag_evidence.get(in_src, {})
+			if not in_tags:
+				continue
+			for out_eid in out_edges:
+				out_dst = str(edge_v.get(out_eid, ""))
+				if out_dst in ("", "SOURCE", "SINK", group_nid):
+					continue
+				out_dst_nt = node_type_by_id.get(out_dst, "UNKNOWN")
+				if out_dst_nt == "UNKNOWN":
+					continue
+				out_tags = node_tag_evidence.get(out_dst, {})
+				if not out_tags:
+					continue
+				shared_tags = sorted(set(in_tags.keys()) & set(out_tags.keys()))
+				for tk in shared_tags:
+					key = (group_nid, tk, in_eid, out_eid)
+					if key in seen:
+						continue
+					seen.add(key)
+					records.append(
+						{
+							"pair_id": f"{group_nid}|{tk}|{in_eid}|{out_eid}",
+							"group_node_id": group_nid,
+							"group_node_type": group_nt,
+							"tag_key": tk,
+							"in_edge_id": in_eid,
+							"in_edge_type": str(edge_type.get(in_eid, "")),
+							"in_node_id": in_src,
+							"in_node_type": in_src_nt,
+							"out_edge_id": out_eid,
+							"out_edge_type": str(edge_type.get(out_eid, "")),
+							"out_node_id": out_dst,
+							"out_node_type": out_dst_nt,
+							"in_sources": list(in_tags.get(tk, [])),
+							"out_sources": list(out_tags.get(tk, [])),
+							"preference_kind": "tag_consistent_pair",
+						}
+					)
+	return sorted(records, key=lambda r: (str(r["group_node_id"]), str(r["tag_key"]), str(r["in_edge_id"]), str(r["out_edge_id"])))
 
 
 def _emit_mcf_tag_inputs(
@@ -671,33 +873,92 @@ def _emit_mcf_tag_inputs(
 	pings_raw = _extract_tag_pings_from_constraints(constraints)
 	must_link = _extract_must_link_groups_from_constraints(constraints)
 
-	# Best-effort SINGLE_TRACKLET index for binding (by base_tracklet_id + span).
+	# Best-effort node index for binding (by tracklet_id + span).
+	#
+	# Goal: allow pings to bind not only to SINGLE_TRACKLET, but also GROUP_TRACKLET and
+	# GROUPISH_TRACKLET nodes so tags can anchor through group/groupish observations.
 	index_rows: List[Dict[str, Any]] = []
 	try:
+		group_member_roles_seen: Dict[str, int] = {}
+
 		df = nodes_df.copy()
 		df["node_id"] = df["node_id"].astype(str)
 		df["node_type"] = df["node_type"].astype(str)
+
+		# Support both historical and current column names.
+		start_col = "start_frame" if "start_frame" in df.columns else ("frame_start" if "frame_start" in df.columns else None)
+		end_col = "end_frame" if "end_frame" in df.columns else ("frame_end" if "frame_end" in df.columns else None)
+		if start_col is not None:
+			df[start_col] = pd.to_numeric(df[start_col], errors="coerce")
+		if end_col is not None:
+			df[end_col] = pd.to_numeric(df[end_col], errors="coerce")
+
+		def _sf_ef(row_obj: Any) -> tuple[Optional[int], Optional[int]]:
+			sf = getattr(row_obj, start_col) if start_col is not None and hasattr(row_obj, start_col) else None
+			ef = getattr(row_obj, end_col) if end_col is not None and hasattr(row_obj, end_col) else None
+			sfi = int(sf) if sf is not None and pd.notna(sf) else None
+			efi = int(ef) if ef is not None and pd.notna(ef) else None
+			return sfi, efi
+
+		# SINGLE_TRACKLET: base_tracklet_id
 		single = df[df["node_type"] == "NodeType.SINGLE_TRACKLET"].copy()
 		if "base_tracklet_id" in single.columns:
 			single["base_tracklet_id"] = single["base_tracklet_id"].astype(str)
-		if "frame_start" in single.columns:
-			single["frame_start"] = pd.to_numeric(single["frame_start"], errors="coerce")
-		if "frame_end" in single.columns:
-			single["frame_end"] = pd.to_numeric(single["frame_end"], errors="coerce")
 		for r in single.itertuples(index=False):
+			sfi, efi = _sf_ef(r)
 			index_rows.append(
 				{
 					"node_id": str(getattr(r, "node_id")),
-					"base_tracklet_id": str(getattr(r, "base_tracklet_id", "")) if hasattr(r, "base_tracklet_id") else None,
-					"frame_start": int(getattr(r, "frame_start")) if hasattr(r, "frame_start") and pd.notna(getattr(r, "frame_start")) else None,
-					"frame_end": int(getattr(r, "frame_end")) if hasattr(r, "frame_end") and pd.notna(getattr(r, "frame_end")) else None,
+					"node_type": "NodeType.SINGLE_TRACKLET",
+					"member_tracklet_id": (str(getattr(r, "base_tracklet_id")) if hasattr(r, "base_tracklet_id") else None),
+					"member_role": "base_tracklet_id",
+					"frame_start": sfi,
+					"frame_end": efi,
 				}
 			)
+
+		# GROUP/GROUPISH: allow binding by carrier/opponent/etc metadata
+		group = df[df["node_type"].isin(["NodeType.GROUP_TRACKLET", "NodeType.GROUPISH_TRACKLET"])].copy()
+		for r in group.itertuples(index=False):
+			sfi, efi = _sf_ef(r)
+			nt = str(getattr(r, "node_type"))
+			cands: List[tuple[str, Optional[str]]] = []
+			for key in (
+				"carrier_tracklet_id",
+				"disappearing_tracklet_id",
+				"new_tracklet_id",
+				"paired_tracklet_id",
+				"opponent_tracklet_id",
+				"partner_tracklet_id",
+				"other_tracklet_id",
+			):
+				if hasattr(r, key):
+					val = getattr(r, key)
+					if val is None:
+						continue
+					vs = str(val).strip()
+					if vs == "" or vs.lower() == "none":
+						continue
+					group_member_roles_seen[str(key)] = int(group_member_roles_seen.get(str(key), 0)) + 1
+					cands.append((key, vs))
+			for role, tid in cands:
+				index_rows.append(
+					{
+						"node_id": str(getattr(r, "node_id")),
+						"node_type": nt,
+						"member_tracklet_id": str(tid),
+						"member_role": str(role),
+						"frame_start": sfi,
+						"frame_end": efi,
+					}
+				)
 	except Exception:
 		index_rows = []
+		group_member_roles_seen = {}
 
 	normalized_pings: List[Dict[str, Any]] = []
 	tag_to_ping_ids: Dict[str, List[str]] = {}
+	tag_summaries: Dict[str, Dict[str, Any]] = {}
 	for i, p in enumerate(pings_raw):
 		if not isinstance(p, dict):
 			continue
@@ -713,11 +974,24 @@ def _emit_mcf_tag_inputs(
 		tid_s = str(tid) if tid is not None else None
 		ping_id = f"{tag_key}@frame:{frame_i if frame_i is not None else 'na'}#{i}"
 
+		tag_summaries.setdefault(
+			tag_key,
+			{
+				"n_pings": 0,
+				"n_bound_pings": 0,
+				"n_bound_single_pings": 0,
+				"n_bound_group_pings": 0,
+				"n_bound_groupish_pings": 0,
+				"n_multi_candidate_pings": 0,
+				"n_tiebreak_bound_pings": 0,
+			},
+		)
+		tag_summaries[tag_key]["n_pings"] = int(tag_summaries[tag_key]["n_pings"]) + 1
 		binding: Dict[str, Any] = {"status": "unbound", "candidates": [], "chosen": None, "notes": []}
 		if frame_i is not None and tid_s is not None and index_rows:
 			cands = []
 			for b in index_rows:
-				if b.get("base_tracklet_id") != tid_s:
+				if b.get("member_tracklet_id") != tid_s:
 					continue
 				fs = b.get("frame_start")
 				fe = b.get("frame_end")
@@ -727,18 +1001,56 @@ def _emit_mcf_tag_inputs(
 					cands.append(
 						{
 							"node_id": str(b.get("node_id")),
-							"node_type": "NodeType.SINGLE_TRACKLET",
+							"node_type": str(b.get("node_type") or "NodeType.SINGLE_TRACKLET"),
 							"span": {"start": int(fs), "end": int(fe)},
 							"reason": "contains_frame",
+							"match_role": str(b.get("member_role") or ""),
 						}
 					)
 			binding["candidates"] = cands
-			if len(cands) == 1:
+			if len(cands) >= 1:
+				# Deterministic tie-break:
+				# Prefer GROUPISH -> GROUP -> SINGLE, then shortest span, then node_id.
+				prio = {"NodeType.GROUPISH_TRACKLET": 0, "NodeType.GROUP_TRACKLET": 1, "NodeType.SINGLE_TRACKLET": 2}
+				def _score(c: Dict[str, Any]) -> tuple[int, int, str]:
+					nt = str(c.get("node_type"))
+					sp = c.get("span") or {}
+					try:
+						span_len = int(sp.get("end")) - int(sp.get("start"))
+					except Exception:
+						span_len = 10**9
+					return (int(prio.get(nt, 9)), int(span_len), str(c.get("node_id")))
+				cands_sorted = sorted(cands, key=_score)
+				chosen = cands_sorted[0]
+				chosen_nt = str(chosen.get("node_type") or "NodeType.SINGLE_TRACKLET")
+				chosen_reason = "unique_candidate" if len(cands) == 1 else "tiebreak"
 				binding["status"] = "bound"
-				binding["chosen"] = {"node_id": cands[0]["node_id"], "reason": "unique_candidate"}
-			elif len(cands) > 1:
-				binding["status"] = "ambiguous"
-				binding["notes"].append("multiple candidates contain frame")
+				binding["chosen"] = {
+					"node_id": chosen["node_id"],
+					"node_type": chosen_nt,
+					"match_role": chosen.get("match_role"),
+					"span": dict(chosen.get("span") or {}),
+					"reason": chosen_reason,
+				}
+				binding["candidate_count"] = int(len(cands))
+				binding["chosen_node_type"] = chosen_nt
+				binding["chosen_match_role"] = chosen.get("match_role")
+				tag_summaries[tag_key]["n_bound_pings"] = int(tag_summaries[tag_key]["n_bound_pings"]) + 1
+				if len(cands) > 1:
+					tag_summaries[tag_key]["n_multi_candidate_pings"] = int(tag_summaries[tag_key]["n_multi_candidate_pings"]) + 1
+					tag_summaries[tag_key]["n_tiebreak_bound_pings"] = int(tag_summaries[tag_key]["n_tiebreak_bound_pings"]) + 1
+				if len(cands) > 1:
+					binding["notes"].append("multiple candidates contain frame; chose by priority+span")
+				if chosen_nt == "NodeType.GROUPISH_TRACKLET":
+					tag_summaries[tag_key]["n_bound_groupish_pings"] = int(tag_summaries[tag_key]["n_bound_groupish_pings"]) + 1
+				elif chosen_nt == "NodeType.GROUP_TRACKLET":
+					tag_summaries[tag_key]["n_bound_group_pings"] = int(tag_summaries[tag_key]["n_bound_group_pings"]) + 1
+				else:
+					tag_summaries[tag_key]["n_bound_single_pings"] = int(tag_summaries[tag_key]["n_bound_single_pings"]) + 1
+			else:
+				binding["candidate_count"] = 0
+		else:
+			binding["candidate_count"] = 0
 
 		norm = {
 			"ping_id": ping_id,
@@ -754,7 +1066,55 @@ def _emit_mcf_tag_inputs(
 	tags: Dict[str, Any] = {}
 	all_tags = sorted(set(list(tag_to_ping_ids.keys()) + list(must_link.keys())))
 	for tk in all_tags:
-		tags[tk] = {"tag_key": tk, "must_link_tracklets": sorted(set(must_link.get(tk, []))), "pings": tag_to_ping_ids.get(tk, [])}
+		tag_summary = dict(tag_summaries.get(tk, {}))
+		ml = sorted(set(must_link.get(tk, [])))
+		tags[tk] = {
+			"tag_key": tk,
+			"must_link_tracklets": ml,
+			"has_must_link_tracklets": bool(len(ml) > 0),
+			"pings": tag_to_ping_ids.get(tk, []),
+			"summary": {
+				"n_pings": int(tag_summary.get("n_pings", 0)),
+				"n_bound_pings": int(tag_summary.get("n_bound_pings", 0)),
+				"n_bound_single_pings": int(tag_summary.get("n_bound_single_pings", 0)),
+				"n_bound_group_pings": int(tag_summary.get("n_bound_group_pings", 0)),
+				"n_bound_groupish_pings": int(tag_summary.get("n_bound_groupish_pings", 0)),
+				"n_multi_candidate_pings": int(tag_summary.get("n_multi_candidate_pings", 0)),
+				"n_tiebreak_bound_pings": int(tag_summary.get("n_tiebreak_bound_pings", 0)),
+			},
+		}
+
+	n_bound_single = 0
+	n_bound_group = 0
+	n_bound_groupish = 0
+	n_unbound = 0
+	n_multi_candidate_pings = 0
+	n_tiebreak_bound = 0
+	for x in normalized_pings:
+		if not isinstance(x, dict):
+			continue
+		b = x.get("binding") or {}
+		if not isinstance(b, dict):
+			continue
+		status = str(b.get("status"))
+		if status != "bound":
+			n_unbound += 1
+			continue
+		chosen = b.get("chosen") or {}
+		if not isinstance(chosen, dict):
+			n_unbound += 1
+			continue
+		nt = str(chosen.get("node_type") or "")
+		if nt == "NodeType.GROUPISH_TRACKLET":
+			n_bound_groupish += 1
+		elif nt == "NodeType.GROUP_TRACKLET":
+			n_bound_group += 1
+		else:
+			n_bound_single += 1
+		if int(b.get("candidate_count", 0)) > 1:
+			n_multi_candidate_pings += 1
+		if str(chosen.get("reason")) == "tiebreak":
+			n_tiebreak_bound += 1
 
 	payload: Dict[str, Any] = {
 		"schema_version": "mcf_tag_inputs_v0.1.0",
@@ -765,6 +1125,13 @@ def _emit_mcf_tag_inputs(
 			"n_tags": int(len(tags)),
 			"n_pings": int(len(normalized_pings)),
 			"n_bound_pings": int(sum(1 for x in normalized_pings if x.get("binding", {}).get("status") == "bound")),
+			"n_bound_single": int(n_bound_single),
+			"n_bound_group": int(n_bound_group),
+			"n_bound_groupish": int(n_bound_groupish),
+			"n_unbound": int(n_unbound),
+			"n_multi_candidate_pings": int(n_multi_candidate_pings),
+			"n_tiebreak_bound": int(n_tiebreak_bound),
+			"group_member_roles_seen": dict(sorted(group_member_roles_seen.items(), key=lambda kv: kv[0])),
 		},
 		"tags": tags,
 		"pings": normalized_pings,
@@ -781,16 +1148,98 @@ def _emit_mcf_tag_paths(
 	tag_inputs: Dict[str, Any] | None,
 	identity_flow_by_edge: Dict[str, int],
 	tag_flow_by_tag_edge: Dict[str, Dict[str, int]],
-) -> Path:
+	ping_statuses_by_tag: Dict[str, List[Dict[str, Any]]] | None = None,
+	) -> Path:
 	"""Emit `_debug/d3_mcf_tag_paths.json` (schema v0.1.0).
 
-	MCF-1: tag flow vars exist but are gated and minimized to zero (no enforcement yet).
+	Reports current tag flow, ping satisfaction, must-link support, and local pair steering summaries.
 	"""
 	tags_out: Dict[str, Any] = {}
 	tags = (tag_inputs or {}).get("tags", {}) if isinstance(tag_inputs, dict) else {}
 	pings = (tag_inputs or {}).get("pings", []) if isinstance(tag_inputs, dict) else []
 
+	ping_statuses_by_tag = ping_statuses_by_tag or {}
+	tag_activation_info: Dict[str, Dict[str, Any]] = {}
+	if isinstance(tags, dict):
+		for tk, info in tags.items():
+			tk_s = str(tk)
+			meta_rec: Optional[Dict[str, Any]] = None
+			for rec in ping_statuses_by_tag.get(tk_s, []) or []:
+				if isinstance(rec, dict) and str(rec.get("record_type", "ping")) == "tag_meta":
+					meta_rec = rec
+					break
+			if not isinstance(info, dict):
+				tag_activation_info[tk_s] = {
+					"is_active": False,
+					"activation_reason": "no_tag_info",
+					"has_must_link_tracklets": False,
+					"must_link_tracklets": [],
+					"must_link_resolved_nodes": [],
+					"must_link_support_applicable": False,
+					"must_link_support_satisfied": False,
+					"must_link_support_missed": False,
+					"must_link_support_nodes": [],
+					"must_link_support_edges": [],
+					"n_must_link_support_edges": 0,
+					"n_tag_pair_preferences": 0,
+					"n_tag_pair_preferences_realized": 0,
+					"tag_pair_preference_ids_realized": [],
+				}
+				continue
+			summary = info.get("summary") or {}
+			if not isinstance(summary, dict):
+				summary = {}
+			n_bound_pings = int(summary.get("n_bound_pings", 0))
+			must_link_tracklets = list(info.get("must_link_tracklets", [])) if isinstance(info.get("must_link_tracklets"), list) else []
+			must_link_resolved_nodes = []
+			if isinstance(meta_rec, dict):
+				must_link_resolved_nodes = list(meta_rec.get("must_link_resolved_nodes", [])) if isinstance(meta_rec.get("must_link_resolved_nodes"), list) else []
+				is_active = bool(int(meta_rec.get("is_active", 0)) > 0)
+				activation_reason = str(meta_rec.get("activation_reason", "no_resolved_evidence"))
+				ml_support_applicable = bool(int(meta_rec.get("must_link_support_applicable", 0)) > 0)
+				ml_support_satisfied = bool(int(meta_rec.get("must_link_support_visit", 0)) > 0)
+				ml_support_missed = bool(int(meta_rec.get("must_link_support_miss", 0)) > 0)
+				ml_support_nodes = list(meta_rec.get("must_link_support_nodes", [])) if isinstance(meta_rec.get("must_link_support_nodes"), list) else []
+				ml_support_edges = list(meta_rec.get("must_link_support_edges", [])) if isinstance(meta_rec.get("must_link_support_edges"), list) else []
+				n_pair_prefs = int(meta_rec.get("n_tag_pair_preferences", 0))
+				n_pair_realized = int(meta_rec.get("n_tag_pair_preferences_realized", 0))
+				pair_ids_realized = list(meta_rec.get("tag_pair_preference_ids_realized", [])) if isinstance(meta_rec.get("tag_pair_preference_ids_realized"), list) else []
+			else:
+				has_resolved_must_link = False
+				is_active = bool(n_bound_pings > 0)
+				if n_bound_pings > 0:
+					activation_reason = "bound_ping"
+				else:
+					activation_reason = "no_resolved_evidence"
+				if has_resolved_must_link:
+					is_active = True
+					activation_reason = "resolved_must_link_only"
+				ml_support_applicable = False
+				ml_support_satisfied = False
+				ml_support_missed = False
+				ml_support_nodes = []
+				ml_support_edges = []
+				n_pair_prefs = 0
+				n_pair_realized = 0
+				pair_ids_realized = []
+			tag_activation_info[tk_s] = {
+				"is_active": is_active,
+				"activation_reason": activation_reason,
+				"has_must_link_tracklets": bool(len(must_link_tracklets) > 0),
+				"must_link_tracklets": must_link_tracklets,
+				"must_link_resolved_nodes": must_link_resolved_nodes,
+				"must_link_support_applicable": ml_support_applicable,
+				"must_link_support_satisfied": ml_support_satisfied,
+				"must_link_support_missed": ml_support_missed,
+				"must_link_support_nodes": ml_support_nodes,
+				"must_link_support_edges": ml_support_edges,
+				"n_tag_pair_preferences": n_pair_prefs,
+				"n_tag_pair_preferences_realized": n_pair_realized,
+				"tag_pair_preference_ids_realized": pair_ids_realized,
+			}
+
 	bound_nodes_by_tag: Dict[str, List[str]] = {}
+	bound_node_types_by_tag: Dict[str, Dict[str, int]] = {}
 	if isinstance(pings, list):
 		for p in pings:
 			if not isinstance(p, dict):
@@ -798,27 +1247,112 @@ def _emit_mcf_tag_paths(
 			tk = str(p.get("tag_key"))
 			chosen = (p.get("binding") or {}).get("chosen") or {}
 			nid = chosen.get("node_id")
+			nt = chosen.get("node_type")
 			if tk and nid:
 				bound_nodes_by_tag.setdefault(tk, []).append(str(nid))
+			if tk and nt:
+				d = bound_node_types_by_tag.setdefault(tk, {})
+				nt_s = str(nt)
+				d[nt_s] = int(d.get(nt_s, 0)) + 1
 
+	# Ping enforcement summaries (bound pings only; solver-provided)
+	ping_statuses_by_tag = ping_statuses_by_tag or {}
+	n_pings_enforced_bound = 0
+	n_pings_satisfied = 0
+	n_pings_missed = 0
+	n_bound_single_pings_satisfied = 0
+	n_bound_group_pings_satisfied = 0
+	n_bound_groupish_pings_satisfied = 0
+	n_tags_with_must_link_support_applicable = 0
+	n_tags_with_must_link_support_satisfied = 0
+	n_tags_with_must_link_support_missed = 0
+	n_tag_pair_preferences_total = 0
+	n_tag_pair_preferences_realized_total = 0
+	for _tk, sts in ping_statuses_by_tag.items():
+		if not isinstance(sts, list):
+			continue
+		for s in sts:
+			if not isinstance(s, dict):
+				continue
+			if str(s.get("record_type", "ping")) != "ping":
+				continue
+			n_pings_enforced_bound += 1
+			node_type = str(s.get("node_type") or "")
+			if int(s.get("visit", 0)) > 0:
+				n_pings_satisfied += 1
+				if node_type == "NodeType.GROUPISH_TRACKLET":
+					n_bound_groupish_pings_satisfied += 1
+				elif node_type == "NodeType.GROUP_TRACKLET":
+					n_bound_group_pings_satisfied += 1
+				else:
+					n_bound_single_pings_satisfied += 1
+			if int(s.get("miss", 0)) > 0:
+				n_pings_missed += 1
+
+	n_active_tags = 0
+	n_inactive_tags = 0
+	n_tags_with_nonzero_flow = 0
 	for tk in sorted(tags.keys()):
 		info = tags.get(tk, {})
 		pids = info.get("pings", []) if isinstance(info, dict) else []
+		activation = tag_activation_info.get(str(tk), {})
+		is_active = bool(activation.get("is_active", False))
+		if is_active:
+			n_active_tags += 1
+		else:
+			n_inactive_tags += 1
+		if bool(activation.get("must_link_support_applicable", False)):
+			n_tags_with_must_link_support_applicable += 1
+		if bool(activation.get("must_link_support_satisfied", False)):
+			n_tags_with_must_link_support_satisfied += 1
+		if bool(activation.get("must_link_support_missed", False)):
+			n_tags_with_must_link_support_missed += 1
+		n_tag_pair_preferences_total += int(activation.get("n_tag_pair_preferences", 0))
+		n_tag_pair_preferences_realized_total += int(activation.get("n_tag_pair_preferences_realized", 0))
 		status = "inactive" if not pids else "present"
-		notes = ["mcf1_gating_only", "tag_flow_minimized_to_zero"]
+		notes = ["mcf3b_group_pair_steering"]
 		tag_edges = tag_flow_by_tag_edge.get(tk, {})
 		selected_edges = []
 		for eid, fval in sorted(tag_edges.items()):
 			if int(fval) <= 0:
 				continue
 			selected_edges.append({"edge_id": str(eid), "identity_flow": int(identity_flow_by_edge.get(str(eid), 0)), "tag_flow": int(fval)})
+		if len(selected_edges) > 0:
+			n_tags_with_nonzero_flow += 1
+		ping_statuses = ping_statuses_by_tag.get(tk, [])
+		n_satisfied_tag = int(sum(1 for s in ping_statuses if isinstance(s, dict) and str(s.get("record_type", "ping")) == "ping" and int(s.get("visit", 0)) > 0))
+		n_missed_tag = int(sum(1 for s in ping_statuses if isinstance(s, dict) and str(s.get("record_type", "ping")) == "ping" and int(s.get("miss", 0)) > 0))
 		tags_out[tk] = {
 			"status": status,
+			"is_active": is_active,
+			"activation_reason": activation.get("activation_reason"),
 			"pings": list(pids) if isinstance(pids, list) else [],
 			"bound_nodes": sorted(set(bound_nodes_by_tag.get(tk, []))),
+			"bound_node_types": dict(sorted((bound_node_types_by_tag.get(tk, {}) or {}).items(), key=lambda kv: kv[0])),
+			"must_link_tracklets": list(activation.get("must_link_tracklets", [])),
+			"must_link_resolved_nodes": list(activation.get("must_link_resolved_nodes", [])),
+			"must_link_support_applicable": bool(activation.get("must_link_support_applicable", False)),
+			"must_link_support_satisfied": bool(activation.get("must_link_support_satisfied", False)),
+			"must_link_support_missed": bool(activation.get("must_link_support_missed", False)),
+			"must_link_support_nodes": list(activation.get("must_link_support_nodes", [])),
+			"must_link_support_edges": list(activation.get("must_link_support_edges", [])),
+			"n_tag_pair_preferences": int(activation.get("n_tag_pair_preferences", 0)),
+			"n_tag_pair_preferences_realized": int(activation.get("n_tag_pair_preferences_realized", 0)),
+			"tag_pair_preference_ids_realized": list(activation.get("tag_pair_preference_ids_realized", [])),
 			"selected_edges": selected_edges,
+			"n_selected_edges": int(len(selected_edges)),
 			"visited_nodes": [],
 			"notes": notes,
+			"ping_statuses": ping_statuses,
+			"summary": {
+				"n_bound_pings": int(len(bound_nodes_by_tag.get(tk, []))),
+				"n_satisfied_pings": int(n_satisfied_tag),
+				"n_missed_pings": int(n_missed_tag),
+				"n_must_link_resolved_nodes": int(len(activation.get("must_link_resolved_nodes", []))),
+				"n_must_link_support_edges": int(len(activation.get("must_link_support_edges", []))),
+				"n_tag_pair_preferences": int(activation.get("n_tag_pair_preferences", 0)),
+				"n_tag_pair_preferences_realized": int(activation.get("n_tag_pair_preferences_realized", 0)),
+			},
 		}
 
 	n_nonzero = int(
@@ -838,11 +1372,25 @@ def _emit_mcf_tag_paths(
 		"solver_module": _SOLVER_MODULE,
 		"solver_version": _SOLVER_VERSION,
 		"summary": {
-			"mcf_checkpoint": "MCF-1",
+			"mcf_checkpoint": "MCF-3b",
 			"n_tag_flow_nonzero_edges_total": n_nonzero,
+			"n_active_tags": int(n_active_tags),
+			"n_inactive_tags": int(n_inactive_tags),
+			"n_tags_with_nonzero_flow": int(n_tags_with_nonzero_flow),
+			"n_tags_with_must_link_support_applicable": int(n_tags_with_must_link_support_applicable),
+			"n_tags_with_must_link_support_satisfied": int(n_tags_with_must_link_support_satisfied),
+			"n_tags_with_must_link_support_missed": int(n_tags_with_must_link_support_missed),
+			"n_tag_pair_preferences_total": int(n_tag_pair_preferences_total),
+			"n_tag_pair_preferences_realized_total": int(n_tag_pair_preferences_realized_total),
+			"n_bound_single_pings_satisfied": int(n_bound_single_pings_satisfied),
+			"n_bound_group_pings_satisfied": int(n_bound_group_pings_satisfied),
+			"n_bound_groupish_pings_satisfied": int(n_bound_groupish_pings_satisfied),
 			"n_tags": int(len(tags_out)),
 			"n_pings": int(len(pings) if isinstance(pings, list) else 0),
 			"n_bound_pings": int(sum(1 for x in (pings or []) if isinstance(x, dict) and (x.get("binding") or {}).get("status") == "bound")),
+			"n_pings_enforced_bound": int(n_pings_enforced_bound),
+			"n_pings_satisfied": int(n_pings_satisfied),
+			"n_pings_missed": int(n_pings_missed),
 			"n_edges_used_by_identity": int(sum(1 for _, v in identity_flow_by_edge.items() if int(v) > 0)),
 		},
 		"tags": tags_out,
@@ -863,7 +1411,7 @@ def _solve_identity_ilp2_identity_only(
 	unexplained_tracklet_penalty: float | None,
 	group_boundary_window_frames: int,
 	tag_inputs: Optional[Dict[str, Any]] = None,
-) -> Tuple[ILPResult, Dict[str, Dict[str, int]]]:
+) -> Tuple[ILPResult, Dict[str, Dict[str, int]], Dict[str, List[Dict[str, Any]]]]:
 	"""ILP2-A identity-only solver (standalone; no ILP1 delegation).
 
 	Model:
@@ -875,6 +1423,13 @@ def _solve_identity_ilp2_identity_only(
 	  - Edge costs from D2 (scaled to int)
 	  - A1: group/groupish semantics constraints (applied via _apply_group_semantics_constraints)
 	  - A2: explain-or-penalize coverage pressure per base_tracklet_id
+	  - MCF overlay uses binary per-tag threads constrained by identity flow capacity
+	  - Sparse AprilTag pings may bind to SINGLE / GROUP / GROUPISH nodes and remain
+	    the strongest local identity anchors
+	  - Active tags remain a constraint layer over identity flow
+	  - Local tag-consistent pairings through GROUP/GROUPISH nodes are rewarded so
+	    ambiguous identity edge choices become tag-consistent when evidence supports them
+	  - Resolved must-link-supported nodes contribute a soft support preference
 	"""
 	# Defensive: this checkpoint ignores tags.
 	_ = emit_transparency
@@ -884,8 +1439,129 @@ def _solve_identity_ilp2_identity_only(
 	edges = edges_df.copy()
 	costs = costs_df.copy()
 
+	# Cost scale MUST be defined before any downstream logic references it
+	# (e.g., MCF miss penalties, explain-or-penalize penalties).
+	#
+	# We keep this deterministic and consistent with the rest of ILP2.
+	scale = _cost_scale_for(None)
+	if not isinstance(scale, int) or scale <= 0:
+		# absolute safety fallback; should never happen
+		scale = 1000
+
+	# --- Tag inputs (MCF) pre-parse + scalar precompute ---
+	# Ordering requirement: do not reference model / adjacency / tag vars before they exist.
 	tag_flow_vars: Dict[str, Dict[str, Any]] = {}
 	tag_flow_by_tag_edge: Dict[str, Dict[str, int]] = {}
+	ping_statuses_by_tag: Dict[str, List[Dict[str, Any]]] = {}
+
+	tag_keys: List[str] = []
+	if isinstance(tag_inputs, dict):
+		tags_obj = tag_inputs.get("tags", {})
+		if isinstance(tags_obj, dict):
+			for tk_raw, info in tags_obj.items():
+				tag_keys.append(str(tk_raw))
+	tag_keys = sorted(set(tag_keys))
+
+	# MCF-2a scalar precompute only (constraints are added later after model/adjacency/tag vars exist).
+	bound_pings = _extract_bound_ping_records(tag_inputs)
+	miss_penalty_unscaled = _infer_ping_miss_penalty_unscaled(constraints=constraints)
+	try:
+		miss_penalty_scaled = int(round(float(miss_penalty_unscaled) * float(scale)))
+	except Exception:
+		# deterministic fallback
+		miss_penalty_scaled = int(round(50.0 * float(scale)))
+
+	# These are created later (after model exists) in the MCF-2a block.
+	visit_vars: Dict[str, Any] = {}
+	miss_vars: Dict[str, Any] = {}
+	must_link_visit_vars: Dict[str, Any] = {}
+	must_link_miss_vars: Dict[str, Any] = {}
+	tag_pair_pref_vars: Dict[str, Any] = {}
+	tag_pair_preference_records: List[Dict[str, Any]] = []
+
+	# Resolve must-link tracklet evidence against the current graph so activation can be
+	# based on graph-grounded evidence rather than raw strings.
+	tag_active_const: Dict[str, int] = {}
+	tag_activation_reason: Dict[str, str] = {}
+	bound_ping_ids_by_tag: Dict[str, List[str]] = {}
+	bound_ping_nodes_by_tag: Dict[str, List[str]] = {}
+	tag_must_link_tracklets: Dict[str, List[str]] = {}
+	tag_must_link_resolved_nodes: Dict[str, List[str]] = {}
+	if isinstance(tag_inputs, dict):
+		tags_obj = tag_inputs.get("tags", {})
+		if isinstance(tags_obj, dict):
+			# Build best-effort node membership index keyed by tracklet id.
+			tracklet_to_nodes: Dict[str, List[str]] = {}
+			for _, nr in nodes.iterrows():
+				nid = str(nr["node_id"]) if "node_id" in nr.index else None
+				if nid is None:
+					continue
+				for key in (
+					"base_tracklet_id",
+					"carrier_tracklet_id",
+					"disappearing_tracklet_id",
+					"new_tracklet_id",
+					"paired_tracklet_id",
+					"opponent_tracklet_id",
+					"partner_tracklet_id",
+					"other_tracklet_id",
+				):
+					if key not in nr.index:
+						continue
+					val = nr.get(key)
+					if val is None:
+						continue
+					sv = str(val).strip()
+					if sv == "" or sv.lower() == "none":
+						continue
+					tracklet_to_nodes.setdefault(sv, []).append(nid)
+			for tk, info in tags_obj.items():
+				ml = list(info.get("must_link_tracklets", [])) if isinstance(info, dict) and isinstance(info.get("must_link_tracklets"), list) else []
+				ml_sorted = sorted(set(str(x) for x in ml if str(x).strip() != "" and str(x).strip().lower() != "none"))
+				tag_must_link_tracklets[str(tk)] = ml_sorted
+				resolved: List[str] = []
+				for tid in ml_sorted:
+					resolved.extend(tracklet_to_nodes.get(str(tid), []))
+				tag_must_link_resolved_nodes[str(tk)] = sorted(set(str(x) for x in resolved))
+
+	for bp in bound_pings:
+		tk = str(bp.get("tag_key"))
+		pid = bp.get("ping_id")
+		nid = bp.get("node_id")
+		if pid is not None:
+			bound_ping_ids_by_tag.setdefault(tk, []).append(str(pid))
+		if nid is not None:
+			bound_ping_nodes_by_tag.setdefault(tk, []).append(str(nid))
+	for tk in list(bound_ping_ids_by_tag.keys()):
+		bound_ping_ids_by_tag[tk] = sorted(set(bound_ping_ids_by_tag[tk]))
+	for tk in list(bound_ping_nodes_by_tag.keys()):
+		bound_ping_nodes_by_tag[tk] = sorted(set(bound_ping_nodes_by_tag[tk]))
+
+	for tk in tag_keys:
+		n_bound = int(len(bound_ping_ids_by_tag.get(tk, [])))
+		n_resolved_ml = int(len(tag_must_link_resolved_nodes.get(tk, [])))
+		is_active = bool((n_bound > 0) or (n_resolved_ml > 0))
+		tag_active_const[tk] = 1 if is_active else 0
+		if n_bound > 0 and n_resolved_ml > 0:
+			tag_activation_reason[tk] = "bound_ping_and_resolved_must_link"
+		elif n_bound > 0:
+			tag_activation_reason[tk] = "bound_ping"
+		elif n_resolved_ml > 0:
+			tag_activation_reason[tk] = "resolved_must_link_only"
+		else:
+			tag_activation_reason[tk] = "no_resolved_evidence"
+
+	# Penalty scales for soft evidence support.
+	must_link_penalty_unscaled = float(miss_penalty_unscaled) * 2.0
+	try:
+		must_link_penalty_scaled = int(round(float(must_link_penalty_unscaled) * float(scale)))
+	except Exception:
+		must_link_penalty_scaled = int(max(1, 2 * int(miss_penalty_scaled)))
+
+	try:
+		tag_pair_reward_scaled = int(max(1, miss_penalty_scaled))
+	except Exception:
+		tag_pair_reward_scaled = 50000
 
 	_require_columns(nodes, name="d1_graph_nodes", cols=["node_id", "node_type", "capacity"])
 	_require_columns(edges, name="d1_graph_edges", cols=["edge_id", "u", "v", "edge_type", "capacity"])
@@ -904,7 +1580,6 @@ def _solve_identity_ilp2_identity_only(
 	node_cap_eff = _compute_node_capacity_eff(nodes, edges, edge_cap_eff=edge_cap_eff)
 
 	# Costs
-	scale = _cost_scale_for(None)
 	scaled_cost, rounding_stats = _scaled_costs(costs, scale=scale)
 
 	# Identify terminals
@@ -955,6 +1630,7 @@ def _solve_identity_ilp2_identity_only(
 
 	# OR-Tools model
 	model = cp_model.CpModel()
+
 	flow_var: Dict[str, Any] = {}
 	used_var: Dict[str, Any] = {}
 	explained_var_by_tid: Dict[str, Any] = {}
@@ -1060,15 +1736,50 @@ def _solve_identity_ilp2_identity_only(
 	except Exception:
 		group_semantics_debug = None
 
-	# --- MCF-1: tag flow variables (gated only) ---
-	# Create tf[tag, edge] in [0..cap_eff(edge)] and enforce tf <= identity_flow(edge).
-	# Add tiny objective tiebreaker to minimize all tf to 0 for determinism (no behavior change).
-	tag_keys: List[str] = []
-	if isinstance(tag_inputs, dict):
-		tags_obj = tag_inputs.get("tags")
-		if isinstance(tags_obj, dict):
-			tag_keys = sorted([str(k) for k in tags_obj.keys()])
+	# Build graph-grounded tag evidence on nodes, then derive preferred local tag-consistent
+	# in/out pairings through GROUP/GROUPISH nodes. These preferences will steer the
+	# underlying identity edge choices, not just the overlay path reporting.
+	node_tag_evidence = _build_tag_evidence_by_node(
+		bound_pings=bound_pings,
+		tag_must_link_resolved_nodes=tag_must_link_resolved_nodes,
+	)
+	tag_pair_preference_records = _build_group_tag_pair_preferences(
+		nodes_df=nodes,
+		edges_df=edges,
+		in_edges_by_node=in_edges_by_node,
+		out_edges_by_node=out_edges_by_node,
+		edge_u=edge_u,
+		edge_v=edge_v,
+		edge_type=edge_type,
+		node_tag_evidence=node_tag_evidence,
+	)
+	for rec in tag_pair_preference_records:
+		pid = str(rec["pair_id"])
+		in_eid = str(rec["in_edge_id"])
+		out_eid = str(rec["out_edge_id"])
+		if in_eid not in used_var or out_eid not in used_var:
+			continue
+		pv = model.NewBoolVar(f"pair_pref[{pid}]")
+		model.Add(pv <= used_var[in_eid])
+		model.Add(pv <= used_var[out_eid])
+		model.Add(pv >= used_var[in_eid] + used_var[out_eid] - 1)
+		tag_pair_pref_vars[pid] = pv
 
+	tag_pair_debug_payload: Optional[Dict[str, Any]] = None
+	if tag_pair_preference_records:
+		tag_pair_debug_payload = {
+			"schema_version": "ilp2_tag_pair_preferences_v0.1.0",
+			"summary": {
+				"n_pair_preferences_total": int(len(tag_pair_preference_records)),
+			},
+			"pair_preferences": [dict(r) for r in tag_pair_preference_records],
+		}
+
+	# --- MCF-1: tag flow variables (gated only) ---
+	# Create tf[tag, edge] in {0,1} and:
+	#  - couple tag capacity to identity flow capacity: sum_t tf[tag, e] <= identity_flow(e)
+	#  - enforce per-tag conservation to form a single-thread path from SOURCE to SINK
+	#
 	# Create vars only if tags are present.
 	if tag_keys:
 		tag_index = {tk: i for i, tk in enumerate(tag_keys)}
@@ -1078,12 +1789,103 @@ def _solve_identity_ilp2_identity_only(
 			tag_flow_by_tag_edge[tk] = {}
 			ki = int(tag_index[tk])
 			for eid in edge_ids_sorted:
-				cap = int(edge_cap_eff.get(eid, 1))
 				ei = int(edge_index[eid])
-				tf = model.NewIntVar(0, cap, f"tf[k{ki},e{ei}]")
-				# Gating: tag flow can only ride on identity flow
-				model.Add(tf <= flow_var[eid])
+				tf = model.NewBoolVar(f"tf[k{ki},e{ei}]")
+				# Gating: tag flow can only ride on used identity edges
+				model.Add(tf <= used_var[eid])
 				tag_flow_vars[tk][eid] = tf
+
+		# Shared edge capacity across tags: sum_t tf[tag, e] <= identity_flow(e)
+		for eid in edge_ids_sorted:
+			model.Add(sum(tag_flow_vars[tk][eid] for tk in tag_keys) <= flow_var[eid])
+
+		# Per-tag conservation: retain the current overlay continuity scaffold, but let
+		# local tag-consistent pair preferences steer the underlying identity choices.
+		for tk in tag_keys:
+			active = int(tag_active_const.get(tk, 0))
+			# SOURCE/SINK participation remains optional up to the active gate.
+			out_s = out_edges_by_node.get(source_id, []) or []
+			in_t = in_edges_by_node.get(sink_id, []) or []
+			model.Add(sum(tag_flow_vars[tk][eid] for eid in out_s) <= active)
+			model.Add(sum(tag_flow_vars[tk][eid] for eid in in_t) <= active)
+			if active <= 0:
+				continue
+			# Conservation + anti-branching at all intermediate nodes
+			for _, nr in nodes.iterrows():
+				nid = str(nr["node_id"])
+				if nid in (source_id, sink_id):
+					continue
+				ins = in_edges_by_node.get(nid, []) or []
+				outs = out_edges_by_node.get(nid, []) or []
+				in_sum = sum(tag_flow_vars[tk][eid] for eid in ins) if ins else 0
+				out_sum = sum(tag_flow_vars[tk][eid] for eid in outs) if outs else 0
+				model.Add(in_sum == out_sum)
+				# Single-tag thread: cannot split/merge for a single tag
+				model.Add(in_sum <= 1)
+
+	# --- MCF-2a: bound ping enforcement with slack miss ---
+	# For each bound ping p on node n:
+	#   visit[p] + miss[p] == 1
+	#   sum_incident_tf[tag, e] >= visit[p]
+	# Objective: + miss_penalty * miss[p]  (added later)
+	#
+	# Notes:
+	# - Uses tag flow vars (not identity flow) so single-thread semantics apply naturally.
+	# - Uses incident edges of the *bound* node (SINGLE/GROUP/GROUPISH).
+	if bound_pings and tag_keys and tag_flow_vars:
+		for bp in bound_pings:
+			tk = bp["tag_key"]
+			pid = bp["ping_id"]
+			nid = bp["node_id"]
+			if tk not in tag_flow_vars:
+				# Tag key exists in pings but tag vars were not constructed (unexpected); skip defensively.
+				continue
+
+			visit = model.NewBoolVar(f"visit[{pid}]")
+			miss = model.NewBoolVar(f"miss[{pid}]")
+			model.Add(visit + miss == 1)
+
+			inc = (in_edges_by_node.get(nid, []) or []) + (out_edges_by_node.get(nid, []) or [])
+			inc = sorted(set(str(e) for e in inc))
+			if inc:
+				model.Add(sum(tag_flow_vars[tk][eid] for eid in inc) >= visit)
+			else:
+				# If node has no incident edges, it can never be visited.
+				model.Add(visit == 0)
+				model.Add(miss == 1)
+
+			visit_vars[pid] = visit
+			miss_vars[pid] = miss
+
+	# --- MCF-3a: soft must-link support from resolved nodes ---
+	# If a tag has resolved must-link-supported nodes in the current graph, prefer that
+	# the tag thread touches at least one such node, but do not make the whole solve fail
+	# if continuity/support cannot be justified.
+	must_link_support_nodes_by_tag: Dict[str, List[str]] = {}
+	must_link_support_edges_by_tag: Dict[str, List[str]] = {}
+	if tag_keys and tag_flow_vars:
+		for tk in tag_keys:
+			if int(tag_active_const.get(tk, 0)) <= 0:
+				continue
+			support_nodes = sorted(set(str(n) for n in tag_must_link_resolved_nodes.get(tk, []) if str(n).strip() != ""))
+			must_link_support_nodes_by_tag[tk] = support_nodes
+			support_edges: List[str] = []
+			for nid in support_nodes:
+				support_edges.extend(in_edges_by_node.get(nid, []) or [])
+				support_edges.extend(out_edges_by_node.get(nid, []) or [])
+			support_edges = sorted(set(str(e) for e in support_edges))
+			must_link_support_edges_by_tag[tk] = support_edges
+			if support_nodes:
+				ml_visit = model.NewBoolVar(f"ml_visit[{tk}]")
+				ml_miss = model.NewBoolVar(f"ml_miss[{tk}]")
+				model.Add(ml_visit + ml_miss == 1)
+				if support_edges:
+					model.Add(sum(tag_flow_vars[tk][eid] for eid in support_edges) >= ml_visit)
+				else:
+					model.Add(ml_visit == 0)
+					model.Add(ml_miss == 1)
+				must_link_visit_vars[tk] = ml_visit
+				must_link_miss_vars[tk] = ml_miss
 
 	# --- ILP2-A2: Explain-or-penalize (coverage) ---
 	# If a base_tracklet_id appears in SINGLE_TRACKLET nodes, either explain it (use any incident edge)
@@ -1179,7 +1981,24 @@ def _solve_identity_ilp2_identity_only(
 		for tid, uvar in unexplained_var_by_tid.items():
 			terms.append(int(penalty_scaled) * uvar)
 
-	# MCF-1 determinism: minimize all tag flow vars (keeps identity solution unchanged)
+	# MCF-2a: miss penalties (soft enforcement)
+	if bound_pings and miss_vars and miss_penalty_scaled > 0:
+		for pid, mv in miss_vars.items():
+			terms.append(int(miss_penalty_scaled) * mv)
+
+	# MCF-3a: must-link support miss penalties (soft behavioral preference)
+	if must_link_miss_vars and must_link_penalty_scaled > 0:
+		for tk, mv in must_link_miss_vars.items():
+			terms.append(int(must_link_penalty_scaled) * mv)
+
+	# MCF-3b: reward local tag-consistent pair realization through GROUP/GROUPISH nodes.
+	# This is the primary hypothesis-steering mechanism that should make the identity
+	# decomposition prefer tag-consistent ambiguous transitions.
+	if tag_pair_pref_vars and tag_pair_reward_scaled > 0:
+		for _pid, pv in tag_pair_pref_vars.items():
+			terms.append(-int(tag_pair_reward_scaled) * pv)
+
+	# MCF determinism: minimize all tag flow vars so unsupported propagation is not forced.
 	if tag_keys:
 		for tk in tag_keys:
 			for eid in edge_ids_sorted:
@@ -1265,6 +2084,134 @@ def _solve_identity_ilp2_identity_only(
 				if v > 0:
 					tag_flow_by_tag_edge.setdefault(tk, {})[eid] = int(v)
 
+	# Read back realized local tag-consistent pair preferences.
+	realized_pair_ids: List[str] = []
+	pair_counts_by_tag: Dict[str, int] = {}
+	pair_realized_counts_by_tag: Dict[str, int] = {}
+	realized_pair_ids_by_tag: Dict[str, List[str]] = {}
+	for rec in tag_pair_preference_records:
+		tk = str(rec.get("tag_key"))
+		pair_counts_by_tag[tk] = int(pair_counts_by_tag.get(tk, 0)) + 1
+		pid = str(rec.get("pair_id"))
+		val = 0
+		if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+			try:
+				val = int(solver.Value(tag_pair_pref_vars.get(pid))) if pid in tag_pair_pref_vars else 0
+			except Exception:
+				val = 0
+		rec["realized"] = int(val)
+		if val > 0:
+			realized_pair_ids.append(pid)
+			pair_realized_counts_by_tag[tk] = int(pair_realized_counts_by_tag.get(tk, 0)) + 1
+			realized_pair_ids_by_tag.setdefault(tk, []).append(pid)
+
+	# Compact D4 handoff for realized local pairings. Keep only fields D4 needs.
+	realized_group_pairings: List[Dict[str, Any]] = []
+	for rec in tag_pair_preference_records:
+		if int(rec.get("realized", 0)) <= 0:
+			continue
+		realized_group_pairings.append(
+			{
+				"group_node_id": str(rec.get("group_node_id")),
+				"group_node_type": str(rec.get("group_node_type")),
+				"tag_key": str(rec.get("tag_key")),
+				"in_edge_id": str(rec.get("in_edge_id")),
+				"out_edge_id": str(rec.get("out_edge_id")),
+				"in_node_id": str(rec.get("in_node_id")),
+				"out_node_id": str(rec.get("out_node_id")),
+			}
+		)
+
+	# Post-solve: record ping statuses (bound pings only)
+	if bound_pings:
+		for bp in bound_pings:
+			tk = bp["tag_key"]
+			pid = bp["ping_id"]
+			nid = bp["node_id"]
+			rec = {
+				"ping_id": pid,
+				"node_id": nid,
+				"node_type": bp.get("node_type"),
+				"match_role": bp.get("match_role"),
+				"frame_index": bp.get("frame_index"),
+				"visit": 0,
+				"miss": 0,
+			}
+			if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+				try:
+					rec["visit"] = int(solver.Value(visit_vars.get(pid))) if pid in visit_vars else 0
+				except Exception:
+					rec["visit"] = 0
+				try:
+					rec["miss"] = int(solver.Value(miss_vars.get(pid))) if pid in miss_vars else 0
+				except Exception:
+					rec["miss"] = 0
+			ping_statuses_by_tag.setdefault(tk, []).append(rec)
+		for tk in list(ping_statuses_by_tag.keys()):
+			ping_statuses_by_tag[tk] = sorted(ping_statuses_by_tag[tk], key=lambda r: (str(r.get("ping_id")), str(r.get("node_id"))))
+
+	# Append logging-only meta status records for tags so downstream debug artifacts can show
+	# activation reason, must-link grounding, and support behavior.
+	for tk in tag_keys:
+		ping_statuses_by_tag.setdefault(tk, [])
+		ml_visit_val = 0
+		ml_miss_val = 0
+		if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+			try:
+				ml_visit_val = int(solver.Value(must_link_visit_vars.get(tk))) if tk in must_link_visit_vars else 0
+			except Exception:
+				ml_visit_val = 0
+			try:
+				ml_miss_val = int(solver.Value(must_link_miss_vars.get(tk))) if tk in must_link_miss_vars else 0
+			except Exception:
+				ml_miss_val = 0
+		ping_statuses_by_tag[tk].append(
+			{
+				"record_type": "tag_meta",
+				"tag_key": tk,
+				"is_active": int(tag_active_const.get(tk, 0)),
+				"activation_reason": tag_activation_reason.get(tk, "unknown"),
+				"bound_ping_ids": list(bound_ping_ids_by_tag.get(tk, [])),
+				"bound_ping_node_ids": list(bound_ping_nodes_by_tag.get(tk, [])),
+				"must_link_tracklets": list(tag_must_link_tracklets.get(tk, [])),
+				"must_link_resolved_nodes": list(tag_must_link_resolved_nodes.get(tk, [])),
+				"must_link_support_applicable": int(1 if len(must_link_support_nodes_by_tag.get(tk, [])) > 0 else 0),
+				"must_link_support_visit": int(ml_visit_val),
+				"must_link_support_miss": int(ml_miss_val),
+				"must_link_support_nodes": list(must_link_support_nodes_by_tag.get(tk, [])),
+				"must_link_support_edges": list(must_link_support_edges_by_tag.get(tk, [])),
+				"n_bound_pings": int(len(bound_ping_ids_by_tag.get(tk, []))),
+				"n_must_link_tracklets": int(len(tag_must_link_tracklets.get(tk, []))),
+				"n_must_link_resolved_nodes": int(len(tag_must_link_resolved_nodes.get(tk, []))),
+				"n_must_link_support_edges": int(len(must_link_support_edges_by_tag.get(tk, []))),
+				"n_tag_pair_preferences": int(pair_counts_by_tag.get(tk, 0)),
+				"n_tag_pair_preferences_realized": int(pair_realized_counts_by_tag.get(tk, 0)),
+				"tag_pair_preference_ids_realized": list(sorted(realized_pair_ids_by_tag.get(tk, []))),
+			}
+		)
+		ping_statuses_by_tag[tk] = sorted(
+			ping_statuses_by_tag[tk],
+			key=lambda r: (
+				0 if str(r.get("record_type", "ping")) == "tag_meta" else 1,
+				str(r.get("ping_id", "")),
+				str(r.get("node_id", "")),
+			),
+		)
+
+	if tag_pair_debug_payload is not None and debug_dir is not None:
+		_tag_pair_debug = dict(tag_pair_debug_payload)
+		_tag_pair_debug["summary"] = dict(_tag_pair_debug.get("summary", {}))
+		_tag_pair_debug["summary"].update(
+			{
+				"n_pair_preferences_realized": int(len(realized_pair_ids)),
+				"solution_status": status_s,
+			}
+		)
+		_emit_ilp2_tag_pair_preferences_debug(
+			debug_dir=Path(debug_dir),
+			payload=_tag_pair_debug,
+		)
+
 	return ILPResult(
 		status=status_s,
 		objective_scaled=obj_scaled,
@@ -1284,7 +2231,8 @@ def _solve_identity_ilp2_identity_only(
 		n_tracklets_unexplained=int(len(dropped_ids)),
 		dropped_tracklet_ids=list(sorted(dropped_ids)),
 		explained_tracklet_ids=list(sorted(explained_ids)),
-	), tag_flow_by_tag_edge
+		realized_group_pairings=realized_group_pairings,
+	), tag_flow_by_tag_edge, ping_statuses_by_tag
 
 
 def solve_structure_ilp2_core(
@@ -1298,7 +2246,7 @@ def solve_structure_ilp2_core(
 	unexplained_tracklet_penalty: float | None = None,
 	group_boundary_window_frames: int = 10,
 	tag_inputs: Optional[Dict[str, Any]] = None,
-) -> Tuple[ILPResult, Dict[str, Dict[str, int]]]:
+) -> Tuple[ILPResult, Dict[str, Dict[str, int]], Dict[str, List[Dict[str, Any]]]]:
 	"""Core solver for ILP2.
 
 	NOTE: This module is ILP2-only. ILP1 delegation is intentionally removed.
@@ -1346,7 +2294,7 @@ def solve_structure_ilp2(
 		tag_inputs = None
 
 	t0 = time.time()
-	res, tag_flow_by_tag_edge = solve_structure_ilp2_core(
+	res, tag_flow_by_tag_edge, ping_statuses_by_tag = solve_structure_ilp2_core(
 		nodes_df=compiled.nodes_df,
 		edges_df=compiled.edges_df,
 		costs_df=compiled.costs_df,
@@ -1415,6 +2363,7 @@ def solve_structure_ilp2(
 			tag_inputs=tag_inputs,
 			identity_flow_by_edge=res.flow_by_edge_id,
 			tag_flow_by_tag_edge=(tag_flow_by_tag_edge or {}),
+			ping_statuses_by_tag=(ping_statuses_by_tag or {}),
 		)
 	except Exception:
 		out_mcf_paths = None
@@ -1432,6 +2381,18 @@ def solve_structure_ilp2(
 		k_paths = int(sum(res.flow_by_edge_id.get(eid, 0) for eid in out_ids))
 	except Exception:
 		k_paths = None
+
+	tag_inputs_summary = (tag_inputs or {}).get("summary", {}) if isinstance(tag_inputs, dict) else {}
+	tag_paths_summary: Dict[str, Any] = {}
+	try:
+		if out_mcf_paths is not None:
+			import json
+			with open(out_mcf_paths, "r", encoding="utf-8") as f:
+				_mcf_payload = json.load(f)
+			if isinstance(_mcf_payload, dict) and isinstance(_mcf_payload.get("summary"), dict):
+				tag_paths_summary = dict(_mcf_payload.get("summary", {}))
+	except Exception:
+		tag_paths_summary = {}
 
 	append_audit_event(
 		layout=layout,
@@ -1463,6 +2424,16 @@ def solve_structure_ilp2(
 				"n_tracklets_explained": res.n_tracklets_explained,
 				"n_tracklets_unexplained": res.n_tracklets_unexplained,
 			},
+			"tag_evidence": {
+				"n_tags": int(tag_inputs_summary.get("n_tags", 0)),
+				"n_pings": int(tag_inputs_summary.get("n_pings", 0)),
+				"n_bound_pings": int(tag_inputs_summary.get("n_bound_pings", 0)),
+				"n_bound_single": int(tag_inputs_summary.get("n_bound_single", 0)),
+				"n_bound_group": int(tag_inputs_summary.get("n_bound_group", 0)),
+				"n_bound_groupish": int(tag_inputs_summary.get("n_bound_groupish", 0)),
+				"n_active_tags": int(tag_paths_summary.get("n_active_tags", 0)),
+				"n_tags_with_nonzero_flow": int(tag_paths_summary.get("n_tags_with_nonzero_flow", 0)),
+			},
 			"n_paths": k_paths,
 			"debug_outputs": {
 				"d3_selected_edges_parquet": rel(out_sel),
@@ -1481,6 +2452,7 @@ def solve_structure_ilp2(
 					if (dbg / "d3_ilp2_explain_or_penalize.json").exists()
 					else {}
 				),
+				**({"d3_ilp2_tag_pair_preferences_json": rel(dbg / "d3_ilp2_tag_pair_preferences.json")} if (dbg / "d3_ilp2_tag_pair_preferences.json").exists() else {}),
 			},
 		},
 	)
