@@ -620,6 +620,15 @@ class StageFConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: Optional[bool] = Field(default=None)
+    padding_px: int = Field(default=80, ge=0)
+    low_quantile: float = Field(default=0.05, ge=0.0, le=1.0)
+    high_quantile: float = Field(default=0.95, ge=0.0, le=1.0)
+    min_crop_width: int = Field(default=160, gt=0)
+    min_crop_height: int = Field(default=160, gt=0)
+    consolidate_sessions: bool = Field(default=False)
+    consolidate_max_gap_frames: int = Field(default=120, ge=0)
+    consolidate_buffer_sec: float = Field(default=5.0, ge=0.0)
+    consolidate_require_nonconflicting_tags: bool = Field(default=True)
 
 
 class PipelineConfig(BaseModel):

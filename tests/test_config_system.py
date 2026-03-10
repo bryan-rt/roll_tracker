@@ -64,6 +64,39 @@ def test_forbid_unknown_keys(tmp_path: Path):
         PipelineConfig.model_validate(cfg)
 
 
+def test_stage_f_config_accepts_export_settings() -> None:
+    cfg = {
+        "paths": {"cache_dir_name": "_cache"},
+        "compute": {"device": "cpu"},
+        "camera": {"camera_id": "cam01"},
+        "stage_F": {
+            "enabled": True,
+            "padding_px": 80,
+            "low_quantile": 0.05,
+            "high_quantile": 0.95,
+            "min_crop_width": 160,
+            "min_crop_height": 160,
+            "consolidate_sessions": False,
+            "consolidate_max_gap_frames": 120,
+            "consolidate_buffer_sec": 5.0,
+            "consolidate_require_nonconflicting_tags": True,
+        },
+    }
+
+    typed = PipelineConfig.model_validate(cfg)
+
+    assert typed.stage_F is not None
+    assert typed.stage_F.padding_px == 80
+    assert typed.stage_F.low_quantile == pytest.approx(0.05)
+    assert typed.stage_F.high_quantile == pytest.approx(0.95)
+    assert typed.stage_F.min_crop_width == 160
+    assert typed.stage_F.min_crop_height == 160
+    assert typed.stage_F.consolidate_sessions is False
+    assert typed.stage_F.consolidate_max_gap_frames == 120
+    assert typed.stage_F.consolidate_buffer_sec == pytest.approx(5.0)
+    assert typed.stage_F.consolidate_require_nonconflicting_tags is True
+
+
 def test_config_hash_stable():
     d = {"a": 1, "b": {"x": 2, "y": [3, 4]}}
     h1 = config_hash(d)

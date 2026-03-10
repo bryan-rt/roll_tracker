@@ -37,16 +37,6 @@ stages:
     mode: real
     # Frame stride; 0/None means no skipping. 1 is a safe POC default.
     frame_stride: 1
-    padding_px: 80
-    low_quantile: 0.05
-    high_quantile: 0.95
-    min_crop_width: 160
-    min_crop_height: 160
-
-    consolidate_sessions: false
-    consolidate_max_gap_frames: 120
-    consolidate_buffer_sec: 5.0
-    consolidate_require_nonconflicting_tags: true
 
     detector:
       # YOLO detection weights (required)
@@ -317,3 +307,13 @@ stages:
 
   stage_F:
     enabled: null
+    padding_px: 80
+    low_quantile: 0.05
+    high_quantile: 0.95
+    min_crop_width: 160
+    min_crop_height: 160
+
+    consolidate_sessions: false
+    consolidate_max_gap_frames: 120
+    consolidate_buffer_sec: 5.0
+    consolidate_require_nonconflicting_tags: true
