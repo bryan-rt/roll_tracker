@@ -50,7 +50,7 @@ stages:
       device: null
 
     masks:
-      write_yolo_masks: false
+      write_yolo_masks: true
       gate:
         det_conf_min: 0.25
         mask_quality_min: 0.40
@@ -313,7 +313,11 @@ stages:
     min_crop_width: 160
     min_crop_height: 160
 
-    consolidate_sessions: false
-    consolidate_max_gap_frames: 120
-    consolidate_buffer_sec: 5.0
+    consolidate_sessions: true
+    consolidate_max_gap_frames: 300
+    consolidate_buffer_sec: 10.0
     consolidate_require_nonconflicting_tags: true
+    gym_id: alpha_bjj
+    storage_bucket: match-clips
+    clip_type: match
+    initial_status: exported_local
