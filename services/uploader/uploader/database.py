@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 import psycopg
+from psycopg.types.json import Jsonb
 
 
 class Database:
@@ -50,7 +51,7 @@ class Database:
                     source_path,
                     "pipeline",
                     "ready",
-                    {"created_by": "services.uploader"},
+                    Jsonb({"created_by": "services.uploader"}),
                 ),
             )
             row = cur.fetchone()
@@ -78,7 +79,12 @@ class Database:
         keys = list(clip_row.keys())
         columns_sql = ", ".join(keys)
         placeholders_sql = ", ".join(["%s"] * len(keys))
-        values = [clip_row[k] for k in keys]
+        values = []
+        for k in keys:
+            value = clip_row[k]
+            if k == "metadata" and isinstance(value, dict):
+                value = Jsonb(value)
+            values.append(value)
 
         with self.conn.cursor() as cur:
             cur.execute(
@@ -99,7 +105,12 @@ class Database:
         keys = list(event.keys())
         columns_sql = ", ".join(keys)
         placeholders_sql = ", ".join(["%s"] * len(keys))
-        values = [event[k] for k in keys]
+        values = []
+        for k in keys:
+            value = event[k]
+            if k == "details" and isinstance(value, dict):
+                value = Jsonb(value)
+            values.append(value)
 
         with self.conn.cursor() as cur:
             cur.execute(
