@@ -15,6 +15,7 @@ from bjj_pipeline.contracts.f0_models import ExportManifest, jsonl_serialize
 from bjj_pipeline.contracts.f0_validate import validate_export_manifest_records
 
 from .consolidate import ExportSession, consolidate_export_sessions
+from .redact import build_redaction_plan, summarize_redaction_plan
 from .manifest import (
 	build_supabase_clip_contract,
 	build_supabase_log_contracts,
@@ -136,6 +137,7 @@ def _build_export_record(
 	output_video_path: Path,
 	ffmpeg_cmd: str,
 	hash_sha256: str | None,
+	redaction_plan: Any,
 	storage_target: Any,
 	seconds_payload: Dict[str, float],
 	file_size_bytes: int | None,
@@ -153,8 +155,8 @@ def _build_export_record(
 		output_video_path=str(output_video_path),
 		crop_mode="fixed_roi",
 		privacy={
-			"redaction_enabled": False,
-			"method": None,
+			"redaction_enabled": bool(redaction_plan.enabled),
+			"method": str(redaction_plan.mode) if redaction_plan.enabled else None,
 		},
 		inputs={
 			"input_video_path": str(input_video_path),
@@ -177,6 +179,7 @@ def _build_export_record(
 			"padding_px": int(crop_plan.padding_px),
 			"envelope_method": str(crop_plan.envelope_method),
 			"n_pair_frames": int(crop_plan.n_pair_frames),
+			"privacy": summarize_redaction_plan(redaction_plan),
 			"start_seconds": float(seconds_payload["start_seconds"]),
 			"end_seconds": float(seconds_payload["end_seconds"]),
 			"duration_seconds": float(seconds_payload["duration_seconds"]),
@@ -216,6 +219,10 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 	consolidate_require_nonconflicting_tags = _cfg_bool(
 		stage_cfg, "consolidate_require_nonconflicting_tags", True
 	)
+	privacy_mode = str(stage_cfg.get("privacy_mode", "none"))
+	redact_non_focus_people = _cfg_bool(stage_cfg, "redact_non_focus_people", False)
+	redact_use_masks_when_available = _cfg_bool(stage_cfg, "redact_use_masks_when_available", True)
+	redact_fallback_to_bbox = _cfg_bool(stage_cfg, "redact_fallback_to_bbox", True)
 	gym_id = str(stage_cfg.get("gym_id", "unknown-gym"))
 	storage_bucket = str(stage_cfg.get("storage_bucket", "match-clips"))
 	clip_type = str(stage_cfg.get("clip_type", "match"))
@@ -345,6 +352,15 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 				min_crop_width=min_crop_width,
 				min_crop_height=min_crop_height,
 			)
+			redaction_plan = build_redaction_plan(
+				export_session=export_session,
+				crop_plan=crop_plan,
+				person_tracks_df=person_tracks_df,
+				privacy_mode=privacy_mode,
+				redact_non_focus_people=redact_non_focus_people,
+				redact_use_masks_when_available=redact_use_masks_when_available,
+				redact_fallback_to_bbox=redact_fallback_to_bbox,
+			)
 
 			output_abs = layout.exports_dir() / f"{export_id}.mp4"
 			export_result = export_clip(
@@ -404,6 +420,7 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 				output_video_path=output_rel,
 				ffmpeg_cmd=export_result.ffmpeg_cmd,
 				hash_sha256=file_hash,
+				redaction_plan=redaction_plan,
 				storage_target=storage_target,
 				seconds_payload=seconds_payload,
 				file_size_bytes=file_size_bytes,
@@ -431,6 +448,7 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 					"export_end_frame": int(export_session.export_end_frame),
 					"output_video_path": str(output_rel),
 					"crop_rect_xywh": [crop_plan.x, crop_plan.y, crop_plan.width, crop_plan.height],
+					"privacy": summarize_redaction_plan(redaction_plan),
 					"storage_bucket": str(storage_target.bucket),
 					"storage_object_path": str(storage_target.object_path),
 					"n_pair_frames": int(crop_plan.n_pair_frames),
