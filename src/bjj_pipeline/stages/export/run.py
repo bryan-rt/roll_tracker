@@ -15,6 +15,13 @@ from bjj_pipeline.contracts.f0_models import ExportManifest, jsonl_serialize
 from bjj_pipeline.contracts.f0_validate import validate_export_manifest_records
 
 from .consolidate import ExportSession, consolidate_export_sessions
+from .manifest import (
+	build_supabase_clip_contract,
+	build_supabase_log_contracts,
+	compute_clip_seconds,
+	derive_storage_target,
+	get_file_stats,
+)
 from .cropper import CropPlanError, FixedRoiCropPlan, plan_crop_fixed_roi
 from .ffmpeg import ExportClipError, export_clip, probe_video_metadata
 
@@ -129,6 +136,11 @@ def _build_export_record(
 	output_video_path: Path,
 	ffmpeg_cmd: str,
 	hash_sha256: str | None,
+	storage_target: Any,
+	seconds_payload: Dict[str, float],
+	file_size_bytes: int | None,
+	clip_row_payload: Dict[str, Any],
+	log_event_payloads: List[Dict[str, Any]],
 	created_at_ms: int,
 ) -> ExportManifest:
 	return ExportManifest(
@@ -165,6 +177,21 @@ def _build_export_record(
 			"padding_px": int(crop_plan.padding_px),
 			"envelope_method": str(crop_plan.envelope_method),
 			"n_pair_frames": int(crop_plan.n_pair_frames),
+			"start_seconds": float(seconds_payload["start_seconds"]),
+			"end_seconds": float(seconds_payload["end_seconds"]),
+			"duration_seconds": float(seconds_payload["duration_seconds"]),
+			"file_size_bytes": file_size_bytes,
+			"storage_bucket": str(storage_target.bucket),
+			"storage_object_path": str(storage_target.object_path),
+			"uploader_contract": {
+				"storage": {
+					"bucket": str(storage_target.bucket),
+					"object_path": str(storage_target.object_path),
+					"file_name": str(storage_target.file_name),
+				},
+				"clip_row": clip_row_payload,
+				"log_events": log_event_payloads,
+			},
 		},
 		ffmpeg_cmd=ffmpeg_cmd,
 		hash_sha256=hash_sha256,
@@ -189,6 +216,10 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 	consolidate_require_nonconflicting_tags = _cfg_bool(
 		stage_cfg, "consolidate_require_nonconflicting_tags", True
 	)
+	gym_id = str(stage_cfg.get("gym_id", "unknown-gym"))
+	storage_bucket = str(stage_cfg.get("storage_bucket", "match-clips"))
+	clip_type = str(stage_cfg.get("clip_type", "match"))
+	initial_status = str(stage_cfg.get("initial_status", "exported_local"))
 
 	layout.ensure_dirs_for_stage("F")
 	layout.ensure_exports_dir()
@@ -326,6 +357,45 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 			)
 			file_hash = _sha256_file(output_abs)
 			output_rel = Path(layout.rel_to_clip_root(output_abs))
+			file_stats = get_file_stats(output_abs)
+			file_size_bytes = file_stats.get("file_size_bytes")
+			storage_target = derive_storage_target(
+				gym_id=gym_id,
+				camera_id=manifest.camera_id,
+				clip_id=manifest.clip_id,
+				export_id=export_session.export_id,
+				storage_bucket=storage_bucket,
+			)
+			seconds_payload = compute_clip_seconds(
+				fps=fps,
+				export_start_frame=int(export_session.export_start_frame),
+				export_end_frame=int(export_session.export_end_frame),
+			)
+			fighter_a_tag_id = export_session.april_tag_id_a
+			fighter_b_tag_id = export_session.april_tag_id_b
+			clip_row_payload = build_supabase_clip_contract(
+				export_session=export_session,
+				clip_id=manifest.clip_id,
+				camera_id=manifest.camera_id,
+				local_output_path=output_abs,
+				storage_target=storage_target,
+				clip_type=clip_type,
+				initial_status=initial_status,
+				fighter_a_tag_id=fighter_a_tag_id,
+				fighter_b_tag_id=fighter_b_tag_id,
+				seconds_payload=seconds_payload,
+				pipeline_version=str(getattr(manifest, "pipeline_version", "dev")),
+				crop_mode="fixed_roi",
+				hash_sha256=file_hash,
+				file_size_bytes=file_size_bytes,
+			)
+			log_event_payloads = build_supabase_log_contracts(
+				export_session=export_session,
+				clip_id=manifest.clip_id,
+				camera_id=manifest.camera_id,
+				storage_target=storage_target,
+				clip_row_payload=clip_row_payload,
+			)
 			record = _build_export_record(
 				manifest=manifest,
 				input_video_path=input_video_path,
@@ -334,6 +404,11 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 				output_video_path=output_rel,
 				ffmpeg_cmd=export_result.ffmpeg_cmd,
 				hash_sha256=file_hash,
+				storage_target=storage_target,
+				seconds_payload=seconds_payload,
+				file_size_bytes=file_size_bytes,
+				clip_row_payload=clip_row_payload,
+				log_event_payloads=log_event_payloads,
 				created_at_ms=_now_ms(),
 			)
 			export_records.append(record)
@@ -356,6 +431,8 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 					"export_end_frame": int(export_session.export_end_frame),
 					"output_video_path": str(output_rel),
 					"crop_rect_xywh": [crop_plan.x, crop_plan.y, crop_plan.width, crop_plan.height],
+					"storage_bucket": str(storage_target.bucket),
+					"storage_object_path": str(storage_target.object_path),
 					"n_pair_frames": int(crop_plan.n_pair_frames),
 				},
 			)
