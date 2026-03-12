@@ -321,6 +321,7 @@ stages:
     redact_non_focus_people: true
     redact_use_masks_when_available: true
     redact_fallback_to_bbox: true
+    blur_kernel_size: 31
     gym_id: alpha_bjj
     storage_bucket: match-clips
     clip_type: match

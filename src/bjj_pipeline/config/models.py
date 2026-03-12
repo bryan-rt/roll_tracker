@@ -633,6 +633,7 @@ class StageFConfig(BaseModel):
     redact_non_focus_people: bool = Field(default=False)
     redact_use_masks_when_available: bool = Field(default=True)
     redact_fallback_to_bbox: bool = Field(default=True)
+    blur_kernel_size: int = Field(default=31, ge=3)
     gym_id: str = Field(default="alpha_bjj")
     storage_bucket: str = Field(default="match-clips")
     clip_type: str = Field(default="match")
