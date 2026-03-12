@@ -190,3 +190,7 @@ archive/
 # Generated outputs and local data (do not commit)
 outputs/
 data/
+
+services/uploader/.env
+services/nest_recorder/.env
+services/nest_recorder/secrets
