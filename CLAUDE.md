@@ -223,11 +223,12 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 
 **Applied migrations (Phase A):**
 - `20260311000001_create_gyms.sql` — `gyms` table: `id`, `name`, `owner_profile_id`, `address`, `wifi_ssid`, `wifi_bssid`, `created_at`, `updated_at`
-- `20260311000002_create_gym_members.sql` — `gym_members` table: `id`, `profile_id` (UNIQUE FK→profiles), `gym_id`, `role` ENUM(`gym_owner`, `athlete`), `joined_at`
+- `20260311000002_create_gym_members.sql` — `gym_members` table (**superseded by 000007** — table dropped, replaced by `profiles.home_gym_id`)
 - `20260311000003_create_gym_subscriptions.sql` — `gym_subscriptions` table: `id`, `gym_id`, `tier` ENUM(`free`, `pro`, `enterprise`), `started_at`, `ended_at`, `is_current`
 - `20260311000004_create_gym_checkins.sql` — `gym_checkins` table: `id`, `profile_id`, `gym_id`, `checked_in_at`, `auto_expires_at` (generated, +3hr), `is_active`
 - `20260311000005_create_homography_configs.sql` — `homography_configs` table: `id`, `gym_id`, `camera_id`, `config_data` JSONB, `created_at`, `updated_at`
 - `20260311000006_add_phase_a_columns.sql` — `profiles` adds `tag_id` (indexed, not unique), `tag_assigned_at`, `starter_pack_sent_at`; `videos` adds `gym_id` FK→gyms; `clips` adds `fighter_a_profile_id`, `fighter_b_profile_id` FK→profiles (nullable)
+- `20260311000007_phase_a_correction.sql` — drops `gym_members` table and `gym_role` enum; adds `profiles.home_gym_id` FK→gyms; adds `gyms.latitude`, `gyms.longitude`; creates `gym_interest_signals` table
 
 ---
 
@@ -313,7 +314,7 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 | Check-in mechanism: WiFi SSID+BSSID | Decided | GPS rejected (indoor unreliable, high permission friction). Auto-triggers on WiFi connect in Flutter app. 3hr TTL auto-expiry. gyms table gets wifi_ssid + wifi_bssid columns. |
 | profiles.tag_id not globally unique | Decided | tag_id is unique within (tag_id + gym_id + active time window). Handles scale beyond 587 without schema change. Stage F uses check-in to disambiguate if collision exists. |
 | Athlete tag assignment: backend-assigned at signup | Decided | Backend assigns tag_id sequentially at registration. Physical merchandise (2 rashguards + 2 gi patches) ships with athlete's distinct tag printed. Replacements available on request. |
-| Gym membership: single gym per athlete | Decided | UNIQUE constraint on gym_members.profile_id. Can relax later. |
+| Gym membership: single gym per athlete | Decided | `profiles.home_gym_id` FK (replaced `gym_members` join table). Can relax later. |
 | Subscription history: gym_subscriptions table | Decided | Separate table from day one. Fields: gym_id, tier, started_at, ended_at, is_current. |
 | Clip identity: denormalized profile IDs on clips | Decided | clips gets fighter_a_profile_id + fighter_b_profile_id (nullable FKs). Stage F writes them. Null = unresolved, backfillable. |
 
@@ -355,10 +356,10 @@ python -m bjj_pipeline.stages.orchestration.cli run \
 # Validate outputs
 python -m bjj_pipeline.stages.orchestration.cli validate --clip-id <clip_id>
 
-# Supabase local dev
+# Supabase local dev (CLI installed via npm, use npx)
 cd backend/supabase/supabase
-supabase start
-supabase db reset
+npx supabase start
+npx supabase db reset
 
 # Docker services
 cd services/nest_recorder && docker compose up
