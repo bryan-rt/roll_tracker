@@ -326,9 +326,9 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 - **Head commit:** `035e464`
 - **Pipeline:** Stages A, C, D (D0–D3), E partially implemented. Stage F (export) exists.
 - **Services:** `nest_recorder` working. `uploader` working. `processor` scaffold only.
-- **Apps:** Flutter mobile app at `mobile_app/`. Auth migrated to Supabase-native (supabase_flutter). Firebase fully removed. Data layer uses profiles/clips/gyms schema.
+- **Apps:** Flutter mobile app at `mobile_app/`. Auth migrated to Supabase-native (supabase_flutter). Firebase fully removed. Data layer uses profiles/clips/gyms schema. WiFi check-in listener added (CheckinService) — requires ACCESS_FINE_LOCATION (Android) and NSLocationWhenInUseUsageDescription (iOS). Runtime permission request UI deferred.
 - **Supabase:** Phase A migrations applied. Phase A correction applied (gym_members → home_gym_id).
-- **Last updated:** 2026-03-14 (Phase B1 — mobile auth + data layer rewrite)
+- **Last updated:** 2026-03-14 (Phase B2 — WiFi check-in listener)
 
 ---
 
