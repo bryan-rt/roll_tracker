@@ -221,15 +221,13 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 **Pending schema items (not yet migrated):**
 - `notification_channel` — TBD (drift alert delivery mechanism)
 
-**Pending migrations (Phase A — not yet applied):**
-- `gyms` table: `id`, `name`, `owner_profile_id`, `address`, `wifi_ssid`, `wifi_bssid`, `created_at`, `updated_at`
-- `gym_members` table: `id`, `profile_id` (UNIQUE FK→profiles), `gym_id`, `role` ENUM(`gym_owner`, `athlete`), `joined_at`
-- `gym_subscriptions` table: `id`, `gym_id`, `tier` ENUM(`free`, `pro`, `enterprise`), `started_at`, `ended_at`, `is_current`
-- `gym_checkins` table: `id`, `profile_id`, `gym_id`, `checked_in_at`, `auto_expires_at` (checked_in_at + 3hr), `is_active`
-- `homography_configs` table: `id`, `gym_id`, `camera_id`, `config_data` JSONB, `created_at`, `updated_at`
-- `profiles` additions: `tag_id` INTEGER (indexed, not unique), `tag_assigned_at`, `starter_pack_sent_at`
-- `videos` addition: `gym_id` FK→gyms
-- `clips` additions: `fighter_a_profile_id` FK→profiles (nullable), `fighter_b_profile_id` FK→profiles (nullable)
+**Applied migrations (Phase A):**
+- `20260311000001_create_gyms.sql` — `gyms` table: `id`, `name`, `owner_profile_id`, `address`, `wifi_ssid`, `wifi_bssid`, `created_at`, `updated_at`
+- `20260311000002_create_gym_members.sql` — `gym_members` table: `id`, `profile_id` (UNIQUE FK→profiles), `gym_id`, `role` ENUM(`gym_owner`, `athlete`), `joined_at`
+- `20260311000003_create_gym_subscriptions.sql` — `gym_subscriptions` table: `id`, `gym_id`, `tier` ENUM(`free`, `pro`, `enterprise`), `started_at`, `ended_at`, `is_current`
+- `20260311000004_create_gym_checkins.sql` — `gym_checkins` table: `id`, `profile_id`, `gym_id`, `checked_in_at`, `auto_expires_at` (generated, +3hr), `is_active`
+- `20260311000005_create_homography_configs.sql` — `homography_configs` table: `id`, `gym_id`, `camera_id`, `config_data` JSONB, `created_at`, `updated_at`
+- `20260311000006_add_phase_a_columns.sql` — `profiles` adds `tag_id` (indexed, not unique), `tag_assigned_at`, `starter_pack_sent_at`; `videos` adds `gym_id` FK→gyms; `clips` adds `fighter_a_profile_id`, `fighter_b_profile_id` FK→profiles (nullable)
 
 ---
 
