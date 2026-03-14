@@ -326,9 +326,9 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 - **Head commit:** `035e464`
 - **Pipeline:** Stages A, C, D (D0–D3), E partially implemented. Stage F (export) exists.
 - **Services:** `nest_recorder` working. `uploader` working. `processor` scaffold only.
-- **Apps:** Empty in current state — Flutter drafts not yet committed to repo.
-- **Supabase:** Schema migrations exist. Gym/tag/homography tables not yet migrated.
-- **Last updated:** 2026-03-14 (working methodology finalized)
+- **Apps:** Flutter mobile app at `apps/mobile_app/`. Auth migrated to Supabase-native (supabase_flutter). Firebase fully removed. Data layer uses profiles/clips/gyms schema.
+- **Supabase:** Phase A migrations applied. Phase A correction applied (gym_members → home_gym_id).
+- **Last updated:** 2026-03-14 (Phase B1 — mobile auth + data layer rewrite)
 
 ---
 
@@ -360,6 +360,11 @@ python -m bjj_pipeline.stages.orchestration.cli validate --clip-id <clip_id>
 cd backend/supabase/supabase
 npx supabase start
 npx supabase db reset
+
+# Flutter (not on PATH — use full path)
+~/development/flutter/bin/flutter pub get
+~/development/flutter/bin/flutter analyze
+~/development/flutter/bin/flutter run
 
 # Docker services
 cd services/nest_recorder && docker compose up
