@@ -195,3 +195,4 @@ services/uploader/.env
 services/nest_recorder/.env
 services/nest_recorder/secrets.DS_Store
 **/.DS_Store
+.DS_Store
