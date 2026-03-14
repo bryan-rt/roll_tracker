@@ -5,10 +5,70 @@ in this repo reads this file automatically. Keep it current after significant ch
 
 ---
 
+## Working Methodology
+
+This project uses a "Web-Brain / CLI-Hands" collaboration model. Read this section
+before starting any non-trivial task.
+
+### Your Role (CLI)
+The CLI owns the *how*. The web session (claude.ai) owns the *what* and *why*.
+Every task arrives as a Task Brief from the web session. Do not make architectural
+decisions independently — if something in the Task Brief is ambiguous or conflicts
+with the codebase, pause and surface it before proceeding.
+
+### The Three-Pass Protocol (required for all non-trivial tasks)
+
+**Always start a new session with Plan Mode: hit `shift+tab` twice before doing anything.**
+
+```
+PASS 1 — Explore (Plan Mode)
+  Read the Task Brief carefully
+  Explore the relevant files in the repo
+  Understand the actual current state of the code
+  Identify any conflicts with the Task Brief or CLAUDE.md conventions
+  ⏸ STOP — summarize findings and wait for user approval before Pass 2
+
+PASS 2 — Specify (Plan Mode continues)
+  Plan the exact changes needed
+  Verify naming conventions against live code
+  Check data contracts (F0 layer) for compatibility
+  Resolve edge cases using evidence from the actual files
+  ⏸ STOP — present the plan and wait for user approval before Pass 3
+
+PASS 3 — Execute
+  Implement the approved plan
+  Run tests or validate pipeline output
+  Update CLAUDE.md if architecture or conventions changed
+  Commit with a descriptive message and push to GitHub
+  ⏸ STOP — summarize what was done and wait for user review
+```
+
+**Never skip a pause.** User approval gates each pass. Do not run Pass 2 immediately
+after Pass 1, and do not run Pass 3 immediately after Pass 2.
+
+### Evidence-Driven Design
+
+We do not code based on assumptions. When behavior is uncertain:
+1. Prefer to enhance logging and collect real artifacts first
+2. Inspect existing parquet/JSONL outputs before designing a fix
+3. Run the pipeline with debug flags and examine the output
+4. Plan from evidence, not speculation
+
+If a Task Brief asks you to fix something but the root cause is unclear, say so.
+Propose an instrumentation step before a fix step. Speculation is a last resort.
+
+### What to Do With Ambiguity
+- Naming conflict with existing code? Surface it in Pass 1, don't resolve it silently.
+- Task Brief references a file that doesn't exist? Report it, don't create it unilaterally.
+- Architectural question not covered in CLAUDE.md? Pause and flag it — don't guess.
+
+---
+
 ## Project Identity
 
 **Name:** Roll Tracker
 **Author:** Bryan Thomas
+**GitHub:** https://github.com/bryan-rt/roll_tracker
 **Status:** POC → MVP transition
 **Goal:** Multi-service SaaS pipeline for BJJ gyms. Streams Nest camera footage, aligns
 it to a gym mat blueprint via homography, tracks athletes (YOLO + BoT-SORT), uses
@@ -98,6 +158,27 @@ or config changed.
 
 ---
 
+## CV Design Constraints
+
+**AprilTag family: 36h11** (~587 distinct IDs). Family selected to maximize
+cell size within an 11x11 inch physical tag printed on athlete apparel. Larger
+cells improve detection reliability for fixed Nest cameras operating at gym
+distances under real conditions: variable resolution, lens distortion, partial
+occlusion common in BJJ. Detection range directly affects the density of
+tag observations fed to the Stage D ILP solver — more observations = stronger
+identity constraints = better stitching quality.
+
+**Do not upgrade tag family** without re-evaluating detection reliability.
+A larger family (e.g. tagStandard41h12) means smaller cells at the same
+physical print size, which reduces the effective detection radius per camera.
+
+**Scale beyond 587 athletes:** handled via WiFi-based gym check-in, not tag
+family migration. `tag_id` is unique within `(tag_id + gym_id + active session)`.
+The schema supports collision gracefully — Stage F uses check-in records to
+disambiguate when multiple athletes globally share a `tag_id`.
+
+---
+
 ## Data Contracts (F0 Layer)
 
 All inter-stage data lives on disk under `outputs/<clip_id>/`. The F0 layer enforces this:
@@ -138,10 +219,17 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 **Storage bucket:** `match-clips` (private)
 
 **Pending schema items (not yet migrated):**
-- `gyms` table — gym owner accounts, camera registrations, pricing tier
-- `april_tag_assignments` table — `tag_id` ↔ `athlete profile` mapping per gym
-- `homography_configs` table — per-camera calibration with version/drift tracking
 - `notification_channel` — TBD (drift alert delivery mechanism)
+
+**Pending migrations (Phase A — not yet applied):**
+- `gyms` table: `id`, `name`, `owner_profile_id`, `address`, `wifi_ssid`, `wifi_bssid`, `created_at`, `updated_at`
+- `gym_members` table: `id`, `profile_id` (UNIQUE FK→profiles), `gym_id`, `role` ENUM(`gym_owner`, `athlete`), `joined_at`
+- `gym_subscriptions` table: `id`, `gym_id`, `tier` ENUM(`free`, `pro`, `enterprise`), `started_at`, `ended_at`, `is_current`
+- `gym_checkins` table: `id`, `profile_id`, `gym_id`, `checked_in_at`, `auto_expires_at` (checked_in_at + 3hr), `is_active`
+- `homography_configs` table: `id`, `gym_id`, `camera_id`, `config_data` JSONB, `created_at`, `updated_at`
+- `profiles` additions: `tag_id` INTEGER (indexed, not unique), `tag_assigned_at`, `starter_pack_sent_at`
+- `videos` addition: `gym_id` FK→gyms
+- `clips` additions: `fighter_a_profile_id` FK→profiles (nullable), `fighter_b_profile_id` FK→profiles (nullable)
 
 ---
 
@@ -192,6 +280,8 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 - Type hints everywhere. Pyrightconfig is present — keep type coverage clean.
 - Debug artifacts go under `outputs/<clip_id>/_debug/`. Never pollute stage output dirs.
 - Avoid hardcoding paths. Use `ClipOutputLayout` and environment variables for path resolution.
+- **Evidence over assumption** — if a behavior is unclear, add logging and inspect real
+  output before writing a fix. Do not guess at root causes.
 
 ---
 
@@ -210,8 +300,24 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
   is the current preferred path.
 - **Stage B (SAM masks) deferred** — POC uses YOLO bbox masks. SAM integration exists
   but is not required for MVP.
+- **Three-pass protocol** — Plan Mode (shift+tab x2) for Pass 1+2, execute for Pass 3.
+  User approves between each pass. See Working Methodology section above.
 - **Processor service is a scaffold** — the Python pipeline runs standalone locally.
   Dockerizing it is a near-term MVP task.
+
+---
+
+## Active Decisions Log
+
+| Decision | Status | Notes |
+|---|---|---|
+| AprilTag family: 36h11 (~587 IDs) | Decided | Cell size optimized for fixed Nest cameras at gym distances. Larger cells = better detection at range, through occlusion, and at lower resolution. No family migration planned. |
+| Check-in mechanism: WiFi SSID+BSSID | Decided | GPS rejected (indoor unreliable, high permission friction). Auto-triggers on WiFi connect in Flutter app. 3hr TTL auto-expiry. gyms table gets wifi_ssid + wifi_bssid columns. |
+| profiles.tag_id not globally unique | Decided | tag_id is unique within (tag_id + gym_id + active time window). Handles scale beyond 587 without schema change. Stage F uses check-in to disambiguate if collision exists. |
+| Athlete tag assignment: backend-assigned at signup | Decided | Backend assigns tag_id sequentially at registration. Physical merchandise (2 rashguards + 2 gi patches) ships with athlete's distinct tag printed. Replacements available on request. |
+| Gym membership: single gym per athlete | Decided | UNIQUE constraint on gym_members.profile_id. Can relax later. |
+| Subscription history: gym_subscriptions table | Decided | Separate table from day one. Fields: gym_id, tier, started_at, ended_at, is_current. |
+| Clip identity: denormalized profile IDs on clips | Decided | clips gets fighter_a_profile_id + fighter_b_profile_id (nullable FKs). Stage F writes them. Null = unresolved, backfillable. |
 
 ---
 
@@ -223,6 +329,7 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 - **Services:** `nest_recorder` working. `uploader` working. `processor` scaffold only.
 - **Apps:** Empty in current state — Flutter drafts not yet committed to repo.
 - **Supabase:** Schema migrations exist. Gym/tag/homography tables not yet migrated.
+- **Last updated:** 2026-03-14 (working methodology finalized)
 
 ---
 
