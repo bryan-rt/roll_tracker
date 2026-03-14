@@ -217,8 +217,8 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 
 ## Current Branch & Status
 
-- **Active branch:** `mobile_app`
-- **Head commit:** `b1abf24`
+- **Active branch:** `services_uploader`
+- **Head commit:** `035e464`
 - **Pipeline:** Stages A, C, D (D0–D3), E partially implemented. Stage F (export) exists.
 - **Services:** `nest_recorder` working. `uploader` working. `processor` scaffold only.
 - **Apps:** Empty in current state — Flutter drafts not yet committed to repo.
