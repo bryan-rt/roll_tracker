@@ -361,6 +361,11 @@ cd backend/supabase/supabase
 npx supabase start
 npx supabase db reset
 
+# Flutter (not on PATH — use full path)
+~/development/flutter/bin/flutter pub get
+~/development/flutter/bin/flutter analyze
+~/development/flutter/bin/flutter run
+
 # Docker services
 cd services/nest_recorder && docker compose up
 cd services/uploader && docker compose up
