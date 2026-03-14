@@ -10,6 +10,7 @@ import 'utils/logging_context.dart';
 import 'utils/logger.dart';
 import 'utils/secure_storage.dart';
 import 'supabase_config.dart';
+import 'services/checkin_service.dart';
 
 final supabaseService = SupabaseService();
 final authService = AuthService();
@@ -22,6 +23,7 @@ void main() async {
     anonKey: supabaseKey,
   );
   await LoggingContext.initialize();
+  CheckinService.startListening();
 
   runApp(const RollItBackApp());
 }
