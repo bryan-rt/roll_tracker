@@ -230,6 +230,9 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 - `20260311000006_add_phase_a_columns.sql` — `profiles` adds `tag_id` (indexed, not unique), `tag_assigned_at`, `starter_pack_sent_at`; `videos` adds `gym_id` FK→gyms; `clips` adds `fighter_a_profile_id`, `fighter_b_profile_id` FK→profiles (nullable)
 - `20260311000007_phase_a_correction.sql` — drops `gym_members` table and `gym_role` enum; adds `profiles.home_gym_id` FK→gyms; adds `gyms.latitude`, `gyms.longitude`; creates `gym_interest_signals` table
 
+**Applied migration (Phase E):**
+- `20260315000001_phase_e_rls_and_trigger.sql` — `profiles.display_name` made nullable; `gym_interest_signals` gets `owner_email` column; auth trigger `handle_new_user()` auto-creates profiles row on sign-up; `gyms_near()` Haversine RPC function; RLS enabled on all 9 tables with role-based policies (athletes see own data, gym owners see their gym's data, service role bypasses)
+
 ---
 
 ## Tech Stack
@@ -316,19 +319,19 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 | Athlete tag assignment: backend-assigned at signup | Decided | Backend assigns tag_id sequentially at registration. Physical merchandise (2 rashguards + 2 gi patches) ships with athlete's distinct tag printed. Replacements available on request. |
 | Gym membership: single gym per athlete | Decided | `profiles.home_gym_id` FK (replaced `gym_members` join table). Can relax later. |
 | Subscription history: gym_subscriptions table | Decided | Separate table from day one. Fields: gym_id, tier, started_at, ended_at, is_current. |
-| Clip identity: denormalized profile IDs on clips | Decided | clips gets fighter_a_profile_id + fighter_b_profile_id (nullable FKs). Stage F writes them. Null = unresolved, backfillable. |
+| Clip identity: denormalized profile IDs on clips | Decided | clips gets fighter_a_profile_id + fighter_b_profile_id (nullable FKs). Stage F writes tag IDs; the uploader service resolves tag → profile via active gym check-ins at upload time. Null = unresolved, backfillable. |
 
 ---
 
 ## Current Branch & Status
 
 - **Active branch:** `services_uploader`
-- **Head commit:** `035e464`
+- **Head commit:** `b9560c6`
 - **Pipeline:** Stages A, C, D (D0–D3), E partially implemented. Stage F (export) exists.
 - **Services:** `nest_recorder` working. `uploader` working (Phase C: resolves fighter profile IDs via tag_id + gym check-ins). `processor` scaffold only.
-- **Apps:** Flutter mobile app at `mobile_app/`. Auth migrated to Supabase-native (supabase_flutter). Firebase fully removed. Data layer uses profiles/clips/gyms schema. WiFi check-in listener added (CheckinService) — requires ACCESS_FINE_LOCATION (Android) and NSLocationWhenInUseUsageDescription (iOS). Runtime permission request UI deferred.
-- **Supabase:** Phase A migrations applied. Phase A correction applied (gym_members → home_gym_id).
-- **Last updated:** 2026-03-15 (Phase C — uploader identity resolution)
+- **Apps:** Flutter mobile app at `mobile_app/`. Auth migrated to Supabase-native (supabase_flutter). Firebase fully removed. Data layer uses profiles/clips/gyms schema. WiFi check-in listener (CheckinService) + manual check-in. Post-login onboarding flow: display name → gym select → invite gym (if not listed). Find a Gym screen with GPS proximity search via `gyms_near` RPC. Auth trigger auto-creates profiles row on sign-up; onboarding screens handle display_name and home_gym_id. Requires ACCESS_FINE_LOCATION (Android) and NSLocationWhenInUseUsageDescription (iOS).
+- **Supabase:** Phase A migrations applied. Phase E applied: RLS on all tables, auth trigger, `gyms_near` function, `profiles.display_name` nullable, `gym_interest_signals.owner_email` column.
+- **Last updated:** 2026-03-15 (Phase E — RLS, auth trigger, onboarding flow, gym discovery)
 
 ---
 
