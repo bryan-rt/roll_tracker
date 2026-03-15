@@ -239,20 +239,22 @@ class _ClipListScreenState extends State<ClipListScreen> {
     try {
       final profile = await supabaseService.fetchCurrentProfile();
       if (profile == null) {
-        setState(() => isLoading = false);
+        if (mounted) setState(() => isLoading = false);
         return;
       }
       final fetchedClips = await supabaseService.fetchMyClips(profile['id']);
-      setState(() {
-        clips = fetchedClips;
-        isLoading = false;
-      });
+      if (mounted) {
+        setState(() {
+          clips = fetchedClips;
+          isLoading = false;
+        });
+      }
     } catch (e, stack) {
       await logger.logEvent('clip_list', 'Error fetching user clips', context: {
         'error': e.toString(),
         'stack': stack.toString(),
       });
-      setState(() => isLoading = false);
+      if (mounted) setState(() => isLoading = false);
     }
   }
 
@@ -283,23 +285,27 @@ class _ClipListScreenState extends State<ClipListScreen> {
       drawer: const AppDrawer(),
       body: isLoading
           ? const Center(child: CircularProgressIndicator())
-          : Column(
-              children: [
-                Expanded(
-                  child: ListView.builder(
-                    itemCount: clips.length,
-                    itemBuilder: (context, index) {
-                      final clip = clips[index];
-                      return ListTile(
-                        title: Text(clip.storageObjectPath),
-                        subtitle: Text('Duration: ${clip.durationSeconds}s'),
-                        trailing: const Icon(Icons.play_arrow),
-                        onTap: () => playClip(clip),
-                      );
-                    },
-                  ),
-                ),
-              ],
+          : RefreshIndicator(
+              onRefresh: fetchUserClips,
+              child: clips.isEmpty
+                  ? ListView(
+                      children: const [
+                        SizedBox(height: 200),
+                        Center(child: Text('No clips yet. Pull to refresh.')),
+                      ],
+                    )
+                  : ListView.builder(
+                      itemCount: clips.length,
+                      itemBuilder: (context, index) {
+                        final clip = clips[index];
+                        return ListTile(
+                          title: Text(clip.storageObjectPath),
+                          subtitle: Text('Duration: ${clip.durationSeconds}s'),
+                          trailing: const Icon(Icons.play_arrow),
+                          onTap: () => playClip(clip),
+                        );
+                      },
+                    ),
             ),
     );
   }
