@@ -11,6 +11,7 @@ import 'utils/logger.dart';
 import 'utils/secure_storage.dart';
 import 'supabase_config.dart';
 import 'services/checkin_service.dart';
+import 'screens/onboarding/display_name_screen.dart';
 
 final supabaseService = SupabaseService();
 final authService = AuthService();
@@ -82,7 +83,22 @@ class _AuthGateState extends State<AuthGate> {
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const Scaffold(body: Center(child: CircularProgressIndicator()));
         } else if (snapshot.hasData && snapshot.data?.session != null) {
-          return const ClipListScreen();
+          return FutureBuilder<Map<String, dynamic>?>(
+            future: supabaseService.fetchCurrentProfile(),
+            builder: (context, profileSnapshot) {
+              if (profileSnapshot.connectionState == ConnectionState.waiting) {
+                return const Scaffold(body: Center(child: CircularProgressIndicator()));
+              }
+              final profile = profileSnapshot.data;
+              // null profile (trigger race) or missing display_name/home_gym_id → onboarding
+              if (profile == null ||
+                  profile['display_name'] == null ||
+                  profile['home_gym_id'] == null) {
+                return const DisplayNameScreen();
+              }
+              return const ClipListScreen();
+            },
+          );
         } else {
           return const AuthScreen();
         }
@@ -202,28 +218,8 @@ class AuthScreen extends StatefulWidget {
 class _AuthScreenState extends State<AuthScreen> {
   final emailController = TextEditingController();
   final passwordController = TextEditingController();
-  final displayNameController = TextEditingController();
-  final gymSearchController = TextEditingController();
-  final gymInterestController = TextEditingController();
   bool isSignup = false;
   bool _passwordVisible = false;
-  List<Map<String, dynamic>> gymResults = [];
-  String? selectedGymId;
-  String? selectedGymName;
-  bool showGymInterest = false;
-
-  Future<void> _searchGyms(String query) async {
-    if (query.length < 2) {
-      setState(() => gymResults = []);
-      return;
-    }
-    try {
-      final results = await supabaseService.searchGyms(query);
-      setState(() => gymResults = results);
-    } catch (e) {
-      setState(() => gymResults = []);
-    }
-  }
 
   Future<void> authenticate() async {
     final email = emailController.text.trim();
@@ -237,25 +233,8 @@ class _AuthScreenState extends State<AuthScreen> {
     }
 
     if (isSignup) {
-      final displayName = displayNameController.text.trim();
       try {
-        await authService.signUp(
-          email: email,
-          password: password,
-          displayName: displayName,
-          gymId: selectedGymId,
-        );
-
-        // Submit gym interest if user typed a gym that wasn't found
-        if (showGymInterest && gymInterestController.text.trim().isNotEmpty) {
-          final profile = await supabaseService.fetchCurrentProfile();
-          if (profile != null) {
-            await supabaseService.submitGymInterest(
-              profileId: profile['id'],
-              gymNameEntered: gymInterestController.text.trim(),
-            );
-          }
-        }
+        await authService.signUp(email: email, password: password);
       } catch (e, stack) {
         await logger.logEvent('signup', 'Signup error', context: {
           'error': e.toString(),
@@ -269,10 +248,7 @@ class _AuthScreenState extends State<AuthScreen> {
       }
     } else {
       try {
-        await authService.signIn(
-          email: email,
-          password: password,
-        );
+        await authService.signIn(email: email, password: password);
       } catch (e, stack) {
         await logger.logEvent('login', 'Login error', context: {
           'error': e.toString(),
@@ -293,7 +269,7 @@ class _AuthScreenState extends State<AuthScreen> {
         'email': user.email,
       });
     }
-    // AuthGate StreamBuilder handles navigation
+    // AuthGate StreamBuilder handles navigation → onboarding or clips
   }
 
   @override
@@ -323,71 +299,6 @@ class _AuthScreenState extends State<AuthScreen> {
                 ),
               ),
             ),
-            if (isSignup) ...[
-              TextField(
-                controller: displayNameController,
-                decoration: const InputDecoration(labelText: 'Display Name'),
-              ),
-              const SizedBox(height: 8),
-              TextField(
-                controller: gymSearchController,
-                decoration: InputDecoration(
-                  labelText: 'Search for your gym',
-                  suffixIcon: selectedGymName != null
-                      ? IconButton(
-                          icon: const Icon(Icons.clear),
-                          onPressed: () {
-                            setState(() {
-                              selectedGymId = null;
-                              selectedGymName = null;
-                              gymSearchController.clear();
-                              gymResults = [];
-                            });
-                          },
-                        )
-                      : null,
-                ),
-                onChanged: (value) {
-                  if (selectedGymId == null) {
-                    _searchGyms(value);
-                  }
-                },
-              ),
-              if (selectedGymName != null)
-                Padding(
-                  padding: const EdgeInsets.only(top: 4),
-                  child: Text('Selected: $selectedGymName',
-                      style: const TextStyle(color: Colors.green)),
-                ),
-              if (gymResults.isNotEmpty && selectedGymId == null)
-                ...gymResults.map((gym) => ListTile(
-                      title: Text(gym['name'] ?? ''),
-                      subtitle: Text(gym['address'] ?? ''),
-                      onTap: () {
-                        setState(() {
-                          selectedGymId = gym['id'];
-                          selectedGymName = gym['name'];
-                          gymSearchController.text = gym['name'];
-                          gymResults = [];
-                          showGymInterest = false;
-                        });
-                      },
-                    )),
-              if (!showGymInterest && selectedGymId == null)
-                TextButton(
-                  onPressed: () => setState(() => showGymInterest = true),
-                  child: const Text("My gym isn't listed"),
-                ),
-              if (showGymInterest) ...[
-                TextField(
-                  controller: gymInterestController,
-                  decoration: const InputDecoration(
-                    labelText: 'Enter your gym name',
-                    helperText: "We'll notify you when your gym joins",
-                  ),
-                ),
-              ],
-            ],
             const SizedBox(height: 16),
             ElevatedButton(
               onPressed: authenticate,
