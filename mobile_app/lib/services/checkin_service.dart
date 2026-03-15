@@ -74,20 +74,25 @@ class CheckinService {
 
       if (profile == null) return;
 
-      // Query gyms table for matching SSID (and optionally BSSID)
-      final query = Supabase.instance.client
+      // Query gyms table for matching SSID
+      // BSSID match is best-effort: only filter if gym has one stored
+      final gyms = await Supabase.instance.client
           .from('gyms')
-          .select('id')
+          .select('id, wifi_bssid')
           .eq('wifi_ssid', cleanSsid);
-
-      // If BSSID available, use it to narrow match
-      final gyms = bssid != null && bssid.isNotEmpty
-          ? await query.eq('wifi_bssid', bssid)
-          : await query;
 
       if ((gyms as List).isEmpty) return;
 
-      final gymId = gyms.first['id'];
+      // Prefer BSSID-matched gym if available, otherwise take first SSID match
+      var matched = gyms.first;
+      if (bssid != null && bssid.isNotEmpty) {
+        final bssidMatch = (gyms as List).where(
+          (g) => g['wifi_bssid'] == bssid,
+        );
+        if (bssidMatch.isNotEmpty) matched = bssidMatch.first;
+      }
+
+      final gymId = matched['id'];
       final profileId = profile['id'];
 
       debugPrint('CheckinService: auto check-in at gym=$gymId for profile=$profileId');
