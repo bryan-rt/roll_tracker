@@ -23,12 +23,13 @@ class CheckinService {
     );
 
     // Immediate check for current WiFi (the listener only fires on changes)
-    _checkCurrentWifi();
+    checkCurrentWifi();
   }
 
   /// Check current WiFi and attempt auto check-in.
   /// Requests location permission if needed (required to read SSID on Android).
-  static Future<void> _checkCurrentWifi() async {
+  /// Public so it can be called after auth state changes.
+  static Future<void> checkCurrentWifi() async {
     try {
       // Ensure location permission is granted (required for SSID on Android 10+)
       LocationPermission permission = await Geolocator.checkPermission();

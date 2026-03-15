@@ -66,6 +66,8 @@ class _AuthGateState extends State<AuthGate> {
         await logger.logEvent('auth', 'User logged in', context: {
           'email': session.user.email,
         });
+        // Trigger WiFi check-in now that a user session exists
+        CheckinService.checkCurrentWifi();
       }
     });
   }
