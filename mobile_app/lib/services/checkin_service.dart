@@ -75,6 +75,17 @@ class CheckinService {
     }
   }
 
+  /// Manual check-in (e.g. from Find a Gym screen).
+  /// auto_expires_at is handled by the DB trigger — do not pass it.
+  static Future<void> manualCheckIn(String profileId, String gymId) async {
+    await Supabase.instance.client.from('gym_checkins').insert({
+      'profile_id': profileId,
+      'gym_id': gymId,
+      'checked_in_at': DateTime.now().toUtc().toIso8601String(),
+      'is_active': true,
+    });
+  }
+
   /// Stop listening (call on app dispose if needed)
   static void stopListening() {
     _subscription?.cancel();
