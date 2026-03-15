@@ -60,6 +60,37 @@ class Database:
             self.conn.commit()
             return str(row[0])
 
+    def get_video_gym_id(self, video_id: str) -> str | None:
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                select gym_id
+                from public.videos
+                where id = %s
+                limit 1
+                """,
+                (video_id,),
+            )
+            row = cur.fetchone()
+            return str(row[0]) if row and row[0] is not None else None
+
+    def resolve_profile_by_tag_and_gym(self, tag_id: int, gym_id: str) -> str | None:
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                select p.id
+                from public.gym_checkins gc
+                join public.profiles p on gc.profile_id = p.id
+                where gc.gym_id = %s
+                  and gc.is_active = true
+                  and p.tag_id = %s
+                limit 1
+                """,
+                (gym_id, tag_id),
+            )
+            row = cur.fetchone()
+            return str(row[0]) if row else None
+
     def find_clip(self, bucket: str, path: str) -> str | None:
         with self.conn.cursor() as cur:
             cur.execute(
