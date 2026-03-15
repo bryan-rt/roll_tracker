@@ -17,7 +17,7 @@ class AppDrawer extends StatelessWidget {
     if (context.mounted) {
       Navigator.pushAndRemoveUntil(
         context,
-        MaterialPageRoute(builder: (_) => const AuthScreen()),
+        MaterialPageRoute(builder: (_) => const AuthGate()),
         (_) => false,
       );
     }
