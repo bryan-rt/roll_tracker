@@ -4,7 +4,6 @@ import 'package:video_player/video_player.dart';
 import 'services/supabase_service.dart';
 import 'services/auth_service.dart';
 import 'widgets/drawer_widgets.dart';
-import 'package:local_auth/local_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'utils/logging_context.dart';
 import 'utils/logger.dart';
@@ -55,10 +54,6 @@ class _AuthGateState extends State<AuthGate> {
   void initState() {
     super.initState();
     _authStream = Supabase.instance.client.auth.onAuthStateChange;
-    Future.microtask(() async {
-      await _attemptBiometricLogin();
-    });
-
     Future.microtask(() async => await _postInitAsync());
   }
 
@@ -71,6 +66,8 @@ class _AuthGateState extends State<AuthGate> {
         await logger.logEvent('auth', 'User logged in', context: {
           'email': session.user.email,
         });
+        // Trigger WiFi check-in now that a user session exists
+        CheckinService.checkCurrentWifi();
       }
     });
   }
@@ -84,6 +81,7 @@ class _AuthGateState extends State<AuthGate> {
           return const Scaffold(body: Center(child: CircularProgressIndicator()));
         } else if (snapshot.hasData && snapshot.data?.session != null) {
           return FutureBuilder<Map<String, dynamic>?>(
+            key: ValueKey(snapshot.data!.session!.user.id),
             future: supabaseService.fetchCurrentProfile(),
             builder: (context, profileSnapshot) {
               if (profileSnapshot.connectionState == ConnectionState.waiting) {
@@ -106,107 +104,6 @@ class _AuthGateState extends State<AuthGate> {
     );
   }
 
-  Future<bool> authenticateWithBiometrics() async {
-    final localAuth = LocalAuthentication();
-    final canCheck = await localAuth.canCheckBiometrics;
-    final isAvailable = await localAuth.isDeviceSupported();
-
-    if (!canCheck || !isAvailable) return false;
-
-    try {
-      final didAuthenticate = await localAuth.authenticate(
-        localizedReason: 'Please authenticate to continue',
-        options: const AuthenticationOptions(
-          biometricOnly: true,
-          stickyAuth: true,
-        ),
-      );
-      return didAuthenticate;
-    } catch (e) {
-      await logger.logEvent('auth', 'Biometric auth error', context: {
-        'error': e.toString()
-      });
-      return false;
-    }
-  }
-
-  Future<void> _attemptBiometricLogin() async {
-    final prefs = await SharedPreferences.getInstance();
-    final useFingerprint = prefs.getBool('useFingerprint') ?? false;
-    final staySignedIn = prefs.getBool('staySignedIn') ?? false;
-    final existingUser = Supabase.instance.client.auth.currentUser;
-
-    if (staySignedIn && existingUser != null) {
-      await logger.logEvent('auth', 'Auto login via staySignedIn');
-      return; // Let StreamBuilder handle routing
-    }
-
-    if (!useFingerprint) return;
-
-    final stored = await SecureStorage.readCredentials();
-    final storedEmail = stored['email'];
-    final storedPassword = stored['password'];
-
-    if (storedEmail == null || storedPassword == null) {
-      await logger.logEvent('auth', 'No stored credentials for biometric login');
-      return;
-    }
-
-    const maxAttempts = 5;
-
-    for (int attempt = 1; attempt <= maxAttempts; attempt++) {
-      try {
-        final success = await authenticateWithBiometrics();
-
-        if (success) {
-          try {
-            await Supabase.instance.client.auth.signInWithPassword(
-              email: storedEmail,
-              password: storedPassword,
-            );
-
-            await logger.logEvent('auth', 'Biometric login success');
-            return; // Let StreamBuilder navigate to ClipListScreen
-          } catch (e) {
-            await logger.logEvent('auth', 'Supabase login failed after biometrics', context: {
-              'error': e.toString(),
-            });
-            break; // Don't retry on auth error
-          }
-        } else {
-          final remaining = maxAttempts - attempt;
-
-          await logger.logEvent('auth', 'Biometric login failed', context: {
-            'attempt': attempt,
-            'remaining': remaining,
-          });
-
-          if (mounted && remaining > 0) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('Fingerprint failed. You have $remaining attempt(s) left.')),
-            );
-          }
-
-          // If user cancelled scan on first attempt -> force logout
-          if (attempt == 1) {
-            await AppDrawer.globalSignOut(context);
-            return;
-          }
-        }
-      } catch (e) {
-        await logger.logEvent('auth', 'Biometric scan error', context: {
-          'attempt': attempt,
-          'error': e.toString(),
-        });
-        await AppDrawer.globalSignOut(context);
-        return;
-      }
-    }
-
-    // All 5 attempts failed
-    await logger.logEvent('auth', 'Biometric login failed 5 times — logging out');
-    await AppDrawer.globalSignOut(context);
-  }
 }
 
 class AuthScreen extends StatefulWidget {
@@ -268,8 +165,15 @@ class _AuthScreenState extends State<AuthScreen> {
         'uid': user.id,
         'email': user.email,
       });
+      // Navigate to AuthGate so StreamBuilder routes to onboarding or clips
+      if (mounted) {
+        Navigator.pushAndRemoveUntil(
+          context,
+          MaterialPageRoute(builder: (_) => const AuthGate()),
+          (_) => false,
+        );
+      }
     }
-    // AuthGate StreamBuilder handles navigation → onboarding or clips
   }
 
   @override
@@ -335,20 +239,22 @@ class _ClipListScreenState extends State<ClipListScreen> {
     try {
       final profile = await supabaseService.fetchCurrentProfile();
       if (profile == null) {
-        setState(() => isLoading = false);
+        if (mounted) setState(() => isLoading = false);
         return;
       }
       final fetchedClips = await supabaseService.fetchMyClips(profile['id']);
-      setState(() {
-        clips = fetchedClips;
-        isLoading = false;
-      });
+      if (mounted) {
+        setState(() {
+          clips = fetchedClips;
+          isLoading = false;
+        });
+      }
     } catch (e, stack) {
       await logger.logEvent('clip_list', 'Error fetching user clips', context: {
         'error': e.toString(),
         'stack': stack.toString(),
       });
-      setState(() => isLoading = false);
+      if (mounted) setState(() => isLoading = false);
     }
   }
 
@@ -379,23 +285,27 @@ class _ClipListScreenState extends State<ClipListScreen> {
       drawer: const AppDrawer(),
       body: isLoading
           ? const Center(child: CircularProgressIndicator())
-          : Column(
-              children: [
-                Expanded(
-                  child: ListView.builder(
-                    itemCount: clips.length,
-                    itemBuilder: (context, index) {
-                      final clip = clips[index];
-                      return ListTile(
-                        title: Text(clip.storageObjectPath),
-                        subtitle: Text('Duration: ${clip.durationSeconds}s'),
-                        trailing: const Icon(Icons.play_arrow),
-                        onTap: () => playClip(clip),
-                      );
-                    },
-                  ),
-                ),
-              ],
+          : RefreshIndicator(
+              onRefresh: fetchUserClips,
+              child: clips.isEmpty
+                  ? ListView(
+                      children: const [
+                        SizedBox(height: 200),
+                        Center(child: Text('No clips yet. Pull to refresh.')),
+                      ],
+                    )
+                  : ListView.builder(
+                      itemCount: clips.length,
+                      itemBuilder: (context, index) {
+                        final clip = clips[index];
+                        return ListTile(
+                          title: Text(clip.storageObjectPath),
+                          subtitle: Text('Duration: ${clip.durationSeconds}s'),
+                          trailing: const Icon(Icons.play_arrow),
+                          onTap: () => playClip(clip),
+                        );
+                      },
+                    ),
             ),
     );
   }

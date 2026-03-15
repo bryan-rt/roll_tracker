@@ -210,28 +210,48 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 ## Supabase Schema (current migrations)
 
 **Tables:**
-- `profiles` — athlete/user records. `auth_user_id` (FK to Supabase Auth), `display_name`, `email`
-- `videos` — raw video metadata: `camera_id`, `source_path`, `recorded_at`, `status`, `metadata` (jsonb)
-- `clips` — processed clips: `video_id` FK, `match_id`, `file_path`, `storage_bucket`,
-  `storage_object_path`, `start_seconds`, `end_seconds`, `fighter_a_tag_id`, `fighter_b_tag_id`
+- `profiles` — athlete/user records. `auth_user_id` (FK to Supabase Auth), `display_name` (nullable), `email`, `tag_id` (auto-assigned 0–586 via sequence), `tag_assigned_at`, `home_gym_id` FK→gyms
+- `videos` — raw video metadata: `camera_id`, `source_path`, `recorded_at`, `status`, `metadata` (jsonb), `gym_id` FK→gyms
+- `clips` — processed clips: `video_id` FK, `match_id`, `file_path`, `storage_bucket`, `storage_object_path`, `start_seconds`, `end_seconds`, `fighter_a_tag_id`, `fighter_b_tag_id`, `fighter_a_profile_id`, `fighter_b_profile_id` (nullable FKs→profiles)
 - `log_events` — audit log: `clip_id`/`video_id` FK, `event_type`, `event_level`, `message`, `details`
+- `gyms` — `name`, `owner_profile_id`, `owner_auth_user_id` (denormalized), `address`, `wifi_ssid`, `wifi_bssid`, `latitude`, `longitude`
+- `gym_checkins` — `profile_id`, `gym_id`, `checked_in_at`, `auto_expires_at` (trigger-managed +3hr), `is_active`, `source` (`manual` or `wifi_auto`)
+- `gym_subscriptions` — `gym_id`, `tier` ENUM, `started_at`, `ended_at`, `is_current`
+- `homography_configs` — `gym_id`, `camera_id`, `config_data` JSONB
+- `gym_interest_signals` — `profile_id`, `gym_name_entered`, `owner_email`, `submitted_at`
 
-**Storage bucket:** `match-clips` (private)
+**Storage bucket:** `match-clips` (private, RLS policy allows authenticated reads for signed URLs)
+
+**Auth trigger:** `handle_new_user()` fires on `auth.users` INSERT — auto-creates `profiles` row with `auth_user_id`, `email`, `tag_id` (from cycling sequence 0–586), `tag_assigned_at`.
+
+**Helper functions:**
+- `gyms_near(lat, lng, radius_km)` — Haversine proximity search, no PostGIS
+- `current_profile_id()` — SECURITY DEFINER helper for RLS policies that need the current user's profile ID without recursion
+
+**RLS:** Enabled on all 9 tables. Athletes see own profile/clips/check-ins. Gym owners see their gym's data. Service role bypasses all RLS. Note: the gym-owner-reads-checked-in-athlete-profiles policy was dropped due to cross-table RLS recursion (42P17) — will be re-implemented as a SECURITY DEFINER RPC function.
 
 **Pending schema items (not yet migrated):**
 - `notification_channel` — TBD (drift alert delivery mechanism)
+- Gym owner profile read policy — needs RPC-based approach to avoid RLS recursion
 
 **Applied migrations (Phase A):**
-- `20260311000001_create_gyms.sql` — `gyms` table: `id`, `name`, `owner_profile_id`, `address`, `wifi_ssid`, `wifi_bssid`, `created_at`, `updated_at`
-- `20260311000002_create_gym_members.sql` — `gym_members` table (**superseded by 000007** — table dropped, replaced by `profiles.home_gym_id`)
-- `20260311000003_create_gym_subscriptions.sql` — `gym_subscriptions` table: `id`, `gym_id`, `tier` ENUM(`free`, `pro`, `enterprise`), `started_at`, `ended_at`, `is_current`
-- `20260311000004_create_gym_checkins.sql` — `gym_checkins` table: `id`, `profile_id`, `gym_id`, `checked_in_at`, `auto_expires_at` (generated, +3hr), `is_active`
-- `20260311000005_create_homography_configs.sql` — `homography_configs` table: `id`, `gym_id`, `camera_id`, `config_data` JSONB, `created_at`, `updated_at`
-- `20260311000006_add_phase_a_columns.sql` — `profiles` adds `tag_id` (indexed, not unique), `tag_assigned_at`, `starter_pack_sent_at`; `videos` adds `gym_id` FK→gyms; `clips` adds `fighter_a_profile_id`, `fighter_b_profile_id` FK→profiles (nullable)
-- `20260311000007_phase_a_correction.sql` — drops `gym_members` table and `gym_role` enum; adds `profiles.home_gym_id` FK→gyms; adds `gyms.latitude`, `gyms.longitude`; creates `gym_interest_signals` table
+- `20260311000001_create_gyms.sql` — `gyms` table
+- `20260311000002_create_gym_members.sql` — (**superseded by 000007** — dropped)
+- `20260311000003_create_gym_subscriptions.sql` — `gym_subscriptions` table
+- `20260311000004_create_gym_checkins.sql` — `gym_checkins` table + `set_checkin_expiry` trigger
+- `20260311000005_create_homography_configs.sql` — `homography_configs` table
+- `20260311000006_add_phase_a_columns.sql` — `tag_id`, `gym_id`, `fighter_*_profile_id` columns
+- `20260311000007_phase_a_correction.sql` — drops `gym_members`, adds `home_gym_id`, creates `gym_interest_signals`
 
-**Applied migration (Phase E):**
-- `20260315000001_phase_e_rls_and_trigger.sql` — `profiles.display_name` made nullable; `gym_interest_signals` gets `owner_email` column; auth trigger `handle_new_user()` auto-creates profiles row on sign-up; `gyms_near()` Haversine RPC function; RLS enabled on all 9 tables with role-based policies (athletes see own data, gym owners see their gym's data, service role bypasses)
+**Applied migrations (Phase E + bug fixes):**
+- `20260315000001_phase_e_rls_and_trigger.sql` — `display_name` nullable, `owner_email` column, auth trigger, `gyms_near()`, RLS on all tables
+- `20260315000002_fix_profiles_update_policy.sql` — adds WITH CHECK to profiles UPDATE policy
+- `20260315000003_fix_profiles_select_recursion.sql` — `current_profile_id()` SECURITY DEFINER helper
+- `20260315000004_fix_current_profile_id_lang.sql` — switches helper to plpgsql to prevent inlining
+- `20260315000005_fix_profiles_recursion_v3.sql` — `owner_auth_user_id` denormalized on gyms
+- `20260315000006_drop_recursive_profile_policy.sql` — drops recursive gym-owner profiles policy
+- `20260315000007_checkin_source_and_tag_assignment.sql` — `source` column on gym_checkins, `tag_id_seq` cycling sequence (0–586), updated `handle_new_user()` to assign tag_id
+- `20260315000008_storage_policies.sql` — storage read policy for `match-clips` bucket
 
 ---
 
@@ -249,7 +269,7 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 | Config | YAML + Pydantic v2 |
 | Services | Docker (each service is standalone) |
 | Backend | Supabase (Postgres + Auth + Storage + Realtime) |
-| Mobile app | Flutter (rough draft, TBD migration) |
+| Mobile app | Flutter + supabase_flutter + geolocator + video_player |
 | Web app | TBD (gym owner blueprint + homography calibration tool) |
 
 **Key dependency constraints:**
@@ -316,7 +336,7 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 | AprilTag family: 36h11 (~587 IDs) | Decided | Cell size optimized for fixed Nest cameras at gym distances. Larger cells = better detection at range, through occlusion, and at lower resolution. No family migration planned. |
 | Check-in mechanism: WiFi SSID+BSSID | Decided | GPS rejected (indoor unreliable, high permission friction). Auto-triggers on WiFi connect in Flutter app. 3hr TTL auto-expiry. gyms table gets wifi_ssid + wifi_bssid columns. |
 | profiles.tag_id not globally unique | Decided | tag_id is unique within (tag_id + gym_id + active time window). Handles scale beyond 587 without schema change. Stage F uses check-in to disambiguate if collision exists. |
-| Athlete tag assignment: backend-assigned at signup | Decided | Backend assigns tag_id sequentially at registration. Physical merchandise (2 rashguards + 2 gi patches) ships with athlete's distinct tag printed. Replacements available on request. |
+| Athlete tag assignment: DB-assigned at signup | Decided | `tag_id_seq` cycling sequence (0–586) assigned by `handle_new_user()` trigger on sign-up. Physical merchandise (2 rashguards + 2 gi patches) ships with athlete's distinct tag printed. Replacements available on request. |
 | Gym membership: single gym per athlete | Decided | `profiles.home_gym_id` FK (replaced `gym_members` join table). Can relax later. |
 | Subscription history: gym_subscriptions table | Decided | Separate table from day one. Fields: gym_id, tier, started_at, ended_at, is_current. |
 | Clip identity: denormalized profile IDs on clips | Decided | clips gets fighter_a_profile_id + fighter_b_profile_id (nullable FKs). Stage F writes tag IDs; the uploader service resolves tag → profile via active gym check-ins at upload time. Null = unresolved, backfillable. |
@@ -326,12 +346,19 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 ## Current Branch & Status
 
 - **Active branch:** `services_uploader`
-- **Head commit:** `b9560c6`
-- **Pipeline:** Stages A, C, D (D0–D3), E partially implemented. Stage F (export) exists.
-- **Services:** `nest_recorder` working. `uploader` working (Phase C: resolves fighter profile IDs via tag_id + gym check-ins). `processor` scaffold only.
-- **Apps:** Flutter mobile app at `mobile_app/`. Auth migrated to Supabase-native (supabase_flutter). Firebase fully removed. Data layer uses profiles/clips/gyms schema. WiFi check-in listener (CheckinService) + manual check-in. Post-login onboarding flow: display name → gym select → invite gym (if not listed). Find a Gym screen with GPS proximity search via `gyms_near` RPC. Auth trigger auto-creates profiles row on sign-up; onboarding screens handle display_name and home_gym_id. Requires ACCESS_FINE_LOCATION (Android) and NSLocationWhenInUseUsageDescription (iOS).
-- **Supabase:** Phase A migrations applied. Phase E applied: RLS on all tables, auth trigger, `gyms_near` function, `profiles.display_name` nullable, `gym_interest_signals.owner_email` column.
-- **Last updated:** 2026-03-15 (Phase E — RLS, auth trigger, onboarding flow, gym discovery)
+- **Head commit:** `12fb2fe`
+- **Pipeline:** Full pipeline (A→F) verified end-to-end. Stages A, C produce tag observations + identity hints. Stage D (ILP stitching) resolves person tracks. Stage E detects match sessions. Stage F exports clips with privacy redaction.
+- **Services:** `nest_recorder` working. `uploader` working — resolves fighter tag IDs → profile IDs via active gym check-ins at upload time (Phase C identity bridge). `processor` scaffold only.
+- **Apps:** Flutter mobile app at `mobile_app/`. End-to-end tested on Pixel 7 Pro against local Supabase.
+  - **Auth:** Supabase-native (supabase_flutter). Auth trigger auto-creates profiles with tag_id on sign-up. Biometric login gated behind Settings toggle (default off).
+  - **Onboarding:** display name → gym select → invite gym (if not listed). Routes via AuthGate FutureBuilder with profile completeness check.
+  - **Clips:** Pull-to-refresh clip list. Tap to play via signed URL + video_player. RLS scopes clips to athlete's profile (fighter_a/b_profile_id match).
+  - **Check-in:** WiFi auto check-in (CheckinService) fires after auth + on WiFi changes. Manual check-in via Find a Gym screen. SSID-primary matching (BSSID optional refinement). Source tracked as `wifi_auto` or `manual`.
+  - **Gym discovery:** Find a Gym screen with GPS proximity via `gyms_near` RPC. Accessible from navigation drawer.
+  - **Android:** `usesCleartextTraffic=true` for local HTTP Supabase. `ACCESS_FINE_LOCATION` required for WiFi SSID + GPS.
+  - **Local dev:** `supabase_config.dart` points to LAN IP (`192.168.0.66:54321`). Signed URLs rewrite `127.0.0.1` → configured host for phone access.
+- **Supabase:** All Phase A + Phase E migrations applied (16 migration files total). RLS on all 9 tables. Storage read policy on `match-clips` bucket. `log_events` has a known schema mismatch — `AppLogger` sends `app_version` column that doesn't exist (non-blocking, errors are caught).
+- **Last updated:** 2026-03-15 (end-to-end mobile test — pipeline → uploader → app clip playback verified)
 
 ---
 
@@ -368,6 +395,18 @@ npx supabase db reset
 ~/development/flutter/bin/flutter pub get
 ~/development/flutter/bin/flutter analyze
 ~/development/flutter/bin/flutter run
+
+# Run uploader locally (against local Supabase)
+# Set env vars from: npx supabase status (use Secret key for SERVICE_ROLE_KEY)
+SUPABASE_URL=http://127.0.0.1:54321 \
+SUPABASE_SERVICE_ROLE_KEY=<secret-key-from-supabase-status> \
+SUPABASE_DB_URL=postgresql://postgres:postgres@127.0.0.1:54322/postgres \
+SUPABASE_STORAGE_BUCKET=match-clips \
+UPLOADER_DELETE_LOCAL=false \
+python -c "import sys; sys.path.insert(0,'services/uploader'); from uploader.cli import main; sys.argv=['u','--manifest','<path/to/export_manifest.jsonl>']; main()"
+
+# Flutter run on Pixel (device ID may vary)
+~/development/flutter/bin/flutter run -d 2A191FDH300C9Z
 
 # Docker services
 cd services/nest_recorder && docker compose up
