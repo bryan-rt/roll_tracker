@@ -84,6 +84,7 @@ class _AuthGateState extends State<AuthGate> {
           return const Scaffold(body: Center(child: CircularProgressIndicator()));
         } else if (snapshot.hasData && snapshot.data?.session != null) {
           return FutureBuilder<Map<String, dynamic>?>(
+            key: ValueKey(snapshot.data!.session!.user.id),
             future: supabaseService.fetchCurrentProfile(),
             builder: (context, profileSnapshot) {
               if (profileSnapshot.connectionState == ConnectionState.waiting) {

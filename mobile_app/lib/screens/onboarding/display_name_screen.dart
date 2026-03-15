@@ -33,7 +33,9 @@ class _DisplayNameScreenState extends State<DisplayNameScreen> {
           MaterialPageRoute(builder: (_) => const GymSelectScreen()),
         );
       }
-    } catch (e) {
+    } catch (e, stack) {
+      debugPrint('DisplayNameScreen update error: $e');
+      debugPrint('Stack: $stack');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Error saving name: $e')),
