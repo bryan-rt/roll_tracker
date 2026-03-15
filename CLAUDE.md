@@ -199,7 +199,7 @@ stage's internals directly.
 |---|---|---|
 | `nest_recorder` | Working | OAuth2 → Nest API → MP4 segments → `data/raw/nest/` |
 | `processor` | Scaffold only | Will wrap bjj_pipeline; no implementation yet |
-| `uploader` | Working | Polls `outputs/`, bundles + uploads to Supabase, deletes on confirm |
+| `uploader` | Working | Polls `outputs/`, bundles + uploads to Supabase, resolves fighter tag IDs → profile IDs via active gym check-ins, deletes on confirm |
 
 The processor service has a documented I/O contract at `services/processor/contracts/input_output.md`.
 The uploader contract is at `services/uploader/contracts/batch_bundle.md`.
@@ -325,10 +325,10 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 - **Active branch:** `services_uploader`
 - **Head commit:** `035e464`
 - **Pipeline:** Stages A, C, D (D0–D3), E partially implemented. Stage F (export) exists.
-- **Services:** `nest_recorder` working. `uploader` working. `processor` scaffold only.
+- **Services:** `nest_recorder` working. `uploader` working (Phase C: resolves fighter profile IDs via tag_id + gym check-ins). `processor` scaffold only.
 - **Apps:** Flutter mobile app at `mobile_app/`. Auth migrated to Supabase-native (supabase_flutter). Firebase fully removed. Data layer uses profiles/clips/gyms schema. WiFi check-in listener added (CheckinService) — requires ACCESS_FINE_LOCATION (Android) and NSLocationWhenInUseUsageDescription (iOS). Runtime permission request UI deferred.
 - **Supabase:** Phase A migrations applied. Phase A correction applied (gym_members → home_gym_id).
-- **Last updated:** 2026-03-14 (Phase B2 — WiFi check-in listener)
+- **Last updated:** 2026-03-15 (Phase C — uploader identity resolution)
 
 ---
 

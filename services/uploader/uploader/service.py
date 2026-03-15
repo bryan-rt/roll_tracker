@@ -37,6 +37,28 @@ def run_upload(manifest_path: str, cfg) -> None:
 
             clip_row["video_id"] = video_id
 
+            # Phase C: resolve tag IDs → profile IDs via active gym check-ins
+            gym_id = db.get_video_gym_id(video_id)
+            if gym_id is None:
+                print(
+                    f"[uploader] warning: no gym_id for video_id={video_id}, "
+                    "skipping profile resolution"
+                )
+            for side in ("a", "b"):
+                tag_key = f"fighter_{side}_tag_id"
+                profile_key = f"fighter_{side}_profile_id"
+                tag_val = clip_row.get(tag_key)
+                if tag_val is not None and tag_val != "" and gym_id is not None:
+                    profile_id = db.resolve_profile_by_tag_and_gym(
+                        int(tag_val), gym_id
+                    )
+                    clip_row[profile_key] = profile_id
+                    print(
+                        f"[uploader] {tag_key}={tag_val} -> {profile_key}={profile_id}"
+                    )
+                else:
+                    clip_row[profile_key] = None
+
             print(f"[uploader] uploading {local_path} -> {bucket}/{object_path}")
             storage.upload(
                 bucket,
