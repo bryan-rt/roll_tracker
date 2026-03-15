@@ -2,6 +2,7 @@ import 'package:intl/intl.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'dart:io';
 import 'package:device_info_plus/device_info_plus.dart';
+import '../supabase_config.dart';
 
 Future<Map<String, String>> getDeviceMetadata() async {
   final deviceInfo = DeviceInfoPlugin();
@@ -95,12 +96,15 @@ class SupabaseService {
         .toList();
   }
 
-  /// Generate signed URL for a clip
+  /// Generate signed URL for a clip.
+  /// Replaces 127.0.0.1 with the configured Supabase URL host so the
+  /// phone can reach local Supabase over LAN.
   Future<String> getSignedUrl(String storageObjectPath) async {
     final response = await Supabase.instance.client.storage
         .from('match-clips')
         .createSignedUrl(storageObjectPath, 3600);
-    return response;
+    final configuredHost = Uri.parse(supabaseUrl).host;
+    return response.replaceAll('127.0.0.1', configuredHost);
   }
 
   /// Search gyms by name for signup flow
