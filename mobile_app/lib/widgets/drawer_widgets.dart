@@ -2,6 +2,7 @@
 import 'package:flutter/material.dart';
 import '../screens/profile_screen.dart';
 import '../screens/settings_screen.dart';
+import '../screens/find_gym_screen.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../utils/secure_storage.dart';
 import '../main.dart';
@@ -37,6 +38,16 @@ class AppDrawer extends StatelessWidget {
             title: const Text('My Clips'),
             onTap: () {
               Navigator.pop(context); // Just close the drawer
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.location_on),
+            title: const Text('Find a Gym'),
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const FindGymScreen()),
+              );
             },
           ),
           ListTile(
