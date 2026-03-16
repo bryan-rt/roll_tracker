@@ -10,7 +10,8 @@ ENV LANG=C.UTF-8
 
 # Workdir & scripts
 WORKDIR /app
-COPY entrypoint.sh get_access_token.sh record_window.sh list_cameras.sh diag_v*.sh /app/
+COPY entrypoint.sh get_access_token.sh record_window.sh \
+     list_cameras.sh register_cameras.sh diag_v*.sh /app/
 RUN chmod +x /app/*.sh
 
 # Data mount point
