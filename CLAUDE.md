@@ -197,7 +197,7 @@ stage's internals directly.
 
 | Service | Status | Responsibility |
 |---|---|---|
-| `nest_recorder` | Working | OAuth2 → Nest API → MP4 segments → `data/raw/nest/` |
+| `nest_recorder` | Working | OAuth2 → Nest API → MP4 segments → `data/raw/nest/`. Auto-registers discovered cameras to Supabase `cameras` table via `register_cameras.sh`. |
 | `processor` | Scaffold only | Will wrap bjj_pipeline; no implementation yet |
 | `uploader` | Working | Polls `outputs/`, bundles + uploads to Supabase, resolves fighter tag IDs → profile IDs via active gym check-ins, deletes on confirm |
 
@@ -217,6 +217,7 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 - `gyms` — `name`, `owner_profile_id`, `owner_auth_user_id` (denormalized), `address`, `wifi_ssid`, `wifi_bssid`, `latitude`, `longitude`
 - `gym_checkins` — `profile_id`, `gym_id`, `checked_in_at`, `auto_expires_at` (trigger-managed +3hr), `is_active`, `source` (`manual` or `wifi_auto`)
 - `gym_subscriptions` — `gym_id`, `tier` ENUM, `started_at`, `ended_at`, `is_current`
+- `cameras` — `gym_id` FK→gyms, `cam_id` (last 6 chars of SDM device path), `device_path` (full SDM path), `display_name` (nullable, from Google Home room name), `is_active`, `first_seen_at`, `last_seen_at`. Unique on `(gym_id, cam_id)`. Auto-registered by `nest_recorder` on camera discovery via Supabase REST upsert.
 - `homography_configs` — `gym_id`, `camera_id`, `config_data` JSONB
 - `gym_interest_signals` — `profile_id`, `gym_name_entered`, `owner_email`, `submitted_at`
 
@@ -228,7 +229,7 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 - `gyms_near(lat, lng, radius_km)` — Haversine proximity search, no PostGIS
 - `current_profile_id()` — SECURITY DEFINER helper for RLS policies that need the current user's profile ID without recursion
 
-**RLS:** Enabled on all 9 tables. Athletes see own profile/clips/check-ins. Gym owners see their gym's data. Service role bypasses all RLS. Note: the gym-owner-reads-checked-in-athlete-profiles policy was dropped due to cross-table RLS recursion (42P17) — will be re-implemented as a SECURITY DEFINER RPC function.
+**RLS:** Enabled on all 10 tables. Athletes see own profile/clips/check-ins. Gym owners see their gym's data. Service role bypasses all RLS. Note: the gym-owner-reads-checked-in-athlete-profiles policy was dropped due to cross-table RLS recursion (42P17) — will be re-implemented as a SECURITY DEFINER RPC function.
 
 **Pending schema items (not yet migrated):**
 - `notification_channel` — TBD (drift alert delivery mechanism)
@@ -252,6 +253,9 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 - `20260315000006_drop_recursive_profile_policy.sql` — drops recursive gym-owner profiles policy
 - `20260315000007_checkin_source_and_tag_assignment.sql` — `source` column on gym_checkins, `tag_id_seq` cycling sequence (0–586), updated `handle_new_user()` to assign tag_id
 - `20260315000008_storage_policies.sql` — storage read policy for `match-clips` bucket
+
+**Applied migrations (cameras + recorder):**
+- `20260316000001_cameras_table.sql` — `cameras` table with `(gym_id, cam_id)` unique constraint, RLS for gym owner SELECT/UPDATE
 
 ---
 
@@ -340,6 +344,7 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 | Gym membership: single gym per athlete | Decided | `profiles.home_gym_id` FK (replaced `gym_members` join table). Can relax later. |
 | Subscription history: gym_subscriptions table | Decided | Separate table from day one. Fields: gym_id, tier, started_at, ended_at, is_current. |
 | Clip identity: denormalized profile IDs on clips | Decided | clips gets fighter_a_profile_id + fighter_b_profile_id (nullable FKs). Stage F writes tag IDs; the uploader service resolves tag → profile via active gym check-ins at upload time. Null = unresolved, backfillable. |
+| Camera auto-registration: discovery-derived cam_id | Decided | `cam_id` = last 6 chars of SDM device path. `nest_recorder` auto-registers cameras to `cameras` table via Supabase REST upsert on every discovery run. Replaces manual DEVICE_*/CAM_ID_* env var configuration. `register_cameras.sh` called from `diag_v7_2.sh` after discovery, before recording. |
 
 ---
 
@@ -348,7 +353,7 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 - **Active branch:** `services_uploader`
 - **Head commit:** `12fb2fe`
 - **Pipeline:** Full pipeline (A→F) verified end-to-end. Stages A, C produce tag observations + identity hints. Stage D (ILP stitching) resolves person tracks. Stage E detects match sessions. Stage F exports clips with privacy redaction.
-- **Services:** `nest_recorder` working. `uploader` working — resolves fighter tag IDs → profile IDs via active gym check-ins at upload time (Phase C identity bridge). `processor` scaffold only.
+- **Services:** `nest_recorder` working — auto-registers cameras to Supabase on discovery. `uploader` working — resolves fighter tag IDs → profile IDs via active gym check-ins at upload time (Phase C identity bridge). `processor` scaffold only.
 - **Apps:** Flutter mobile app at `mobile_app/`. End-to-end tested on Pixel 7 Pro against local Supabase.
   - **Auth:** Supabase-native (supabase_flutter). Auth trigger auto-creates profiles with tag_id on sign-up. Biometric login gated behind Settings toggle (default off).
   - **Onboarding:** display name → gym select → invite gym (if not listed). Routes via AuthGate FutureBuilder with profile completeness check.
@@ -357,8 +362,8 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
   - **Gym discovery:** Find a Gym screen with GPS proximity via `gyms_near` RPC. Accessible from navigation drawer.
   - **Android:** `usesCleartextTraffic=true` for local HTTP Supabase. `ACCESS_FINE_LOCATION` required for WiFi SSID + GPS.
   - **Local dev:** `supabase_config.dart` points to LAN IP (`192.168.0.66:54321`). Signed URLs rewrite `127.0.0.1` → configured host for phone access.
-- **Supabase:** All Phase A + Phase E migrations applied (16 migration files total). RLS on all 9 tables. Storage read policy on `match-clips` bucket. `log_events` has a known schema mismatch — `AppLogger` sends `app_version` column that doesn't exist (non-blocking, errors are caught).
-- **Last updated:** 2026-03-15 (end-to-end mobile test — pipeline → uploader → app clip playback verified)
+- **Supabase:** All Phase A + Phase E + cameras migrations applied (17 migration files total). RLS on all 10 tables. Storage read policy on `match-clips` bucket. `cameras` table auto-populated by `nest_recorder`. `log_events` has a known schema mismatch — `AppLogger` sends `app_version` column that doesn't exist (non-blocking, errors are caught).
+- **Last updated:** 2026-03-16 (cameras table + nest_recorder auto-registration verified with 3 live cameras)
 
 ---
 

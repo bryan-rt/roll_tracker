@@ -133,6 +133,11 @@ jq -n --arg ts "$TS" --arg root "$ROOT" \
   done | jq -s '.')" \
   '{ts: $ts, root: $root, cameras: $cams}' > "$ROOT/camera_map.json"
 
+# Register discovered cameras in Supabase (non-fatal)
+sed -i "s/\r$//" /app/register_cameras.sh 2>/dev/null || true
+chmod +x /app/register_cameras.sh 2>/dev/null || true
+/app/register_cameras.sh "$ROOT" || true
+
 # ===== Per-camera runner (spawns v6) =====
 run_one_cam() {
   local idx="$1"
