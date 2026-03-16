@@ -351,7 +351,7 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 ## Current Branch & Status
 
 - **Active branch:** `services_uploader`
-- **Head commit:** `12fb2fe`
+- **Head commit:** `d0cf43e`
 - **Pipeline:** Full pipeline (A→F) verified end-to-end. Stages A, C produce tag observations + identity hints. Stage D (ILP stitching) resolves person tracks. Stage E detects match sessions. Stage F exports clips with privacy redaction.
 - **Services:** `nest_recorder` working — auto-registers cameras to Supabase on discovery. `uploader` working — resolves fighter tag IDs → profile IDs via active gym check-ins at upload time (Phase C identity bridge). `processor` scaffold only.
 - **Apps:** Flutter mobile app at `mobile_app/`. End-to-end tested on Pixel 7 Pro against local Supabase.
@@ -363,7 +363,7 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
   - **Android:** `usesCleartextTraffic=true` for local HTTP Supabase. `ACCESS_FINE_LOCATION` required for WiFi SSID + GPS.
   - **Local dev:** `supabase_config.dart` points to LAN IP (`192.168.0.66:54321`). Signed URLs rewrite `127.0.0.1` → configured host for phone access.
 - **Supabase:** All Phase A + Phase E + cameras migrations applied (17 migration files total). RLS on all 10 tables. Storage read policy on `match-clips` bucket. `cameras` table auto-populated by `nest_recorder`. `log_events` has a known schema mismatch — `AppLogger` sends `app_version` column that doesn't exist (non-blocking, errors are caught).
-- **Last updated:** 2026-03-16 (cameras table + nest_recorder auto-registration verified with 3 live cameras)
+- **Last updated:** 2026-03-16 (cameras table + auto-registration verified; secrets removed from git tracking; Dockerfile includes register_cameras.sh; .env.example updated for discovery model)
 
 ---
 

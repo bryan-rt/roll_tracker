@@ -1,0 +1,5 @@
+secrets/*.txt
+secrets/*.json
+secrets/google_3api
+!secrets/.keep
+!secrets/README.md
