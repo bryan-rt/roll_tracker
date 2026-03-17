@@ -275,7 +275,7 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 | Services | Docker (each service is standalone) |
 | Backend | Supabase (Postgres + Auth + Storage + Realtime) |
 | Mobile app | Flutter + supabase_flutter + geolocator + video_player |
-| Web app | TBD (gym owner blueprint + homography calibration tool) |
+| Web app | Vite + React + react-router-dom + @supabase/supabase-js |
 
 **Key dependency constraints:**
 - NumPy pinned to `1.x` (`<2`) — Torch/NumPy ABI incompatibility with 2.x
@@ -347,6 +347,7 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 | Clip identity: denormalized profile IDs on clips | Decided | clips gets fighter_a_profile_id + fighter_b_profile_id (nullable FKs). Stage F writes tag IDs; the uploader service resolves tag → profile via active gym check-ins at upload time. Null = unresolved, backfillable. |
 | Camera auto-registration: discovery-derived cam_id | Decided | `cam_id` = last 6 chars of SDM device path. `nest_recorder` auto-registers cameras to `cameras` table via Supabase REST upsert on every discovery run. Replaces manual DEVICE_*/CAM_ID_* env var configuration. `register_cameras.sh` called from `diag_v7_2.sh` after discovery, before recording. |
 | Recording file path: gym-scoped production path | Decided | Production: `data/raw/nest/{gym_id}/{cam_id}/{YYYY-MM-DD}/{HH}/{cam_id}-{timestamp}.mp4`. Diag (no GYM_ID): `data/raw/nest/diag/{TS}/`. GYM_ID presence is the mode switch. `entrypoint.sh` delegates to `diag_v8.sh` scheduler (replaces legacy `record_window.sh` call). |
+| Pipeline ingest path: gym-scoped, backward compatible | Decided | Pipeline accepts both `data/raw/nest/{gym_id}/{cam_id}/{date}/{hour}/` (new) and `data/raw/nest/{cam_id}/{date}/{hour}/` (legacy). `gym_id` inferred from path structure (date folder position detection), stored in `ClipManifest.gym_id` (None for legacy). No new CLI argument required. |
 
 ---
 
@@ -354,7 +355,7 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 
 - **Active branch:** `services_uploader`
 - **Head commit:** `d0cf43e`
-- **Pipeline:** Full pipeline (A→F) verified end-to-end. Stages A, C produce tag observations + identity hints. Stage D (ILP stitching) resolves person tracks. Stage E detects match sessions. Stage F exports clips with privacy redaction.
+- **Pipeline:** Full pipeline (A→F) verified end-to-end. Ingest accepts gym-scoped paths (`{gym_id}/{cam_id}/{date}/{hour}/`) and legacy paths (`{cam_id}/{date}/{hour}/`). `gym_id` stored in `ClipManifest`. Stages A, C produce tag observations + identity hints. Stage D (ILP stitching) resolves person tracks. Stage E detects match sessions. Stage F exports clips with privacy redaction.
 - **Services:** `nest_recorder` working — auto-registers cameras to Supabase on discovery. `uploader` working — resolves fighter tag IDs → profile IDs via active gym check-ins at upload time (Phase C identity bridge). `processor` scaffold only.
 - **Apps:** Flutter mobile app at `app_mobile/`. End-to-end tested on Pixel 7 Pro against local Supabase.
   - **Auth:** Supabase-native (supabase_flutter). Auth trigger auto-creates profiles with tag_id on sign-up. Biometric login gated behind Settings toggle (default off).
@@ -370,7 +371,7 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
   - **Auth:** `AdminGate` wraps protected routes. Email+password sign-in via Supabase. Admin email checked from env, never hardcoded.
   - **Local dev:** `.env.example` provided. Set `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `VITE_ADMIN_EMAIL`.
 - **Supabase:** All Phase A + Phase E + cameras migrations applied (17 migration files total). RLS on all 10 tables. Storage read policy on `match-clips` bucket. `cameras` table auto-populated by `nest_recorder`. `log_events` has a known schema mismatch — `AppLogger` sends `app_version` column that doesn't exist (non-blocking, errors are caught).
-- **Last updated:** 2026-03-17 (admin pricing dashboard added to app_web; Supabase auth + react-router-dom integrated)
+- **Last updated:** 2026-03-17 (pipeline ingest accepts gym-scoped paths; gym_id in ClipManifest; backward compatible with legacy cam_id paths)
 
 ---
 

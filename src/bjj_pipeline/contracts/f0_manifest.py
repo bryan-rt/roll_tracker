@@ -138,6 +138,7 @@ class ClipManifest(BaseModel):
 
     clip_id: str
     camera_id: str
+    gym_id: Optional[str] = None  # inferred from ingest path; None for legacy paths
 
     input_video_path: str  # repo-relative or absolute; stages should not assume absolute
     fps: float
@@ -214,11 +215,13 @@ def init_manifest(
     duration_ms: int,
     pipeline_version: str,
     created_at_ms: int,
+    gym_id: Optional[str] = None,
     provenance: Optional[Dict[str, Any]] = None,
 ) -> ClipManifest:
     return ClipManifest(
         clip_id=clip_id,
         camera_id=camera_id,
+        gym_id=gym_id,
         input_video_path=input_video_path,
         fps=fps,
         frame_count=frame_count,
