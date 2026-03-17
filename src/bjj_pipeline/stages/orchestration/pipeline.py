@@ -20,7 +20,7 @@ import subprocess
 import sys
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 import pandas as pd
 import math
@@ -123,14 +123,22 @@ def extract_clip_id(ingest_path: Path) -> str:
     return ingest_path.stem
 
 
-def validate_ingest_path(ingest_path: Path, camera_id: str) -> Optional[str]:
-    """Validate ingest path structure and return gym_id (or None for legacy paths).
+class IngestPathInfo(NamedTuple):
+    """Parsed components from a validated ingest path."""
+    gym_id: Optional[str]
+    cam_id: str
+    date_str: str
+    hour_str: str
+
+
+def validate_ingest_path(ingest_path: Path, camera_id: str) -> IngestPathInfo:
+    """Validate ingest path structure and return parsed components.
 
     Accepts two structures:
       NEW: .../data/raw/nest/<gym_id>/<cam_id>/<YYYY-MM-DD>/<HH>/<cam_id>-*.mp4
       OLD: .../data/raw/nest/<cam_id>/<YYYY-MM-DD>/<HH>/<cam_id>-*.mp4
 
-    Returns gym_id if present, None for legacy paths.
+    Returns IngestPathInfo with gym_id (None for legacy), cam_id, date, hour.
     """
     parts = ingest_path.resolve().parts
     try:
@@ -172,7 +180,19 @@ def validate_ingest_path(ingest_path: Path, camera_id: str) -> Optional[str]:
     if len(hour_str) != 2 or not hour_str.isdigit():
         raise PipelineError(f"hour folder not a 2-digit hour: {hour_str}")
 
-    return gym_id
+    return IngestPathInfo(gym_id=gym_id, cam_id=cam, date_str=date_str, hour_str=hour_str)
+
+
+def compute_output_root(info: IngestPathInfo, base_root: Path = Path("outputs")) -> Path:
+    """Compute the gym-scoped output root from parsed ingest path info.
+
+    Returns:
+      - base_root/{gym_id}/{cam_id}/{date}/{hour}/  for gym-scoped paths
+      - base_root/legacy/{cam_id}/{date}/{hour}/    for legacy paths
+    """
+    if info.gym_id is not None:
+        return base_root / info.gym_id / info.cam_id / info.date_str / info.hour_str
+    return base_root / "legacy" / info.cam_id / info.date_str / info.hour_str
 
 
 def hash_config(config: Dict[str, Any]) -> str:
@@ -627,13 +647,14 @@ def run_pipeline(ingest_path: Path, camera_id: str, config: Dict[str, Any], *,
                  visualize: bool = False,
                  config_sources: Optional[List[str]] = None,
                  config_hash_override: Optional[str] = None) -> None:
-    gym_id = validate_ingest_path(ingest_path, camera_id)
+    info = validate_ingest_path(ingest_path, camera_id)
     clip_id = extract_clip_id(ingest_path)
-    layout = ClipOutputLayout(clip_id=clip_id, root=out_root or Path("outputs"))
+    scoped_root = compute_output_root(info, base_root=out_root or Path("outputs"))
+    layout = ClipOutputLayout(clip_id=clip_id, root=scoped_root)
     layout.clip_root.mkdir(parents=True, exist_ok=True)
 
     manifest = ensure_manifest(layout, clip_id, camera_id, ingest_path,
-                               pipeline_version=pipeline_version, gym_id=gym_id)
+                               pipeline_version=pipeline_version, gym_id=info.gym_id)
 
     # "config" is the resolved/merged dict. Create a backwards-compatible runtime
     # view for stage implementations that still expect certain top-level keys.

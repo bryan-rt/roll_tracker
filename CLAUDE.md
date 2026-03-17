@@ -199,7 +199,7 @@ stage's internals directly.
 | Service | Status | Responsibility |
 |---|---|---|
 | `nest_recorder` | Working | OAuth2 → Nest API → MP4 segments. Production path: `data/raw/nest/{gym_id}/{cam_id}/{YYYY-MM-DD}/{HH}/`. Diag path (no GYM_ID): `data/raw/nest/diag/{TS}/`. Auto-registers cameras to Supabase. `entrypoint.sh` delegates to `diag_v8.sh` scheduler. |
-| `processor` | Scaffold only | Will wrap bjj_pipeline; no implementation yet |
+| `processor` | Working | Polls `data/raw/nest/` for new MP4s, invokes `bjj_pipeline` (A→F), writes gym-scoped outputs to `outputs/{gym_id}/{cam_id}/{date}/{hour}/{clip_id}/`. Skips already-processed clips. Config: `SCAN_ROOT`, `OUTPUT_ROOT`, `POLL_INTERVAL_SECONDS`, `RUN_UNTIL`, `GYM_ID`. |
 | `uploader` | Working | Polls `outputs/`, bundles + uploads to Supabase, resolves fighter tag IDs → profile IDs via active gym check-ins, deletes on confirm |
 
 The processor service has a documented I/O contract at `services/processor/contracts/input_output.md`.
@@ -348,6 +348,7 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 | Camera auto-registration: discovery-derived cam_id | Decided | `cam_id` = last 6 chars of SDM device path. `nest_recorder` auto-registers cameras to `cameras` table via Supabase REST upsert on every discovery run. Replaces manual DEVICE_*/CAM_ID_* env var configuration. `register_cameras.sh` called from `diag_v7_2.sh` after discovery, before recording. |
 | Recording file path: gym-scoped production path | Decided | Production: `data/raw/nest/{gym_id}/{cam_id}/{YYYY-MM-DD}/{HH}/{cam_id}-{timestamp}.mp4`. Diag (no GYM_ID): `data/raw/nest/diag/{TS}/`. GYM_ID presence is the mode switch. `entrypoint.sh` delegates to `diag_v8.sh` scheduler (replaces legacy `record_window.sh` call). |
 | Pipeline ingest path: gym-scoped, backward compatible | Decided | Pipeline accepts both `data/raw/nest/{gym_id}/{cam_id}/{date}/{hour}/` (new) and `data/raw/nest/{cam_id}/{date}/{hour}/` (legacy). `gym_id` inferred from path structure (date folder position detection), stored in `ClipManifest.gym_id` (None for legacy). No new CLI argument required. |
+| Pipeline output path: gym-scoped | Decided | Outputs at `outputs/{gym_id}/{cam_id}/{date}/{hour}/{clip_id}/stage_*/`. Legacy fallback: `outputs/legacy/{cam_id}/{date}/{hour}/{clip_id}/`. `ClipOutputLayout.root` set from `compute_output_root()`. Stage F reads `gym_id` from manifest (fallback to config). |
 
 ---
 
@@ -371,7 +372,7 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
   - **Auth:** `AdminGate` wraps protected routes. Email+password sign-in via Supabase. Admin email checked from env, never hardcoded.
   - **Local dev:** `.env.example` provided. Set `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `VITE_ADMIN_EMAIL`.
 - **Supabase:** All Phase A + Phase E + cameras migrations applied (17 migration files total). RLS on all 10 tables. Storage read policy on `match-clips` bucket. `cameras` table auto-populated by `nest_recorder`. `log_events` has a known schema mismatch — `AppLogger` sends `app_version` column that doesn't exist (non-blocking, errors are caught).
-- **Last updated:** 2026-03-17 (pipeline ingest accepts gym-scoped paths; gym_id in ClipManifest; backward compatible with legacy cam_id paths)
+- **Last updated:** 2026-03-17 (processor service implemented; gym-scoped output paths; Stage F gym_id from manifest; legacy path fallback)
 
 ---
 

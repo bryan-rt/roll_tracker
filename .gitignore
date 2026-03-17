@@ -191,6 +191,7 @@ outputs/
 data/
 
 services/uploader/.env
+services/processor/.env
 services/nest_recorder/.env
 services/nest_recorder/secrets.DS_Store
 **/.DS_Store

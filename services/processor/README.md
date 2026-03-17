@@ -1,25 +1,43 @@
-# Processor Service (scaffold)
+# Processor Service
 
-Purpose: Offline processing service that will orchestrate the `bjj_pipeline` over recorded sessions. This scaffold documents inputs/outputs and environment-driven paths. No implementation code is present yet.
+Polls `data/raw/nest/` for new MP4 recordings from `nest_recorder`, invokes the
+`bjj_pipeline` (stages A→F) on each clip, and writes gym-scoped outputs that
+the `uploader` service can consume.
 
-Non-negotiables:
-- Do not alter Nest ingestion behavior.
-- Do not add cloud/DB logic here.
-- Do not redesign the Python pipeline.
-- Only mounts/paths via environment variables (see repository `.env.example`).
+## How it works
 
-Inputs (expected):
-- Session directory produced by `services/nest_recorder` (TBD finalized schema).
-- Configs from `configs/` and optional camera configs from `configs/cameras/`.
-- Environment variables for base directories:
-  - `ROLL_TRACKER_CONFIGS_DIR`, `ROLL_TRACKER_CAMERA_CONFIGS_DIR`, `ROLL_TRACKER_DATA_DIR`, `ROLL_TRACKER_OUTPUTS_DIR`.
+1. Scans `SCAN_ROOT` for `.mp4` files (optionally filtered by `GYM_ID`)
+2. Skips clips whose output already contains `stage_F/export_manifest.jsonl`
+3. Invokes `run_pipeline()` from `bjj_pipeline` programmatically
+4. Emits structured JSON log lines to stdout for each event
 
-Outputs (expected):
-- Derived artifacts written to `outputs/<session-id>/` (e.g., detections, masks, tracklets, clips).
-- Logs/telemetry stored under `outputs/<session-id>/logs/` (naming TBD).
+## Output path convention
 
-Dev/Run notes:
-- No Dockerfile or compose included yet for this service.
-- In dev, a parent compose may run containers with `sleep infinity` and use `docker exec` to invoke the CLI.
+```
+outputs/{gym_id}/{cam_id}/{YYYY-MM-DD}/{HH}/{clip_id}/
+  stage_A/ stage_B/ stage_C/ stage_D/ stage_E/ stage_F/
+```
 
-Status: Scaffold only. This folder contains documentation and contracts; implementation will be added later without changing the overall pipeline design.
+Legacy (no gym_id): `outputs/legacy/{cam_id}/{date}/{hour}/{clip_id}/`
+
+## Configuration
+
+Copy `.env.example` to `.env`. See `contracts/input_output.md` for full env var docs.
+
+## Running
+
+```bash
+# Build and run
+docker compose up --build -d
+
+# Or run locally (with bjj_pipeline installed)
+SUPABASE_URL=http://... SUPABASE_SERVICE_ROLE_KEY=... python processor.py
+```
+
+## Docker volumes
+
+| Mount | Container path | Mode |
+|---|---|---|
+| `../../data/raw/nest` | `/app/data/raw/nest` | read-only |
+| `../../outputs` | `/app/outputs` | read-write |
+| `../../configs` | `/app/configs` | read-only |

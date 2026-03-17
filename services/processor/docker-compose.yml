@@ -1,0 +1,12 @@
+services:
+  processor:
+    build:
+      context: ../..
+      dockerfile: services/processor/Dockerfile
+    container_name: roll-processor
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ../../data/raw/nest:/app/data/raw/nest:ro
+      - ../../outputs:/app/outputs
+      - ../../configs:/app/configs:ro
