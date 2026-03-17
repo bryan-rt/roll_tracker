@@ -118,7 +118,7 @@ function MatBlueprint() {
         } else {
           alert("Invalid file format.");
         }
-      } catch (err) {
+      } catch {
         alert("Error reading JSON file.");
       }
     };
