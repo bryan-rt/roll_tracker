@@ -182,12 +182,18 @@ disambiguate when multiple athletes globally share a `tag_id`.
 
 ## Data Contracts (F0 Layer)
 
-All inter-stage data lives on disk under `outputs/<clip_id>/`. The F0 layer enforces this:
-- `f0_manifest.py` — `ClipManifest` dataclass, init/load/write, per-stage default registration
+All inter-stage data lives on disk under `outputs/{gym_id}/{cam_id}/{date}/{hour}/{clip_id}/`
+(gym-scoped) or `outputs/legacy/{cam_id}/{date}/{hour}/{clip_id}/` (legacy). The F0 layer enforces this:
+- `f0_manifest.py` — `ClipManifest` Pydantic model (includes `gym_id: Optional[str]`), init/load/write, per-stage default registration
 - `f0_paths.py` — `ClipOutputLayout`, `StageLetter` — canonical path resolution
 - `f0_parquet.py` — Parquet read/write helpers
 - `f0_models.py` — Shared Pydantic models
 - `f0_validate.py` — Post-stage validators
+
+**Ingest path parsing:** `validate_ingest_path()` in `pipeline.py` returns `IngestPathInfo`
+(namedtuple: `gym_id`, `cam_id`, `date_str`, `hour_str`). `compute_output_root()` converts
+this into the gym-scoped output root path. Both are used by `run_pipeline()`, CLI commands
+(`status`, `validate`), and the processor service.
 
 **Rule:** Stages communicate only via the manifest + filesystem. No stage imports another
 stage's internals directly.
