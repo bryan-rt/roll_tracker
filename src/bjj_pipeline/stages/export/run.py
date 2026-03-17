@@ -230,7 +230,11 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 	redact_use_masks_when_available = _cfg_bool(stage_cfg, "redact_use_masks_when_available", True)
 	redact_fallback_to_bbox = _cfg_bool(stage_cfg, "redact_fallback_to_bbox", True)
 	blur_kernel_size = _cfg_int(stage_cfg, "blur_kernel_size", 31)
-	gym_id = str(stage_cfg.get("gym_id", "unknown-gym"))
+	gym_id = (
+		str(manifest.gym_id)
+		if getattr(manifest, "gym_id", None) is not None
+		else str(stage_cfg.get("gym_id", "unknown-gym"))
+	)
 	storage_bucket = str(stage_cfg.get("storage_bucket", "match-clips"))
 	clip_type = str(stage_cfg.get("clip_type", "match"))
 	initial_status = str(stage_cfg.get("initial_status", "exported_local"))

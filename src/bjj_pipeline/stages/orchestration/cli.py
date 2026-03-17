@@ -27,6 +27,8 @@ from .pipeline import (
 	_validate_stage_outputs,
 	_files_exist,
 	get_last_stage_success_config_hash,
+	validate_ingest_path,
+	compute_output_root,
 )
 from bjj_pipeline.contracts.f0_paths import ClipOutputLayout
 from bjj_pipeline.config import load_config
@@ -206,7 +208,9 @@ def status(
 ) -> None:
 	"""Print human-readable status table for all stages."""
 	cfg, _, _ = _load_config(camera, None)
-	layout = ClipOutputLayout(clip_id=clip.stem, root=out or Path("outputs"))
+	info = validate_ingest_path(clip, camera)
+	scoped_root = compute_output_root(info, base_root=out or Path("outputs"))
+	layout = ClipOutputLayout(clip_id=clip.stem, root=scoped_root)
 	typer.echo(f"clip_id={clip.stem} outputs={layout.clip_root}")
 	header = ["stage", "complete", "validated", "last_success_ts", "last_config_hash"]
 	rows: List[List[str]] = []
@@ -271,7 +275,9 @@ def validate(
 	stage: Optional[str] = typer.Option(None, help="Stage letter to validate (A..F). If omitted, validate all (Stage B optional if missing)."),
 ) -> None:
 	"""Run validators for a specific stage or all stages."""
-	layout = ClipOutputLayout(clip_id=clip.stem, root=out or Path("outputs"))
+	info = validate_ingest_path(clip, camera)
+	scoped_root = compute_output_root(info, base_root=out or Path("outputs"))
+	layout = ClipOutputLayout(clip_id=clip.stem, root=scoped_root)
 	cfg, _, _ = _load_config(camera, None)
 	from bjj_pipeline.contracts.f0_manifest import init_manifest
 	m = init_manifest(
