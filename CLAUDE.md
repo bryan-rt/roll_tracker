@@ -205,7 +205,7 @@ stage's internals directly.
 | Service | Status | Responsibility |
 |---|---|---|
 | `nest_recorder` | Working | OAuth2 → Nest API → MP4 segments. Production path: `data/raw/nest/{gym_id}/{cam_id}/{YYYY-MM-DD}/{HH}/`. Diag path (no GYM_ID): `data/raw/nest/diag/{TS}/`. Auto-registers cameras to Supabase. `entrypoint.sh` delegates to `diag_v8.sh` scheduler. |
-| `processor` | Working | Polls `data/raw/nest/` for new MP4s, invokes `bjj_pipeline` (A→F), writes gym-scoped outputs to `outputs/{gym_id}/{cam_id}/{date}/{hour}/{clip_id}/`. Skips already-processed clips. Config: `SCAN_ROOT`, `OUTPUT_ROOT`, `POLL_INTERVAL_SECONDS`, `RUN_UNTIL`, `GYM_ID`. |
+| `processor` | Working | Polls `data/raw/nest/` for new MP4s, invokes `bjj_pipeline` (A→F) in `multiplex_AC` mode. Wall-clock filter (`MAX_CLIP_AGE_HOURS`, default 6) skips stale clips. Empty-video failures log as `clip_skipped` (not `clip_error`). Config: `SCAN_ROOT`, `OUTPUT_ROOT`, `POLL_INTERVAL_SECONDS`, `RUN_UNTIL`, `GYM_ID`, `MAX_CLIP_AGE_HOURS`. |
 | `uploader` | Working | Polls `outputs/`, bundles + uploads to Supabase, resolves fighter tag IDs → profile IDs via active gym check-ins, deletes on confirm |
 
 The processor service has a documented I/O contract at `services/processor/contracts/input_output.md`.
@@ -378,7 +378,7 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
   - **Auth:** `AdminGate` wraps protected routes. Email+password sign-in via Supabase. Admin email checked from env, never hardcoded.
   - **Local dev:** `.env.example` provided. Set `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `VITE_ADMIN_EMAIL`.
 - **Supabase:** All Phase A + Phase E + cameras migrations applied (17 migration files total). RLS on all 10 tables. Storage read policy on `match-clips` bucket. `cameras` table auto-populated by `nest_recorder`. `log_events` has a known schema mismatch — `AppLogger` sends `app_version` column that doesn't exist (non-blocking, errors are caught).
-- **Last updated:** 2026-03-17 (processor service implemented; gym-scoped output paths; Stage F gym_id from manifest; legacy path fallback)
+- **Last updated:** 2026-03-17 (processor: multiplex_AC mode, wall-clock filter, resilient empty-video handling; Stage A frame_bgr→image_bgr fix; camera_id passthrough to Stage A)
 
 ---
 

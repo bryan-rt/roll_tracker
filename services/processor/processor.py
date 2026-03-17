@@ -4,6 +4,7 @@ import json
 import sys
 import time
 import traceback
+from datetime import datetime, timezone
 from pathlib import Path
 
 from config import ProcessorSettings
@@ -17,6 +18,18 @@ from bjj_pipeline.stages.orchestration.pipeline import (
 )
 from bjj_pipeline.stages.orchestration.cli import _load_config
 from bjj_pipeline.contracts.f0_paths import ClipOutputLayout
+
+# Keywords in PipelineError messages that indicate an empty/uninteresting clip
+# rather than a real pipeline failure. Case-insensitive matching.
+_SKIP_KEYWORDS = (
+    "no detections",
+    "empty",
+    "no person",
+    "no match",
+    "tracker output shape: (0",
+    "no valid frames",
+    "no tracklets",
+)
 
 
 def _log(event: str, **kwargs) -> None:
@@ -43,6 +56,21 @@ def _derive_cam_id(mp4_path: Path, settings: ProcessorSettings) -> str | None:
     elif len(remaining) >= 5 and _is_date(remaining[2]):
         return remaining[1]  # NEW: nest/<gym_id>/<cam>/<date>/<hour>/<file>
     return None
+
+
+def _is_recent_clip(mp4_path: Path, cam_id: str, settings: ProcessorSettings) -> bool:
+    """Return True if the clip's folder timestamp is within MAX_CLIP_AGE_HOURS."""
+    if settings.MAX_CLIP_AGE_HOURS <= 0:
+        return True  # disabled
+    try:
+        info = validate_ingest_path(mp4_path, cam_id)
+        folder_dt = datetime.strptime(
+            f"{info.date_str} {info.hour_str}", "%Y-%m-%d %H"
+        ).replace(tzinfo=timezone.utc)
+        age_hours = (datetime.now(tz=timezone.utc) - folder_dt).total_seconds() / 3600.0
+        return age_hours <= settings.MAX_CLIP_AGE_HOURS
+    except Exception:
+        return True  # if we can't parse, don't filter it out
 
 
 def _is_already_processed(mp4_path: Path, cam_id: str, settings: ProcessorSettings) -> bool:
@@ -97,6 +125,7 @@ def _process_clip(mp4_path: Path, cam_id: str, settings: ProcessorSettings) -> N
         config_sources=cfg_sources,
         config_hash_override=cfg_hash,
         to_stage="F",
+        mode="multiplex_AC",
     )
 
 
@@ -107,7 +136,8 @@ def main() -> None:
          output_root=str(settings.OUTPUT_ROOT),
          poll_interval=settings.POLL_INTERVAL_SECONDS,
          run_until=settings.RUN_UNTIL,
-         gym_id=settings.GYM_ID)
+         gym_id=settings.GYM_ID,
+         max_clip_age_hours=settings.MAX_CLIP_AGE_HOURS)
 
     while True:
         try:
@@ -117,6 +147,9 @@ def main() -> None:
                 if cam_id is None:
                     continue
 
+                if not _is_recent_clip(mp4, cam_id, settings):
+                    continue
+
                 if _is_already_processed(mp4, cam_id, settings):
                     continue
 
@@ -124,6 +157,13 @@ def main() -> None:
                 try:
                     _process_clip(mp4, cam_id, settings)
                     _log("clip_completed", clip=str(mp4), cam_id=cam_id)
+                except PipelineError as e:
+                    err_str = str(e).lower()
+                    if any(kw in err_str for kw in _SKIP_KEYWORDS):
+                        _log("clip_skipped", clip=str(mp4), cam_id=cam_id, reason=str(e))
+                    else:
+                        _log("clip_error", clip=str(mp4), cam_id=cam_id,
+                             error=str(e), traceback=traceback.format_exc())
                 except Exception as e:
                     _log("clip_error", clip=str(mp4), cam_id=cam_id,
                          error=str(e), traceback=traceback.format_exc())
