@@ -377,8 +377,9 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
   - `/admin/pricing` — Admin-only business model pricing simulator (4 tabs: Model, Unit Economics, Sensitivity, Notes). Gated by `AdminGate` component checking session email against `VITE_ADMIN_EMAIL` env var.
   - **Auth:** `AdminGate` wraps protected routes. Email+password sign-in via Supabase. Admin email checked from env, never hardcoded.
   - **Local dev:** `.env.example` provided. Set `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `VITE_ADMIN_EMAIL`.
-- **Supabase:** All Phase A + Phase E + cameras migrations applied (17 migration files total). RLS on all 10 tables. Storage read policy on `match-clips` bucket. `cameras` table auto-populated by `nest_recorder`. `log_events` has a known schema mismatch — `AppLogger` sends `app_version` column that doesn't exist (non-blocking, errors are caught).
-- **Last updated:** 2026-03-17 (processor: multiplex_AC mode, wall-clock filter, resilient empty-video handling; Stage A frame_bgr→image_bgr fix; camera_id passthrough to Stage A)
+- **Supabase:** All Phase A + Phase E + cameras migrations applied (18 migration files total). RLS on all 10 tables. Storage read policy on `match-clips` bucket. `cameras` table auto-populated by `nest_recorder`. `log_events.app_version` column added (was missing, caused Flutter logger inserts to fail).
+- **E2E verified:** 2026-03-17 — nest_recorder → processor → uploader chain tested end-to-end. Tagged clip (FP7oJQ-tag_0-60s.mp4) processed A→F, uploaded to local Supabase, 2 clip rows + 2 log_events inserted. Already-processed guard confirmed working.
+- **Last updated:** 2026-03-17 (E2E verified: recorder→processor→uploader chain; multiplex_AC mode; wall-clock filter; resilient empty-video handling)
 
 ---
 
