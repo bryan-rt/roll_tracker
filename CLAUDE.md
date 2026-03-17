@@ -104,7 +104,8 @@ roll_tracker/
 │   └── supabase/supabase/
 │       ├── config.toml
 │       └── migrations/     # SQL schema (see Database Schema section)
-├── apps/                   # Flutter mobile app + web app (empty in current zip)
+├── app_mobile/             # Flutter mobile app (Supabase + video_player)
+├── app_web/                # Web app (Vite + React, gym owner dashboard — scaffold)
 ├── bin/run_pipeline.py     # Legacy dev runner (use CLI instead)
 ├── configs/
 │   ├── default.yaml        # Safe mechanical defaults
@@ -354,7 +355,7 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 - **Head commit:** `d0cf43e`
 - **Pipeline:** Full pipeline (A→F) verified end-to-end. Stages A, C produce tag observations + identity hints. Stage D (ILP stitching) resolves person tracks. Stage E detects match sessions. Stage F exports clips with privacy redaction.
 - **Services:** `nest_recorder` working — auto-registers cameras to Supabase on discovery. `uploader` working — resolves fighter tag IDs → profile IDs via active gym check-ins at upload time (Phase C identity bridge). `processor` scaffold only.
-- **Apps:** Flutter mobile app at `mobile_app/`. End-to-end tested on Pixel 7 Pro against local Supabase.
+- **Apps:** Flutter mobile app at `app_mobile/`. End-to-end tested on Pixel 7 Pro against local Supabase.
   - **Auth:** Supabase-native (supabase_flutter). Auth trigger auto-creates profiles with tag_id on sign-up. Biometric login gated behind Settings toggle (default off).
   - **Onboarding:** display name → gym select → invite gym (if not listed). Routes via AuthGate FutureBuilder with profile completeness check.
   - **Clips:** Pull-to-refresh clip list. Tap to play via signed URL + video_player. RLS scopes clips to athlete's profile (fighter_a/b_profile_id match).

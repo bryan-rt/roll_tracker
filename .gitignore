@@ -210,6 +210,10 @@ app.*.map.json
 .buildlog/
 .swiftpm/
 migrate_working_dir/
-mobile_app/android/app/debug
-mobile_app/android/app/profile
-mobile_app/android/app/release
+app_mobile/android/app/debug
+app_mobile/android/app/profile
+app_mobile/android/app/release
+
+# Web app
+app_web/node_modules/
+app_web/dist/
