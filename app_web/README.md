@@ -1,12 +1,17 @@
-# React + Vite
+# Roll Tracker — Web App
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Vite + React. Admin dashboard for Roll Tracker gym owners.
 
-Currently, two official plugins are available:
+## Local dev setup
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+Requires local Supabase to be running first:
 
-## Expanding the ESLint configuration
+    cd backend/supabase/supabase && npx supabase start
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+Then from the repo root:
+
+    bash app_web/setup.sh   # first time only — creates .env, runs npm install
+    cd app_web && npm run dev
+
+Open http://localhost:5173
+Admin dashboard: http://localhost:5173/admin/pricing

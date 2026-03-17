@@ -76,7 +76,7 @@ def _load_config(camera_id: str, overlay_path: Optional[Path]) -> Tuple[Dict[str
 @app.command()
 def run(
 	clip: Path = typer.Option(..., help="Path to clip file under data/raw/nest/..."),
-	camera: str = typer.Option(..., help="Camera ID (e.g., cam03)"),
+	camera: str = typer.Option(..., help="Camera ID (e.g., cam03 or J_EDEw)"),
 	out: Optional[Path] = typer.Option(None, help="Outputs root override (default: outputs/)"),
 	config: Optional[Path] = typer.Option(None, help="Path to config overlay (.yaml/.yml/.json)"),
 	from_stage: Optional[str] = typer.Option(None, help="Stage letter to start from (A..F)"),
@@ -160,7 +160,7 @@ def run(
 @app.command()
 def stage(
 	clip: Path = typer.Option(..., help="Path to clip file under data/raw/nest/..."),
-	camera: str = typer.Option(..., help="Camera ID (e.g., cam03)"),
+	camera: str = typer.Option(..., help="Camera ID (e.g., cam03 or J_EDEw)"),
 	stage: str = typer.Option(..., help="Stage key or letter (detect_track|masks|tags|stitch|matches|export or A..F)"),
 	out: Optional[Path] = typer.Option(None, help="Outputs root override (default: outputs/)"),
 	config: Optional[Path] = typer.Option(None, help="Path to config overlay (.yaml/.yml/.json)"),
@@ -201,7 +201,7 @@ def stage(
 @app.command()
 def status(
 	clip: Path = typer.Option(..., help="Path to clip file under data/raw/nest/..."),
-	camera: str = typer.Option(..., help="Camera ID (e.g., cam03)"),
+	camera: str = typer.Option(..., help="Camera ID (e.g., cam03 or J_EDEw)"),
 	out: Optional[Path] = typer.Option(None, help="Outputs root override (default: outputs/)"),
 ) -> None:
 	"""Print human-readable status table for all stages."""
@@ -266,7 +266,7 @@ def status(
 @app.command()
 def validate(
 	clip: Path = typer.Option(..., help="Path to clip file under data/raw/nest/..."),
-	camera: str = typer.Option(..., help="Camera ID (e.g., cam03)"),
+	camera: str = typer.Option(..., help="Camera ID (e.g., cam03 or J_EDEw)"),
 	out: Optional[Path] = typer.Option(None, help="Outputs root override (default: outputs/)"),
 	stage: Optional[str] = typer.Option(None, help="Stage letter to validate (A..F). If omitted, validate all (Stage B optional if missing)."),
 ) -> None:

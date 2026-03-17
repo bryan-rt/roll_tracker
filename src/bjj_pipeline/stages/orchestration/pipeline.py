@@ -123,7 +123,15 @@ def extract_clip_id(ingest_path: Path) -> str:
     return ingest_path.stem
 
 
-def validate_ingest_path(ingest_path: Path, camera_id: str) -> None:
+def validate_ingest_path(ingest_path: Path, camera_id: str) -> Optional[str]:
+    """Validate ingest path structure and return gym_id (or None for legacy paths).
+
+    Accepts two structures:
+      NEW: .../data/raw/nest/<gym_id>/<cam_id>/<YYYY-MM-DD>/<HH>/<cam_id>-*.mp4
+      OLD: .../data/raw/nest/<cam_id>/<YYYY-MM-DD>/<HH>/<cam_id>-*.mp4
+
+    Returns gym_id if present, None for legacy paths.
+    """
     parts = ingest_path.resolve().parts
     try:
         idx = parts.index("nest")
@@ -131,12 +139,29 @@ def validate_ingest_path(ingest_path: Path, camera_id: str) -> None:
         raise PipelineError("ingest path missing 'nest' component under data/raw")
     if idx < 2 or parts[idx - 2] != "data" or parts[idx - 1] != "raw":
         raise PipelineError("ingest path must be under data/raw/nest/...")
-    try:
-        cam = parts[idx + 1]
-        date_str = parts[idx + 2]
-        hour_str = parts[idx + 3]
-    except IndexError:
-        raise PipelineError("ingest path incomplete; expected data/raw/nest/<cam>/<YYYY-MM-DD>/<HH>/...")
+
+    remaining = parts[idx + 1:]  # everything after "nest"
+
+    def _is_date(s: str) -> bool:
+        return len(s) == 10 and s[4] == "-" and s[7] == "-"
+
+    if len(remaining) >= 4 and _is_date(remaining[1]):
+        # OLD: nest/<cam>/<date>/<hour>/<file>
+        cam = remaining[0]
+        date_str = remaining[1]
+        hour_str = remaining[2]
+        gym_id: Optional[str] = None
+    elif len(remaining) >= 5 and _is_date(remaining[2]):
+        # NEW: nest/<gym_id>/<cam>/<date>/<hour>/<file>
+        gym_id = remaining[0]
+        cam = remaining[1]
+        date_str = remaining[2]
+        hour_str = remaining[3]
+    else:
+        raise PipelineError(
+            "ingest path incomplete; expected data/raw/nest/[<gym_id>/]<cam>/<YYYY-MM-DD>/<HH>/..."
+        )
+
     if cam != camera_id:
         raise PipelineError(f"camera_id directory mismatch: path={cam} cli={camera_id}")
     stem = ingest_path.stem
@@ -146,6 +171,8 @@ def validate_ingest_path(ingest_path: Path, camera_id: str) -> None:
         raise PipelineError(f"date folder not in YYYY-MM-DD format: {date_str}")
     if len(hour_str) != 2 or not hour_str.isdigit():
         raise PipelineError(f"hour folder not a 2-digit hour: {hour_str}")
+
+    return gym_id
 
 
 def hash_config(config: Dict[str, Any]) -> str:
@@ -371,7 +398,7 @@ def get_last_stage_success_config_hash(layout: ClipOutputLayout, stage_letter: S
 
 
 def ensure_manifest(layout: ClipOutputLayout, clip_id: str, camera_id: str, input_video_path: Path, *,
-                    pipeline_version: str = "dev") -> ClipManifest:
+                    pipeline_version: str = "dev", gym_id: Optional[str] = None) -> ClipManifest:
     mpath = layout.clip_manifest_path()
     audit_rel = layout.rel_to_clip_root(orchestration_audit_path(layout))
     if mpath.exists():
@@ -424,6 +451,7 @@ def ensure_manifest(layout: ClipOutputLayout, clip_id: str, camera_id: str, inpu
     manifest = init_manifest(
         clip_id=clip_id,
         camera_id=camera_id,
+        gym_id=gym_id,
         input_video_path=str(input_video_path),
         fps=float(fps),
         frame_count=int(frame_count),
@@ -599,12 +627,13 @@ def run_pipeline(ingest_path: Path, camera_id: str, config: Dict[str, Any], *,
                  visualize: bool = False,
                  config_sources: Optional[List[str]] = None,
                  config_hash_override: Optional[str] = None) -> None:
-    validate_ingest_path(ingest_path, camera_id)
+    gym_id = validate_ingest_path(ingest_path, camera_id)
     clip_id = extract_clip_id(ingest_path)
     layout = ClipOutputLayout(clip_id=clip_id, root=out_root or Path("outputs"))
     layout.clip_root.mkdir(parents=True, exist_ok=True)
 
-    manifest = ensure_manifest(layout, clip_id, camera_id, ingest_path, pipeline_version=pipeline_version)
+    manifest = ensure_manifest(layout, clip_id, camera_id, ingest_path,
+                               pipeline_version=pipeline_version, gym_id=gym_id)
 
     # "config" is the resolved/merged dict. Create a backwards-compatible runtime
     # view for stage implementations that still expect certain top-level keys.
