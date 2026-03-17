@@ -1,553 +1,705 @@
 import { useState, useMemo } from 'react'
 
-const TIERS = [
-  { key: 'starter', label: 'Starter', price: 99, cameras: 1 },
-  { key: 'standard', label: 'Standard', price: 199, cameras: 3 },
-  { key: 'premium', label: 'Premium', price: 349, cameras: 6 },
-]
-
-const COST_ITEMS = [
-  { key: 'cameras', label: 'Nest cameras (amortized/mo)', perGym: true, base: 8 },
-  { key: 'compute', label: 'Compute & storage', perGym: true, base: 25 },
-  { key: 'supabase', label: 'Supabase (Pro plan share)', perGym: false, flat: 25 },
-  { key: 'support', label: 'Support & ops', perGym: false, flat: 200 },
-]
+// ── Constants ──────────────────────────────────────────────────────────────
 
 const BILLING_CHANNELS = [
-  { key: 'direct', label: 'Direct (Stripe)', cut: 0.029 },
-  { key: 'appstore', label: 'App Store', cut: 0.30 },
+  { key: 'web',          label: 'Web (Stripe only)',         platformCut: 0 },
+  { key: 'apple_small',  label: 'Apple small biz (≤$1M)',    platformCut: 0.15 },
+  { key: 'apple_std',    label: 'Apple standard',            platformCut: 0.30 },
+  { key: 'google_small', label: 'Google Play small biz',     platformCut: 0.15 },
 ]
 
+const SENSITIVITY_PRICES = [3, 5, 8, 10, 12, 15, 20, 25]
+
+const NOTES_CARDS = [
+  { title: 'Gear markup', body: 'Replacement gear modeled at 2.2\u00d7 COGS for rashguards, 2.5\u00d7 for patches. Adjust COGS sliders once you have a manufacturing quote.' },
+  { title: 'Coach marketplace', body: 'Revenue = athletes \u00d7 months \u00d7 reviews/athlete/year \u00d7 review price \u00d7 your cut %. Treat as Year 2+ upside, not baseline.' },
+  { title: 'CAC', body: 'Covers everything to close a gym: demos, travel, onboarding labor, your time. $500 is conservative for founder-led sales. Budget $1,000\u2013$2,500 once you hire sales.' },
+  { title: 'Headcount', body: 'Model triggers one hire at your chosen gym count, shared across all gyms. One ops/support person at $60K can plausibly support 20\u201330 gyms.' },
+  { title: 'Break-even price', body: 'Floor price = total 3-yr costs \u00f7 total athlete-months \u00d7 net-per-dollar factor. Price above this for sustainable margin.' },
+  { title: 'LTV', body: 'Net profit \u00f7 Year 1 athlete count over 3 years. Healthy SaaS LTV:CAC ratio is 3:1 or better. Check the Unit Economics tab.' },
+  { title: 'Web billing', body: 'Highly recommended. Stripe-only billing via your website avoids 15\u201330% platform cuts. Users sign up on web, log in on app. Spotify and Netflix use this model on iOS.' },
+]
+
+// ── Formatting helpers ─────────────────────────────────────────────────────
+
 function fmt(n) {
-  if (Math.abs(n) >= 1000) return `$${(n / 1000).toFixed(1)}k`
-  return `$${Math.round(n)}`
+  const abs = Math.abs(n)
+  const sign = n < 0 ? '-' : ''
+  if (abs >= 1_000_000) return `${sign}$${(abs / 1_000_000).toFixed(2)}M`
+  if (abs >= 1_000) return `${sign}$${(abs / 1_000).toFixed(1)}K`
+  return `${sign}$${Math.round(abs)}`
 }
 
-function pct(n) {
-  return `${(n * 100).toFixed(1)}%`
+// ── Calculation engine ─────────────────────────────────────────────────────
+
+function calcModel(p, overrideAthletePrice) {
+  const athletePrice = overrideAthletePrice ?? p.athletePrice
+  const ret = 1 - p.annualChurn / 100
+  const sr = p.athleteSignupRate / 100
+  const m = [p.members, Math.round(p.members * ret), Math.round(p.members * ret * ret)]
+  const a = m.map(mi => Math.round(mi * sr))
+  const totalAthleteMonths = (a[0] + a[1] + a[2]) * 12
+
+  // Gym sub
+  const gymSubRev = p.gymSub ? p.gymPrice * 12 * 3 : 0
+
+  // Athlete sub
+  const athleteSubGross = p.athleteSub ? totalAthleteMonths * athletePrice : 0
+  const billing = BILLING_CHANNELS.find(c => c.key === p.billingChannel)
+  const appFees = athleteSubGross * billing.platformCut
+  const stripeFees = (athleteSubGross - appFees) * 0.029 + 0.30 * totalAthleteMonths
+  const athleteSubNet = athleteSubGross - appFees - stripeFees
+
+  // Gear replacement
+  const rashRetail = p.rashCogs * 2.2
+  const patchRetail = p.patchCogs * 2.5
+  const gearReplRev = p.gearRepl
+    ? Math.round(a[1] * 0.40 * rashRetail) + Math.round(a[1] * 0.10 * patchRetail)
+    + Math.round(a[2] * 0.50 * rashRetail) + Math.round(a[2] * 0.30 * patchRetail)
+    : 0
+  const gearReplCogs = p.gearRepl
+    ? Math.round(a[1] * 0.40 * p.rashCogs) + Math.round(a[1] * 0.10 * p.patchCogs)
+    + Math.round(a[2] * 0.50 * p.rashCogs) + Math.round(a[2] * 0.30 * p.patchCogs)
+    : 0
+
+  // Starter pack
+  const starterCogsTotal = p.freeStarterPack ? a[0] * p.starterCogs : 0
+
+  // Coach marketplace
+  const coachRev = p.coachMarket
+    ? (a[0] + a[1] + a[2]) * 12 * (p.coachTxnPerYear / 12) * p.coachTxnValue * (p.coachCut / 100)
+    : 0
+
+  // Costs
+  const hwAmort = (p.hwCost / p.hwMonths) * 12 * 3
+  const opsCost = p.opsMo * 12 * 3
+  const cacCost = p.includeCAC ? p.cacPerGym : 0
+  const headcostPerGym = (p.includeHeadcount && p.gymCount >= p.headcountAt)
+    ? (p.headcountSalary / p.gymCount) * 3 : 0
+
+  const totalCost = hwAmort + opsCost + cacCost + starterCogsTotal + gearReplCogs + headcostPerGym
+  const totalRevenue = gymSubRev + athleteSubNet + gearReplRev + coachRev
+  const grossRevenue = gymSubRev + athleteSubGross + gearReplRev + coachRev
+  const profit = totalRevenue - totalCost
+  const margin = grossRevenue > 0 ? (profit / grossRevenue) * 100 : 0
+
+  // HW payback
+  const monthlyNetSub = (gymSubRev + athleteSubNet) / 36
+  const hwPayback = monthlyNetSub > 0 ? Math.round((p.hwCost + cacCost) / monthlyNetSub) : null
+
+  // Break-even
+  const netPerDollar = totalAthleteMonths > 0
+    ? (1 - billing.platformCut) * (1 - 0.029) : 0
+  const bep = netPerDollar > 0 && totalAthleteMonths > 0
+    ? totalCost / (totalAthleteMonths * netPerDollar) : null
+
+  // LTV
+  const ltv = a[0] > 0 ? profit / a[0] : 0
+
+  // Fleet
+  const fleetRevenue = grossRevenue * p.gymCount
+  const fleetProfit = profit * p.gymCount
+
+  // Gear vs HW coverage
+  const totalHwFleet = p.hwCost * p.gymCount
+  const totalGearRevFleet = gearReplRev * p.gymCount
+  const gearHwCoverage = totalHwFleet > 0 ? (totalGearRevFleet / totalHwFleet) * 100 : 0
+
+  // Headcount
+  const staffNeeded = (p.includeHeadcount && p.gymCount >= p.headcountAt) ? 1 : 0
+  const staffCost3yr = staffNeeded * p.headcountSalary * 3
+
+  return {
+    m, a, totalAthleteMonths,
+    gymSubRev, athleteSubGross, appFees, stripeFees, athleteSubNet,
+    gearReplRev, gearReplCogs, starterCogsTotal, coachRev,
+    hwAmort, opsCost, cacCost, headcostPerGym,
+    totalCost, totalRevenue, grossRevenue, profit, margin,
+    hwPayback, bep, ltv,
+    fleetRevenue, fleetProfit, gearHwCoverage,
+    staffNeeded, staffCost3yr,
+    billing,
+  }
 }
+
+// ── Component ──────────────────────────────────────────────────────────────
 
 export default function PricingDashboard() {
   const [tab, setTab] = useState('model')
 
-  // Model inputs
-  const [gymCount, setGymCount] = useState(20)
-  const [athletesPerGym, setAthletesPerGym] = useState(80)
-  const [clipsPerAthleteMonth, setClipsPerAthleteMonth] = useState(8)
-  const [tierMix, setTierMix] = useState({ starter: 0.3, standard: 0.5, premium: 0.2 })
-  const [billingChannel, setBillingChannel] = useState('direct')
-  const [clipFeeEnabled, setClipFeeEnabled] = useState(false)
-  const [clipFee, setClipFee] = useState(0.25)
-  const [athleteSubEnabled, setAthleteSubEnabled] = useState(false)
-  const [athleteSubPrice, setAthleteSubPrice] = useState(4.99)
-  const [athleteSubAdoption, setAthleteSubAdoption] = useState(0.15)
-  const [costToggles, setCostToggles] = useState(
-    Object.fromEntries(COST_ITEMS.map(c => [c.key, true]))
-  )
-  const [notes, setNotes] = useState('')
+  // Revenue toggles
+  const [gymSub, setGymSub] = useState(false)
+  const [athleteSub, setAthleteSub] = useState(true)
+  const [gearRepl, setGearRepl] = useState(true)
+  const [coachMarket, setCoachMarket] = useState(false)
 
-  const channel = BILLING_CHANNELS.find(c => c.key === billingChannel)
+  // Cost toggles
+  const [includeCAC, setIncludeCAC] = useState(true)
+  const [includeHeadcount, setIncludeHeadcount] = useState(false)
+  const [freeStarterPack, setFreeStarterPack] = useState(true)
 
-  const metrics = useMemo(() => {
-    // Revenue
-    const gymRevenue = TIERS.reduce((sum, tier) => {
-      const count = Math.round(gymCount * tierMix[tier.key])
-      return sum + count * tier.price
-    }, 0)
+  // Gym sub
+  const [gymPrice, setGymPrice] = useState(299)
 
-    const totalAthletes = gymCount * athletesPerGym
-    const totalClips = totalAthletes * clipsPerAthleteMonth
+  // Athlete sub
+  const [athletePrice, setAthletePrice] = useState(10)
+  const [billingChannel, setBillingChannel] = useState('web')
+  const [athleteSignupRate, setAthleteSignupRate] = useState(70)
 
-    const clipRevenue = clipFeeEnabled ? totalClips * clipFee : 0
-    const athleteSubRevenue = athleteSubEnabled
-      ? totalAthletes * athleteSubAdoption * athleteSubPrice
-      : 0
+  // Coach marketplace
+  const [coachTxnPerYear, setCoachTxnPerYear] = useState(2)
+  const [coachTxnValue, setCoachTxnValue] = useState(40)
+  const [coachCut, setCoachCut] = useState(20)
 
-    const grossRevenue = gymRevenue + clipRevenue + athleteSubRevenue
-    const processingFees = grossRevenue * channel.cut
-    const netRevenue = grossRevenue - processingFees
+  // Gym profile
+  const [members, setMembers] = useState(120)
+  const [annualChurn, setAnnualChurn] = useState(20)
+  const [gymCount, setGymCount] = useState(10)
 
-    // Costs
-    let totalCosts = 0
-    const costBreakdown = COST_ITEMS.map(item => {
-      if (!costToggles[item.key]) return { ...item, amount: 0 }
-      const amount = item.perGym ? item.base * gymCount : item.flat
-      totalCosts += amount
-      return { ...item, amount }
-    })
+  // Ops + costs
+  const [hwCost, setHwCost] = useState(1800)
+  const [hwMonths, setHwMonths] = useState(36)
+  const [opsMo, setOpsMo] = useState(40)
+  const [cacPerGym, setCacPerGym] = useState(500)
+  const [headcountAt, setHeadcountAt] = useState(20)
+  const [headcountSalary, setHeadcountSalary] = useState(60000)
+  const [starterCogs, setStarterCogs] = useState(25)
+  const [rashCogs, setRashCogs] = useState(20)
+  const [patchCogs, setPatchCogs] = useState(5)
 
-    const margin = netRevenue - totalCosts
-    const marginPct = netRevenue > 0 ? margin / netRevenue : 0
+  const deps = [
+    gymSub, athleteSub, gearRepl, coachMarket,
+    includeCAC, includeHeadcount, freeStarterPack,
+    gymPrice, athletePrice, billingChannel, athleteSignupRate,
+    coachTxnPerYear, coachTxnValue, coachCut,
+    members, annualChurn, gymCount,
+    hwCost, hwMonths, opsMo, cacPerGym,
+    headcountAt, headcountSalary, starterCogs, rashCogs, patchCogs,
+  ]
 
-    // Per-unit
-    const revenuePerGym = gymCount > 0 ? netRevenue / gymCount : 0
-    const costPerGym = gymCount > 0 ? totalCosts / gymCount : 0
-    const marginPerGym = revenuePerGym - costPerGym
-    const revenuePerAthlete = totalAthletes > 0 ? netRevenue / totalAthletes : 0
+  const params = useMemo(() => ({
+    gymSub, athleteSub, gearRepl, coachMarket,
+    includeCAC, includeHeadcount, freeStarterPack,
+    gymPrice, athletePrice, billingChannel, athleteSignupRate,
+    coachTxnPerYear, coachTxnValue, coachCut,
+    members, annualChurn, gymCount,
+    hwCost, hwMonths, opsMo, cacPerGym,
+    headcountAt, headcountSalary, starterCogs, rashCogs, patchCogs,
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), deps)
 
-    // Fleet projection (12 months)
-    const fleet = Array.from({ length: 12 }, (_, i) => {
-      const month = i + 1
-      const gyms = Math.round(gymCount * (1 + i * 0.08))
-      const rev = TIERS.reduce((sum, tier) => {
-        return sum + Math.round(gyms * tierMix[tier.key]) * tier.price
-      }, 0)
-      const athletes = gyms * athletesPerGym
-      const clips = athletes * clipsPerAthleteMonth
-      const cRev = clipFeeEnabled ? clips * clipFee : 0
-      const aRev = athleteSubEnabled ? athletes * athleteSubAdoption * athleteSubPrice : 0
-      const gross = rev + cRev + aRev
-      const net = gross * (1 - channel.cut)
-      let costs = 0
-      COST_ITEMS.forEach(item => {
-        if (!costToggles[item.key]) return
-        costs += item.perGym ? item.base * gyms : item.flat
-      })
-      return { month, gyms, revenue: net, costs, margin: net - costs }
-    })
+  const M = useMemo(() => calcModel(params), [params])
 
-    return {
-      gymRevenue, clipRevenue, athleteSubRevenue,
-      grossRevenue, processingFees, netRevenue,
-      totalCosts, costBreakdown, margin, marginPct,
-      revenuePerGym, costPerGym, marginPerGym, revenuePerAthlete,
-      totalAthletes, totalClips, fleet,
+  // ── Waterfall bars ─────────────────────────────────────────────────────
+
+  const waterfallBars = useMemo(() => {
+    const bars = []
+    if (gymSub) bars.push({ label: 'Gym subscriptions', value: M.gymSubRev, color: '#4f8ff7' })
+    if (athleteSub) {
+      bars.push({ label: 'Athlete subs gross', value: M.athleteSubGross, color: '#4ade80' })
+      if (M.billing.platformCut > 0) bars.push({ label: 'Platform cut', value: -M.appFees, color: '#f87171' })
+      bars.push({ label: 'Stripe fees', value: -M.stripeFees, color: '#fb923c' })
     }
-  }, [gymCount, athletesPerGym, clipsPerAthleteMonth, tierMix, billingChannel,
-      clipFeeEnabled, clipFee, athleteSubEnabled, athleteSubPrice, athleteSubAdoption,
-      costToggles, channel])
+    if (gearRepl) {
+      bars.push({ label: 'Gear replacements', value: M.gearReplRev, color: '#fbbf24' })
+      bars.push({ label: 'Gear COGS', value: -M.gearReplCogs, color: '#f97316' })
+    }
+    if (freeStarterPack) bars.push({ label: 'Starter pack COGS', value: -M.starterCogsTotal, color: '#b91c1c' })
+    if (coachMarket) bars.push({ label: 'Coach marketplace', value: M.coachRev, color: '#a78bfa' })
+    bars.push({ label: 'Hardware + ops', value: -(M.hwAmort + M.opsCost), color: '#6b7280' })
+    if (includeCAC) bars.push({ label: 'CAC', value: -M.cacCost, color: '#be185d' })
+    if (includeHeadcount && gymCount >= headcountAt) {
+      bars.push({ label: 'Headcount share', value: -M.headcostPerGym, color: '#7c3aed' })
+    }
+    return bars
+  }, [M, gymSub, athleteSub, gearRepl, freeStarterPack, coachMarket, includeCAC, includeHeadcount, gymCount, headcountAt])
 
-  // Sensitivity matrix
-  const sensitivityData = useMemo(() => {
-    const gymRange = [5, 10, 20, 40, 80, 150]
-    const athleteRange = [30, 50, 80, 120, 200]
-    return gymRange.map(g => {
-      return athleteRange.map(a => {
-        const rev = TIERS.reduce((sum, tier) => {
-          return sum + Math.round(g * tierMix[tier.key]) * tier.price
-        }, 0)
-        const athletes = g * a
-        const cRev = clipFeeEnabled ? athletes * clipsPerAthleteMonth * clipFee : 0
-        const aRev = athleteSubEnabled ? athletes * athleteSubAdoption * athleteSubPrice : 0
-        const net = (rev + cRev + aRev) * (1 - channel.cut)
-        let costs = 0
-        COST_ITEMS.forEach(item => {
-          if (!costToggles[item.key]) return
-          costs += item.perGym ? item.base * g : item.flat
-        })
-        return { gyms: g, athletes: a, margin: net - costs, marginPct: net > 0 ? (net - costs) / net : 0 }
-      })
+  const maxBar = Math.max(...waterfallBars.map(b => Math.abs(b.value)), 1)
+
+  // ── Sensitivity rows ───────────────────────────────────────────────────
+
+  const sensitivityRows = useMemo(() => {
+    if (!athleteSub) return null
+    return SENSITIVITY_PRICES.map(price => {
+      const r = calcModel(params, price)
+      return { price, profit: r.profit, margin: r.margin }
     })
-  }, [tierMix, clipFeeEnabled, clipFee, athleteSubEnabled, athleteSubPrice,
-      athleteSubAdoption, clipsPerAthleteMonth, costToggles, channel])
+  }, [params, athleteSub])
 
-  const maxWaterfall = Math.max(metrics.netRevenue, metrics.grossRevenue, 1)
+  // ── Render helpers ─────────────────────────────────────────────────────
+
+  const Toggle = ({ checked, onChange, label, hint }) => (
+    <label style={s.toggleRow}>
+      <div
+        style={{
+          ...s.toggleTrack,
+          backgroundColor: checked ? '#4f8ff7' : '#444',
+        }}
+        onClick={() => onChange(!checked)}
+      >
+        <div style={{
+          ...s.toggleThumb,
+          transform: checked ? 'translateX(18px)' : 'translateX(2px)',
+        }} />
+      </div>
+      <div>
+        <div style={s.toggleLabel}>{label}</div>
+        {hint && <div style={s.hint}>{hint}</div>}
+      </div>
+    </label>
+  )
+
+  const Slider = ({ label, value, min, max, step, onChange, hint, prefix, suffix }) => (
+    <div style={s.sliderBlock}>
+      <div style={s.sliderHeader}>
+        <span>{label}</span>
+        <strong>{prefix || ''}{typeof value === 'number' ? value.toLocaleString() : value}{suffix || ''}</strong>
+      </div>
+      <input type="range" min={min} max={max} step={step || 1} value={value}
+        onChange={e => onChange(+e.target.value)} style={s.slider} />
+      {hint && <div style={s.hint}>{hint}</div>}
+    </div>
+  )
+
+  const KpiCard = ({ label, value, warn }) => (
+    <div style={{ ...s.kpiCard, borderColor: warn ? '#f87171' : '#333' }}>
+      <div style={s.kpiValue}>{value}</div>
+      <div style={s.kpiLabel}>{label}</div>
+    </div>
+  )
+
+  const TableRow = ({ label, value, off }) => (
+    <div style={s.tableRow}>
+      <span>{label}</span>
+      <span style={{ fontVariantNumeric: 'tabular-nums', opacity: off ? 0.4 : 1 }}>
+        {off ? 'off' : value}
+      </span>
+    </div>
+  )
+
+  // ── Tab: Model ─────────────────────────────────────────────────────────
+
+  const renderModel = () => (
+    <div style={s.twoCol}>
+      {/* Left column */}
+      <div style={s.leftCol}>
+        <h3 style={s.sectionTitle}>Revenue streams</h3>
+        <Toggle checked={gymSub} onChange={setGymSub}
+          label="Gym pays subscription" hint="Charge the gym owner a flat monthly fee" />
+        <Toggle checked={athleteSub} onChange={setAthleteSub}
+          label="Athlete pays subscription" hint="Athletes pay monthly via app or web" />
+        <Toggle checked={gearRepl} onChange={setGearRepl}
+          label="Gear replacement revenue" hint="Sell replacement rashguards + patches in Y2, Y3" />
+        <Toggle checked={coachMarket} onChange={setCoachMarket}
+          label="Coach review marketplace" hint="Take a % of coach-athlete clip review transactions" />
+
+        <h3 style={s.sectionTitle}>Costs</h3>
+        <Toggle checked={includeCAC} onChange={setIncludeCAC}
+          label="Include CAC" hint="Customer acquisition cost per gym" />
+        <Toggle checked={includeHeadcount} onChange={setIncludeHeadcount}
+          label="Include headcount" hint="First hire at a gym count threshold" />
+        <Toggle checked={freeStarterPack} onChange={setFreeStarterPack}
+          label="Free starter pack at signup" hint="Absorb COGS \u2014 rashguard + patch kit" />
+
+        {/* Gym sub section */}
+        {gymSub && (
+          <div style={s.conditionalSection}>
+            <h4 style={s.subSectionTitle}>Gym subscription</h4>
+            <Slider label="Gym price / month" value={gymPrice} min={49} max={999} step={10}
+              onChange={setGymPrice} prefix="$" />
+          </div>
+        )}
+
+        {/* Athlete sub section */}
+        {athleteSub && (
+          <div style={s.conditionalSection}>
+            <h4 style={s.subSectionTitle}>Athlete subscription</h4>
+            <Slider label="Athlete price / month" value={athletePrice} min={2} max={30} step={1}
+              onChange={setAthletePrice} prefix="$" hint="Gym membership ~$165/mo" />
+            <div style={s.hint}>Billing channel</div>
+            <div style={s.channelRow}>
+              {BILLING_CHANNELS.map(ch => (
+                <button key={ch.key}
+                  style={{
+                    ...s.channelBtn,
+                    ...(billingChannel === ch.key ? s.channelBtnActive : {}),
+                  }}
+                  onClick={() => setBillingChannel(ch.key)}
+                >
+                  <div style={{ fontSize: '0.8em', fontWeight: 600 }}>{ch.label}</div>
+                  <div style={{ fontSize: '0.7em', opacity: 0.7 }}>
+                    {ch.platformCut === 0 ? '0% platform cut' : `${ch.platformCut * 100}% platform cut`}
+                  </div>
+                </button>
+              ))}
+            </div>
+            <Slider label="Athlete signup rate" value={athleteSignupRate} min={20} max={100} step={5}
+              onChange={setAthleteSignupRate} suffix="%" hint="% of gym members who subscribe" />
+          </div>
+        )}
+
+        {/* Coach marketplace section */}
+        {coachMarket && (
+          <div style={s.conditionalSection}>
+            <h4 style={s.subSectionTitle}>Coach marketplace</h4>
+            <Slider label="Reviews / athlete / year" value={coachTxnPerYear} min={1} max={12}
+              onChange={setCoachTxnPerYear} />
+            <Slider label="Avg review price" value={coachTxnValue} min={10} max={150} step={5}
+              onChange={setCoachTxnValue} prefix="$" />
+            <Slider label="Your cut" value={coachCut} min={10} max={40}
+              onChange={setCoachCut} suffix="%" />
+          </div>
+        )}
+
+        {/* Gym profile — always visible */}
+        <h3 style={s.sectionTitle}>Gym profile</h3>
+        <Slider label="Active members at gym" value={members} min={40} max={300} step={10}
+          onChange={setMembers} />
+        <Slider label="Annual member churn" value={annualChurn} min={5} max={50}
+          onChange={setAnnualChurn} suffix="%" hint="Industry avg: 20\u201333%" />
+        <Slider label="Gyms onboarded (yr 3)" value={gymCount} min={1} max={100}
+          onChange={setGymCount} />
+
+        {/* Ops + costs — always visible */}
+        <h3 style={s.sectionTitle}>Ops + costs</h3>
+        <Slider label="Hardware / gym" value={hwCost} min={500} max={5000} step={100}
+          onChange={setHwCost} prefix="$" />
+        <Slider label="Amortization months" value={hwMonths} min={12} max={60}
+          onChange={setHwMonths} />
+        <Slider label="Ops / gym / month" value={opsMo} min={10} max={200} step={5}
+          onChange={setOpsMo} prefix="$" />
+        {includeCAC && (
+          <Slider label="CAC per gym" value={cacPerGym} min={0} max={5000} step={50}
+            onChange={setCacPerGym} prefix="$" />
+        )}
+        {includeHeadcount && (
+          <>
+            <Slider label="Hire at gym count" value={headcountAt} min={5} max={50}
+              onChange={setHeadcountAt} />
+            <Slider label="Annual salary" value={headcountSalary} min={40000} max={120000} step={5000}
+              onChange={setHeadcountSalary} prefix="$" />
+          </>
+        )}
+        {(freeStarterPack || gearRepl) && (
+          <Slider label="Starter pack COGS" value={starterCogs} min={10} max={60}
+            onChange={setStarterCogs} prefix="$" />
+        )}
+        {gearRepl && (
+          <>
+            <Slider label="Rashguard COGS" value={rashCogs} min={10} max={50}
+              onChange={setRashCogs} prefix="$" />
+            <Slider label="Patch COGS" value={patchCogs} min={2} max={20}
+              onChange={setPatchCogs} prefix="$" />
+          </>
+        )}
+      </div>
+
+      {/* Right column */}
+      <div style={s.rightCol}>
+        {/* KPI cards */}
+        <div style={s.kpiGrid}>
+          <KpiCard label="3-yr revenue / gym (gross)" value={fmt(M.grossRevenue)} />
+          <KpiCard label="3-yr net profit / gym"
+            value={`${fmt(M.profit)} (${Math.round(M.margin)}%)`} />
+          <KpiCard label="HW payback (months)"
+            value={M.hwPayback !== null ? `${M.hwPayback} mo` : 'N/A'} />
+          <KpiCard label="Fleet profit (net, 3yr)"
+            value={fmt(M.fleetProfit)} warn={M.fleetProfit < 0} />
+        </div>
+
+        {/* Waterfall */}
+        <h3 style={s.sectionTitle}>Revenue vs cost waterfall</h3>
+        <div style={s.waterfallList}>
+          {waterfallBars.map(bar => (
+            <div key={bar.label} style={s.waterfallRow}>
+              <div style={s.waterfallLabel}>{bar.label}</div>
+              <div style={s.waterfallBarTrack}>
+                <div style={{
+                  width: `${(Math.abs(bar.value) / maxBar) * 100}%`,
+                  backgroundColor: bar.color,
+                  height: '18px',
+                  borderRadius: '3px',
+                  minWidth: bar.value !== 0 ? '2px' : '0',
+                }} />
+              </div>
+              <div style={s.waterfallValue}>{fmt(bar.value)}</div>
+            </div>
+          ))}
+          <div style={{ borderTop: '1px solid #444', margin: '6px 0' }} />
+          <div style={s.waterfallRow}>
+            <div style={{ ...s.waterfallLabel, fontWeight: 700 }}>Net profit</div>
+            <div style={s.waterfallBarTrack}>
+              <div style={{
+                width: `${(Math.abs(M.profit) / maxBar) * 100}%`,
+                backgroundColor: M.profit >= 0 ? '#4ade80' : '#f87171',
+                height: '18px',
+                borderRadius: '3px',
+                minWidth: '2px',
+              }} />
+            </div>
+            <div style={{ ...s.waterfallValue, fontWeight: 700, color: M.profit >= 0 ? '#4ade80' : '#f87171' }}>
+              {fmt(M.profit)}
+            </div>
+          </div>
+        </div>
+
+        {/* Fleet section */}
+        <h3 style={s.sectionTitle}>Fleet &middot; {gymCount} gyms &middot; 3 years</h3>
+        <div style={s.kpiGrid}>
+          <KpiCard label="Total fleet gross revenue" value={fmt(M.fleetRevenue)} />
+          <KpiCard label="Total fleet net profit" value={fmt(M.fleetProfit)} warn={M.fleetProfit < 0} />
+        </div>
+        {gearRepl && (
+          <p style={s.fleetNote}>
+            Gear revenue alone covers ~{Math.round(M.gearHwCoverage)}% of total hardware costs across the fleet.
+          </p>
+        )}
+      </div>
+    </div>
+  )
+
+  // ── Tab: Unit Economics ────────────────────────────────────────────────
+
+  const renderUnit = () => (
+    <div style={s.twoCol}>
+      <div style={s.leftCol}>
+        <h3 style={s.sectionTitle}>Per-gym economics (3 yr)</h3>
+        <TableRow label="Gross revenue" value={fmt(M.grossRevenue)} />
+        <TableRow label="Platform + Stripe fees" value={fmt(-(M.appFees + M.stripeFees))}
+          off={!athleteSub} />
+        <TableRow label="Gear COGS" value={fmt(-M.gearReplCogs)} off={!gearRepl} />
+        <TableRow label="Hardware amortized" value={fmt(-M.hwAmort)} />
+        <TableRow label="Ops (3 yr)" value={fmt(-M.opsCost)} />
+        <TableRow label="CAC" value={fmt(-M.cacCost)} off={!includeCAC} />
+        <TableRow label="Headcount share" value={fmt(-M.headcostPerGym)} off={!includeHeadcount} />
+        <TableRow label="Starter pack COGS" value={fmt(-M.starterCogsTotal)} off={!freeStarterPack} />
+        <div style={{ borderTop: '1px solid #444', margin: '8px 0' }} />
+        <TableRow label="Net profit" value={fmt(M.profit)} />
+        <TableRow label="Margin %" value={`${Math.round(M.margin)}%`} />
+      </div>
+
+      <div style={s.rightCol}>
+        <h3 style={s.sectionTitle}>Fleet economics ({gymCount} gyms, 3 yr)</h3>
+        <TableRow label="Total fleet revenue" value={fmt(M.fleetRevenue)} />
+        <TableRow label="Total fleet profit" value={fmt(M.fleetProfit)} />
+        <TableRow label="Blended margin %" value={`${Math.round(M.margin)}%`} />
+        <TableRow label="Total hardware cost" value={fmt(hwCost * gymCount)} />
+        <TableRow label="Total CAC" value={fmt(M.cacCost * gymCount)} off={!includeCAC} />
+        <TableRow label="Staff needed (FTE)" value={M.staffNeeded} off={!includeHeadcount} />
+        <TableRow label="Staff cost (3 yr)" value={fmt(M.staffCost3yr)} off={!includeHeadcount} />
+      </div>
+    </div>
+  )
+
+  // ── Tab: Sensitivity ───────────────────────────────────────────────────
+
+  const renderSensitivity = () => {
+    if (!athleteSub) {
+      return (
+        <div style={{ padding: '2rem', textAlign: 'center', opacity: 0.6 }}>
+          Enable athlete subscription to see price sensitivity.
+        </div>
+      )
+    }
+
+    const maxProfit = 50000
+
+    return (
+      <div>
+        <h3 style={s.sectionTitle}>3-year net profit per gym across athlete price points</h3>
+        <div style={s.sensitivityList}>
+          {sensitivityRows.map(row => (
+            <div key={row.price} style={s.sensitivityRow}
+              onClick={() => { setAthletePrice(row.price); setTab('model') }}>
+              <div style={s.sensitivityPrice}>${row.price}/mo</div>
+              <div style={s.sensitivityBarTrack}>
+                <div style={{
+                  width: `${Math.min(Math.abs(row.profit) / maxProfit * 100, 100)}%`,
+                  backgroundColor: row.profit >= 0 ? '#4ade80' : '#f87171',
+                  height: '22px',
+                  borderRadius: '3px',
+                  minWidth: '2px',
+                }} />
+              </div>
+              <div style={{
+                ...s.sensitivityValue,
+                color: row.profit >= 0 ? '#4ade80' : '#f87171',
+              }}>
+                {fmt(row.profit)}
+              </div>
+              <div style={s.sensitivityMargin}>{Math.round(row.margin)}%</div>
+            </div>
+          ))}
+        </div>
+        <p style={s.hint}>Tap any row to set that price and return to the Model tab.</p>
+      </div>
+    )
+  }
+
+  // ── Tab: Notes ─────────────────────────────────────────────────────────
+
+  const renderNotes = () => (
+    <div style={s.notesGrid}>
+      {NOTES_CARDS.map(card => (
+        <div key={card.title} style={s.noteCard}>
+          <div style={s.noteTitle}>{card.title}</div>
+          <div style={s.noteBody}>{card.body}</div>
+        </div>
+      ))}
+    </div>
+  )
+
+  // ── Main render ────────────────────────────────────────────────────────
 
   return (
-    <div style={styles.root}>
-      <h2 style={styles.header}>Roll Tracker &middot; Admin &mdash; Business model simulator</h2>
+    <div style={s.root}>
+      <h2 style={s.header}>Roll Tracker &middot; Admin &mdash; Business model simulator</h2>
+      <div style={s.subtitle}>3-year projection &middot; single gym unless noted</div>
 
-      {/* Tabs */}
-      <div style={styles.tabs}>
-        {['model', 'unit', 'sensitivity', 'notes'].map(t => (
-          <button
-            key={t}
-            onClick={() => setTab(t)}
-            style={{
-              ...styles.tab,
-              ...(tab === t ? styles.tabActive : {}),
-            }}
-          >
-            {t === 'model' ? 'Model' : t === 'unit' ? 'Unit Economics' : t === 'sensitivity' ? 'Sensitivity' : 'Notes'}
+      <div style={s.tabs}>
+        {[
+          { key: 'model', label: 'Model' },
+          { key: 'unit', label: 'Unit Economics' },
+          { key: 'sensitivity', label: 'Sensitivity' },
+          { key: 'notes', label: 'Notes' },
+        ].map(t => (
+          <button key={t.key} onClick={() => setTab(t.key)}
+            style={{ ...s.tab, ...(tab === t.key ? s.tabActive : {}) }}>
+            {t.label}
           </button>
         ))}
       </div>
 
-      {/* Model Tab */}
-      {tab === 'model' && (
-        <div style={styles.content}>
-          <div style={styles.row}>
-            {/* Left column — inputs */}
-            <div style={styles.col}>
-              <h3>Revenue Streams</h3>
-
-              <label style={styles.sliderLabel}>
-                Gym count: <strong>{gymCount}</strong>
-                <input type="range" min={1} max={200} value={gymCount}
-                  onChange={e => setGymCount(+e.target.value)} style={styles.slider} />
-              </label>
-
-              <label style={styles.sliderLabel}>
-                Athletes / gym: <strong>{athletesPerGym}</strong>
-                <input type="range" min={10} max={300} value={athletesPerGym}
-                  onChange={e => setAthletesPerGym(+e.target.value)} style={styles.slider} />
-              </label>
-
-              <label style={styles.sliderLabel}>
-                Clips / athlete / mo: <strong>{clipsPerAthleteMonth}</strong>
-                <input type="range" min={1} max={30} value={clipsPerAthleteMonth}
-                  onChange={e => setClipsPerAthleteMonth(+e.target.value)} style={styles.slider} />
-              </label>
-
-              <h4>Tier Mix</h4>
-              {TIERS.map(tier => (
-                <label key={tier.key} style={styles.sliderLabel}>
-                  {tier.label} ({fmt(tier.price)}/mo): <strong>{pct(tierMix[tier.key])}</strong>
-                  <input type="range" min={0} max={100} value={Math.round(tierMix[tier.key] * 100)}
-                    onChange={e => {
-                      const val = +e.target.value / 100
-                      setTierMix(prev => ({ ...prev, [tier.key]: val }))
-                    }} style={styles.slider} />
-                </label>
-              ))}
-
-              <h4>Billing Channel</h4>
-              {BILLING_CHANNELS.map(ch => (
-                <label key={ch.key} style={styles.radioLabel}>
-                  <input type="radio" name="channel" value={ch.key}
-                    checked={billingChannel === ch.key}
-                    onChange={() => setBillingChannel(ch.key)} />
-                  {ch.label} ({pct(ch.cut)} fee)
-                </label>
-              ))}
-
-              <h4>Add-on Revenue</h4>
-              <label style={styles.checkLabel}>
-                <input type="checkbox" checked={clipFeeEnabled}
-                  onChange={e => setClipFeeEnabled(e.target.checked)} />
-                Per-clip fee: ${clipFee.toFixed(2)}
-              </label>
-              {clipFeeEnabled && (
-                <input type="range" min={5} max={100} value={Math.round(clipFee * 100)}
-                  onChange={e => setClipFee(+e.target.value / 100)} style={styles.slider} />
-              )}
-
-              <label style={styles.checkLabel}>
-                <input type="checkbox" checked={athleteSubEnabled}
-                  onChange={e => setAthleteSubEnabled(e.target.checked)} />
-                Athlete subscription: ${athleteSubPrice.toFixed(2)}/mo
-              </label>
-              {athleteSubEnabled && (
-                <>
-                  <label style={styles.sliderLabel}>
-                    Price: <strong>${athleteSubPrice.toFixed(2)}</strong>
-                    <input type="range" min={100} max={1999} value={Math.round(athleteSubPrice * 100)}
-                      onChange={e => setAthleteSubPrice(+e.target.value / 100)} style={styles.slider} />
-                  </label>
-                  <label style={styles.sliderLabel}>
-                    Adoption: <strong>{pct(athleteSubAdoption)}</strong>
-                    <input type="range" min={1} max={50} value={Math.round(athleteSubAdoption * 100)}
-                      onChange={e => setAthleteSubAdoption(+e.target.value / 100)} style={styles.slider} />
-                  </label>
-                </>
-              )}
-
-              <h3 style={{ marginTop: '1.5rem' }}>Costs</h3>
-              {COST_ITEMS.map(item => (
-                <label key={item.key} style={styles.checkLabel}>
-                  <input type="checkbox" checked={costToggles[item.key]}
-                    onChange={e => setCostToggles(prev => ({ ...prev, [item.key]: e.target.checked }))} />
-                  {item.label}: {item.perGym ? `${fmt(item.base)}/gym` : `${fmt(item.flat)} flat`}
-                </label>
-              ))}
-            </div>
-
-            {/* Right column — summary + waterfall */}
-            <div style={styles.col}>
-              <h3>Monthly Summary</h3>
-              <table style={styles.table}>
-                <tbody>
-                  <tr><td>Gym subscription revenue</td><td style={styles.num}>{fmt(metrics.gymRevenue)}</td></tr>
-                  {clipFeeEnabled && <tr><td>Clip fee revenue</td><td style={styles.num}>{fmt(metrics.clipRevenue)}</td></tr>}
-                  {athleteSubEnabled && <tr><td>Athlete sub revenue</td><td style={styles.num}>{fmt(metrics.athleteSubRevenue)}</td></tr>}
-                  <tr style={styles.rowBold}><td>Gross revenue</td><td style={styles.num}>{fmt(metrics.grossRevenue)}</td></tr>
-                  <tr><td>Processing fees ({pct(channel.cut)})</td><td style={styles.num}>-{fmt(metrics.processingFees)}</td></tr>
-                  <tr style={styles.rowBold}><td>Net revenue</td><td style={styles.num}>{fmt(metrics.netRevenue)}</td></tr>
-                  <tr><td colSpan={2} style={{ height: '8px' }} /></tr>
-                  {metrics.costBreakdown.filter(c => c.amount > 0).map(c => (
-                    <tr key={c.key}><td>{c.label}</td><td style={styles.num}>-{fmt(c.amount)}</td></tr>
-                  ))}
-                  <tr style={styles.rowBold}><td>Total costs</td><td style={styles.num}>-{fmt(metrics.totalCosts)}</td></tr>
-                  <tr><td colSpan={2} style={{ height: '8px' }} /></tr>
-                  <tr style={{ ...styles.rowBold, color: metrics.margin >= 0 ? '#4ade80' : '#f87171' }}>
-                    <td>Margin</td>
-                    <td style={styles.num}>{fmt(metrics.margin)} ({pct(metrics.marginPct)})</td>
-                  </tr>
-                </tbody>
-              </table>
-
-              <h3 style={{ marginTop: '2rem' }}>Waterfall</h3>
-              <div style={styles.waterfallContainer}>
-                {[
-                  { label: 'Gross', value: metrics.grossRevenue, color: '#646cff' },
-                  { label: 'Fees', value: -metrics.processingFees, color: '#f87171' },
-                  { label: 'Net', value: metrics.netRevenue, color: '#818cf8' },
-                  { label: 'Costs', value: -metrics.totalCosts, color: '#f87171' },
-                  { label: 'Margin', value: metrics.margin, color: metrics.margin >= 0 ? '#4ade80' : '#f87171' },
-                ].map(bar => (
-                  <div key={bar.label} style={styles.waterfallBar}>
-                    <div style={styles.waterfallLabel}>{bar.label}</div>
-                    <div style={{
-                      height: `${Math.abs(bar.value) / maxWaterfall * 120}px`,
-                      backgroundColor: bar.color,
-                      borderRadius: '4px 4px 0 0',
-                      minHeight: '2px',
-                      width: '40px',
-                    }} />
-                    <div style={styles.waterfallValue}>{fmt(bar.value)}</div>
-                  </div>
-                ))}
-              </div>
-
-              <h3 style={{ marginTop: '2rem' }}>12-Month Fleet Projection</h3>
-              <div style={{ overflowX: 'auto' }}>
-                <table style={styles.table}>
-                  <thead>
-                    <tr>
-                      <th style={styles.th}>Mo</th>
-                      <th style={styles.th}>Gyms</th>
-                      <th style={styles.th}>Revenue</th>
-                      <th style={styles.th}>Costs</th>
-                      <th style={styles.th}>Margin</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {metrics.fleet.map(f => (
-                      <tr key={f.month}>
-                        <td style={styles.num}>{f.month}</td>
-                        <td style={styles.num}>{f.gyms}</td>
-                        <td style={styles.num}>{fmt(f.revenue)}</td>
-                        <td style={styles.num}>{fmt(f.costs)}</td>
-                        <td style={{ ...styles.num, color: f.margin >= 0 ? '#4ade80' : '#f87171' }}>
-                          {fmt(f.margin)}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Unit Economics Tab */}
-      {tab === 'unit' && (
-        <div style={styles.content}>
-          <h3>Per-Unit Economics</h3>
-          <table style={styles.table}>
-            <tbody>
-              <tr><td>Total gyms</td><td style={styles.num}>{gymCount}</td></tr>
-              <tr><td>Total athletes</td><td style={styles.num}>{metrics.totalAthletes.toLocaleString()}</td></tr>
-              <tr><td>Total clips / month</td><td style={styles.num}>{metrics.totalClips.toLocaleString()}</td></tr>
-              <tr><td colSpan={2} style={{ height: '12px' }} /></tr>
-              <tr style={styles.rowBold}><td>Revenue / gym</td><td style={styles.num}>{fmt(metrics.revenuePerGym)}</td></tr>
-              <tr style={styles.rowBold}><td>Cost / gym</td><td style={styles.num}>{fmt(metrics.costPerGym)}</td></tr>
-              <tr style={{ ...styles.rowBold, color: metrics.marginPerGym >= 0 ? '#4ade80' : '#f87171' }}>
-                <td>Margin / gym</td><td style={styles.num}>{fmt(metrics.marginPerGym)}</td>
-              </tr>
-              <tr><td colSpan={2} style={{ height: '12px' }} /></tr>
-              <tr><td>Revenue / athlete</td><td style={styles.num}>{fmt(metrics.revenuePerAthlete)}</td></tr>
-            </tbody>
-          </table>
-
-          <h3 style={{ marginTop: '2rem' }}>Waterfall: Per-Gym Breakdown</h3>
-          <div style={styles.waterfallContainer}>
-            {[
-              { label: 'Revenue', value: metrics.revenuePerGym, color: '#646cff' },
-              { label: 'Costs', value: -metrics.costPerGym, color: '#f87171' },
-              { label: 'Margin', value: metrics.marginPerGym, color: metrics.marginPerGym >= 0 ? '#4ade80' : '#f87171' },
-            ].map(bar => {
-              const maxVal = Math.max(metrics.revenuePerGym, 1)
-              return (
-                <div key={bar.label} style={styles.waterfallBar}>
-                  <div style={styles.waterfallLabel}>{bar.label}</div>
-                  <div style={{
-                    height: `${Math.abs(bar.value) / maxVal * 120}px`,
-                    backgroundColor: bar.color,
-                    borderRadius: '4px 4px 0 0',
-                    minHeight: '2px',
-                    width: '40px',
-                  }} />
-                  <div style={styles.waterfallValue}>{fmt(bar.value)}</div>
-                </div>
-              )
-            })}
-          </div>
-        </div>
-      )}
-
-      {/* Sensitivity Tab */}
-      {tab === 'sensitivity' && (
-        <div style={styles.content}>
-          <h3>Margin Sensitivity: Gyms x Athletes/Gym</h3>
-          <div style={{ overflowX: 'auto' }}>
-            <table style={styles.table}>
-              <thead>
-                <tr>
-                  <th style={styles.th}>Gyms \\ Athletes</th>
-                  {[30, 50, 80, 120, 200].map(a => (
-                    <th key={a} style={styles.th}>{a}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {sensitivityData.map((row, ri) => (
-                  <tr key={ri}>
-                    <td style={{ ...styles.num, fontWeight: 'bold' }}>{row[0].gyms}</td>
-                    {row.map((cell, ci) => (
-                      <td key={ci} style={{
-                        ...styles.num,
-                        backgroundColor: cell.margin >= 0
-                          ? `rgba(74, 222, 128, ${Math.min(cell.marginPct, 0.8) * 0.5})`
-                          : `rgba(248, 113, 113, ${Math.min(Math.abs(cell.marginPct), 0.8) * 0.5})`,
-                      }}>
-                        {fmt(cell.margin)}
-                        <br />
-                        <span style={{ fontSize: '0.75em', opacity: 0.7 }}>{pct(cell.marginPct)}</span>
-                      </td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      {/* Notes Tab */}
-      {tab === 'notes' && (
-        <div style={styles.content}>
-          <h3>Assumptions & Notes</h3>
-          <textarea
-            value={notes}
-            onChange={e => setNotes(e.target.value)}
-            placeholder="Document your assumptions, scenarios, and notes here..."
-            style={styles.textarea}
-          />
-        </div>
-      )}
+      {tab === 'model' && renderModel()}
+      {tab === 'unit' && renderUnit()}
+      {tab === 'sensitivity' && renderSensitivity()}
+      {tab === 'notes' && renderNotes()}
     </div>
   )
 }
 
-const styles = {
-  root: {
-    padding: '1rem 2rem',
-    maxWidth: '1200px',
-    margin: '0 auto',
-  },
-  header: {
-    marginTop: 0,
-    marginBottom: '0.5rem',
-    fontSize: '1.25rem',
-    fontWeight: 600,
-    opacity: 0.8,
-  },
+// ── Styles ──────────────────────────────────────────────────────────────────
+
+const s = {
+  root: { padding: '1rem 2rem', maxWidth: '1200px', margin: '0 auto' },
+  header: { marginTop: 0, marginBottom: '2px', fontSize: '1.25rem', fontWeight: 600, opacity: 0.85 },
+  subtitle: { fontSize: '0.85rem', opacity: 0.5, marginBottom: '1rem' },
+
   tabs: {
-    display: 'flex',
-    gap: '4px',
-    marginBottom: '1.5rem',
-    borderBottom: '1px solid #333',
-    paddingBottom: '8px',
+    display: 'flex', gap: '4px', marginBottom: '1.5rem',
+    borderBottom: '1px solid #333', paddingBottom: '8px',
   },
   tab: {
-    padding: '0.4em 1em',
-    borderRadius: '6px 6px 0 0',
-    border: '1px solid transparent',
-    backgroundColor: 'transparent',
-    color: 'inherit',
-    cursor: 'pointer',
-    fontSize: '0.9em',
-    fontFamily: 'inherit',
+    padding: '0.4em 1em', borderRadius: '6px 6px 0 0',
+    border: '1px solid transparent', backgroundColor: 'transparent',
+    color: 'inherit', cursor: 'pointer', fontSize: '0.9em', fontFamily: 'inherit',
   },
-  tabActive: {
-    backgroundColor: '#333',
-    borderColor: '#555',
+  tabActive: { backgroundColor: '#333', borderColor: '#555' },
+
+  twoCol: { display: 'flex', gap: '2rem', flexWrap: 'wrap' },
+  leftCol: { flex: '1 1 380px', minWidth: '300px' },
+  rightCol: { flex: '1 1 480px', minWidth: '340px' },
+
+  sectionTitle: { fontSize: '1rem', fontWeight: 600, marginTop: '1.5rem', marginBottom: '0.75rem' },
+  subSectionTitle: { fontSize: '0.9rem', fontWeight: 600, marginTop: '0.5rem', marginBottom: '0.5rem', opacity: 0.8 },
+  conditionalSection: { paddingLeft: '12px', borderLeft: '2px solid #333', marginBottom: '0.75rem' },
+
+  // Toggle
+  toggleRow: {
+    display: 'flex', alignItems: 'flex-start', gap: '10px',
+    marginBottom: '0.75rem', cursor: 'pointer',
   },
-  content: {
-    minHeight: '400px',
+  toggleTrack: {
+    width: '38px', height: '20px', borderRadius: '10px',
+    position: 'relative', flexShrink: 0, cursor: 'pointer',
+    transition: 'background-color 0.15s',
   },
-  row: {
-    display: 'flex',
-    gap: '2rem',
-    flexWrap: 'wrap',
+  toggleThumb: {
+    width: '16px', height: '16px', borderRadius: '50%',
+    backgroundColor: '#fff', position: 'absolute', top: '2px',
+    transition: 'transform 0.15s',
   },
-  col: {
-    flex: '1 1 400px',
-    minWidth: '300px',
+  toggleLabel: { fontSize: '0.9em', fontWeight: 500 },
+  hint: { fontSize: '0.75em', opacity: 0.5, marginTop: '2px' },
+
+  // Slider
+  sliderBlock: { marginBottom: '0.75rem' },
+  sliderHeader: {
+    display: 'flex', justifyContent: 'space-between',
+    fontSize: '0.85em', marginBottom: '2px',
   },
-  sliderLabel: {
-    display: 'block',
-    marginBottom: '0.5rem',
-    fontSize: '0.9em',
+  slider: { display: 'block', width: '100%', marginTop: '2px' },
+
+  // Billing channel
+  channelRow: { display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '0.75rem' },
+  channelBtn: {
+    flex: '1 1 0', padding: '8px 6px', borderRadius: '6px',
+    border: '1px solid #444', backgroundColor: '#1a1a1a',
+    color: 'inherit', cursor: 'pointer', textAlign: 'center',
+    fontFamily: 'inherit', minWidth: '110px',
   },
-  slider: {
-    display: 'block',
-    width: '100%',
-    marginTop: '2px',
+  channelBtnActive: {
+    borderColor: '#4f8ff7', backgroundColor: '#1e3a5f',
   },
-  radioLabel: {
-    display: 'block',
-    marginBottom: '0.25rem',
-    fontSize: '0.9em',
+
+  // KPI cards
+  kpiGrid: {
+    display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
+    gap: '10px', marginBottom: '1rem',
   },
-  checkLabel: {
-    display: 'block',
-    marginBottom: '0.4rem',
-    fontSize: '0.9em',
+  kpiCard: {
+    padding: '12px', borderRadius: '8px',
+    border: '1px solid #333', backgroundColor: '#1a1a1a',
   },
-  table: {
-    borderCollapse: 'collapse',
-    width: '100%',
-    fontSize: '0.9em',
-  },
-  th: {
-    textAlign: 'right',
-    padding: '4px 8px',
-    borderBottom: '1px solid #444',
-    fontSize: '0.85em',
-    opacity: 0.7,
-  },
-  num: {
-    textAlign: 'right',
-    padding: '3px 8px',
-    fontVariantNumeric: 'tabular-nums',
-  },
-  rowBold: {
-    fontWeight: 'bold',
-  },
-  waterfallContainer: {
-    display: 'flex',
-    alignItems: 'flex-end',
-    gap: '1rem',
-    padding: '1rem 0',
-  },
-  waterfallBar: {
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    gap: '4px',
-  },
-  waterfallLabel: {
-    fontSize: '0.75em',
-    opacity: 0.7,
-  },
+  kpiValue: { fontSize: '1.2em', fontWeight: 700, fontVariantNumeric: 'tabular-nums' },
+  kpiLabel: { fontSize: '0.75em', opacity: 0.6, marginTop: '4px' },
+
+  // Waterfall (horizontal)
+  waterfallList: { display: 'flex', flexDirection: 'column', gap: '4px' },
+  waterfallRow: { display: 'flex', alignItems: 'center', gap: '8px' },
+  waterfallLabel: { width: '160px', fontSize: '0.8em', flexShrink: 0 },
+  waterfallBarTrack: { flex: 1, height: '18px', borderRadius: '3px' },
   waterfallValue: {
-    fontSize: '0.8em',
-    fontWeight: 'bold',
+    width: '70px', textAlign: 'right', fontSize: '0.8em',
+    fontWeight: 600, fontVariantNumeric: 'tabular-nums', flexShrink: 0,
   },
-  textarea: {
-    width: '100%',
-    minHeight: '300px',
-    padding: '1rem',
-    borderRadius: '8px',
-    border: '1px solid #444',
-    backgroundColor: '#1a1a1a',
-    color: 'inherit',
-    fontFamily: 'inherit',
-    fontSize: '0.95em',
-    resize: 'vertical',
-    boxSizing: 'border-box',
+
+  fleetNote: { fontSize: '0.85em', opacity: 0.6, marginTop: '0.5rem' },
+
+  // Table row (unit economics)
+  tableRow: {
+    display: 'flex', justifyContent: 'space-between',
+    padding: '4px 0', fontSize: '0.9em',
   },
+
+  // Sensitivity
+  sensitivityList: { display: 'flex', flexDirection: 'column', gap: '6px' },
+  sensitivityRow: {
+    display: 'flex', alignItems: 'center', gap: '8px',
+    padding: '6px 8px', borderRadius: '6px', cursor: 'pointer',
+    transition: 'background-color 0.1s',
+  },
+  sensitivityPrice: { width: '70px', fontSize: '0.9em', fontWeight: 600, flexShrink: 0 },
+  sensitivityBarTrack: { flex: 1, height: '22px', borderRadius: '3px' },
+  sensitivityValue: {
+    width: '80px', textAlign: 'right', fontSize: '0.85em',
+    fontWeight: 600, fontVariantNumeric: 'tabular-nums', flexShrink: 0,
+  },
+  sensitivityMargin: {
+    width: '40px', textAlign: 'right', fontSize: '0.75em',
+    opacity: 0.5, flexShrink: 0,
+  },
+
+  // Notes
+  notesGrid: {
+    display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))',
+    gap: '12px',
+  },
+  noteCard: {
+    padding: '16px', borderRadius: '8px',
+    border: '1px solid #333', backgroundColor: '#1a1a1a',
+  },
+  noteTitle: { fontWeight: 700, marginBottom: '6px', fontSize: '0.95em' },
+  noteBody: { fontSize: '0.85em', opacity: 0.7, lineHeight: 1.5 },
 }
