@@ -15,8 +15,8 @@ if [ -z "$ROOT" ]; then
 fi
 
 # Required env vars — skip gracefully if missing
-if [ -z "${SUPABASE_URL:-}" ] || [ -z "${SUPABASE_SERVICE_KEY:-}" ] || [ -z "${GYM_ID:-}" ]; then
-  echo "[register] skipping: SUPABASE_URL, SUPABASE_SERVICE_KEY, or GYM_ID not set"
+if [ -z "${SUPABASE_URL:-}" ] || [ -z "${SUPABASE_SERVICE_ROLE_KEY:-}" ] || [ -z "${GYM_ID:-}" ]; then
+  echo "[register] skipping: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, or GYM_ID not set"
   exit 0
 fi
 
@@ -79,8 +79,8 @@ for (( i=0; i<cam_count; i++ )); do
 
   http_code=$(curl -s -w "%{http_code}" -o /dev/null \
     -X POST "${SUPABASE_URL}/rest/v1/cameras?on_conflict=gym_id,cam_id" \
-    -H "apikey: ${SUPABASE_SERVICE_KEY}" \
-    -H "Authorization: Bearer ${SUPABASE_SERVICE_KEY}" \
+    -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
+    -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
     -H "Content-Type: application/json" \
     -H "Prefer: resolution=merge-duplicates" \
     -d "$payload")

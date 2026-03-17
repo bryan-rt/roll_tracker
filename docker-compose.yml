@@ -1,0 +1,44 @@
+# Root compose — wires nest_recorder, processor, and uploader for local E2E.
+# Usage: cp .env.example .env && <fill values> && docker compose up --build
+
+services:
+  recorder:
+    build: services/nest_recorder/recorder
+    container_name: roll-recorder
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      TZ: ${TZ:-America/New_York}
+      SDM_SECRETS_DIR: /secrets
+    volumes:
+      - ./data/raw/nest:/recordings
+      - ./services/nest_recorder/secrets:/secrets:ro
+
+  processor:
+    build:
+      context: .
+      dockerfile: services/processor/Dockerfile
+    container_name: roll-processor
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./data/raw/nest:/app/data/raw/nest:ro
+      - ./outputs:/app/outputs
+      - ./configs:/app/configs:ro
+      - ./models:/app/models:ro
+    depends_on:
+      - recorder
+
+  uploader:
+    build:
+      context: .
+      dockerfile: services/uploader/Dockerfile
+    container_name: roll-uploader
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      UPLOADER_SCAN_ROOT: /app/outputs
+    volumes:
+      - ./outputs:/app/outputs
+    depends_on:
+      - processor

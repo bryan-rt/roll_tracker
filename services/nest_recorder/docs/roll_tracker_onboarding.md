@@ -93,7 +93,7 @@ TZ=America/New_York
 # Supabase connection (for camera auto-registration)
 GYM_ID=<your-gym-uuid-from-supabase>
 SUPABASE_URL=http://192.168.0.66:54321
-SUPABASE_SERVICE_KEY=<service-role-key-from-supabase-status>
+SUPABASE_SERVICE_ROLE_KEY=<service-role-key-from-supabase-status>
 
 # Recording settings
 WINDOW_MINUTES=30
