@@ -150,6 +150,7 @@ build_ffmpeg_opts() {
 }
 
 start_ffmpeg() {
+  mkdir -p "$DIAG_DIR"
   local out_tmpl="$DIAG_DIR/${CAM_ID}-%Y%m%d-%H%M%S.mp4"
   log "[v6] recording until $(date -u -d "@$DEADLINE" +%H:%M:%S) in ${SEG_SECONDS}s segments → $out_tmpl"
 

@@ -198,7 +198,7 @@ stage's internals directly.
 
 | Service | Status | Responsibility |
 |---|---|---|
-| `nest_recorder` | Working | OAuth2 → Nest API → MP4 segments → `data/raw/nest/`. Auto-registers discovered cameras to Supabase `cameras` table via `register_cameras.sh`. |
+| `nest_recorder` | Working | OAuth2 → Nest API → MP4 segments. Production path: `data/raw/nest/{gym_id}/{cam_id}/{YYYY-MM-DD}/{HH}/`. Diag path (no GYM_ID): `data/raw/nest/diag/{TS}/`. Auto-registers cameras to Supabase. `entrypoint.sh` delegates to `diag_v8.sh` scheduler. |
 | `processor` | Scaffold only | Will wrap bjj_pipeline; no implementation yet |
 | `uploader` | Working | Polls `outputs/`, bundles + uploads to Supabase, resolves fighter tag IDs → profile IDs via active gym check-ins, deletes on confirm |
 
@@ -346,6 +346,7 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 | Subscription history: gym_subscriptions table | Decided | Separate table from day one. Fields: gym_id, tier, started_at, ended_at, is_current. |
 | Clip identity: denormalized profile IDs on clips | Decided | clips gets fighter_a_profile_id + fighter_b_profile_id (nullable FKs). Stage F writes tag IDs; the uploader service resolves tag → profile via active gym check-ins at upload time. Null = unresolved, backfillable. |
 | Camera auto-registration: discovery-derived cam_id | Decided | `cam_id` = last 6 chars of SDM device path. `nest_recorder` auto-registers cameras to `cameras` table via Supabase REST upsert on every discovery run. Replaces manual DEVICE_*/CAM_ID_* env var configuration. `register_cameras.sh` called from `diag_v7_2.sh` after discovery, before recording. |
+| Recording file path: gym-scoped production path | Decided | Production: `data/raw/nest/{gym_id}/{cam_id}/{YYYY-MM-DD}/{HH}/{cam_id}-{timestamp}.mp4`. Diag (no GYM_ID): `data/raw/nest/diag/{TS}/`. GYM_ID presence is the mode switch. `entrypoint.sh` delegates to `diag_v8.sh` scheduler (replaces legacy `record_window.sh` call). |
 
 ---
 
@@ -364,7 +365,7 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
   - **Android:** `usesCleartextTraffic=true` for local HTTP Supabase. `ACCESS_FINE_LOCATION` required for WiFi SSID + GPS.
   - **Local dev:** `supabase_config.dart` points to LAN IP (`192.168.0.66:54321`). Signed URLs rewrite `127.0.0.1` → configured host for phone access.
 - **Supabase:** All Phase A + Phase E + cameras migrations applied (17 migration files total). RLS on all 10 tables. Storage read policy on `match-clips` bucket. `cameras` table auto-populated by `nest_recorder`. `log_events` has a known schema mismatch — `AppLogger` sends `app_version` column that doesn't exist (non-blocking, errors are caught).
-- **Last updated:** 2026-03-16 (cameras table + auto-registration verified; secrets removed from git tracking; Dockerfile includes register_cameras.sh; .env.example updated for discovery model)
+- **Last updated:** 2026-03-17 (production recording path `{gym_id}/{cam_id}/{date}/{hour}/` verified with 3 live cameras; entrypoint.sh delegates to diag_v8.sh)
 
 ---
 

@@ -89,6 +89,7 @@ fi
 
 # Build stable per-cam labels and per-cam dirs
 declare -A seen_label
+declare -a CAM_LABEL  # cam_id used for filenames (sid in production, lbl in diag)
 for (( i=0; i<${#DEVICE_PATH[@]}; i++ )); do
   cam="${CAM_NAME[$i]}"
   dev="${DEVICE_PATH[$i]}"
@@ -106,11 +107,20 @@ for (( i=0; i<${#DEVICE_PATH[@]}; i++ )); do
   fi
   seen_label["$lbl"]=1
 
-  dir="$ROOT/$lbl"
+  if [[ -n "${GYM_ID:-}" ]]; then
+    # Production path — gym-scoped, date/hour structured
+    dir="/recordings/${GYM_ID}/${sid}/$(date +%Y-%m-%d)/$(date +%H)"
+    cam_label="$sid"
+  else
+    # Diagnostic path — timestamped session folder
+    dir="$ROOT/$lbl"
+    cam_label="$lbl"
+  fi
   mkdir -p "$dir"
 
   LABEL+=("$lbl")
   OUT_DIR+=("$dir")
+  CAM_LABEL+=("$cam_label")
 done
 
 echo "[v7] cameras:"
@@ -144,6 +154,7 @@ run_one_cam() {
   local cam="${CAM_NAME[$idx]}"
   local dev="${DEVICE_PATH[$idx]}"
   local lbl="${LABEL[$idx]}"
+  local clbl="${CAM_LABEL[$idx]}"
   local dir="${OUT_DIR[$idx]}"
 
   echo "[v7][$lbl] starting → $dir"
@@ -152,7 +163,7 @@ run_one_cam() {
 
   # Delegate to v6 worker with per-cam env and folder
   TZ="${TZ:-America/New_York}" \
-  CAM_ID_1="$lbl" \
+  CAM_ID_1="$clbl" \
   DEVICE_1="$dev" \
   DIAG_DIR="$dir" \
   TS="$TS" \
