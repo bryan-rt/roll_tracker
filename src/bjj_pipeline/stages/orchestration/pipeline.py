@@ -632,7 +632,7 @@ def _import_stage_run(module_path: str):
 def _resolve_inputs_for_stage(manifest: ClipManifest, layout: ClipOutputLayout, letter: StageLetter,
                               ingest_path: Path) -> Dict[str, Any]:
     if letter == "A":
-        return {"clip_path": str(ingest_path), "layout": layout}
+        return {"clip_path": str(ingest_path), "layout": layout, "camera_id": manifest.camera_id}
     return {"layout": layout, "manifest": manifest}
 
 

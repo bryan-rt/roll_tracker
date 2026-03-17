@@ -208,7 +208,7 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 		if isinstance(frame, tuple) and len(frame) >= 3:
 			frame_bgr, frame_index, timestamp_ms = frame[0], int(frame[1]), int(frame[2])
 		else:
-			frame_bgr = frame.frame_bgr  # type: ignore[attr-defined]
+			frame_bgr = frame.image_bgr  # type: ignore[attr-defined]
 			frame_index = int(frame.frame_index)  # type: ignore[attr-defined]
 			timestamp_ms = int(frame.timestamp_ms)  # type: ignore[attr-defined]
 
