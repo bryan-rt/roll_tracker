@@ -105,7 +105,7 @@ roll_tracker/
 │       ├── config.toml
 │       └── migrations/     # SQL schema (see Database Schema section)
 ├── app_mobile/             # Flutter mobile app (Supabase + video_player)
-├── app_web/                # Web app (Vite + React, gym owner dashboard — scaffold)
+├── app_web/                # Web app (Vite + React, Supabase auth, react-router-dom, admin pricing dashboard)
 ├── bin/run_pipeline.py     # Legacy dev runner (use CLI instead)
 ├── configs/
 │   ├── default.yaml        # Safe mechanical defaults
@@ -364,8 +364,13 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
   - **Gym discovery:** Find a Gym screen with GPS proximity via `gyms_near` RPC. Accessible from navigation drawer.
   - **Android:** `usesCleartextTraffic=true` for local HTTP Supabase. `ACCESS_FINE_LOCATION` required for WiFi SSID + GPS.
   - **Local dev:** `supabase_config.dart` points to LAN IP (`192.168.0.66:54321`). Signed URLs rewrite `127.0.0.1` → configured host for phone access.
+- **Web app:** Vite + React at `app_web/`. Supabase auth via `@supabase/supabase-js`, client-side routing via `react-router-dom`.
+  - `/` — Mat blueprint editor (Konva canvas, drag-and-drop mat sections, import/export JSON)
+  - `/admin/pricing` — Admin-only business model pricing simulator (4 tabs: Model, Unit Economics, Sensitivity, Notes). Gated by `AdminGate` component checking session email against `VITE_ADMIN_EMAIL` env var.
+  - **Auth:** `AdminGate` wraps protected routes. Email+password sign-in via Supabase. Admin email checked from env, never hardcoded.
+  - **Local dev:** `.env.example` provided. Set `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `VITE_ADMIN_EMAIL`.
 - **Supabase:** All Phase A + Phase E + cameras migrations applied (17 migration files total). RLS on all 10 tables. Storage read policy on `match-clips` bucket. `cameras` table auto-populated by `nest_recorder`. `log_events` has a known schema mismatch — `AppLogger` sends `app_version` column that doesn't exist (non-blocking, errors are caught).
-- **Last updated:** 2026-03-17 (production recording path `{gym_id}/{cam_id}/{date}/{hour}/` verified with 3 live cameras; entrypoint.sh delegates to diag_v8.sh)
+- **Last updated:** 2026-03-17 (admin pricing dashboard added to app_web; Supabase auth + react-router-dom integrated)
 
 ---
 
