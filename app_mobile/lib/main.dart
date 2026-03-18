@@ -52,6 +52,7 @@ class AuthGate extends StatefulWidget {
 
 class _AuthGateState extends State<AuthGate> {
   late final Stream<AuthState> _authStream;
+  bool _pushInitialized = false;
 
   @override
   void initState() {
@@ -64,6 +65,7 @@ class _AuthGateState extends State<AuthGate> {
     _authStream.listen((event) async {
       final session = event.session;
       if (session == null) {
+        _pushInitialized = false;
         await logger.logEvent('auth', 'User logged out');
       } else {
         await logger.logEvent('auth', 'User logged in', context: {
@@ -97,8 +99,15 @@ class _AuthGateState extends State<AuthGate> {
                   profile['home_gym_id'] == null) {
                 return const DisplayNameScreen();
               }
-              // Initialize push notifications now that profile is complete
-              PushNotificationService.initialize(profile['id']);
+              // Initialize push notifications once after profile is complete
+              if (!_pushInitialized) {
+                _pushInitialized = true;
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (mounted) {
+                    PushNotificationService.initialize(profile['id']);
+                  }
+                });
+              }
               return const ClipListScreen();
             },
           );

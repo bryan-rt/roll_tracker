@@ -10,6 +10,8 @@
     <!-- WiFi check-in: required to read SSID on Android 10+ -->
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <!-- Push notifications: required on Android 13+ (API 33) for runtime permission -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:label="Roll Tracker"
