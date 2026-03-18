@@ -86,6 +86,14 @@ class Database:
             self.conn.commit()
             return str(row[0])
 
+    def update_video_gym_id(self, video_id: str, gym_id: str) -> None:
+        with self.conn.cursor() as cur:
+            cur.execute(
+                "update public.videos set gym_id = %s where id = %s",
+                (gym_id, video_id),
+            )
+            self.conn.commit()
+
     def get_video_gym_id(self, video_id: str) -> str | None:
         with self.conn.cursor() as cur:
             cur.execute(

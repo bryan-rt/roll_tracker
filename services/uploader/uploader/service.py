@@ -35,14 +35,18 @@ def run_upload(manifest_path: str, cfg) -> None:
                     source_path=rec.input_video_path,
                     gym_id=rec.gym_id,
                 )
+            else:
+                # Backfill gym_id on pre-existing video rows
+                if rec.gym_id is not None:
+                    db.update_video_gym_id(video_id, rec.gym_id)
 
             clip_row["video_id"] = video_id
 
             # Phase C: resolve tag IDs → profile IDs via active gym check-ins
-            gym_id = db.get_video_gym_id(video_id)
+            gym_id = rec.gym_id
             if gym_id is None:
                 print(
-                    f"[uploader] warning: no gym_id for video_id={video_id}, "
+                    f"[uploader] warning: no gym_id in manifest for export_id={export_id}, "
                     "skipping profile resolution"
                 )
             for side in ("a", "b"):

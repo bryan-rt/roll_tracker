@@ -234,7 +234,7 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 	gym_id = (
 		str(manifest.gym_id)
 		if getattr(manifest, "gym_id", None) is not None
-		else str(stage_cfg.get("gym_id", "unknown-gym"))
+		else stage_cfg.get("gym_id") or None
 	)
 	storage_bucket = str(stage_cfg.get("storage_bucket", "match-clips"))
 	clip_type = str(stage_cfg.get("clip_type", "match"))
