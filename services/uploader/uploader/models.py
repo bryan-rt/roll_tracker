@@ -15,3 +15,4 @@ class ManifestRecord:
     clip_row: dict[str, Any]
     log_events: list[dict[str, Any]]
     gym_id: str | None = None
+    collision_hints: dict[str, Any] | None = None

@@ -235,6 +235,8 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 **Helper functions:**
 - `gyms_near(lat, lng, radius_km)` — Haversine proximity search, no PostGIS
 - `current_profile_id()` — SECURITY DEFINER helper for RLS policies that need the current user's profile ID without recursion
+- `get_claimable_clips(p_tag_id, p_gym_id, p_window_hours)` — SECURITY DEFINER RPC returns clips with unresolved profile_ids for a tag+gym within a time window
+- `claim_clip(p_clip_id, p_fighter_side)` — SECURITY DEFINER RPC sets `fighter_{a|b}_profile_id` to current user's profile and updates status to `'uploaded'`. IS NULL guard prevents overwriting existing claims.
 
 **RLS:** Enabled on all 10 tables. Athletes see own profile/clips/check-ins. Gym owners see their gym's data. Service role bypasses all RLS. Note: the gym-owner-reads-checked-in-athlete-profiles policy was dropped due to cross-table RLS recursion (42P17) — will be re-implemented as a SECURITY DEFINER RPC function.
 
@@ -265,6 +267,8 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 - `20260316000001_cameras_table.sql` — `cameras` table with `(gym_id, cam_id)` unique constraint, RLS for gym owner SELECT/UPDATE
 - `20260317000001_add_log_events_app_version.sql` — `app_version` text column on `log_events`
 - `20260318000001_checkin_upsert_unique.sql` — `UNIQUE(profile_id, gym_id)` on `gym_checkins` for sliding TTL upsert
+- `20260318000002_clips_collision_status.sql` — CHECK constraint on `clips.status`: `created`, `exported_local`, `uploaded`, `collision_flagged`
+- `20260318000003_claimable_clips_rpc.sql` — `get_claimable_clips()` + `claim_clip()` SECURITY DEFINER RPCs
 
 ---
 
@@ -357,6 +361,7 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 | Recording file path: gym-scoped production path | Decided | Production: `data/raw/nest/{gym_id}/{cam_id}/{YYYY-MM-DD}/{HH}/{cam_id}-{timestamp}.mp4`. Diag (no GYM_ID): `data/raw/nest/diag/{TS}/`. GYM_ID presence is the mode switch. `entrypoint.sh` delegates to `diag_v8.sh` scheduler (replaces legacy `record_window.sh` call). |
 | Pipeline ingest path: gym-scoped, backward compatible | Decided | Pipeline accepts both `data/raw/nest/{gym_id}/{cam_id}/{date}/{hour}/` (new) and `data/raw/nest/{cam_id}/{date}/{hour}/` (legacy). `gym_id` inferred from path structure (date folder position detection), stored in `ClipManifest.gym_id` (None for legacy). No new CLI argument required. |
 | Pipeline output path: gym-scoped | Decided | Outputs at `outputs/{gym_id}/{cam_id}/{date}/{hour}/{clip_id}/stage_*/`. Legacy fallback: `outputs/legacy/{cam_id}/{date}/{hour}/{clip_id}/`. `ClipOutputLayout.root` set from `compute_output_root()`. Stage F reads `gym_id` from manifest (fallback to config). |
+| Collision detection: uploader tag dedup | Decided | Two signals: Signal A (same april_tag_id on both fighters in manifest `collision_hints`), Signal B (>1 active check-in for same tag+gym at upload time). Colliding clips get `status=collision_flagged`, null profile_ids. Athletes reclaim via `claim_clip()` RPC from Unlinked Clips screen. |
 
 ---
 
@@ -379,9 +384,9 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
   - `/admin/pricing` — Admin-only business model pricing simulator (4 tabs: Model, Unit Economics, Sensitivity, Notes). Gated by `AdminGate` component checking session email against `VITE_ADMIN_EMAIL` env var.
   - **Auth:** `AdminGate` wraps protected routes. Email+password sign-in via Supabase. Admin email checked from env, never hardcoded.
   - **Local dev:** `.env.example` provided. Set `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `VITE_ADMIN_EMAIL`.
-- **Supabase:** All migrations applied (19 migration files total). RLS on all 10 tables. Storage read policy on `match-clips` bucket. `cameras` table auto-populated by `nest_recorder`. `gym_checkins` has `UNIQUE(profile_id, gym_id)` for sliding TTL upsert.
+- **Supabase:** All migrations applied (21 migration files total). RLS on all 10 tables. Storage read policy on `match-clips` bucket. `cameras` table auto-populated by `nest_recorder`. `gym_checkins` has `UNIQUE(profile_id, gym_id)` for sliding TTL upsert.
 - **E2E verified:** 2026-03-17 — nest_recorder → processor → uploader chain tested end-to-end. Tagged clip (FP7oJQ-tag_0-60s.mp4) processed A→F, uploaded to local Supabase, 2 clip rows + 2 log_events inserted. Already-processed guard confirmed working.
-- **Last updated:** 2026-03-18 (Checkpoint 8: uploader writes gym_id to videos, tag→profile resolution unblocked; Stage F no_matches early exit; sliding check-in TTL via upsert + hourly probe)
+- **Last updated:** 2026-03-18 (Checkpoint 9: collision detection in uploader, collision_flagged status, get_claimable_clips + claim_clip RPCs, Unlinked Clips screen with badge count)
 
 ---
 

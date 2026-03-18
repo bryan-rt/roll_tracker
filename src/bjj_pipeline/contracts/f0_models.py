@@ -379,6 +379,7 @@ class ExportManifest(ArtifactBase):
 
     ffmpeg_cmd: Optional[str] = None
     hash_sha256: Optional[str] = None
+    collision_hints: Optional[Dict[str, Any]] = None
 
 
 # ----------------------------

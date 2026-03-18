@@ -49,20 +49,52 @@ def run_upload(manifest_path: str, cfg) -> None:
                     f"[uploader] warning: no gym_id in manifest for export_id={export_id}, "
                     "skipping profile resolution"
                 )
-            for side in ("a", "b"):
-                tag_key = f"fighter_{side}_tag_id"
-                profile_key = f"fighter_{side}_profile_id"
-                tag_val = clip_row.get(tag_key)
-                if tag_val is not None and tag_val != "" and gym_id is not None:
-                    profile_id = db.resolve_profile_by_tag_and_gym(
-                        int(tag_val), gym_id
-                    )
-                    clip_row[profile_key] = profile_id
-                    print(
-                        f"[uploader] {tag_key}={tag_val} -> {profile_key}={profile_id}"
-                    )
-                else:
-                    clip_row[profile_key] = None
+
+            # Collision detection
+            tag_a = clip_row.get("fighter_a_tag_id")
+            tag_b = clip_row.get("fighter_b_tag_id")
+            collision = False
+            collision_signal = None
+
+            # Signal A: within-clip same tag
+            if rec.collision_hints and rec.collision_hints.get("same_tag_collision"):
+                collision = True
+                collision_signal = "signal_a"
+
+            # Signal B: multiple active check-ins for either tag at this gym
+            if gym_id and not collision:
+                if tag_a is not None and tag_a != "":
+                    if db.count_active_checkins_for_tag(int(tag_a), gym_id) > 1:
+                        collision = True
+                        collision_signal = "signal_b"
+                if tag_b is not None and tag_b != "" and not collision:
+                    if db.count_active_checkins_for_tag(int(tag_b), gym_id) > 1:
+                        collision = True
+                        collision_signal = "signal_b"
+
+            if collision:
+                clip_row["status"] = "collision_flagged"
+                clip_row["fighter_a_profile_id"] = None
+                clip_row["fighter_b_profile_id"] = None
+                print(
+                    f"[uploader] collision_flagged: tag_a={tag_a} tag_b={tag_b} "
+                    f"gym_id={gym_id} export_id={export_id} signal={collision_signal}"
+                )
+            else:
+                for side in ("a", "b"):
+                    tag_key = f"fighter_{side}_tag_id"
+                    profile_key = f"fighter_{side}_profile_id"
+                    tag_val = clip_row.get(tag_key)
+                    if tag_val is not None and tag_val != "" and gym_id is not None:
+                        profile_id = db.resolve_profile_by_tag_and_gym(
+                            int(tag_val), gym_id
+                        )
+                        clip_row[profile_key] = profile_id
+                        print(
+                            f"[uploader] {tag_key}={tag_val} -> {profile_key}={profile_id}"
+                        )
+                    else:
+                        clip_row[profile_key] = None
 
             print(f"[uploader] uploading {local_path} -> {bucket}/{object_path}")
             storage.upload(

@@ -44,6 +44,7 @@ def load_manifest(path: str | Path) -> list[ManifestRecord]:
                 clip_row=clip_row,
                 log_events=log_events,
                 gym_id=data.get("gym_id"),
+                collision_hints=data.get("collision_hints"),
             )
             records.append(record)
 
