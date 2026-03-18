@@ -205,6 +205,12 @@ def _build_export_record(
 		},
 		ffmpeg_cmd=ffmpeg_cmd,
 		hash_sha256=hash_sha256,
+		collision_hints=(
+			{"same_tag_collision": True, "tag_id": int(export_session.april_tag_id_a)}
+			if (export_session.april_tag_id_a is not None
+				and export_session.april_tag_id_a == export_session.april_tag_id_b)
+			else None
+		),
 	)
 
 

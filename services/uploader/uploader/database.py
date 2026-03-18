@@ -108,6 +108,22 @@ class Database:
             row = cur.fetchone()
             return str(row[0]) if row and row[0] is not None else None
 
+    def count_active_checkins_for_tag(self, tag_id: int, gym_id: str) -> int:
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                select count(*)
+                from public.gym_checkins gc
+                join public.profiles p on gc.profile_id = p.id
+                where gc.gym_id = %s
+                  and gc.is_active = true
+                  and p.tag_id = %s
+                """,
+                (gym_id, tag_id),
+            )
+            row = cur.fetchone()
+            return int(row[0]) if row else 0
+
     def resolve_profile_by_tag_and_gym(self, tag_id: int, gym_id: str) -> str | None:
         with self.conn.cursor() as cur:
             cur.execute(
