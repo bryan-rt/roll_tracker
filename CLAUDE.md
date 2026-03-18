@@ -380,7 +380,8 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
   - **Check-in:** WiFi auto check-in (CheckinService) fires after auth + on WiFi changes. Upserts on `(profile_id, gym_id)` — sliding TTL via hourly periodic probe while WiFi connected. Timer cancelled on WiFi disconnect. Manual check-in via Find a Gym screen. SSID-primary matching (BSSID optional refinement). Source tracked as `wifi_auto` or `manual`.
   - **Gym discovery:** Find a Gym screen with GPS proximity via `gyms_near` RPC. Accessible from navigation drawer.
   - **Android:** `usesCleartextTraffic=true` for local HTTP Supabase. `ACCESS_FINE_LOCATION` required for WiFi SSID + GPS.
-  - **Local dev:** `supabase_config.dart` points to LAN IP (`192.168.0.66:54321`). Signed URLs rewrite `127.0.0.1` → configured host for phone access.
+  - **Local dev:** `supabase_config.dart` has local config commented out (`192.168.0.66:54321`). Remote config active. Signed URLs rewrite `127.0.0.1` → configured host for phone access.
+  - **Supabase key format:** Remote Supabase uses new `sb_publishable_`/`sb_secret_` key naming, but PostgREST API requires classic JWT keys (`eyJ...` format). Use JWT keys from Dashboard > Settings > API Keys for all client and service connections.
 - **Web app:** Vite + React at `app_web/`. Supabase auth via `@supabase/supabase-js`, client-side routing via `react-router-dom`.
   - `/` — Mat blueprint editor (Konva canvas, drag-and-drop mat sections, import/export JSON)
   - `/admin/pricing` — Admin-only business model pricing simulator (4 tabs: Model, Unit Economics, Sensitivity, Notes). Gated by `AdminGate` component checking session email against `VITE_ADMIN_EMAIL` env var.
