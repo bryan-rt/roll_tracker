@@ -6,6 +6,37 @@ class UnlinkedClipsScreen extends StatefulWidget {
 
   @override
   State<UnlinkedClipsScreen> createState() => _UnlinkedClipsScreenState();
+
+  /// Static helper to fetch the count of claimable clips for badge display.
+  static Future<int> fetchClaimableCount() async {
+    try {
+      final user = Supabase.instance.client.auth.currentUser;
+      if (user == null) return 0;
+
+      final profile = await Supabase.instance.client
+          .from('profiles')
+          .select('tag_id, home_gym_id')
+          .eq('auth_user_id', user.id)
+          .maybeSingle();
+
+      if (profile == null || profile['tag_id'] == null || profile['home_gym_id'] == null) {
+        return 0;
+      }
+
+      final result = await Supabase.instance.client.rpc(
+        'get_claimable_clips',
+        params: {
+          'p_tag_id': profile['tag_id'],
+          'p_gym_id': profile['home_gym_id'],
+          'p_window_hours': 72,
+        },
+      );
+
+      return (result as List).length;
+    } catch (_) {
+      return 0;
+    }
+  }
 }
 
 class _UnlinkedClipsScreenState extends State<UnlinkedClipsScreen> {
@@ -179,36 +210,5 @@ class _UnlinkedClipsScreenState extends State<UnlinkedClipsScreen> {
                       ),
                     ),
     );
-  }
-
-  /// Static helper to fetch the count of claimable clips for badge display.
-  static Future<int> fetchClaimableCount() async {
-    try {
-      final user = Supabase.instance.client.auth.currentUser;
-      if (user == null) return 0;
-
-      final profile = await Supabase.instance.client
-          .from('profiles')
-          .select('tag_id, home_gym_id')
-          .eq('auth_user_id', user.id)
-          .maybeSingle();
-
-      if (profile == null || profile['tag_id'] == null || profile['home_gym_id'] == null) {
-        return 0;
-      }
-
-      final result = await Supabase.instance.client.rpc(
-        'get_claimable_clips',
-        params: {
-          'p_tag_id': profile['tag_id'],
-          'p_gym_id': profile['home_gym_id'],
-          'p_window_hours': 72,
-        },
-      );
-
-      return (result as List).length;
-    } catch (_) {
-      return 0;
-    }
   }
 }
