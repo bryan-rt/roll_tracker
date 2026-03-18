@@ -1,4 +1,3 @@
-import 'package:intl/intl.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'dart:io';
 import 'package:device_info_plus/device_info_plus.dart';
@@ -127,7 +126,10 @@ class SupabaseService {
     });
   }
 
-  /// Insert a structured log event into the log_events table
+  /// Insert a structured log event into the log_events table.
+  /// Column mapping: category→event_type, severity→event_level,
+  /// app_version stays top-level, everything else goes into details jsonb.
+  /// event_time defaults to now() in the DB — not sent by the client.
   Future<void> insertLogEvent({
     required String category,
     required String message,
@@ -137,20 +139,21 @@ class SupabaseService {
   }) async {
     final email = emailOverride ??
         Supabase.instance.client.auth.currentUser?.email;
-    final timestamp =
-        DateFormat('yyyy-MM-dd HH:mm:ss').format(DateTime.now());
-
-    final base = {
-      'email': email ?? 'anonymous',
-      'category': category,
-      'message': message,
-      'timestamp': timestamp,
-      'severity': severity ?? 'info',
-    };
 
     final data = {
-      ...base,
-      ...?extraFields,
+      'event_type': category,
+      'event_level': severity ?? 'info',
+      'message': message,
+      'app_version': extraFields?['app_version'],
+      'details': {
+        'email': email ?? 'anonymous',
+        'session_id': extraFields?['session_id'],
+        'source': extraFields?['source'],
+        'device_model': extraFields?['device_model'],
+        'os_version': extraFields?['os_version'],
+        'user_role': extraFields?['user_role'],
+        'context': extraFields?['event_context'],
+      },
     };
 
     try {
