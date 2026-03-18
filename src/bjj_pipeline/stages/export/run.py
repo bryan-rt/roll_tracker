@@ -151,6 +151,7 @@ def _build_export_record(
 	return ExportManifest(
 		clip_id=manifest.clip_id,
 		camera_id=manifest.camera_id,
+		gym_id=getattr(manifest, "gym_id", None),
 		pipeline_version=str(getattr(manifest, "pipeline_version", "dev")),
 		created_at_ms=int(created_at_ms),
 		export_id=str(export_session.export_id),
@@ -289,6 +290,33 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 		raise FileNotFoundError(f"Stage F missing required inputs: {missing_required}")
 
 	matches = _load_match_sessions(match_sessions_path)
+
+	if len(matches) == 0:
+		_append_jsonl(
+			audit_path,
+			{
+				"artifact_type": "stage_f_no_matches",
+				"created_at_ms": _now_ms(),
+				"clip_id": manifest.clip_id,
+				"camera_id": manifest.camera_id,
+				"message": "stage_F: no match sessions found, skipping export",
+			},
+		)
+		# Write a no_matches record so the already-processed guard fires
+		export_manifest_path.parent.mkdir(parents=True, exist_ok=True)
+		with export_manifest_path.open("w", encoding="utf-8") as f:
+			f.write(json.dumps({
+				"status": "no_matches",
+				"clip_id": manifest.clip_id,
+				"camera_id": manifest.camera_id,
+				"created_at_ms": _now_ms(),
+			}) + "\n")
+		return {
+			"status": "no_matches",
+			"clip_id": manifest.clip_id,
+			"export_count": 0,
+		}
+
 	person_tracks_df = _load_person_tracks_df(person_tracks_path)
 	video_meta = probe_video_metadata(input_video_path)
 	fps = float(video_meta.fps if video_meta.fps > 0 else getattr(manifest, "fps", 0.0))

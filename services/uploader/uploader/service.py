@@ -33,6 +33,7 @@ def run_upload(manifest_path: str, cfg) -> None:
                 video_id = db.create_video(
                     camera_id=rec.camera_id,
                     source_path=rec.input_video_path,
+                    gym_id=rec.gym_id,
                 )
 
             clip_row["video_id"] = video_id

@@ -31,29 +31,55 @@ class Database:
         self,
         camera_id: str,
         source_path: str,
+        gym_id: str | None = None,
     ) -> str:
         with self.conn.cursor() as cur:
-            cur.execute(
-                """
-                insert into public.videos (
-                    camera_id,
-                    source_path,
-                    source_type,
-                    recorded_at,
-                    status,
-                    metadata
+            if gym_id is not None:
+                cur.execute(
+                    """
+                    insert into public.videos (
+                        camera_id,
+                        source_path,
+                        source_type,
+                        recorded_at,
+                        status,
+                        metadata,
+                        gym_id
+                    )
+                    values (%s, %s, %s, now(), %s, %s, %s)
+                    returning id
+                    """,
+                    (
+                        camera_id,
+                        source_path,
+                        "pipeline",
+                        "ready",
+                        Jsonb({"created_by": "services.uploader"}),
+                        gym_id,
+                    ),
                 )
-                values (%s, %s, %s, now(), %s, %s)
-                returning id
-                """,
-                (
-                    camera_id,
-                    source_path,
-                    "pipeline",
-                    "ready",
-                    Jsonb({"created_by": "services.uploader"}),
-                ),
-            )
+            else:
+                cur.execute(
+                    """
+                    insert into public.videos (
+                        camera_id,
+                        source_path,
+                        source_type,
+                        recorded_at,
+                        status,
+                        metadata
+                    )
+                    values (%s, %s, %s, now(), %s, %s)
+                    returning id
+                    """,
+                    (
+                        camera_id,
+                        source_path,
+                        "pipeline",
+                        "ready",
+                        Jsonb({"created_by": "services.uploader"}),
+                    ),
+                )
             row = cur.fetchone()
             if row is None:
                 raise RuntimeError("Failed to create video row.")

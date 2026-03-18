@@ -367,6 +367,8 @@ class ExportManifest(ArtifactBase):
 
     artifact_type: Literal["export_manifest"] = "export_manifest"
 
+    gym_id: Optional[str] = None  # from ClipManifest; used by uploader for tag→profile resolution
+
     export_id: str
     match_id: str
 
