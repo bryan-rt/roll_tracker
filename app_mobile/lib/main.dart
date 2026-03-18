@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:video_player/video_player.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'services/supabase_service.dart';
 import 'services/auth_service.dart';
 import 'widgets/drawer_widgets.dart';
@@ -10,6 +11,7 @@ import 'utils/logger.dart';
 import 'utils/secure_storage.dart';
 import 'supabase_config.dart';
 import 'services/checkin_service.dart';
+import 'services/push_notification_service.dart';
 import 'screens/onboarding/display_name_screen.dart';
 
 final supabaseService = SupabaseService();
@@ -18,6 +20,7 @@ final AppLogger logger = AppLogger(supabaseService);
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp();
   await Supabase.initialize(
     url: supabaseUrl,
     anonKey: supabaseKey,
@@ -94,6 +97,8 @@ class _AuthGateState extends State<AuthGate> {
                   profile['home_gym_id'] == null) {
                 return const DisplayNameScreen();
               }
+              // Initialize push notifications now that profile is complete
+              PushNotificationService.initialize(profile['id']);
               return const ClipListScreen();
             },
           );

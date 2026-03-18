@@ -24,6 +24,8 @@ dependencies:
   network_info_plus: ^6.0.0
   connectivity_plus: ^6.0.0
   geolocator: ^13.0.0
+  firebase_core: ^3.0.0
+  firebase_messaging: ^15.0.0
 
 dev_dependencies:
   flutter_test:
