@@ -227,6 +227,7 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 - `cameras` — `gym_id` FK→gyms, `cam_id` (last 6 chars of SDM device path), `device_path` (full SDM path), `display_name` (nullable, from Google Home room name), `is_active`, `first_seen_at`, `last_seen_at`. Unique on `(gym_id, cam_id)`. Auto-registered by `nest_recorder` on camera discovery via Supabase REST upsert.
 - `homography_configs` — `gym_id`, `camera_id`, `config_data` JSONB
 - `gym_interest_signals` — `profile_id`, `gym_name_entered`, `owner_email`, `submitted_at`
+- `device_tokens` — `profile_id` FK→profiles, `token` (FCM token), `platform` (default `android`). Unique on `(profile_id, token)`. RLS: athletes manage own tokens.
 
 **Storage bucket:** `match-clips` (private, RLS policy allows authenticated reads for signed URLs)
 
@@ -238,7 +239,7 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 - `get_claimable_clips(p_tag_id, p_gym_id, p_window_hours)` — SECURITY DEFINER RPC returns clips with unresolved profile_ids for a tag+gym within a time window
 - `claim_clip(p_clip_id, p_fighter_side)` — SECURITY DEFINER RPC sets `fighter_{a|b}_profile_id` to current user's profile and updates status to `'uploaded'`. IS NULL guard prevents overwriting existing claims.
 
-**RLS:** Enabled on all 10 tables. Athletes see own profile/clips/check-ins. Gym owners see their gym's data. Service role bypasses all RLS. Note: the gym-owner-reads-checked-in-athlete-profiles policy was dropped due to cross-table RLS recursion (42P17) — will be re-implemented as a SECURITY DEFINER RPC function.
+**RLS:** Enabled on all 11 tables. Athletes see own profile/clips/check-ins. Gym owners see their gym's data. Service role bypasses all RLS. Note: the gym-owner-reads-checked-in-athlete-profiles policy was dropped due to cross-table RLS recursion (42P17) — will be re-implemented as a SECURITY DEFINER RPC function.
 
 **Pending schema items (not yet migrated):**
 - `notification_channel` — TBD (drift alert delivery mechanism)
@@ -269,6 +270,7 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 - `20260318000001_checkin_upsert_unique.sql` — `UNIQUE(profile_id, gym_id)` on `gym_checkins` for sliding TTL upsert
 - `20260318000002_clips_collision_status.sql` — CHECK constraint on `clips.status`: `created`, `exported_local`, `uploaded`, `collision_flagged`
 - `20260318000003_claimable_clips_rpc.sql` — `get_claimable_clips()` + `claim_clip()` SECURITY DEFINER RPCs
+- `20260318000004_device_tokens.sql` — `device_tokens` table for FCM push notification token storage, RLS for athletes
 
 ---
 
@@ -384,9 +386,9 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
   - `/admin/pricing` — Admin-only business model pricing simulator (4 tabs: Model, Unit Economics, Sensitivity, Notes). Gated by `AdminGate` component checking session email against `VITE_ADMIN_EMAIL` env var.
   - **Auth:** `AdminGate` wraps protected routes. Email+password sign-in via Supabase. Admin email checked from env, never hardcoded.
   - **Local dev:** `.env.example` provided. Set `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `VITE_ADMIN_EMAIL`.
-- **Supabase:** All migrations applied (21 migration files total). RLS on all 10 tables. Storage read policy on `match-clips` bucket. `cameras` table auto-populated by `nest_recorder`. `gym_checkins` has `UNIQUE(profile_id, gym_id)` for sliding TTL upsert.
+- **Supabase:** All migrations applied (22 migration files total). Remote Supabase linked (project `zwwdduccwrkmkvawwjpc`). Edge Function `send_push_notification` for FCM V1 push delivery. RLS on all 10 tables. Storage read policy on `match-clips` bucket. `cameras` table auto-populated by `nest_recorder`. `gym_checkins` has `UNIQUE(profile_id, gym_id)` for sliding TTL upsert.
 - **E2E verified:** 2026-03-17 — nest_recorder → processor → uploader chain tested end-to-end. Tagged clip (FP7oJQ-tag_0-60s.mp4) processed A→F, uploaded to local Supabase, 2 clip rows + 2 log_events inserted. Already-processed guard confirmed working.
-- **Last updated:** 2026-03-18 (Checkpoint 9: collision detection in uploader, collision_flagged status, get_claimable_clips + claim_clip RPCs, Unlinked Clips screen with badge count)
+- **Last updated:** 2026-03-18 (Checkpoint 10: remote Supabase, FCM push notifications via Edge Function, device_tokens table, Flutter FCM integration, root docker-compose with arm64, supabase_config pointing to remote)
 
 ---
 

@@ -6,12 +6,14 @@ import '../screens/find_gym_screen.dart';
 import '../screens/unlinked_clips_screen.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../utils/secure_storage.dart';
+import '../services/push_notification_service.dart';
 import '../main.dart';
 
 class AppDrawer extends StatefulWidget {
   const AppDrawer({super.key});
 
   static Future<void> globalSignOut(BuildContext context) async {
+    await PushNotificationService.removeToken();
     await Supabase.instance.client.auth.signOut();
     await SecureStorage.clearCredentials();
 
