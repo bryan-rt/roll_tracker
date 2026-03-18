@@ -14,3 +14,4 @@ class ManifestRecord:
     storage_object_path: str
     clip_row: dict[str, Any]
     log_events: list[dict[str, Any]]
+    gym_id: str | None = None

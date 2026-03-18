@@ -9,6 +9,9 @@ class CheckinService {
   static final _connectivity = Connectivity();
   static final _networkInfo = NetworkInfo();
   static StreamSubscription? _subscription;
+  static Timer? _refreshTimer;
+  static String? _currentGymId;
+  static String? _currentProfileId;
 
   /// Start listening for WiFi connection changes and do an immediate check.
   /// Call once from main() after Supabase.initialize().
@@ -17,7 +20,10 @@ class CheckinService {
       (results) async {
         // onConnectivityChanged returns List<ConnectivityResult> in v6+
         final connected = results.contains(ConnectivityResult.wifi);
-        if (!connected) return;
+        if (!connected) {
+          _cancelRefreshTimer();
+          return;
+        }
         await _handleWifiConnection();
       },
     );
@@ -58,7 +64,10 @@ class CheckinService {
       final ssid = await _networkInfo.getWifiName();
       final bssid = await _networkInfo.getWifiBSSID();
 
-      if (ssid == null || ssid.isEmpty) return;
+      if (ssid == null || ssid.isEmpty) {
+        _cancelRefreshTimer();
+        return;
+      }
 
       // Strip surrounding quotes iOS adds to SSID
       final cleanSsid = ssid.replaceAll('"', '');
@@ -81,7 +90,10 @@ class CheckinService {
           .select('id, wifi_bssid')
           .eq('wifi_ssid', cleanSsid);
 
-      if ((gyms as List).isEmpty) return;
+      if ((gyms as List).isEmpty) {
+        _cancelRefreshTimer();
+        return;
+      }
 
       // Prefer BSSID-matched gym if available, otherwise take first SSID match
       var matched = gyms.first;
@@ -97,35 +109,71 @@ class CheckinService {
 
       debugPrint('CheckinService: auto check-in at gym=$gymId for profile=$profileId');
 
-      // Write check-in record (3hr TTL enforced by DB trigger)
-      await Supabase.instance.client.from('gym_checkins').insert({
-        'profile_id': profileId,
-        'gym_id': gymId,
-        'checked_in_at': DateTime.now().toUtc().toIso8601String(),
-        'is_active': true,
-        'source': 'wifi_auto',
-      });
+      await _upsertCheckin(profileId, gymId, 'wifi_auto');
+
+      // Start periodic refresh timer (slides TTL every 60 minutes)
+      _currentGymId = gymId;
+      _currentProfileId = profileId;
+      _startRefreshTimer();
     } catch (e) {
       // Silent failure — check-in is best-effort, never blocks the user
       debugPrint('CheckinService: check-in failed: $e');
     }
   }
 
+  /// Upsert a check-in row. The DB trigger computes auto_expires_at = checked_in_at + 3h.
+  /// On conflict (profile_id, gym_id), the row is updated — sliding the TTL forward.
+  static Future<void> _upsertCheckin(String profileId, String gymId, String source) async {
+    await Supabase.instance.client.from('gym_checkins').upsert(
+      {
+        'profile_id': profileId,
+        'gym_id': gymId,
+        'checked_in_at': DateTime.now().toUtc().toIso8601String(),
+        'is_active': true,
+        'source': source,
+      },
+      onConflict: 'profile_id,gym_id',
+    );
+  }
+
   /// Manual check-in (e.g. from Find a Gym screen).
   /// auto_expires_at is handled by the DB trigger — do not pass it.
   static Future<void> manualCheckIn(String profileId, String gymId) async {
-    await Supabase.instance.client.from('gym_checkins').insert({
-      'profile_id': profileId,
-      'gym_id': gymId,
-      'checked_in_at': DateTime.now().toUtc().toIso8601String(),
-      'is_active': true,
-      'source': 'manual',
+    await _upsertCheckin(profileId, gymId, 'manual');
+  }
+
+  /// Start a periodic timer that re-upserts the check-in every 60 minutes
+  /// while the athlete remains on the gym's WiFi.
+  static void _startRefreshTimer() {
+    _cancelRefreshTimer();
+    _refreshTimer = Timer.periodic(const Duration(hours: 1), (_) async {
+      final gymId = _currentGymId;
+      final profileId = _currentProfileId;
+      if (gymId == null || profileId == null) {
+        _cancelRefreshTimer();
+        return;
+      }
+      try {
+        debugPrint('CheckinService: refreshing check-in TTL for gym=$gymId');
+        await _upsertCheckin(profileId, gymId, 'wifi_auto');
+      } catch (e) {
+        debugPrint('CheckinService: TTL refresh failed: $e');
+      }
     });
+  }
+
+  /// Cancel the periodic refresh timer and clear tracked gym/profile.
+  static void _cancelRefreshTimer() {
+    _refreshTimer?.cancel();
+    _refreshTimer = null;
+    _currentGymId = null;
+    _currentProfileId = null;
   }
 
   /// Stop listening (call on app dispose if needed)
   static void stopListening() {
     _subscription?.cancel();
     _subscription = null;
+    _cancelRefreshTimer();
   }
 }

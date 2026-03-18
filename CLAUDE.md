@@ -206,7 +206,7 @@ stage's internals directly.
 |---|---|---|
 | `nest_recorder` | Working | OAuth2 → Nest API → MP4 segments. Production path: `data/raw/nest/{gym_id}/{cam_id}/{YYYY-MM-DD}/{HH}/`. Diag path (no GYM_ID): `data/raw/nest/diag/{TS}/`. Auto-registers cameras to Supabase. `entrypoint.sh` delegates to `diag_v8.sh` scheduler. |
 | `processor` | Working | Polls `data/raw/nest/` for new MP4s, invokes `bjj_pipeline` (A→F) in `multiplex_AC` mode. Wall-clock filter (`MAX_CLIP_AGE_HOURS`, default 6) skips stale clips. Empty-video failures log as `clip_skipped` (not `clip_error`). Config: `SCAN_ROOT`, `OUTPUT_ROOT`, `POLL_INTERVAL_SECONDS`, `RUN_UNTIL`, `GYM_ID`, `MAX_CLIP_AGE_HOURS`. |
-| `uploader` | Working | Polls `outputs/`, bundles + uploads to Supabase, resolves fighter tag IDs → profile IDs via active gym check-ins, deletes on confirm |
+| `uploader` | Working | Polls `outputs/`, bundles + uploads to Supabase, writes `gym_id` to `videos` row from export manifest, resolves fighter tag IDs → profile IDs via active gym check-ins, skips `no_matches` manifests, deletes on confirm |
 
 The processor service has a documented I/O contract at `services/processor/contracts/input_output.md`.
 The uploader contract is at `services/uploader/contracts/batch_bundle.md`.
@@ -222,7 +222,7 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 - `clips` — processed clips: `video_id` FK, `match_id`, `file_path`, `storage_bucket`, `storage_object_path`, `start_seconds`, `end_seconds`, `fighter_a_tag_id`, `fighter_b_tag_id`, `fighter_a_profile_id`, `fighter_b_profile_id` (nullable FKs→profiles)
 - `log_events` — audit log: `clip_id`/`video_id` FK, `event_type`, `event_level`, `message`, `details`
 - `gyms` — `name`, `owner_profile_id`, `owner_auth_user_id` (denormalized), `address`, `wifi_ssid`, `wifi_bssid`, `latitude`, `longitude`
-- `gym_checkins` — `profile_id`, `gym_id`, `checked_in_at`, `auto_expires_at` (trigger-managed +3hr), `is_active`, `source` (`manual` or `wifi_auto`)
+- `gym_checkins` — `profile_id`, `gym_id`, `checked_in_at`, `auto_expires_at` (trigger-managed +3hr, slides on upsert), `is_active`, `source` (`manual` or `wifi_auto`). Unique on `(profile_id, gym_id)` — enables upsert for sliding TTL.
 - `gym_subscriptions` — `gym_id`, `tier` ENUM, `started_at`, `ended_at`, `is_current`
 - `cameras` — `gym_id` FK→gyms, `cam_id` (last 6 chars of SDM device path), `device_path` (full SDM path), `display_name` (nullable, from Google Home room name), `is_active`, `first_seen_at`, `last_seen_at`. Unique on `(gym_id, cam_id)`. Auto-registered by `nest_recorder` on camera discovery via Supabase REST upsert.
 - `homography_configs` — `gym_id`, `camera_id`, `config_data` JSONB
@@ -261,8 +261,10 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 - `20260315000007_checkin_source_and_tag_assignment.sql` — `source` column on gym_checkins, `tag_id_seq` cycling sequence (0–586), updated `handle_new_user()` to assign tag_id
 - `20260315000008_storage_policies.sql` — storage read policy for `match-clips` bucket
 
-**Applied migrations (cameras + recorder):**
+**Applied migrations (cameras + recorder + checkpoint 8):**
 - `20260316000001_cameras_table.sql` — `cameras` table with `(gym_id, cam_id)` unique constraint, RLS for gym owner SELECT/UPDATE
+- `20260317000001_add_log_events_app_version.sql` — `app_version` text column on `log_events`
+- `20260318000001_checkin_upsert_unique.sql` — `UNIQUE(profile_id, gym_id)` on `gym_checkins` for sliding TTL upsert
 
 ---
 
@@ -368,7 +370,7 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
   - **Auth:** Supabase-native (supabase_flutter). Auth trigger auto-creates profiles with tag_id on sign-up. Biometric login gated behind Settings toggle (default off).
   - **Onboarding:** display name → gym select → invite gym (if not listed). Routes via AuthGate FutureBuilder with profile completeness check.
   - **Clips:** Pull-to-refresh clip list. Tap to play via signed URL + video_player. RLS scopes clips to athlete's profile (fighter_a/b_profile_id match).
-  - **Check-in:** WiFi auto check-in (CheckinService) fires after auth + on WiFi changes. Manual check-in via Find a Gym screen. SSID-primary matching (BSSID optional refinement). Source tracked as `wifi_auto` or `manual`.
+  - **Check-in:** WiFi auto check-in (CheckinService) fires after auth + on WiFi changes. Upserts on `(profile_id, gym_id)` — sliding TTL via hourly periodic probe while WiFi connected. Timer cancelled on WiFi disconnect. Manual check-in via Find a Gym screen. SSID-primary matching (BSSID optional refinement). Source tracked as `wifi_auto` or `manual`.
   - **Gym discovery:** Find a Gym screen with GPS proximity via `gyms_near` RPC. Accessible from navigation drawer.
   - **Android:** `usesCleartextTraffic=true` for local HTTP Supabase. `ACCESS_FINE_LOCATION` required for WiFi SSID + GPS.
   - **Local dev:** `supabase_config.dart` points to LAN IP (`192.168.0.66:54321`). Signed URLs rewrite `127.0.0.1` → configured host for phone access.
@@ -377,9 +379,9 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
   - `/admin/pricing` — Admin-only business model pricing simulator (4 tabs: Model, Unit Economics, Sensitivity, Notes). Gated by `AdminGate` component checking session email against `VITE_ADMIN_EMAIL` env var.
   - **Auth:** `AdminGate` wraps protected routes. Email+password sign-in via Supabase. Admin email checked from env, never hardcoded.
   - **Local dev:** `.env.example` provided. Set `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `VITE_ADMIN_EMAIL`.
-- **Supabase:** All Phase A + Phase E + cameras migrations applied (18 migration files total). RLS on all 10 tables. Storage read policy on `match-clips` bucket. `cameras` table auto-populated by `nest_recorder`. `log_events.app_version` column added (was missing, caused Flutter logger inserts to fail).
+- **Supabase:** All migrations applied (19 migration files total). RLS on all 10 tables. Storage read policy on `match-clips` bucket. `cameras` table auto-populated by `nest_recorder`. `gym_checkins` has `UNIQUE(profile_id, gym_id)` for sliding TTL upsert.
 - **E2E verified:** 2026-03-17 — nest_recorder → processor → uploader chain tested end-to-end. Tagged clip (FP7oJQ-tag_0-60s.mp4) processed A→F, uploaded to local Supabase, 2 clip rows + 2 log_events inserted. Already-processed guard confirmed working.
-- **Last updated:** 2026-03-17 (E2E verified: recorder→processor→uploader chain; multiplex_AC mode; wall-clock filter; resilient empty-video handling)
+- **Last updated:** 2026-03-18 (Checkpoint 8: uploader writes gym_id to videos, tag→profile resolution unblocked; Stage F no_matches early exit; sliding check-in TTL via upsert + hourly probe)
 
 ---
 

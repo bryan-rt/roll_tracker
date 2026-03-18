@@ -20,6 +20,11 @@ def load_manifest(path: str | Path) -> list[ManifestRecord]:
                 continue
 
             data = json.loads(line)
+
+            # Skip no_matches records (Stage F found no match sessions)
+            if data.get("status") == "no_matches":
+                continue
+
             inputs = data["inputs"]
             uploader_contract = inputs["uploader_contract"]
             clip_row = uploader_contract["clip_row"]
@@ -38,6 +43,7 @@ def load_manifest(path: str | Path) -> list[ManifestRecord]:
                 storage_object_path=storage_object_path,
                 clip_row=clip_row,
                 log_events=log_events,
+                gym_id=data.get("gym_id"),
             )
             records.append(record)
 
