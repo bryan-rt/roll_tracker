@@ -343,8 +343,21 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
   but is not required for MVP.
 - **Three-pass protocol** — Plan Mode (shift+tab x2) for Pass 1+2, execute for Pass 3.
   User approves between each pass. See Working Methodology section above.
-- **Processor service is a scaffold** — the Python pipeline runs standalone locally.
-  Dockerizing it is a near-term MVP task.
+- **Processor runs natively on Mac** — Docker ARM64 emulation too slow for YOLO inference.
+  `services/processor/run_local.sh` runs the processor natively. Docker compose processor
+  service is commented out; uncomment for Linux deployment.
+- **Phase 1/Phase 2 parallelism boundary** (NON-NEGOTIABLE) — Phase 1 (Stages A+C) runs
+  parallel workers via ProcessPoolExecutor (one per camera). Phase 2 (Stages D+E+F) runs
+  sequentially. This boundary is load-bearing for future cross-clip global stitching.
+  Do NOT parallelize Stage D+E+F under any circumstances.
+- **YOLO segmentation disabled for performance** — `use_seg: false`, `write_yolo_masks: false`
+  in default.yaml. Detection-only YOLOv8n used instead of YOLOv8s-seg. Mask code preserved
+  behind config flags for future Stage F privacy redaction.
+- **MPS auto-detection** — `device: "auto"` selects Apple Silicon MPS > CUDA > CPU.
+  Validation step runs before full clip processing. Phase 1 workers use CPU (parallel safety),
+  Phase 2 uses MPS (sequential, full GPU).
+- **Uploader sentinel pattern** — Uploader writes `.uploaded` sentinel instead of deleting
+  `export_manifest.jsonl`. Processor checks both manifest and sentinel for already-processed guard.
 
 ---
 
@@ -389,7 +402,7 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
   - **Local dev:** `.env.example` provided. Set `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `VITE_ADMIN_EMAIL`.
 - **Supabase:** All migrations applied (22 migration files total). Remote Supabase linked (project `zwwdduccwrkmkvawwjpc`). Edge Function `send_push_notification` for FCM V1 push delivery. RLS on all 10 tables. Storage read policy on `match-clips` bucket. `cameras` table auto-populated by `nest_recorder`. `gym_checkins` has `UNIQUE(profile_id, gym_id)` for sliding TTL upsert.
 - **E2E verified:** 2026-03-17 — nest_recorder → processor → uploader chain tested end-to-end. Tagged clip (FP7oJQ-tag_0-60s.mp4) processed A→F, uploaded to local Supabase, 2 clip rows + 2 log_events inserted. Already-processed guard confirmed working.
-- **Last updated:** 2026-03-18 (Checkpoint 10: remote Supabase, FCM push notifications via Edge Function, device_tokens table, Flutter FCM integration, root docker-compose with arm64, supabase_config pointing to remote)
+- **Last updated:** 2026-03-19 (Checkpoint 11: manifest sentinel fix, processing sentinel, YOLO masks disabled, MPS auto-detect, batch inference, Phase 1/2 parallelism, native processor, session pooler URL)
 
 ---
 

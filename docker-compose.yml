@@ -1,4 +1,6 @@
-# Root compose — orchestrates nest_recorder, processor, and uploader.
+# Root compose — orchestrates nest_recorder and uploader.
+# Processor runs natively on Mac via services/processor/run_local.sh
+# for better ARM performance. Uncomment for Linux deployment.
 # Usage: cp .env.example .env && <fill values> && docker compose up --build
 
 services:
@@ -20,26 +22,31 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  processor:
-    build:
-      context: .
-      dockerfile: services/processor/Dockerfile
-    platform: linux/arm64
-    container_name: roll-processor
-    restart: unless-stopped
-    env_file: .env
-    volumes:
-      - ./data/raw/nest:/app/data/raw/nest:ro
-      - ./outputs:/app/outputs
-      - ./configs:/app/configs:ro
-      - ./models:/app/models:ro
-    depends_on:
-      - recorder
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
+  # processor service commented out — runs natively on Mac via
+  # services/processor/run_local.sh for better ARM performance.
+  # Uncomment for Linux deployment on mini-PC where Docker
+  # overhead is minimal.
+  #
+  # processor:
+  #   build:
+  #     context: .
+  #     dockerfile: services/processor/Dockerfile
+  #   platform: linux/arm64
+  #   container_name: roll-processor
+  #   restart: unless-stopped
+  #   env_file: .env
+  #   volumes:
+  #     - ./data/raw/nest:/app/data/raw/nest:ro
+  #     - ./outputs:/app/outputs
+  #     - ./configs:/app/configs:ro
+  #     - ./models:/app/models:ro
+  #   depends_on:
+  #     - recorder
+  #   logging:
+  #     driver: json-file
+  #     options:
+  #       max-size: "10m"
+  #       max-file: "3"
 
   uploader:
     build:

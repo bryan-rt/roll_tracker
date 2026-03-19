@@ -1,0 +1,86 @@
+{
+  "H": [
+    [
+      -24.28070865904725,
+      -21.51687027774986,
+      2102.1819487655166
+    ],
+    [
+      2.4002225783288638,
+      2.075148622783882,
+      -328.37865415882607
+    ],
+    [
+      -0.03251248188843991,
+      0.00902946126766792,
+      1.0
+    ]
+  ],
+  "camera_id": "J_EDEw",
+  "source": {
+    "type": "overlay_rect",
+    "video": "data/raw/nest/diag/20260317-070824/Cam_cam__J_EDEw/Cam_cam__J_EDEw-20260317-070837.mp4"
+  },
+  "created_at": "2026-03-18T21:23:20.556203+00:00",
+  "correspondences": {
+    "image_points_px": [
+      [
+        1025.7142857142856,
+        494.57142857142856
+      ],
+      [
+        890.2857142857142,
+        218.57142857142856
+      ],
+      [
+        391.4285714285714,
+        220.28571428571422
+      ],
+      [
+        142.85714285714283,
+        426.0
+      ]
+    ],
+    "mat_points": [
+      [
+        51.0,
+        50.0
+      ],
+      [
+        57.0,
+        50.0
+      ],
+      [
+        57.0,
+        42.0
+      ],
+      [
+        51.0,
+        42.0
+      ]
+    ],
+    "corner_ids": [
+      "tl",
+      "tr",
+      "br",
+      "bl"
+    ]
+  },
+  "ui": {
+    "calibration_ui": "overlay_rect",
+    "note": "overlay_rect stores direct dragged image-space corners; corner_ids preserve mapping to chosen anchor rectangle corners (in mat coords).",
+    "blueprint_alpha": 0.35,
+    "anchor_rect": {
+      "x": 51.0,
+      "y": 42.0,
+      "width": 6.0,
+      "height": 8.0,
+      "label": ""
+    }
+  },
+  "qa": {
+    "grid_spacing_m": 0.5,
+    "sample_step_m": 0.05,
+    "accepted": true
+  }
+}

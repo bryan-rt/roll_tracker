@@ -44,13 +44,14 @@ stages:
       # Optional YOLO segmentation weights. If missing at runtime, Stage A will
       # fall back to deterministic bbox masks and emit an audit event.
       seg_model_path: models/yolov8s-seg.pt
-      use_seg: true
+      use_seg: false
       conf: 0.25
       imgsz: null
-      device: null
+      device: "auto"
+      yolo_batch_size: 4
 
     masks:
-      write_yolo_masks: true
+      write_yolo_masks: false
       gate:
         det_conf_min: 0.25
         mask_quality_min: 0.40

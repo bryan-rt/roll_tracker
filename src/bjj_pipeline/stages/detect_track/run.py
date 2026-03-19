@@ -199,21 +199,47 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 		tracker=tracker,
 	)
 
-	# Iterate frames
+	# Iterate frames with optional batching
+	yolo_batch_size = int(_cfg_get(
+		config, "stages.stage_A.detector.yolo_batch_size",
+		_cfg_get(config, "detector.yolo_batch_size", 1),
+	))
 	n = 0
-	for frame in frame_iter:
-		# Support both iterator styles:
-		#  (frame_bgr, frame_index, timestamp_ms)
-		# or objects with attributes
-		if isinstance(frame, tuple) and len(frame) >= 3:
-			frame_bgr, frame_index, timestamp_ms = frame[0], int(frame[1]), int(frame[2])
-		else:
-			frame_bgr = frame.image_bgr  # type: ignore[attr-defined]
-			frame_index = int(frame.frame_index)  # type: ignore[attr-defined]
-			timestamp_ms = int(frame.timestamp_ms)  # type: ignore[attr-defined]
+	batch: list[tuple] = []  # (frame_bgr, frame_index, timestamp_ms)
 
-		_ = processor.process_frame(frame_bgr=frame_bgr, frame_index=frame_index, timestamp_ms=timestamp_ms)
-		n += 1
+	def _unpack_frame(frame):
+		if isinstance(frame, tuple) and len(frame) >= 3:
+			return frame[0], int(frame[1]), int(frame[2])
+		return frame.image_bgr, int(frame.frame_index), int(frame.timestamp_ms)
+
+	def _flush_batch(batch):
+		nonlocal n
+		if not batch:
+			return
+		if yolo_batch_size > 1:
+			# Batch YOLO inference, then feed per-frame results to processor
+			batch_dets = detector.infer_batch(
+				clip_id=clip_id,
+				camera_id=camera_id,
+				frames=batch,
+			)
+			for (fb, fi, ts), dets in zip(batch, batch_dets):
+				processor.process_frame(frame_bgr=fb, frame_index=fi, timestamp_ms=ts,
+				                       precomputed_dets=dets)
+				n += 1
+		else:
+			for fb, fi, ts in batch:
+				processor.process_frame(frame_bgr=fb, frame_index=fi, timestamp_ms=ts)
+				n += 1
+
+	for frame in frame_iter:
+		batch.append(_unpack_frame(frame))
+		if len(batch) >= yolo_batch_size:
+			_flush_batch(batch)
+			batch = []
+
+	# Flush remaining frames
+	_flush_batch(batch)
 
 	writer.audit("stage_a_completed", {"n_frames": n})
 	res = writer.write_all()

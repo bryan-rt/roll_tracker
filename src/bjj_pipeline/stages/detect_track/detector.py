@@ -91,7 +91,29 @@ class UltralyticsYoloDetector(DetectorBackend):
 		self.use_seg = use_seg
 		self.conf = float(conf)
 		self.imgsz = imgsz
-		self.device = device
+
+		# Auto-detect device: MPS (Apple Silicon) > CUDA > CPU
+		if device in (None, "null", "auto"):
+			import torch
+			if torch.backends.mps.is_available():
+				resolved_device = "mps"
+			elif torch.cuda.is_available():
+				resolved_device = "cuda"
+			else:
+				resolved_device = "cpu"
+			print(f"[Stage A] Using device: {resolved_device} (auto-detected)", flush=True)
+			# MPS validation
+			if resolved_device == "mps":
+				try:
+					_test = torch.zeros(1, 3, 64, 64, device="mps")
+					del _test
+				except Exception as e:
+					print(f"[Stage A] MPS validation failed ({e}), falling back to CPU", flush=True)
+					resolved_device = "cpu"
+			self.device = resolved_device
+		else:
+			self.device = device
+			print(f"[Stage A] Using device: {device} (configured)", flush=True)
 
 		self._model = None
 		self._seg_model = None
@@ -275,3 +297,81 @@ class UltralyticsYoloDetector(DetectorBackend):
 				)
 			)
 		return out
+
+	def infer_batch(
+		self,
+		*,
+		clip_id: str,
+		camera_id: str,
+		frames: list[tuple[np.ndarray, int, int]],
+	) -> list[list['Detection']]:
+		"""Run YOLO predict on a batch of frames. Returns list of per-frame detection lists.
+
+		frames: list of (frame_bgr, frame_index, timestamp_ms) tuples.
+		"""
+		if not frames:
+			return []
+
+		self._lazy_load_models()
+
+		using_seg_model = bool(self.use_seg and self._seg_model is not None)
+		model = self._seg_model if (self.use_seg and self._seg_model is not None) else self._model
+		if model is None:
+			raise RuntimeError("YOLO model failed to load")
+
+		kwargs = {"conf": self.conf}
+		if self.imgsz is not None:
+			kwargs["imgsz"] = int(self.imgsz)
+		if self.device is not None:
+			kwargs["device"] = self.device
+
+		# Batch predict: pass list of BGR arrays
+		frame_bgrs = [f[0] for f in frames]
+		results = model.predict(source=frame_bgrs, verbose=False, **kwargs)
+		if not results:
+			return [[] for _ in frames]
+
+		all_dets: list[list[Detection]] = []
+		for i, (frame_bgr, frame_index, timestamp_ms) in enumerate(frames):
+			if i >= len(results):
+				all_dets.append([])
+				continue
+			r0 = results[i]
+			frame_h = int(frame_bgr.shape[0])
+			frame_w = int(frame_bgr.shape[1])
+
+			boxes = getattr(r0, "boxes", None)
+			if boxes is None or len(boxes) == 0:
+				all_dets.append([])
+				continue
+
+			masks_obj = getattr(r0, "masks", None) if using_seg_model else None
+			out: list[Detection] = []
+			for j in range(len(boxes)):
+				cls_id = int(boxes.cls[j].item()) if hasattr(boxes.cls[j], "item") else int(boxes.cls[j])
+				if cls_id != 0:
+					continue
+				c = float(boxes.conf[j].item()) if hasattr(boxes.conf[j], "item") else float(boxes.conf[j])
+				xyxy = boxes.xyxy[j].cpu().numpy() if hasattr(boxes.xyxy[j], "cpu") else boxes.xyxy[j]
+				x1, y1, x2, y2 = float(xyxy[0]), float(xyxy[1]), float(xyxy[2]), float(xyxy[3])
+				detection_id = f"d{frame_index:06d}_{j}"
+				mask = None
+				ms = "none"
+				if masks_obj is not None and hasattr(masks_obj, "data") and j < len(masks_obj.data):
+					try:
+						raw = masks_obj.data[j].cpu().numpy()
+						import cv2
+						mask = cv2.resize(raw, (frame_w, frame_h), interpolation=cv2.INTER_NEAREST)
+						ms = "yolo_seg"
+					except Exception:
+						mask = None
+						ms = "seg_error"
+				out.append(Detection(
+					clip_id=clip_id, camera_id=camera_id,
+					frame_index=frame_index, timestamp_ms=timestamp_ms,
+					detection_id=detection_id, class_name="person",
+					confidence=c, x1=x1, y1=y1, x2=x2, y2=y2,
+					mask=mask, mask_source=ms, mask_quality=None,
+				))
+			all_dets.append(out)
+		return all_dets

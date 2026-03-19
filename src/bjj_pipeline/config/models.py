@@ -98,7 +98,8 @@ class StageAConfig(BaseModel):
         use_seg: bool = Field(default=False, description="Attempt to use YOLO segmentation masks")
         conf: float = Field(default=0.25, ge=0.0, le=1.0, description="Detection confidence threshold")
         imgsz: Optional[int] = Field(default=None, gt=0, description="Optional inference image size")
-        device: Optional[str] = Field(default=None, description="Optional detector device override")
+        device: Optional[str] = Field(default=None, description="Optional detector device override (auto/mps/cuda/cpu)")
+        yolo_batch_size: int = Field(default=1, ge=1, description="Number of frames to batch for YOLO inference")
 
     class MaskGateConfig(BaseModel):
         model_config = ConfigDict(extra="forbid")

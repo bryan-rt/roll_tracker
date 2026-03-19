@@ -12,8 +12,12 @@ class ProcessorSettings(BaseSettings):
     SCAN_ROOT: Path = Path("data/raw/nest")
     OUTPUT_ROOT: Path = Path("outputs")
     POLL_INTERVAL_SECONDS: int = 30
-    RUN_UNTIL: str = "D6"
     GYM_ID: Optional[str] = None
     MAX_CLIP_AGE_HOURS: int = 6  # clips older than this are ignored; 0 = no limit
     SUPABASE_URL: str = ""
     SUPABASE_SERVICE_ROLE_KEY: str = ""
+
+    # Phase 1/2 parallelism
+    MAX_WORKERS: int = 3  # one per camera, Phase 1 (A+C) only
+    PARALLEL_DEVICE: str = "cpu"  # Phase 1 workers use CPU
+    SEQUENTIAL_DEVICE: str = "auto"  # Phase 2 (D+E+F) uses MPS if available
