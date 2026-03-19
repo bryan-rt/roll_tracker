@@ -6,7 +6,9 @@ from .service import run_upload
 
 def discover_manifests(scan_root: str):
     root = Path(scan_root)
-    return list(root.glob("**/stage_F/export_manifest.jsonl"))
+    manifests = list(root.glob("**/stage_F/export_manifest.jsonl"))
+    # Skip manifests that already have an .uploaded sentinel
+    return [m for m in manifests if not (m.parent / ".uploaded").exists()]
 
 
 def run_worker(cfg):
@@ -29,9 +31,10 @@ def run_worker(cfg):
 
                 run_upload(str(manifest), cfg)
 
-                manifest.unlink(missing_ok=True)
+                sentinel = manifest.parent / ".uploaded"
+                sentinel.touch()
 
-                print(f"[uploader] manifest complete, removed {manifest}")
+                print(f"[uploader] marked as uploaded: {sentinel}")
 
             except Exception as e:
 

@@ -79,32 +79,36 @@ class StageAProcessor:
     # Public API
     # ---------------------------------------------------------
 
-    def process_frame(self, frame_bgr: np.ndarray, frame_index: int, timestamp_ms: int) -> list[OverlayItem]:
+    def process_frame(self, frame_bgr: np.ndarray, frame_index: int, timestamp_ms: int,
+                      precomputed_dets=None) -> list[OverlayItem]:
         if frame_bgr is None or not isinstance(frame_bgr, np.ndarray):
             raise TypeError(
                 f"StageAProcessor.process_frame expected frame_bgr np.ndarray, got {type(frame_bgr)}"
             )
         frame_for_detector = frame_bgr  # keep detector input immutable for evidence/debugging
-        # 1) Detect
+        # 1) Detect (skip if precomputed detections provided from batch inference)
         try:
-            # Evidence-grade breadcrumb: proves the exact input at the detector boundary (only persisted on crash via flush)
-            self.writer.audit(
-                "stage_a_detector_call",
-                {
-                    "frame_index": int(frame_index),
-                    "timestamp_ms": int(timestamp_ms),
-                    "detector_input_type": str(type(frame_for_detector)),
-                    "detector_input_shape": getattr(frame_for_detector, "shape", None),
-                    "detector_input_id": int(id(frame_for_detector)),
-                },
-            )
-            dets = self.detector.infer(
-                clip_id=self.writer.clip_id,
-                camera_id=self.writer.camera_id,
-                frame_index=frame_index,
-                timestamp_ms=timestamp_ms,
-                frame_bgr=frame_for_detector,
-            )
+            if precomputed_dets is not None:
+                dets = precomputed_dets
+            else:
+                # Evidence-grade breadcrumb: proves the exact input at the detector boundary (only persisted on crash via flush)
+                self.writer.audit(
+                    "stage_a_detector_call",
+                    {
+                        "frame_index": int(frame_index),
+                        "timestamp_ms": int(timestamp_ms),
+                        "detector_input_type": str(type(frame_for_detector)),
+                        "detector_input_shape": getattr(frame_for_detector, "shape", None),
+                        "detector_input_id": int(id(frame_for_detector)),
+                    },
+                )
+                dets = self.detector.infer(
+                    clip_id=self.writer.clip_id,
+                    camera_id=self.writer.camera_id,
+                    frame_index=frame_index,
+                    timestamp_ms=timestamp_ms,
+                    frame_bgr=frame_for_detector,
+                )
 
             # Persist “seg reality” in audit.jsonl (no reliance on Python logging configuration).
             # This makes it explicit whether we're actually getting masks back from the detector.
