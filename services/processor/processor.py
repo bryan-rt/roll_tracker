@@ -39,6 +39,7 @@ _SKIP_KEYWORDS = (
     "tracker output shape: (0",
     "no valid frames",
     "no tracklets",
+    "positive definite",
 )
 
 
