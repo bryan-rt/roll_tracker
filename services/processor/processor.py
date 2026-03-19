@@ -198,6 +198,7 @@ def _process_clip_phase1(mp4_path_str: str, cam_id: str, settings_dict: dict) ->
             config_hash_override=cfg_hash,
             to_stage="C",
             mode="multiplex_AC",
+            visualize=settings.VISUALIZE,
         )
         return {"status": "completed", "clip": mp4_path_str, "cam_id": cam_id}
     except PipelineError as e:
@@ -224,6 +225,7 @@ def _process_clip_phase2(mp4_path: Path, cam_id: str, settings: ProcessorSetting
         from_stage="D",
         to_stage="F",
         mode="multiplex_AC",
+        visualize=False,
     )
 
 
@@ -237,7 +239,8 @@ def main() -> None:
          max_clip_age_hours=settings.MAX_CLIP_AGE_HOURS,
          max_workers=settings.MAX_WORKERS,
          parallel_device=settings.PARALLEL_DEVICE,
-         sequential_device=settings.SEQUENTIAL_DEVICE)
+         sequential_device=settings.SEQUENTIAL_DEVICE,
+         visualize=settings.VISUALIZE)
 
     while True:
         try:
