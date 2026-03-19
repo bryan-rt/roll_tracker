@@ -377,13 +377,19 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 | Pipeline ingest path: gym-scoped, backward compatible | Decided | Pipeline accepts both `data/raw/nest/{gym_id}/{cam_id}/{date}/{hour}/` (new) and `data/raw/nest/{cam_id}/{date}/{hour}/` (legacy). `gym_id` inferred from path structure (date folder position detection), stored in `ClipManifest.gym_id` (None for legacy). No new CLI argument required. |
 | Pipeline output path: gym-scoped | Decided | Outputs at `outputs/{gym_id}/{cam_id}/{date}/{hour}/{clip_id}/stage_*/`. Legacy fallback: `outputs/legacy/{cam_id}/{date}/{hour}/{clip_id}/`. `ClipOutputLayout.root` set from `compute_output_root()`. Stage F reads `gym_id` from manifest (fallback to config). |
 | Collision detection: uploader tag dedup | Decided | Two signals: Signal A (same april_tag_id on both fighters in manifest `collision_hints`), Signal B (>1 active check-in for same tag+gym at upload time). Colliding clips get `status=collision_flagged`, null profile_ids. Athletes reclaim via `claim_clip()` RPC from Unlinked Clips screen. |
+| YOLO masks disabled in Stage A | Decided | `use_seg: false`, `write_yolo_masks: false` in default.yaml. Detection-only YOLOv8n used. Mask code preserved behind config flags — will re-enable selectively in Stage F redaction redesign (CP13). |
+| MPS auto-detection | Decided | `device: "auto"` in default.yaml. Detector resolves MPS > CUDA > CPU at construction time. Validated on M1 Air with dummy tensor. Falls back to CPU on validation failure. |
+| Phase 1/2 parallelism boundary | Decided (NON-NEGOTIABLE) | A+C parallel via ProcessPoolExecutor (MAX_WORKERS=3, one per camera). D+E+F sequential. This boundary is load-bearing for future cross-clip global stitching — do not parallelize D+E+F under any circumstances. |
+| Native processor execution | Decided | `run_local.sh` for Mac (MPS, native ARM). Dockerfile preserved for Linux mini-PC deployment. Docker processor service commented out in root compose. |
+| Uploader sentinel pattern | Decided | `.uploaded` file written by uploader instead of deleting `export_manifest.jsonl`. Preserves processor's already-processed guard. Uploader `discover_manifests()` skips manifests with `.uploaded` sentinel. |
+| Session pooler URL | Decided | `SUPABASE_DB_URL` uses Supavisor Session pooler (port 5432, `aws-1-us-east-1.pooler.supabase.com`) instead of direct connection (IPv6 only, fails in Docker). |
 
 ---
 
 ## Current Branch & Status
 
 - **Active branch:** `services_uploader`
-- **Head commit:** `d0cf43e`
+- **Head commit:** `1f00f58`
 - **Pipeline:** Full pipeline (A→F) verified end-to-end. Ingest accepts gym-scoped paths (`{gym_id}/{cam_id}/{date}/{hour}/`) and legacy paths (`{cam_id}/{date}/{hour}/`). `gym_id` stored in `ClipManifest`. Stages A, C produce tag observations + identity hints. Stage D (ILP stitching) resolves person tracks. Stage E detects match sessions. Stage F exports clips with privacy redaction.
 - **Services:** `nest_recorder` working — auto-registers cameras to Supabase on discovery. `uploader` working — resolves fighter tag IDs → profile IDs via active gym check-ins at upload time (Phase C identity bridge). `processor` scaffold only.
 - **Apps:** Flutter mobile app at `app_mobile/`. End-to-end tested on Pixel 7 Pro against local Supabase.
@@ -402,7 +408,13 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
   - **Local dev:** `.env.example` provided. Set `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `VITE_ADMIN_EMAIL`.
 - **Supabase:** All migrations applied (22 migration files total). Remote Supabase linked (project `zwwdduccwrkmkvawwjpc`). Edge Function `send_push_notification` for FCM V1 push delivery. RLS on all 10 tables. Storage read policy on `match-clips` bucket. `cameras` table auto-populated by `nest_recorder`. `gym_checkins` has `UNIQUE(profile_id, gym_id)` for sliding TTL upsert.
 - **E2E verified:** 2026-03-17 — nest_recorder → processor → uploader chain tested end-to-end. Tagged clip (FP7oJQ-tag_0-60s.mp4) processed A→F, uploaded to local Supabase, 2 clip rows + 2 log_events inserted. Already-processed guard confirmed working.
-- **Last updated:** 2026-03-19 (Checkpoint 11: manifest sentinel fix, processing sentinel, YOLO masks disabled, MPS auto-detect, batch inference, Phase 1/2 parallelism, native processor, session pooler URL)
+- **Performance baseline (CP11):**
+
+  | Stage | Before CP11 | After CP11 | Speedup |
+  |---|---|---|---|
+  | Stage A (2.5min clip, 4500 frames) | ~120 min (CPU, Docker ARM64, masks) | **4m 37s** (MPS, native, no masks) | **26x** |
+
+- **Last updated:** 2026-03-19 (CP11 CLAUDE.md update: head commit, performance baseline, decisions log)
 
 ---
 
