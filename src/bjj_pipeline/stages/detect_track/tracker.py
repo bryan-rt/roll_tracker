@@ -120,6 +120,12 @@ class BotSortTracker(TrackerBackend):
 				f"BotSortTracker.update requires frame_bgr np.ndarray (got {type(frame_bgr)})"
 			)
 
+		# Filter degenerate boxes (zero width or height) — YOLO edge-case outputs
+		# that cause divide-by-zero in BoT-SORT IoU → Kalman NaN → crash
+		if det_arr.shape[0] > 0:
+			valid = (det_arr[:, 2] > det_arr[:, 0]) & (det_arr[:, 3] > det_arr[:, 1])
+			det_arr = det_arr[valid]
+
 		# Update tracker; common signature: update(dets, img, embs=None)
 		tracks = self._tracker.update(det_arr, frame_bgr)  # type: ignore[attr-defined]
 
@@ -127,6 +133,8 @@ class BotSortTracker(TrackerBackend):
 			return []
 
 		tracks = np.asarray(tracks)
+		if tracks.ndim == 1 and tracks.shape[0] == 0:
+			return []  # BoT-SORT returns (0,) when no active tracks — treat as empty
 		if tracks.ndim != 2 or tracks.shape[1] < 5:
 			raise RuntimeError(f"Unexpected BoxMOT tracker output shape: {tracks.shape}")
 
