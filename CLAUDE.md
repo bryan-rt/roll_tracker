@@ -383,6 +383,7 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 | Native processor execution | Decided | `run_local.sh` for Mac (MPS, native ARM). Dockerfile preserved for Linux mini-PC deployment. Docker processor service commented out in root compose. |
 | Uploader sentinel pattern | Decided | `.uploaded` file written by uploader instead of deleting `export_manifest.jsonl`. Preserves processor's already-processed guard. Uploader `discover_manifests()` skips manifests with `.uploaded` sentinel. |
 | Session pooler URL | Decided | `SUPABASE_DB_URL` uses Supavisor Session pooler (port 5432, `aws-1-us-east-1.pooler.supabase.com`) instead of direct connection (IPv6 only, fails in Docker). |
+| Processor Phase 1 worker count | Decided | MAX_WORKERS=3 on M1 Air. 4 P-cores + 4 E-cores. YOLO on E-cores ~3-4x slower. 3 workers hits P-core sweet spot (17m35s for 4 clips vs 32min/1w, 40min/2w, 51min/4w). PARALLEL_DEVICE=cpu required — MPS in spawned subprocesses causes BoT-SORT Kalman instability. SEQUENTIAL_DEVICE=auto retains MPS for Phase 2. Machine-specific — higher counts appropriate on M1 Pro/Max. |
 
 ---
 
@@ -408,13 +409,21 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
   - **Local dev:** `.env.example` provided. Set `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `VITE_ADMIN_EMAIL`.
 - **Supabase:** All migrations applied (22 migration files total). Remote Supabase linked (project `zwwdduccwrkmkvawwjpc`). Edge Function `send_push_notification` for FCM V1 push delivery. RLS on all 10 tables. Storage read policy on `match-clips` bucket. `cameras` table auto-populated by `nest_recorder`. `gym_checkins` has `UNIQUE(profile_id, gym_id)` for sliding TTL upsert.
 - **E2E verified:** 2026-03-17 — nest_recorder → processor → uploader chain tested end-to-end. Tagged clip (FP7oJQ-tag_0-60s.mp4) processed A→F, uploaded to local Supabase, 2 clip rows + 2 log_events inserted. Already-processed guard confirmed working.
-- **Performance baseline (CP11):**
+- **Performance baseline (CP11 + production run 2026-03-20):**
 
-  | Stage | Before CP11 | After CP11 | Speedup |
+  | Stage | Before CP11 | After CP11 | Production run |
   |---|---|---|---|
-  | Stage A (2.5min clip, 4500 frames) | ~120 min (CPU, Docker ARM64, masks) | **4m 37s** (MPS, native, no masks) | **26x** |
+  | Stage A (2.5min clip) | ~120 min (CPU, Docker, masks) | 4m 37s (MPS, native, no masks) | ~8 min/clip (CPU, 3 workers) |
 
-- **Last updated:** 2026-03-19 (CP11 CLAUDE.md update: head commit, performance baseline, decisions log)
+  | Phase | Wall-clock (36 clips) | Notes |
+  |---|---|---|
+  | Phase 1 (A+C, 3 CPU workers) | **~50 min** | 6 completed, 30 skipped (BoT-SORT Kalman instability) |
+  | Phase 2 (D+E+F, sequential MPS) | **~65 min** | 5 clips completed A→F |
+  | Total | **~115 min** | 36 debug videos generated, 5 full clips exported |
+
+  **BoT-SORT Kalman filter instability:** 83% of clips (30/36) hit `LinAlgError: leading minor not positive definite` during BoT-SORT tracking. This is a numerical issue in boxmot's Kalman filter, not a pipeline bug. Affects all cameras. Tracked as a known issue — potential fixes: try different tracker (ByteTrack), or add Kalman filter regularization.
+
+- **Last updated:** 2026-03-20 (production run: 36 Alpha BJJ clips, Phase 1+2 complete, 5/36 clips exported, BoT-SORT Kalman instability identified)
 
 ---
 
