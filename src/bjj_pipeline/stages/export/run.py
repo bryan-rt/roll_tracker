@@ -11,7 +11,7 @@ from typing import Any, Dict, List
 
 import pandas as pd
 
-from bjj_pipeline.contracts.f0_models import ExportManifest, jsonl_serialize
+from bjj_pipeline.contracts.f0_models import ExportManifest, jsonl_serialize, SCHEMA_VERSION_DEFAULT
 from bjj_pipeline.contracts.f0_validate import validate_export_manifest_records
 
 from .consolidate import ExportSession, consolidate_export_sessions
@@ -312,6 +312,7 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 		export_manifest_path.parent.mkdir(parents=True, exist_ok=True)
 		with export_manifest_path.open("w", encoding="utf-8") as f:
 			f.write(json.dumps({
+				"schema_version": SCHEMA_VERSION_DEFAULT,
 				"status": "no_matches",
 				"clip_id": manifest.clip_id,
 				"camera_id": manifest.camera_id,
