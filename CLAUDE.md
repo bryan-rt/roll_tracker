@@ -409,21 +409,23 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
   - **Local dev:** `.env.example` provided. Set `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `VITE_ADMIN_EMAIL`.
 - **Supabase:** All migrations applied (22 migration files total). Remote Supabase linked (project `zwwdduccwrkmkvawwjpc`). Edge Function `send_push_notification` for FCM V1 push delivery. RLS on all 10 tables. Storage read policy on `match-clips` bucket. `cameras` table auto-populated by `nest_recorder`. `gym_checkins` has `UNIQUE(profile_id, gym_id)` for sliding TTL upsert.
 - **E2E verified:** 2026-03-17 — nest_recorder → processor → uploader chain tested end-to-end. Tagged clip (FP7oJQ-tag_0-60s.mp4) processed A→F, uploaded to local Supabase, 2 clip rows + 2 log_events inserted. Already-processed guard confirmed working.
-- **Performance baseline (CP11 + production run 2026-03-20):**
+- **Performance baseline (post-fix re-run 2026-03-21):**
 
-  | Stage | Before CP11 | After CP11 | Production run |
+  | Stage | Before CP11 | After CP11 | Post-fix re-run |
   |---|---|---|---|
-  | Stage A (2.5min clip) | ~120 min (CPU, Docker, masks) | 4m 37s (MPS, native, no masks) | ~8 min/clip (CPU, 3 workers) |
+  | Stage A (2.5min clip) | ~120 min (CPU, Docker, masks) | 4m 37s (MPS, native, no masks) | ~6-8 min/clip (CPU, 3 workers) |
 
   | Phase | Wall-clock (36 clips) | Notes |
   |---|---|---|
-  | Phase 1 (A+C, 3 CPU workers) | **~50 min** | 6 completed, 30 skipped (BoT-SORT Kalman instability) |
-  | Phase 2 (D+E+F, sequential MPS) | **~65 min** | 5 clips completed A→F |
-  | Total | **~115 min** | 36 debug videos generated, 5 full clips exported |
+  | Phase 1 (A+C, 3 CPU workers) | **~80 min** | **36/36 completed, 0 skipped** |
+  | Phase 2 (D+E+F, sequential MPS) | **~25 min** | 29/36 completed, 7 errors (2 Stage D, 5 Stage F) |
+  | Total | **~105 min** | 36 debug videos, 34 export manifests |
 
-  **BoT-SORT Kalman filter instability:** 83% of clips (30/36) hit `LinAlgError: leading minor not positive definite` during BoT-SORT tracking. This is a numerical issue in boxmot's Kalman filter, not a pipeline bug. Affects all cameras. Tracked as a known issue — potential fixes: try different tracker (ByteTrack), or add Kalman filter regularization.
+  **First production run (2026-03-20):** 30/36 clips failed due to degenerate bbox bug — YOLO produced zero-width detections (`x1==x2`) that crashed BoT-SORT's Kalman filter via NaN propagation. Fixed in `ab526b7` (pre-filter `det_arr` before tracker update). Re-run achieved 36/36 Phase 1 success.
 
-- **Last updated:** 2026-03-20 (production run: 36 Alpha BJJ clips, Phase 1+2 complete, 5/36 clips exported, BoT-SORT Kalman instability identified)
+  **Remaining Phase 2 errors (7 clips):** 2 Stage D data-quality issues (column type mismatch, missing repaired coords), 5 Stage F validation failures (missing `schema_version` in no-match manifests). Not tracker-related — separate fixes needed.
+
+- **Last updated:** 2026-03-21 (post-fix re-run: 36/36 Phase 1, 29/36 full A→F, degenerate bbox fix validated at scale)
 
 ---
 
