@@ -383,7 +383,7 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 | Native processor execution | Decided | `run_local.sh` for Mac (MPS, native ARM). Dockerfile preserved for Linux mini-PC deployment. Docker processor service commented out in root compose. |
 | Uploader sentinel pattern | Decided | `.uploaded` file written by uploader instead of deleting `export_manifest.jsonl`. Preserves processor's already-processed guard. Uploader `discover_manifests()` skips manifests with `.uploaded` sentinel. |
 | Session pooler URL | Decided | `SUPABASE_DB_URL` uses Supavisor Session pooler (port 5432, `aws-1-us-east-1.pooler.supabase.com`) instead of direct connection (IPv6 only, fails in Docker). |
-| Processor Phase 1 worker count | Decided | MAX_WORKERS=2, PARALLEL_DEVICE=mps on M1 Air. Post-degenerate-bbox-fix, MPS is safe in spawned subprocesses. QoS P-core pinning via `pthread_set_qos_class_self_np(USER_INITIATED)`. Benchmark: MPS 2w = 7m/4clips (63min proj), MPS 3w = 7m (no gain, GPU saturated), CPU 4w QoS = 15m, CPU 3w QoS = 22m. MPS 2w is 3.1x faster than CPU 3w. |
+| Processor Phase 1 worker count | Decided | MAX_WORKERS=2, PARALLEL_DEVICE=mps on M1 Air. QoS P-core pinning via `pthread_set_qos_class_self_np(USER_INITIATED)`. Benchmark: MPS 2w = 7m/4clips, MPS 3w = 7m (GPU saturated), CPU 4w QoS = 15m, CPU 3w QoS = 22m. Validated on 3-camera diverse real footage (PPDmUg, J_EDEw, FP7oJQ) — all 4 clips A→F success including PPDmUg which was 0/12 in first production run. MPS parallel safe after degenerate bbox fix (ab526b7). |
 
 ---
 
@@ -425,7 +425,7 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 
   **Remaining Phase 2 errors (7 clips):** 2 Stage D data-quality issues (column type mismatch, missing repaired coords), 5 Stage F validation failures (missing `schema_version` in no-match manifests). Not tracker-related — separate fixes needed.
 
-- **Last updated:** 2026-03-21 (QoS P-core pinning + MPS parallel benchmark: MPS 2w = 3.1x faster than CPU 3w, 63 min projected for 36 clips)
+- **Last updated:** 2026-03-21 (MPS 2w validated on 3-camera diverse real footage — PPDmUg, J_EDEw, FP7oJQ all A→F success. Recommended: MAX_WORKERS=2, PARALLEL_DEVICE=mps)
 
 ---
 
