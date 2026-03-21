@@ -630,6 +630,21 @@ def run_d0(*, config: Dict[str, Any], layout: Any, manifest: Any) -> None:
 	tf = pd.read_parquet(tf_path)
 	ts = pd.read_parquet(ts_path)
 
+	# Ensure x_m_repaired and y_m_repaired exist on tf regardless of whether tf is
+	# empty. D1 requires both columns unconditionally. Without this, empty-tracklet
+	# clips (zero Stage A detections) skip the occlusion block and the columns are
+	# never added, causing D1 to raise ValueError.
+	if "x_m_repaired" not in tf.columns:
+		tf["x_m_repaired"] = pd.to_numeric(
+			tf["x_m"] if "x_m" in tf.columns else pd.Series(dtype="float64"),
+			errors="coerce"
+		).astype("float64")
+	if "y_m_repaired" not in tf.columns:
+		tf["y_m_repaired"] = pd.to_numeric(
+			tf["y_m"] if "y_m" in tf.columns else pd.Series(dtype="float64"),
+			errors="coerce"
+		).astype("float64")
+
 	kin_summary: Dict[str, Any] = {"enabled": False}
 	occ_cfg, ctx_cfg, kin_cfg = _get_d0_cfg(config)
 	enable_norm = bool(occ_cfg.get("enable_normalized", True))
@@ -991,6 +1006,11 @@ def run_d0(*, config: Dict[str, Any], layout: Any, manifest: Any) -> None:
 	out_frames = Path(layout.tracklet_bank_frames_parquet())
 	out_summ = Path(layout.tracklet_bank_summaries_parquet())
 	out_frames.parent.mkdir(parents=True, exist_ok=True)
+
+	# Coerce dt_s to float64 if present — Stage A may produce object dtype
+	# when values are mixed None/float, which fails D1 schema validation.
+	if "dt_s" in tf.columns:
+		tf["dt_s"] = pd.to_numeric(tf["dt_s"], errors="coerce").astype("float64")
 
 	tf.to_parquet(out_frames, index=False)
 	ts.to_parquet(out_summ, index=False)
