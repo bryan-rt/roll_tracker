@@ -8,6 +8,8 @@ Phase 1/Phase 2 boundary is load-bearing for future cross-clip global
 stitching — do not parallelize Stage D+E+F under any circumstances.
 """
 
+import ctypes
+import ctypes.util
 import json
 import sys
 import time
@@ -15,6 +17,16 @@ import traceback
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
+
+
+def _pin_to_performance_cores() -> None:
+    """Request P-core scheduling via macOS QoS. No-op on non-Apple platforms."""
+    try:
+        libc = ctypes.CDLL(ctypes.util.find_library("c"))
+        QOS_CLASS_USER_INITIATED = 0x19
+        libc.pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED, 0)
+    except Exception:
+        pass  # Non-macOS or unavailable — silently skip
 
 from config import ProcessorSettings
 
@@ -39,6 +51,7 @@ _SKIP_KEYWORDS = (
     "tracker output shape: (0",
     "no valid frames",
     "no tracklets",
+    "positive definite",
 )
 
 
@@ -198,6 +211,7 @@ def _process_clip_phase1(mp4_path_str: str, cam_id: str, settings_dict: dict) ->
             config_hash_override=cfg_hash,
             to_stage="C",
             mode="multiplex_AC",
+            visualize=settings.VISUALIZE,
         )
         return {"status": "completed", "clip": mp4_path_str, "cam_id": cam_id}
     except PipelineError as e:
@@ -224,6 +238,7 @@ def _process_clip_phase2(mp4_path: Path, cam_id: str, settings: ProcessorSetting
         from_stage="D",
         to_stage="F",
         mode="multiplex_AC",
+        visualize=False,
     )
 
 
@@ -237,7 +252,8 @@ def main() -> None:
          max_clip_age_hours=settings.MAX_CLIP_AGE_HOURS,
          max_workers=settings.MAX_WORKERS,
          parallel_device=settings.PARALLEL_DEVICE,
-         sequential_device=settings.SEQUENTIAL_DEVICE)
+         sequential_device=settings.SEQUENTIAL_DEVICE,
+         visualize=settings.VISUALIZE)
 
     while True:
         try:
@@ -274,7 +290,8 @@ def main() -> None:
                     for k, v in settings.__dict__.items()
                 }
 
-                with ProcessPoolExecutor(max_workers=settings.MAX_WORKERS) as pool:
+                with ProcessPoolExecutor(max_workers=settings.MAX_WORKERS,
+                                       initializer=_pin_to_performance_cores) as pool:
                     futures = {
                         pool.submit(_process_clip_phase1, str(mp4), cam_id, settings_dict): (mp4, cam_id)
                         for mp4, cam_id in phase1_needed

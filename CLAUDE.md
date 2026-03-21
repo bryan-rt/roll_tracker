@@ -383,6 +383,7 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 | Native processor execution | Decided | `run_local.sh` for Mac (MPS, native ARM). Dockerfile preserved for Linux mini-PC deployment. Docker processor service commented out in root compose. |
 | Uploader sentinel pattern | Decided | `.uploaded` file written by uploader instead of deleting `export_manifest.jsonl`. Preserves processor's already-processed guard. Uploader `discover_manifests()` skips manifests with `.uploaded` sentinel. |
 | Session pooler URL | Decided | `SUPABASE_DB_URL` uses Supavisor Session pooler (port 5432, `aws-1-us-east-1.pooler.supabase.com`) instead of direct connection (IPv6 only, fails in Docker). |
+| Processor Phase 1 worker count | Decided | MAX_WORKERS=2, PARALLEL_DEVICE=mps on M1 Air. QoS P-core pinning via `pthread_set_qos_class_self_np(USER_INITIATED)`. Benchmark: MPS 2w = 7m/4clips, MPS 3w = 7m (GPU saturated), CPU 4w QoS = 15m, CPU 3w QoS = 22m. Validated on 3-camera diverse real footage (PPDmUg, J_EDEw, FP7oJQ) — all 4 clips A→F success including PPDmUg which was 0/12 in first production run. MPS parallel safe after degenerate bbox fix (ab526b7). |
 
 ---
 
@@ -408,13 +409,23 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
   - **Local dev:** `.env.example` provided. Set `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `VITE_ADMIN_EMAIL`.
 - **Supabase:** All migrations applied (22 migration files total). Remote Supabase linked (project `zwwdduccwrkmkvawwjpc`). Edge Function `send_push_notification` for FCM V1 push delivery. RLS on all 10 tables. Storage read policy on `match-clips` bucket. `cameras` table auto-populated by `nest_recorder`. `gym_checkins` has `UNIQUE(profile_id, gym_id)` for sliding TTL upsert.
 - **E2E verified:** 2026-03-17 — nest_recorder → processor → uploader chain tested end-to-end. Tagged clip (FP7oJQ-tag_0-60s.mp4) processed A→F, uploaded to local Supabase, 2 clip rows + 2 log_events inserted. Already-processed guard confirmed working.
-- **Performance baseline (CP11):**
+- **Performance baseline (post-fix re-run 2026-03-21):**
 
-  | Stage | Before CP11 | After CP11 | Speedup |
-  |---|---|---|---|
-  | Stage A (2.5min clip, 4500 frames) | ~120 min (CPU, Docker ARM64, masks) | **4m 37s** (MPS, native, no masks) | **26x** |
+  | Stage | Before CP11 | After CP11 | Post-fix (CPU 3w) | **Current (MPS 2w QoS)** |
+  |---|---|---|---|---|
+  | Stage A (2.5min clip) | ~120 min | 4m 37s | ~6-8 min/clip | **~1.75 min/clip** |
 
-- **Last updated:** 2026-03-19 (CP11 CLAUDE.md update: head commit, performance baseline, decisions log)
+  | Phase | Wall-clock (36 clips) | Notes |
+  |---|---|---|
+  | Phase 1 (A+C, 3 CPU workers) | **~80 min** | **36/36 completed, 0 skipped** |
+  | Phase 2 (D+E+F, sequential MPS) | **~25 min** | 29/36 completed, 7 errors (2 Stage D, 5 Stage F) |
+  | Total | **~105 min** | 36 debug videos, 34 export manifests |
+
+  **First production run (2026-03-20):** 30/36 clips failed due to degenerate bbox bug — YOLO produced zero-width detections (`x1==x2`) that crashed BoT-SORT's Kalman filter via NaN propagation. Fixed in `ab526b7` (pre-filter `det_arr` before tracker update). Re-run achieved 36/36 Phase 1 success.
+
+  **Remaining Phase 2 errors (7 clips):** 2 Stage D data-quality issues (column type mismatch, missing repaired coords), 5 Stage F validation failures (missing `schema_version` in no-match manifests). Not tracker-related — separate fixes needed.
+
+- **Last updated:** 2026-03-21 (MPS 2w validated on 3-camera diverse real footage — PPDmUg, J_EDEw, FP7oJQ all A→F success. Recommended: MAX_WORKERS=2, PARALLEL_DEVICE=mps)
 
 ---
 
