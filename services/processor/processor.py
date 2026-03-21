@@ -8,6 +8,8 @@ Phase 1/Phase 2 boundary is load-bearing for future cross-clip global
 stitching — do not parallelize Stage D+E+F under any circumstances.
 """
 
+import ctypes
+import ctypes.util
 import json
 import sys
 import time
@@ -15,6 +17,16 @@ import traceback
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
+
+
+def _pin_to_performance_cores() -> None:
+    """Request P-core scheduling via macOS QoS. No-op on non-Apple platforms."""
+    try:
+        libc = ctypes.CDLL(ctypes.util.find_library("c"))
+        QOS_CLASS_USER_INITIATED = 0x19
+        libc.pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED, 0)
+    except Exception:
+        pass  # Non-macOS or unavailable — silently skip
 
 from config import ProcessorSettings
 
@@ -278,7 +290,8 @@ def main() -> None:
                     for k, v in settings.__dict__.items()
                 }
 
-                with ProcessPoolExecutor(max_workers=settings.MAX_WORKERS) as pool:
+                with ProcessPoolExecutor(max_workers=settings.MAX_WORKERS,
+                                       initializer=_pin_to_performance_cores) as pool:
                     futures = {
                         pool.submit(_process_clip_phase1, str(mp4), cam_id, settings_dict): (mp4, cam_id)
                         for mp4, cam_id in phase1_needed

@@ -383,7 +383,7 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 | Native processor execution | Decided | `run_local.sh` for Mac (MPS, native ARM). Dockerfile preserved for Linux mini-PC deployment. Docker processor service commented out in root compose. |
 | Uploader sentinel pattern | Decided | `.uploaded` file written by uploader instead of deleting `export_manifest.jsonl`. Preserves processor's already-processed guard. Uploader `discover_manifests()` skips manifests with `.uploaded` sentinel. |
 | Session pooler URL | Decided | `SUPABASE_DB_URL` uses Supavisor Session pooler (port 5432, `aws-1-us-east-1.pooler.supabase.com`) instead of direct connection (IPv6 only, fails in Docker). |
-| Processor Phase 1 worker count | Decided | MAX_WORKERS=3 on M1 Air. 4 P-cores + 4 E-cores. YOLO on E-cores ~3-4x slower. 3 workers hits P-core sweet spot (17m35s for 4 clips vs 32min/1w, 40min/2w, 51min/4w). PARALLEL_DEVICE=cpu required — MPS in spawned subprocesses causes BoT-SORT Kalman instability. SEQUENTIAL_DEVICE=auto retains MPS for Phase 2. Machine-specific — higher counts appropriate on M1 Pro/Max. |
+| Processor Phase 1 worker count | Decided | MAX_WORKERS=2, PARALLEL_DEVICE=mps on M1 Air. Post-degenerate-bbox-fix, MPS is safe in spawned subprocesses. QoS P-core pinning via `pthread_set_qos_class_self_np(USER_INITIATED)`. Benchmark: MPS 2w = 7m/4clips (63min proj), MPS 3w = 7m (no gain, GPU saturated), CPU 4w QoS = 15m, CPU 3w QoS = 22m. MPS 2w is 3.1x faster than CPU 3w. |
 
 ---
 
@@ -411,9 +411,9 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 - **E2E verified:** 2026-03-17 — nest_recorder → processor → uploader chain tested end-to-end. Tagged clip (FP7oJQ-tag_0-60s.mp4) processed A→F, uploaded to local Supabase, 2 clip rows + 2 log_events inserted. Already-processed guard confirmed working.
 - **Performance baseline (post-fix re-run 2026-03-21):**
 
-  | Stage | Before CP11 | After CP11 | Post-fix re-run |
-  |---|---|---|---|
-  | Stage A (2.5min clip) | ~120 min (CPU, Docker, masks) | 4m 37s (MPS, native, no masks) | ~6-8 min/clip (CPU, 3 workers) |
+  | Stage | Before CP11 | After CP11 | Post-fix (CPU 3w) | **Current (MPS 2w QoS)** |
+  |---|---|---|---|---|
+  | Stage A (2.5min clip) | ~120 min | 4m 37s | ~6-8 min/clip | **~1.75 min/clip** |
 
   | Phase | Wall-clock (36 clips) | Notes |
   |---|---|---|
@@ -425,7 +425,7 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 
   **Remaining Phase 2 errors (7 clips):** 2 Stage D data-quality issues (column type mismatch, missing repaired coords), 5 Stage F validation failures (missing `schema_version` in no-match manifests). Not tracker-related — separate fixes needed.
 
-- **Last updated:** 2026-03-21 (post-fix re-run: 36/36 Phase 1, 29/36 full A→F, degenerate bbox fix validated at scale)
+- **Last updated:** 2026-03-21 (QoS P-core pinning + MPS parallel benchmark: MPS 2w = 3.1x faster than CPU 3w, 63 min projected for 36 clips)
 
 ---
 
