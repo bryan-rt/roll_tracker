@@ -379,18 +379,20 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 | Collision detection: uploader tag dedup | Decided | Two signals: Signal A (same april_tag_id on both fighters in manifest `collision_hints`), Signal B (>1 active check-in for same tag+gym at upload time). Colliding clips get `status=collision_flagged`, null profile_ids. Athletes reclaim via `claim_clip()` RPC from Unlinked Clips screen. |
 | YOLO masks disabled in Stage A | Decided | `use_seg: false`, `write_yolo_masks: false` in default.yaml. Detection-only YOLOv8n used. Mask code preserved behind config flags — will re-enable selectively in Stage F redaction redesign (CP13). |
 | MPS auto-detection | Decided | `device: "auto"` in default.yaml. Detector resolves MPS > CUDA > CPU at construction time. Validated on M1 Air with dummy tensor. Falls back to CPU on validation failure. |
-| Phase 1/2 parallelism boundary | Decided (NON-NEGOTIABLE) | A+C parallel via ProcessPoolExecutor (MAX_WORKERS=3, one per camera). D+E+F sequential. This boundary is load-bearing for future cross-clip global stitching — do not parallelize D+E+F under any circumstances. |
+| Phase 1/2 parallelism boundary | Decided (NON-NEGOTIABLE) | A+C parallel via ProcessPoolExecutor (MAX_WORKERS=2, one per camera). D+E+F sequential. This boundary is load-bearing for future cross-clip global stitching — do not parallelize D+E+F under any circumstances. |
 | Native processor execution | Decided | `run_local.sh` for Mac (MPS, native ARM). Dockerfile preserved for Linux mini-PC deployment. Docker processor service commented out in root compose. |
 | Uploader sentinel pattern | Decided | `.uploaded` file written by uploader instead of deleting `export_manifest.jsonl`. Preserves processor's already-processed guard. Uploader `discover_manifests()` skips manifests with `.uploaded` sentinel. |
 | Session pooler URL | Decided | `SUPABASE_DB_URL` uses Supavisor Session pooler (port 5432, `aws-1-us-east-1.pooler.supabase.com`) instead of direct connection (IPv6 only, fails in Docker). |
 | Processor Phase 1 worker count | Decided | MAX_WORKERS=2, PARALLEL_DEVICE=mps on M1 Air. QoS P-core pinning via `pthread_set_qos_class_self_np(USER_INITIATED)`. Benchmark: MPS 2w = 7m/4clips, MPS 3w = 7m (GPU saturated), CPU 4w QoS = 15m, CPU 3w QoS = 22m. Validated on 3-camera diverse real footage (PPDmUg, J_EDEw, FP7oJQ) — all 4 clips A→F success including PPDmUg which was 0/12 in first production run. MPS parallel safe after degenerate bbox fix (ab526b7). |
+| caffeinate -is for Mac runs | Decided | Prevents idle/display sleep during long MPS workloads on M1 Air. Standard invocation: `caffeinate -is bash -c 'time bash services/processor/run_local.sh'`. Releases automatically on child process exit. |
+| Stale worker cleanup in run_local.sh | Decided | ProcessPoolExecutor spawn-mode workers are orphaned on unclean parent exit (Ctrl+C, timeout, CLI kill). run_local.sh now kills stale bjj_pipeline.stages and processor.py processes at startup and on EXIT/INT/TERM trap. Prevents memory/CPU contention on subsequent runs. |
 
 ---
 
 ## Current Branch & Status
 
 - **Active branch:** `services_uploader`
-- **Head commit:** `1f00f58`
+- **Head commit:** `f2ade06`
 - **Pipeline:** Full pipeline (A→F) verified end-to-end. Ingest accepts gym-scoped paths (`{gym_id}/{cam_id}/{date}/{hour}/`) and legacy paths (`{cam_id}/{date}/{hour}/`). `gym_id` stored in `ClipManifest`. Stages A, C produce tag observations + identity hints. Stage D (ILP stitching) resolves person tracks. Stage E detects match sessions. Stage F exports clips with privacy redaction.
 - **Services:** `nest_recorder` working — auto-registers cameras to Supabase on discovery. `uploader` working — resolves fighter tag IDs → profile IDs via active gym check-ins at upload time (Phase C identity bridge). `processor` scaffold only.
 - **Apps:** Flutter mobile app at `app_mobile/`. End-to-end tested on Pixel 7 Pro against local Supabase.
@@ -409,24 +411,27 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
   - **Local dev:** `.env.example` provided. Set `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `VITE_ADMIN_EMAIL`.
 - **Supabase:** All migrations applied (22 migration files total). Remote Supabase linked (project `zwwdduccwrkmkvawwjpc`). Edge Function `send_push_notification` for FCM V1 push delivery. RLS on all 10 tables. Storage read policy on `match-clips` bucket. `cameras` table auto-populated by `nest_recorder`. `gym_checkins` has `UNIQUE(profile_id, gym_id)` for sliding TTL upsert.
 - **E2E verified:** 2026-03-17 — nest_recorder → processor → uploader chain tested end-to-end. Tagged clip (FP7oJQ-tag_0-60s.mp4) processed A→F, uploaded to local Supabase, 2 clip rows + 2 log_events inserted. Already-processed guard confirmed working.
-- **Performance baseline (post-fix re-run 2026-03-21):**
+- **Performance baseline (final validation run 2026-03-22):**
 
   | Stage | Before CP11 | After CP11 | Post-fix (CPU 3w) | **Current (MPS 2w QoS)** |
   |---|---|---|---|---|
-  | Stage A (2.5min clip) | ~120 min | 4m 37s | ~6-8 min/clip | **~1.75 min/clip** |
+  | Stage A (2.5min clip) | ~120 min | 4m 37s | ~6-8 min/clip | **~1.9 min/clip** |
 
   | Phase | Wall-clock (36 clips) | Notes |
   |---|---|---|
-  | Phase 1 (A+C, MPS 2w QoS) | **~115 min** | **36/36 completed, 0 skipped** |
-  | Phase 2 (D+E+F, sequential MPS) | **~27 min** | 34/36 manifests, 2 Stage D errors |
-  | Total | **~142 min** | 36 debug videos, 34 export manifests |
+  | Phase 1 (A+C, MPS 2w QoS) | **105 min actual / ~69 min representative** | 36/36 completed, 0 skipped. Actual inflated by stale workers from prior run competing for first ~60 min. Post-cleanup rate ~1.9 min/clip is the representative baseline. |
+  | Phase 2 (D+E+F, sequential MPS) | **68 min actual** | 35/36 manifests, 1 Stage D error. Also inflated by stale worker memory pressure early in run. |
+  | Total | **~173 min actual / ~120 min representative** | Run with `caffeinate -is`. 35 export manifests. |
 
   **Bug fix history:**
   - Run 1 (2026-03-20): 30/36 failed — degenerate bbox bug. Fixed in `ab526b7`.
   - Run 2 (2026-03-21a): 36/36 Phase 1, 7 Phase 2 errors — Stage D/F bugs. Fixed in `4e825a4`.
   - Run 3 (2026-03-21b): 36/36 Phase 1, 34/36 manifests. 2 remaining Stage D edge cases (FP7oJQ-201022 dt_s, PPDmUg-202751 graph edges).
+  - Run 4 (2026-03-22): 36/36 Phase 1, 35/36 manifests. FP7oJQ-201022 now passes. 1 remaining: PPDmUg-202751 (NAType in frame_index). Stale worker contamination inflated timings ~40%.
 
-- **Last updated:** 2026-03-21 (production re-run 3: 36/36 Phase 1, 34/36 manifests, Stage D/F fixes validated, MPS 2w QoS production config confirmed)
+  **Known open issue:** PPDmUg-20260318-202751 fails consistently at Stage D2 — `int(bank_df["frame_index"].min())` returns NAType. Degenerate clip with extremely sparse tracklets producing all-NaN frame_index column. Requires null-safe integer handling fix in D2 `compute_edge_costs()`. All other 35 clips pass A→F.
+
+- **Last updated:** 2026-03-22 (final validation run 4: 36/36 Phase 1, 35/36 manifests, stale worker cleanup added to run_local.sh, caffeinate -is standard invocation, MAX_WORKERS corrected 3→2)
 
 ---
 
