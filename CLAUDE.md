@@ -417,15 +417,16 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 
   | Phase | Wall-clock (36 clips) | Notes |
   |---|---|---|
-  | Phase 1 (A+C, 3 CPU workers) | **~80 min** | **36/36 completed, 0 skipped** |
-  | Phase 2 (D+E+F, sequential MPS) | **~25 min** | 29/36 completed, 7 errors (2 Stage D, 5 Stage F) |
-  | Total | **~105 min** | 36 debug videos, 34 export manifests |
+  | Phase 1 (A+C, MPS 2w QoS) | **~115 min** | **36/36 completed, 0 skipped** |
+  | Phase 2 (D+E+F, sequential MPS) | **~27 min** | 34/36 manifests, 2 Stage D errors |
+  | Total | **~142 min** | 36 debug videos, 34 export manifests |
 
-  **First production run (2026-03-20):** 30/36 clips failed due to degenerate bbox bug — YOLO produced zero-width detections (`x1==x2`) that crashed BoT-SORT's Kalman filter via NaN propagation. Fixed in `ab526b7` (pre-filter `det_arr` before tracker update). Re-run achieved 36/36 Phase 1 success.
+  **Bug fix history:**
+  - Run 1 (2026-03-20): 30/36 failed — degenerate bbox bug. Fixed in `ab526b7`.
+  - Run 2 (2026-03-21a): 36/36 Phase 1, 7 Phase 2 errors — Stage D/F bugs. Fixed in `4e825a4`.
+  - Run 3 (2026-03-21b): 36/36 Phase 1, 34/36 manifests. 2 remaining Stage D edge cases (FP7oJQ-201022 dt_s, PPDmUg-202751 graph edges).
 
-  **Remaining Phase 2 errors (7 clips):** 2 Stage D data-quality issues (column type mismatch, missing repaired coords), 5 Stage F validation failures (missing `schema_version` in no-match manifests). Not tracker-related — separate fixes needed.
-
-- **Last updated:** 2026-03-21 (MPS 2w validated on 3-camera diverse real footage — PPDmUg, J_EDEw, FP7oJQ all A→F success. Recommended: MAX_WORKERS=2, PARALLEL_DEVICE=mps)
+- **Last updated:** 2026-03-21 (production re-run 3: 36/36 Phase 1, 34/36 manifests, Stage D/F fixes validated, MPS 2w QoS production config confirmed)
 
 ---
 
