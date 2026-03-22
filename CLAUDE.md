@@ -185,7 +185,7 @@ disambiguate when multiple athletes globally share a `tag_id`.
 All inter-stage data lives on disk under `outputs/{gym_id}/{cam_id}/{date}/{hour}/{clip_id}/`
 (gym-scoped) or `outputs/legacy/{cam_id}/{date}/{hour}/{clip_id}/` (legacy). The F0 layer enforces this:
 - `f0_manifest.py` — `ClipManifest` Pydantic model (includes `gym_id: Optional[str]`), init/load/write, per-stage default registration
-- `f0_paths.py` — `ClipOutputLayout`, `StageLetter` — canonical path resolution
+- `f0_paths.py` — `ClipOutputLayout`, `SessionOutputLayout`, `StageLetter` — canonical path resolution. `SessionOutputLayout` (CP14a) is a frozen dataclass for session-level (multi-clip, multi-camera) outputs under `outputs/{gym_id}/sessions/{date}/{session_id}/`.
 - `f0_parquet.py` — Parquet read/write helpers
 - `f0_models.py` — Shared Pydantic models
 - `f0_validate.py` — Post-stage validators
@@ -205,7 +205,7 @@ stage's internals directly.
 | Service | Status | Responsibility |
 |---|---|---|
 | `nest_recorder` | Working | OAuth2 → Nest API → MP4 segments. Production path: `data/raw/nest/{gym_id}/{cam_id}/{YYYY-MM-DD}/{HH}/`. Diag path (no GYM_ID): `data/raw/nest/diag/{TS}/`. Auto-registers cameras to Supabase. `entrypoint.sh` delegates to `diag_v8.sh` scheduler. |
-| `processor` | Working | Polls `data/raw/nest/` for new MP4s, invokes `bjj_pipeline` (A→F) in `multiplex_AC` mode. Wall-clock filter (`MAX_CLIP_AGE_HOURS`, default 6) skips stale clips. Empty-video failures log as `clip_skipped` (not `clip_error`). Config: `SCAN_ROOT`, `OUTPUT_ROOT`, `POLL_INTERVAL_SECONDS`, `RUN_UNTIL`, `GYM_ID`, `MAX_CLIP_AGE_HOURS`. |
+| `processor` | Working | Polls `data/raw/nest/` for new MP4s, invokes `bjj_pipeline` (A→F) in `multiplex_AC` mode. Wall-clock filter (`MAX_CLIP_AGE_HOURS`, default 6) skips stale clips. Empty-video failures log as `clip_skipped` (not `clip_error`). Session state machine (CP14a): when `SCHEDULE_JSON` is set, groups clips by gym schedule window, writes `.phase1_complete_{cam_id}` / `.session_ready` / `.tag_required` sentinels under `SessionOutputLayout`. Config: `SCAN_ROOT`, `OUTPUT_ROOT`, `POLL_INTERVAL_SECONDS`, `GYM_ID`, `MAX_CLIP_AGE_HOURS`, `SCHEDULE_JSON`, `SESSION_END_BUFFER_MINUTES`. |
 | `uploader` | Working | Polls `outputs/`, bundles + uploads to Supabase, writes `gym_id` to `videos` row from export manifest, resolves fighter tag IDs → profile IDs via active gym check-ins, skips `no_matches` manifests, deletes on confirm |
 
 The processor service has a documented I/O contract at `services/processor/contracts/input_output.md`.
@@ -386,6 +386,7 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 | Processor Phase 1 worker count | Decided | MAX_WORKERS=2, PARALLEL_DEVICE=mps on M1 Air. QoS P-core pinning via `pthread_set_qos_class_self_np(USER_INITIATED)`. Benchmark: MPS 2w = 7m/4clips, MPS 3w = 7m (GPU saturated), CPU 4w QoS = 15m, CPU 3w QoS = 22m. Validated on 3-camera diverse real footage (PPDmUg, J_EDEw, FP7oJQ) — all 4 clips A→F success including PPDmUg which was 0/12 in first production run. MPS parallel safe after degenerate bbox fix (ab526b7). |
 | caffeinate -is for Mac runs | Decided | Prevents idle/display sleep during long MPS workloads on M1 Air. Standard invocation: `caffeinate -is bash -c 'time bash services/processor/run_local.sh'`. Releases automatically on child process exit. |
 | Stale worker cleanup in run_local.sh | Decided | ProcessPoolExecutor spawn-mode workers are orphaned on unclean parent exit (Ctrl+C, timeout, CLI kill). run_local.sh now kills stale bjj_pipeline.stages and processor.py processes at startup and on EXIT/INT/TERM trap. Prevents memory/CPU contention on subsequent runs. |
+| Session-level stitching: schedule-based clip grouping (CP14a) | Decided | `SCHEDULE_JSON` env var (same one nest_recorder uses) provides gym class windows. Processor groups clips by session (date + start time), writes per-camera `.phase1_complete_{cam_id}` sentinels, then `.session_ready` or `.tag_required` when all-cameras-Phase-1 + wall-clock buffer gates pass. `SessionOutputLayout` in `f0_paths.py` provides canonical session output paths under `outputs/{gym_id}/sessions/{date}/{session_id}/`. Session-level D/E/F invocation is CP14c. |
 
 ---
 

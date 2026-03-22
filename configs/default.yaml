@@ -327,3 +327,9 @@ stages:
     storage_bucket: match-clips
     clip_type: match
     initial_status: exported_local
+
+# Session-level processing (CP14a)
+session:
+  end_buffer_minutes: 10       # wait after class end before triggering Phase 2
+  tag_required_blocks_phase2: true
+  # buzzer heuristics populated in CP14d

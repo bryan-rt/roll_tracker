@@ -191,3 +191,70 @@ class ClipOutputLayout:
 
     def ensure_exports_dir(self) -> None:
         self.exports_dir().mkdir(parents=True, exist_ok=True)
+
+
+@dataclass(frozen=True)
+class SessionOutputLayout:
+    """
+    Canonical layout for session-level outputs (multi-clip, multi-camera).
+
+    A session groups clips from the same gym class schedule window.
+    root points to the *repo* outputs directory by default: Path("outputs").
+    session_root = root / gym_id / "sessions" / date / session_id
+    """
+    gym_id: str
+    date: str          # YYYY-MM-DD in gym's local timezone
+    session_id: str    # e.g. "2026-03-18T2000" — date + start time, no colon
+    root: Path = Path("outputs")
+
+    @property
+    def session_root(self) -> Path:
+        return self.root / self.gym_id / "sessions" / self.date / self.session_id
+
+    def stage_dir(self, stage: StageLetter) -> Path:
+        return self.session_root / f"stage_{stage}"
+
+    # ---- Stage D (session-level) ----
+    def session_tracklet_bank_frames_parquet(self, cam_id: str) -> Path:
+        return self.stage_dir("D") / f"tracklet_bank_frames_{cam_id}.parquet"
+
+    def session_person_tracks_parquet(self, cam_id: str) -> Path:
+        return self.stage_dir("D") / f"person_tracks_{cam_id}.parquet"
+
+    def session_identity_merge_jsonl(self) -> Path:
+        return self.stage_dir("D") / "identity_merge.jsonl"
+
+    # ---- Stage E (session-level) ----
+    def session_match_sessions_jsonl(self) -> Path:
+        return self.stage_dir("E") / "match_sessions.jsonl"
+
+    # ---- Stage F (session-level) ----
+    def session_export_manifest_jsonl(self) -> Path:
+        return self.stage_dir("F") / "export_manifest.jsonl"
+
+    # ---- Audit ----
+    def session_audit_jsonl(self, stage: StageLetter) -> Path:
+        return self.stage_dir(stage) / "audit.jsonl"
+
+    # ---- Sentinels ----
+    def phase1_complete_sentinel(self, cam_id: str) -> Path:
+        return self.session_root / f".phase1_complete_{cam_id}"
+
+    def session_ready_sentinel(self) -> Path:
+        return self.session_root / ".session_ready"
+
+    def tag_required_sentinel(self) -> Path:
+        return self.session_root / ".tag_required"
+
+    def processing_sentinel(self) -> Path:
+        return self.session_root / ".processing"
+
+    def uploaded_sentinel(self) -> Path:
+        return self.session_root / ".uploaded"
+
+    # ---- Utility ----
+    def ensure_session_root(self) -> None:
+        self.session_root.mkdir(parents=True, exist_ok=True)
+
+    def ensure_dirs_for_stage(self, stage: StageLetter) -> None:
+        self.stage_dir(stage).mkdir(parents=True, exist_ok=True)

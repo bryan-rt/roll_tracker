@@ -15,7 +15,8 @@ import sys
 import time
 import traceback
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
 
@@ -39,7 +40,7 @@ from bjj_pipeline.stages.orchestration.pipeline import (
     PipelineError,
 )
 from bjj_pipeline.stages.orchestration.cli import _load_config
-from bjj_pipeline.contracts.f0_paths import ClipOutputLayout
+from bjj_pipeline.contracts.f0_paths import ClipOutputLayout, SessionOutputLayout
 
 # Keywords in PipelineError messages that indicate an empty/uninteresting clip
 # rather than a real pipeline failure. Case-insensitive matching.
@@ -242,6 +243,245 @@ def _process_clip_phase2(mp4_path: Path, cam_id: str, settings: ProcessorSetting
     )
 
 
+# --- Session state machine (CP14a) ---
+
+_SESSION_PRE_BUFFER_MINUTES = 30  # clips arriving this many minutes before window start still match
+
+
+def _parse_schedule_json(schedule_json_str: str) -> dict | None:
+    """Parse SCHEDULE_JSON string. Returns parsed dict or None on failure."""
+    try:
+        d = json.loads(schedule_json_str)
+        if not isinstance(d, dict):
+            _log("schedule_parse_error", error="SCHEDULE_JSON is not a JSON object")
+            return None
+        if "timezone" not in d or "schedules" not in d:
+            _log("schedule_parse_error", error="SCHEDULE_JSON missing 'timezone' or 'schedules'")
+            return None
+        return d
+    except Exception as e:
+        _log("schedule_parse_error", error=str(e))
+        return None
+
+
+def _clip_wall_clock_dt(mp4_path: Path, cam_id: str) -> datetime | None:
+    """Derive UTC datetime from ingest path date+hour folder.
+
+    Treats folder date/hour as UTC (conservative; avoids tz dependency in the
+    ingest path itself).
+    """
+    try:
+        info = validate_ingest_path(mp4_path, cam_id)
+        return datetime.strptime(
+            f"{info.date_str} {info.hour_str}", "%Y-%m-%d %H"
+        ).replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+
+
+def _find_session_for_clip(
+    clip_dt: datetime,
+    schedule: dict,
+) -> tuple[str, str, str] | None:
+    """Given a clip's wall-clock time (UTC), find the matching schedule window.
+
+    Returns (date_str, session_id, session_end_iso) or None if no match.
+
+    date_str: YYYY-MM-DD in gym's local timezone
+    session_id: f"{date_str}T{start_hhmm_no_colon}" e.g. "2026-03-18T2000"
+    session_end_iso: ISO string of session end in UTC (tz-aware, round-trips
+                     through datetime.fromisoformat())
+    """
+    try:
+        tz = ZoneInfo(schedule["timezone"])
+    except Exception:
+        return None
+
+    local_dt = clip_dt.astimezone(tz)
+    local_day_abbr = local_dt.strftime("%a")  # e.g. "Mon", "Tue"
+    local_date_str = local_dt.strftime("%Y-%m-%d")
+
+    for entry in schedule.get("schedules", []):
+        days = entry.get("days", [])
+        if local_day_abbr not in days:
+            continue
+
+        start_str = entry.get("start", "")  # "20:00"
+        end_str = entry.get("end", "")      # "22:30"
+        try:
+            sh, sm = int(start_str.split(":")[0]), int(start_str.split(":")[1])
+            eh, em = int(end_str.split(":")[0]), int(end_str.split(":")[1])
+        except Exception:
+            continue
+
+        window_start = local_dt.replace(hour=sh, minute=sm, second=0, microsecond=0)
+        window_end = local_dt.replace(hour=eh, minute=em, second=0, microsecond=0)
+
+        # Handle windows that cross midnight
+        if window_end <= window_start:
+            window_end += timedelta(days=1)
+
+        # Match if clip falls within [start - pre_buffer, end]
+        pre_buffer = timedelta(minutes=_SESSION_PRE_BUFFER_MINUTES)
+        if (window_start - pre_buffer) <= local_dt <= window_end:
+            start_hhmm = f"{sh:02d}{sm:02d}"
+            session_id = f"{local_date_str}T{start_hhmm}"
+            session_end_utc = window_end.astimezone(timezone.utc)
+            return local_date_str, session_id, session_end_utc.isoformat()
+
+    return None
+
+
+def _get_session_layout(
+    session_id: str, date_str: str, gym_id: str, settings: ProcessorSettings
+) -> SessionOutputLayout:
+    """Construct SessionOutputLayout from session identifiers."""
+    return SessionOutputLayout(
+        gym_id=gym_id,
+        date=date_str,
+        session_id=session_id,
+        root=settings.OUTPUT_ROOT,
+    )
+
+
+def _mark_camera_phase1_complete(
+    session_layout: SessionOutputLayout, cam_id: str
+) -> None:
+    """Write .phase1_complete_{cam_id} sentinel."""
+    session_layout.ensure_session_root()
+    session_layout.phase1_complete_sentinel(cam_id).touch()
+
+
+def _is_camera_phase1_complete(
+    session_layout: SessionOutputLayout, cam_id: str
+) -> bool:
+    return session_layout.phase1_complete_sentinel(cam_id).exists()
+
+
+def _is_session_ready(session_layout: SessionOutputLayout) -> bool:
+    return session_layout.session_ready_sentinel().exists()
+
+
+def _is_session_tag_required(session_layout: SessionOutputLayout) -> bool:
+    return session_layout.tag_required_sentinel().exists()
+
+
+def _is_session_uploaded(session_layout: SessionOutputLayout) -> bool:
+    return session_layout.uploaded_sentinel().exists()
+
+
+def _evaluate_session_readiness(
+    session_id: str,
+    date_str: str,
+    session_end_utc: datetime,
+    cam_ids: set[str],
+    session_clips: list[tuple[Path, str]],
+    settings: ProcessorSettings,
+    schedule: dict | None,
+) -> None:
+    """Evaluate whether a session is ready for Phase 2.
+
+    Called at the end of each poll cycle for each active session. Writes
+    sentinels (.phase1_complete_{cam_id}, .session_ready, .tag_required)
+    as gates are satisfied. Never raises.
+    """
+    try:
+        # Resolve gym_id: prefer from ingest path, fall back to settings.GYM_ID
+        gym_id = settings.GYM_ID
+        for mp4, cam_id in session_clips:
+            try:
+                info = validate_ingest_path(mp4, cam_id)
+                if info.gym_id:
+                    gym_id = info.gym_id
+                    break
+            except Exception:
+                continue
+        if not gym_id:
+            return
+
+        session_layout = _get_session_layout(session_id, date_str, gym_id, settings)
+
+        # Already decided — skip
+        if _is_session_ready(session_layout) or _is_session_tag_required(session_layout):
+            return
+
+        # Step 1: Check per-camera Phase 1 completion
+        cameras_complete: set[str] = set()
+        cameras_incomplete: set[str] = set()
+        for cam in cam_ids:
+            cam_clips = [(mp4, cid) for mp4, cid in session_clips if cid == cam]
+            all_done = all(
+                _is_phase1_complete(mp4, cid, settings) for mp4, cid in cam_clips
+            )
+            if all_done and cam_clips:
+                if not _is_camera_phase1_complete(session_layout, cam):
+                    _mark_camera_phase1_complete(session_layout, cam)
+                    _log("session_phase1_camera_complete",
+                         session_id=session_id, cam_id=cam,
+                         clip_count=len(cam_clips))
+                cameras_complete.add(cam)
+            else:
+                cameras_incomplete.add(cam)
+
+        all_cameras_done = len(cameras_incomplete) == 0 and len(cameras_complete) > 0
+        now_utc = datetime.now(tz=timezone.utc)
+        buffer = timedelta(minutes=settings.SESSION_END_BUFFER_MINUTES)
+        wall_clock_passed = now_utc > (session_end_utc + buffer)
+
+        # Step 2: Check if ready
+        proceed = False
+        if all_cameras_done and wall_clock_passed:
+            proceed = True
+        elif wall_clock_passed and len(cameras_complete) > 0:
+            # Timeout: some cameras incomplete but wall clock passed
+            for cam in cameras_incomplete:
+                _log("session_camera_timeout",
+                     session_id=session_id, cam_id=cam,
+                     message="Wall-clock gate passed but camera Phase 1 incomplete")
+            proceed = True
+
+        if proceed:
+            # Check tag observations across all session clips
+            has_any_tags = False
+            for mp4, cam_id in session_clips:
+                clip_layout = _get_layout(mp4, cam_id, settings)
+                if clip_layout and clip_layout.tag_observations_jsonl().exists():
+                    tag_path = clip_layout.tag_observations_jsonl()
+                    if tag_path.stat().st_size > 0:
+                        has_any_tags = True
+                        break
+
+            if not has_any_tags:
+                session_layout.ensure_session_root()
+                session_layout.tag_required_sentinel().touch()
+                _log("session_tag_required",
+                     session_id=session_id,
+                     cameras_complete=sorted(cameras_complete),
+                     cameras_incomplete=sorted(cameras_incomplete))
+            else:
+                session_layout.ensure_session_root()
+                session_layout.session_ready_sentinel().touch()
+                _log("session_ready",
+                     session_id=session_id,
+                     cameras_complete=sorted(cameras_complete),
+                     cameras_incomplete=sorted(cameras_incomplete))
+        else:
+            # Log status for observability
+            remaining_s = max(0.0, ((session_end_utc + buffer) - now_utc).total_seconds())
+            _log("session_readiness_status",
+                 session_id=session_id,
+                 cameras_complete=sorted(cameras_complete),
+                 cameras_incomplete=sorted(cameras_incomplete),
+                 wall_clock_remaining_s=round(remaining_s, 1),
+                 all_cameras_done=all_cameras_done,
+                 wall_clock_passed=wall_clock_passed)
+
+    except Exception as e:
+        _log("session_evaluation_error",
+             session_id=session_id, error=str(e),
+             traceback=traceback.format_exc())
+
+
 def main() -> None:
     settings = ProcessorSettings()
     _log("processor_started",
@@ -253,7 +493,9 @@ def main() -> None:
          max_workers=settings.MAX_WORKERS,
          parallel_device=settings.PARALLEL_DEVICE,
          sequential_device=settings.SEQUENTIAL_DEVICE,
-         visualize=settings.VISUALIZE)
+         visualize=settings.VISUALIZE,
+         schedule_json_set=bool(settings.SCHEDULE_JSON),
+         session_end_buffer_minutes=settings.SESSION_END_BUFFER_MINUTES)
 
     while True:
         try:
@@ -334,6 +576,37 @@ def main() -> None:
                 except Exception as e:
                     _log("clip_error", clip=str(mp4), cam_id=cam_id,
                          error=str(e), traceback=traceback.format_exc())
+
+            # --- Session readiness evaluation (CP14a) ---
+            if settings.SCHEDULE_JSON:
+                schedule = _parse_schedule_json(settings.SCHEDULE_JSON)
+                if schedule is not None:
+                    sessions: dict[tuple[str, str, str], dict] = {}
+                    for mp4, cam_id in work:
+                        clip_dt = _clip_wall_clock_dt(mp4, cam_id)
+                        if clip_dt is None:
+                            continue
+                        result = _find_session_for_clip(clip_dt, schedule)
+                        if result is None:
+                            continue
+                        date_str, session_id, session_end_iso = result
+                        key = (session_id, date_str, session_end_iso)
+                        if key not in sessions:
+                            sessions[key] = {"cam_ids": set(), "clips": []}
+                        sessions[key]["cam_ids"].add(cam_id)
+                        sessions[key]["clips"].append((mp4, cam_id))
+
+                    for (session_id, date_str, session_end_iso), info in sessions.items():
+                        session_end_utc = datetime.fromisoformat(session_end_iso)
+                        _evaluate_session_readiness(
+                            session_id=session_id,
+                            date_str=date_str,
+                            session_end_utc=session_end_utc,
+                            cam_ids=info["cam_ids"],
+                            session_clips=info["clips"],
+                            settings=settings,
+                            schedule=schedule,
+                        )
 
         except Exception as e:
             _log("poll_error", error=str(e), traceback=traceback.format_exc())

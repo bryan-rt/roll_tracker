@@ -17,6 +17,10 @@ class ProcessorSettings(BaseSettings):
     SUPABASE_URL: str = ""
     SUPABASE_SERVICE_ROLE_KEY: str = ""
 
+    # Session scheduling (same SCHEDULE_JSON env var that nest_recorder uses)
+    SCHEDULE_JSON: Optional[str] = None
+    SESSION_END_BUFFER_MINUTES: int = 10  # wait after session end before Phase 2
+
     # Phase 1/2 parallelism
     MAX_WORKERS: int = 2  # one per camera, Phase 1 (A+C) only
     PARALLEL_DEVICE: str = "cpu"  # Phase 1 workers use CPU
