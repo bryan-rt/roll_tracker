@@ -17,6 +17,8 @@ from typing import Any, Dict, List, Tuple
 import numpy as np
 import pandas as pd
 
+from bjj_pipeline.stages.orchestration.pipeline import PipelineError
+
 DISALLOWED_EDGE_COST: float = 1e6
 EPS: float = 1e-6
 
@@ -119,8 +121,12 @@ def compute_edge_costs(
 	# ---------------------------------------------------------------------
 
 	bank_df = bank.reset_index(drop=True)
-	clip_start_frame = int(bank_df["frame_index"].min())
-	clip_end_frame = int(bank_df["frame_index"].max())
+	_fi_min = bank_df["frame_index"].min()
+	_fi_max = bank_df["frame_index"].max()
+	if _is_nullish(_fi_min) or _is_nullish(_fi_max):
+		raise PipelineError("no valid frames in tracklet bank — all frame_index values are null")
+	clip_start_frame = int(_fi_min)
+	clip_end_frame = int(_fi_max)
 
 	# Per-tracklet temporal extent (used for near_clip_start/end and for entrance/exit windows).
 	tid_start_end = bank_df.groupby("tracklet_id")["frame_index"].agg(["min", "max"]).to_dict("index")

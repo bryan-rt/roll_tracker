@@ -18,7 +18,7 @@ class ProcessorSettings(BaseSettings):
     SUPABASE_SERVICE_ROLE_KEY: str = ""
 
     # Phase 1/2 parallelism
-    MAX_WORKERS: int = 3  # one per camera, Phase 1 (A+C) only
+    MAX_WORKERS: int = 2  # one per camera, Phase 1 (A+C) only
     PARALLEL_DEVICE: str = "cpu"  # Phase 1 workers use CPU
     SEQUENTIAL_DEVICE: str = "auto"  # Phase 2 (D+E+F) uses MPS if available
 

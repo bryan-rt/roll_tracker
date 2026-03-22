@@ -57,7 +57,6 @@ from the ingest path using `validate_ingest_path()`.
 | `SCAN_ROOT` | No | `data/raw/nest` | Root directory to scan for MP4s |
 | `OUTPUT_ROOT` | No | `outputs` | Root directory for pipeline outputs |
 | `POLL_INTERVAL_SECONDS` | No | `30` | Seconds between scan cycles |
-| `RUN_UNTIL` | No | `D6` | Pipeline depth (stage letter) |
 | `GYM_ID` | No | None | Restrict scanning to one gym |
 | `SUPABASE_URL` | Yes | — | Supabase instance URL |
 | `SUPABASE_SERVICE_ROLE_KEY` | Yes | — | Service role key for DB writes |

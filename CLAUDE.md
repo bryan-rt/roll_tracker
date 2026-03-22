@@ -394,7 +394,7 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 - **Active branch:** `services_uploader`
 - **Head commit:** `bb7de33`
 - **Pipeline:** Full pipeline (A→F) verified end-to-end. Ingest accepts gym-scoped paths (`{gym_id}/{cam_id}/{date}/{hour}/`) and legacy paths (`{cam_id}/{date}/{hour}/`). `gym_id` stored in `ClipManifest`. Stages A, C produce tag observations + identity hints. Stage D (ILP stitching) resolves person tracks. Stage E detects match sessions. Stage F exports clips with privacy redaction.
-- **Services:** `nest_recorder` working — auto-registers cameras to Supabase on discovery. `uploader` working — resolves fighter tag IDs → profile IDs via active gym check-ins at upload time (Phase C identity bridge). `processor` scaffold only.
+- **Services:** `nest_recorder` working — auto-registers cameras to Supabase on discovery. `uploader` working — resolves fighter tag IDs → profile IDs via active gym check-ins at upload time (Phase C identity bridge). `processor` working.
 - **Apps:** Flutter mobile app at `app_mobile/`. End-to-end tested on Pixel 7 Pro against local Supabase.
   - **Auth:** Supabase-native (supabase_flutter). Auth trigger auto-creates profiles with tag_id on sign-up. Biometric login gated behind Settings toggle (default off).
   - **Onboarding:** display name → gym select → invite gym (if not listed). Routes via AuthGate FutureBuilder with profile completeness check.
