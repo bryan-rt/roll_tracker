@@ -317,6 +317,21 @@ def run_d2(*, config: Dict[str, Any], inputs: Dict[str, Any]) -> None:
 			},
 		)
 
+	# Coerce float-expected columns to float64 — compute_edge_costs() may
+	# produce object dtype when values contain mixed None/float, failing schema
+	# validation. Only coerce known-float columns from the D2 schema.
+	_D2_FLOAT_COLS = (
+		"dt_s", "dist_m", "v_req_mps", "dist_norm", "contact_rel",
+		"term_env", "term_time", "term_vreq", "term_missing_geom",
+		"term_flags", "term_group_coherence", "term_birth_prior",
+		"term_death_prior", "term_merge_prior", "term_split_prior",
+		"term_contact_rel", "term_reconnect_extra", "term_reconnect_z",
+		"total_cost",
+	)
+	for col in _D2_FLOAT_COLS:
+		if col in costs_df.columns and costs_df[col].dtype == object:
+			costs_df[col] = pd.to_numeric(costs_df[col], errors="coerce").astype("float64")
+
 	# Validate before writing
 	v.validate_d2_edge_costs_df(costs_df)
 	v.validate_d2_constraints_json(constraints)
@@ -325,6 +340,7 @@ def run_d2(*, config: Dict[str, Any], inputs: Dict[str, Any]) -> None:
 	out_costs = layout.d2_edge_costs_parquet()
 	out_constraints = layout.d2_constraints_json()
 	out_costs.parent.mkdir(parents=True, exist_ok=True)
+
 	costs_df.to_parquet(out_costs, index=False)
 	out_constraints.write_text(json.dumps(constraints, sort_keys=True, indent=2), encoding="utf-8")
 

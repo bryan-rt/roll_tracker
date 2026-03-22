@@ -569,7 +569,11 @@ def _validate_stage_outputs(
         em_path = root / "stage_F" / "export_manifest.jsonl"
         if em_path.exists():
             records = [json.loads(line) for line in em_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-            v.validate_export_manifest_records(records, expected_clip_id=manifest.clip_id)
+            # Skip validation for no-matches sentinel records — they don't
+            # conform to the full ExportManifest schema by design.
+            records = [r for r in records if r.get("status") != "no_matches"]
+            if records:
+                v.validate_export_manifest_records(records, expected_clip_id=manifest.clip_id)
         return
 
 

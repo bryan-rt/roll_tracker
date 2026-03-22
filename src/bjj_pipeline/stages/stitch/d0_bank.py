@@ -644,6 +644,11 @@ def run_d0(*, config: Dict[str, Any], layout: Any, manifest: Any) -> None:
 			tf["y_m"] if "y_m" in tf.columns else pd.Series(dtype="float64"),
 			errors="coerce"
 		).astype("float64")
+	# Ensure kinematics flag columns exist — D2 requires them unconditionally.
+	if "speed_is_implausible" not in tf.columns:
+		tf["speed_is_implausible"] = False
+	if "accel_is_implausible" not in tf.columns:
+		tf["accel_is_implausible"] = False
 
 	kin_summary: Dict[str, Any] = {"enabled": False}
 	occ_cfg, ctx_cfg, kin_cfg = _get_d0_cfg(config)

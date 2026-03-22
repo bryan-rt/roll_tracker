@@ -1755,7 +1755,22 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 			print("[D1 DEBUG] nodes_df is empty before writing d1_graph_nodes.parquet")
 		else:
 			print("[D1 DEBUG] nodes_df columns and dtypes before write:\n", nodes_df.dtypes)
-		edges_df = pd.DataFrame(edges_rows)
+		if edges_rows:
+			edges_df = pd.DataFrame(edges_rows)
+		else:
+			# Explicit schema for empty graph — validator requires columns with
+			# correct dtypes even when no edges exist (degenerate clip).
+			edges_df = pd.DataFrame({
+				"edge_id": pd.Series(dtype="str"),
+				"edge_type": pd.Series(dtype="str"),
+				"u": pd.Series(dtype="str"),
+				"v": pd.Series(dtype="str"),
+				"capacity": pd.Series(dtype="Int64"),
+				"dt_frames": pd.Series(dtype="Int64"),
+				"merge_end": pd.Series(dtype="Int64"),
+				"split_start": pd.Series(dtype="Int64"),
+				"payload_json": pd.Series(dtype="str"),
+			})
 		# Coerce dt_frames, merge_end, split_start to Int64 (nullable int) if present
 		for col in ("dt_frames", "merge_end", "split_start"):
 			if col in edges_df.columns:
@@ -2315,7 +2330,20 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 					"payload_json": json.dumps(e.payload, sort_keys=True),
 				}
 			)
-		pd.DataFrame(edges_rows).to_parquet(edges_path, index=False)
+		if edges_rows:
+			pd.DataFrame(edges_rows).to_parquet(edges_path, index=False)
+		else:
+			pd.DataFrame({
+				"edge_id": pd.Series(dtype="str"),
+				"edge_type": pd.Series(dtype="str"),
+				"u": pd.Series(dtype="str"),
+				"v": pd.Series(dtype="str"),
+				"capacity": pd.Series(dtype="Int64"),
+				"dt_frames": pd.Series(dtype="Int64"),
+				"merge_end": pd.Series(dtype="Int64"),
+				"split_start": pd.Series(dtype="Int64"),
+				"payload_json": pd.Series(dtype="str"),
+			}).to_parquet(edges_path, index=False)
 
 		pd.DataFrame(groups).to_parquet(groups_path, index=False)
 		pd.DataFrame(suppressed_continue_edges_rows).to_parquet(suppressed_path, index=False)
