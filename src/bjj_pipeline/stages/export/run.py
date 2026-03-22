@@ -313,9 +313,11 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 		with export_manifest_path.open("w", encoding="utf-8") as f:
 			f.write(json.dumps({
 				"schema_version": SCHEMA_VERSION_DEFAULT,
+				"artifact_type": "export_manifest",
 				"status": "no_matches",
 				"clip_id": manifest.clip_id,
 				"camera_id": manifest.camera_id,
+				"pipeline_version": str(getattr(manifest, "pipeline_version", "dev")),
 				"created_at_ms": _now_ms(),
 			}) + "\n")
 		return {
