@@ -340,6 +340,12 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 - **MCF/ILP for stitching** — tracklet identity assignment treated as a min-cost flow
   problem. OR-Tools solver. Two ILP solver variants exist (d3_ilp, d3_ilp2) — d3_ilp2
   is the current preferred path.
+- **Session-level Stage D aggregation (CP14c)** — `session_d_run.py` aggregates per-clip
+  D0 bank outputs (frames, summaries, detections, identity hints) into a combined session
+  bank, namespacing tracklet IDs with `{clip_id}:{tracklet_id}`. Runs existing D1→D4
+  unchanged via `SessionStageLayoutAdapter` (duck-typed layout) and `SessionManifest`
+  (lightweight manifest with artifact registry for D3 compile). Processor triggers
+  session Phase 2 when `.session_ready` sentinel exists. Per-clip Phase 2 is untouched.
 - **Stage B (SAM masks) deferred** — POC uses YOLO bbox masks. SAM integration exists
   but is not required for MVP.
 - **Three-pass protocol** — Plan Mode (shift+tab x2) for Pass 1+2, execute for Pass 3.
@@ -387,6 +393,7 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 | Processor Phase 1 worker count | Decided | MAX_WORKERS=2, PARALLEL_DEVICE=mps on M1 Air. QoS P-core pinning via `pthread_set_qos_class_self_np(USER_INITIATED)`. Benchmark: MPS 2w = 7m/4clips, MPS 3w = 7m (GPU saturated), CPU 4w QoS = 15m, CPU 3w QoS = 22m. Validated on 3-camera diverse real footage (PPDmUg, J_EDEw, FP7oJQ) — all 4 clips A→F success including PPDmUg which was 0/12 in first production run. MPS parallel safe after degenerate bbox fix (ab526b7). |
 | caffeinate -is for Mac runs | Decided | Prevents idle/display sleep during long MPS workloads on M1 Air. Standard invocation: `caffeinate -is bash -c 'time bash services/processor/run_local.sh'`. Releases automatically on child process exit. |
 | Stale worker cleanup in run_local.sh | Decided | ProcessPoolExecutor spawn-mode workers are orphaned on unclean parent exit (Ctrl+C, timeout, CLI kill). run_local.sh now kills stale bjj_pipeline.stages and processor.py processes at startup and on EXIT/INT/TERM trap. Prevents memory/CPU contention on subsequent runs. |
+| Session-level Stage D aggregation (CP14c) | Decided | Per-clip D0 banks aggregated into session-level combined bank with `{clip_id}:{tracklet_id}` namespacing. D1→D4 run unchanged via `SessionStageLayoutAdapter` + `SessionManifest`. Processor triggers session Phase 2 from `.session_ready` sentinel. Session E/F are separate briefs (CP14e/CP14f). |
 | Gym setup calibration tool | Planned | `tools/detect_buzzer.py` is the first module of what will become a production gym setup/calibration tool for gym owners. Future scope: blueprint builder, homography calibration, buzzer profile collection, AprilTag visibility mapping. All gym-onboarding calibration workflows consolidated into a single guided tool. |
 | Session-level stitching: schedule-based clip grouping (CP14a) | Decided | `SCHEDULE_JSON` env var (same one nest_recorder uses) provides gym class windows. Processor groups clips by session (date + start time), writes per-camera `.phase1_complete_{cam_id}` sentinels, then `.session_ready` or `.tag_required` when all-cameras-Phase-1 + wall-clock buffer gates pass. `SessionOutputLayout` in `f0_paths.py` provides canonical session output paths under `outputs/{gym_id}/sessions/{date}/{session_id}/`. Session-level D/E/F invocation is CP14c. |
 

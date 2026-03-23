@@ -41,6 +41,7 @@ from bjj_pipeline.stages.orchestration.pipeline import (
 )
 from bjj_pipeline.stages.orchestration.cli import _load_config
 from bjj_pipeline.contracts.f0_paths import ClipOutputLayout, SessionOutputLayout
+from bjj_pipeline.stages.stitch.session_d_run import run_session_d
 
 # Keywords in PipelineError messages that indicate an empty/uninteresting clip
 # rather than a real pipeline failure. Case-insensitive matching.
@@ -482,6 +483,76 @@ def _evaluate_session_readiness(
              traceback=traceback.format_exc())
 
 
+def _run_session_phase2(
+    session_id: str,
+    date_str: str,
+    gym_id: str,
+    session_clips: list[tuple[Path, str]],
+    settings: ProcessorSettings,
+) -> None:
+    """Run session-level Stage D for each camera that completed Phase 1.
+
+    Invoked when .session_ready sentinel exists. Writes .processing sentinel
+    at start, clears on completion or error. Never raises.
+    """
+    session_layout = _get_session_layout(session_id, date_str, gym_id, settings)
+
+    try:
+        # Write processing sentinel
+        session_layout.processing_sentinel().parent.mkdir(parents=True, exist_ok=True)
+        session_layout.processing_sentinel().touch()
+        _log("session_phase2_start", session_id=session_id, gym_id=gym_id)
+
+        # Build config from the first clip's camera
+        cam_ids = sorted({cam_id for _, cam_id in session_clips})
+        first_cam = cam_ids[0] if cam_ids else "unknown"
+        first_mp4 = next((mp4 for mp4, cid in session_clips if cid == first_cam), None)
+        if first_mp4:
+            cfg, _, _ = _build_config(first_cam, first_mp4, settings.SEQUENTIAL_DEVICE)
+        else:
+            cfg, _, _ = _load_config(first_cam, None)
+
+        for cam_id in cam_ids:
+            if not _is_camera_phase1_complete(session_layout, cam_id):
+                _log("session_d_skipped", session_id=session_id, cam_id=cam_id,
+                     reason="phase1_not_complete")
+                continue
+
+            try:
+                _log("session_d_start", session_id=session_id, cam_id=cam_id)
+                run_session_d(
+                    config=cfg,
+                    session_layout=session_layout,
+                    session_clips=session_clips,
+                    cam_id=cam_id,
+                    output_root=settings.OUTPUT_ROOT,
+                )
+                _log("session_d_completed", session_id=session_id, cam_id=cam_id)
+            except PipelineError as e:
+                err_str = str(e).lower()
+                if any(kw in err_str for kw in _SKIP_KEYWORDS):
+                    _log("session_d_skipped", session_id=session_id, cam_id=cam_id,
+                         reason=str(e))
+                else:
+                    _log("session_d_error", session_id=session_id, cam_id=cam_id,
+                         error=str(e), traceback=traceback.format_exc())
+            except Exception as e:
+                _log("session_d_error", session_id=session_id, cam_id=cam_id,
+                     error=str(e), traceback=traceback.format_exc())
+
+        _log("session_phase2_completed", session_id=session_id)
+
+    except Exception as e:
+        _log("session_phase2_error", session_id=session_id,
+             error=str(e), traceback=traceback.format_exc())
+    finally:
+        # Clear processing sentinel
+        try:
+            session_layout.processing_sentinel().unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
 def main() -> None:
     settings = ProcessorSettings()
     _log("processor_started",
@@ -607,6 +678,40 @@ def main() -> None:
                             settings=settings,
                             schedule=schedule,
                         )
+
+                    # --- Session Phase 2 trigger (CP14c) ---
+                    for (session_id, date_str, session_end_iso), info in sessions.items():
+                        # Resolve gym_id from first clip's ingest path
+                        gym_id = settings.GYM_ID
+                        for mp4, cam_id in info["clips"]:
+                            try:
+                                i = validate_ingest_path(mp4, cam_id)
+                                if i.gym_id:
+                                    gym_id = i.gym_id
+                                    break
+                            except Exception:
+                                continue
+                        if not gym_id:
+                            continue
+
+                        session_layout = _get_session_layout(
+                            session_id, date_str, gym_id, settings
+                        )
+                        if (
+                            _is_session_ready(session_layout)
+                            and not session_layout.processing_sentinel().exists()
+                            and not _is_session_uploaded(session_layout)
+                        ):
+                            _log("session_phase2_trigger",
+                                 session_id=session_id,
+                                 cam_count=len(info["cam_ids"]))
+                            _run_session_phase2(
+                                session_id=session_id,
+                                date_str=date_str,
+                                gym_id=gym_id,
+                                session_clips=info["clips"],
+                                settings=settings,
+                            )
 
         except Exception as e:
             _log("poll_error", error=str(e), traceback=traceback.format_exc())
