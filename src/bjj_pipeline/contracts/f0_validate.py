@@ -375,7 +375,8 @@ def validate_person_tracks_df(df: pd.DataFrame) -> None:
     if df.empty:
         return
 
-    _assert_singleton(df, "clip_id", table_name="person_tracks")
+    if df["clip_id"].isna().any():
+        raise ValidationError("person_tracks: clip_id contains nulls")
     _assert_singleton(df, "camera_id", table_name="person_tracks")
 
     # Monotonic per person_id

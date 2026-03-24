@@ -332,10 +332,9 @@ def aggregate_session_bank(
             logger.warning("session_bank: missing detections for {}", clip_id_prefix)
 
         # --- Identity hints ---
-        # NOTE: Identity hint frame_index is NOT offset. Hints use clip-local
-        # frame indices by design — D3 matches tag pings to nodes using the
-        # same clip-local frame space established during Stage C. The tracklet_id
-        # namespacing ({clip_id}:{tracklet_id}) is sufficient for correct binding.
+        # CP15: hints are frame-offset to match D1 node frame ranges.
+        # D3 binds tag pings to nodes by frame range — both must use the
+        # same session-level offset frame space.
         hints_path = layout.identity_hints_jsonl()
         if hints_path.exists():
             with open(hints_path, "r", encoding="utf-8") as f:
@@ -347,6 +346,17 @@ def aggregate_session_bank(
                         hint = json.loads(line)
                         if "tracklet_id" in hint:
                             hint["tracklet_id"] = f"{clip_id_prefix}:{hint['tracklet_id']}"
+                        # Apply frame offset to evidence frame indices (CP15)
+                        if frame_offset > 0 and isinstance(hint.get("evidence"), dict):
+                            hint = dict(hint)
+                            evidence = dict(hint["evidence"])
+                            for fkey in ("first_seen_frame", "frame_index"):
+                                if fkey in evidence and evidence[fkey] is not None:
+                                    try:
+                                        evidence[fkey] = int(evidence[fkey]) + frame_offset
+                                    except (TypeError, ValueError):
+                                        pass
+                            hint["evidence"] = evidence
                         all_hints.append(hint)
                     except json.JSONDecodeError:
                         pass
