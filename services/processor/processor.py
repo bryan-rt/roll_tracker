@@ -41,6 +41,7 @@ from bjj_pipeline.stages.orchestration.pipeline import (
 )
 from bjj_pipeline.stages.orchestration.cli import _load_config
 from bjj_pipeline.contracts.f0_paths import ClipOutputLayout, SessionOutputLayout
+from bjj_pipeline.contracts.f0_models import SCHEMA_VERSION_DEFAULT
 from bjj_pipeline.stages.stitch.session_d_run import (
     run_session_d,
     SessionStageLayoutAdapter,
@@ -621,6 +622,53 @@ def _run_session_phase2(
             except Exception as e:
                 _log("session_f_error", session_id=session_id, cam_id=cam_id,
                      error=str(e), traceback=traceback.format_exc())
+
+        # --- Merge per-camera export manifests into single uploader-facing file ---
+        stage_f_dir = session_layout.stage_dir("F")
+        merged_path = session_layout.session_export_manifest_jsonl()
+        all_records: list[dict] = []
+        cam_files_found = 0
+
+        for cam_id in cam_ids:
+            cam_manifest = stage_f_dir / f"export_manifest_{cam_id}.jsonl"
+            if not cam_manifest.exists():
+                _log("session_merge_missing", session_id=session_id, cam_id=cam_id,
+                     message="Per-camera manifest not found, skipping")
+                continue
+            cam_files_found += 1
+            with cam_manifest.open("r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                        if rec.get("status") == "no_matches":
+                            continue  # Filter out per-camera no_matches headers
+                        all_records.append(rec)
+                    except json.JSONDecodeError:
+                        continue
+
+        merged_path.parent.mkdir(parents=True, exist_ok=True)
+        if all_records:
+            with merged_path.open("w", encoding="utf-8") as f:
+                for rec in all_records:
+                    f.write(json.dumps(rec, sort_keys=True, separators=(",", ":"),
+                                      ensure_ascii=False) + "\n")
+            _log("session_merge_completed", session_id=session_id,
+                 cam_files=cam_files_found, total_records=len(all_records))
+        else:
+            with merged_path.open("w", encoding="utf-8") as f:
+                f.write(json.dumps({
+                    "schema_version": SCHEMA_VERSION_DEFAULT,
+                    "artifact_type": "export_manifest",
+                    "status": "no_matches",
+                    "clip_id": session_id,
+                    "pipeline_version": "session",
+                    "created_at_ms": int(time.time() * 1000),
+                }, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n")
+            _log("session_merge_no_matches", session_id=session_id,
+                 cam_files=cam_files_found)
 
         session_layout.session_completed_sentinel().touch()
         _log("session_phase2_completed", session_id=session_id)
