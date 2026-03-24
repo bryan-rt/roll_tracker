@@ -322,11 +322,12 @@ def run_session_f(
     initial_status = str(stage_cfg.get("initial_status", "exported_local"))
 
     session_id = session_layout.session_id
-    exports_dir = session_layout.stage_dir("F") / "exports"
+    stage_f_dir = session_layout.stage_dir("F")
+    exports_dir = stage_f_dir / "exports"
     exports_dir.mkdir(parents=True, exist_ok=True)
 
-    audit_path = session_layout.session_audit_jsonl("F")
-    export_manifest_path = session_layout.session_export_manifest_jsonl()
+    audit_path = stage_f_dir / f"audit_{cam_id}.jsonl"
+    export_manifest_path = stage_f_dir / f"export_manifest_{cam_id}.jsonl"
 
     # Clear previous run artifacts
     if export_manifest_path.exists():
