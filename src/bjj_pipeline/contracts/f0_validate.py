@@ -674,6 +674,17 @@ def validate_match_sessions_records(records: List[Dict], *, expected_clip_id: Op
         if conf < 0.0 or conf > 1.0:
             raise ValidationError(f"match_sessions: record[{i}] confidence outside [0,1]")
 
+        # v2 schema: optional fields (backward compatible)
+        if "partial_start" in r and not isinstance(r["partial_start"], bool):
+            raise ValidationError(f"match_sessions: record[{i}] partial_start must be bool")
+        if "partial_end" in r and not isinstance(r["partial_end"], bool):
+            raise ValidationError(f"match_sessions: record[{i}] partial_end must be bool")
+
+        ev = r.get("evidence")
+        if isinstance(ev, dict) and "sources" in ev:
+            if not isinstance(ev["sources"], list):
+                raise ValidationError(f"match_sessions: record[{i}] evidence.sources must be a list")
+
 
 def validate_export_manifest_records(records: List[Dict], *, expected_clip_id: Optional[str] = None) -> None:
     base = ["schema_version", "artifact_type", "clip_id", "camera_id", "pipeline_version", "created_at_ms"]

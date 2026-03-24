@@ -299,12 +299,24 @@ stages:
 
   stage_E:
     enabled: null
-    # Maximum allowed gap (in frames) between cap2 seed intervals for the same
-    # unordered pair before we split into separate match sessions.
+    # Seed merging (cap2 GROUP nodes)
     max_gap_frames: 60
-    # Confidence assigned to sessions in v1 (seed/merge based). More nuanced
-    # scoring can be introduced later.
+
+    # Confidence assigned to emitted sessions
     seed_confidence: 0.70
+
+    # Proximity hysteresis
+    engage_dist_m: 0.75          # enter ENGAGING state below this distance
+    disengage_dist_m: 2.0        # enter GRACE state above this distance
+    engage_min_frames: 15        # frames below engage_dist_m to confirm ENGAGED
+    hysteresis_frames: 450       # frames above disengage_dist_m to confirm DISENGAGED (~15s at 30fps)
+
+    # Clip shaping
+    min_clip_duration_frames: 150  # drop intervals shorter than this (~5s at 30fps)
+    clip_buffer_frames: 45         # pad start/end by this many frames (~1.5s at 30fps)
+
+    # Buzzer soft gate (only applies if audio_events.jsonl present)
+    buzzer_boundary_window_frames: 90  # search window around interval end for buzzer (~3s)
 
   stage_F:
     enabled: null
