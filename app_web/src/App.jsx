@@ -12,33 +12,31 @@ function App() {
   const location = useLocation()
 
   return (
-    <div>
-      <nav style={styles.nav}>
-        <span style={styles.brand}>Roll Tracker</span>
-        <div style={styles.links}>
-          {NAV_LINKS.map(link => (
-            <Link
-              key={link.to}
-              to={link.to}
-              style={{
-                ...styles.link,
-                ...(location.pathname === link.to ? styles.linkActive : {}),
-              }}
-            >
-              {link.label}
-            </Link>
-          ))}
-        </div>
-      </nav>
-      <Routes>
-        <Route path="/" element={<MatBlueprint />} />
-        <Route path="/admin/pricing" element={
-          <AdminGate>
-            <PricingDashboard />
-          </AdminGate>
-        } />
-      </Routes>
-    </div>
+    <AdminGate>
+      <div>
+        <nav style={styles.nav}>
+          <span style={styles.brand}>Roll Tracker</span>
+          <div style={styles.links}>
+            {NAV_LINKS.map(link => (
+              <Link
+                key={link.to}
+                to={link.to}
+                style={{
+                  ...styles.link,
+                  ...(location.pathname === link.to ? styles.linkActive : {}),
+                }}
+              >
+                {link.label}
+              </Link>
+            ))}
+          </div>
+        </nav>
+        <Routes>
+          <Route path="/" element={<MatBlueprint />} />
+          <Route path="/admin/pricing" element={<PricingDashboard />} />
+        </Routes>
+      </div>
+    </AdminGate>
   )
 }
 
