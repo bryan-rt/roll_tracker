@@ -465,7 +465,6 @@ def run_session_f(
             april_tag_a = match.get("april_tag_id_a")
             april_tag_b = match.get("april_tag_id_b")
             clip_row = {
-                "video_id": None,
                 "match_id": str(match_id),
                 "file_path": str(storage_target.object_path),
                 "storage_bucket": str(storage_target.bucket),
@@ -502,7 +501,7 @@ def run_session_f(
             class _LogProxy:
                 def __init__(self):
                     self.export_id = export_id
-                    self.source_match_ids = (match_id,)
+                    self.source_match_ids = (str(match_id),)
 
             log_events = build_supabase_log_contracts(
                 export_session=_LogProxy(),
