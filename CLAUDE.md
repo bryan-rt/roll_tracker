@@ -193,7 +193,7 @@ disambiguate when multiple athletes globally share a `tag_id`.
 All inter-stage data lives on disk under `outputs/{gym_id}/{cam_id}/{date}/{hour}/{clip_id}/`
 (gym-scoped) or `outputs/legacy/{cam_id}/{date}/{hour}/{clip_id}/` (legacy). The F0 layer enforces this:
 - `f0_manifest.py` — `ClipManifest` Pydantic model (includes `gym_id: Optional[str]`), init/load/write, per-stage default registration
-- `f0_paths.py` — `ClipOutputLayout`, `SessionOutputLayout`, `StageLetter` — canonical path resolution. `SessionOutputLayout` (CP14a) is a frozen dataclass for session-level (multi-clip, multi-camera) outputs under `outputs/{gym_id}/sessions/{date}/{session_id}/`.
+- `f0_paths.py` — `ClipOutputLayout`, `SessionOutputLayout`, `StageLetter` — canonical path resolution. `SessionOutputLayout` (CP14a) is a frozen dataclass for session-level (multi-clip, multi-camera) outputs under `outputs/{gym_id}/sessions/{date}/{session_id}/`. CP14f adds `session_cross_camera_identities_jsonl()` → `stage_D/cross_camera_identities.jsonl`.
 - `f0_parquet.py` — Parquet read/write helpers
 - `f0_models.py` — Shared Pydantic models
 - `f0_validate.py` — Post-stage validators
@@ -227,7 +227,7 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 **Tables:**
 - `profiles` — athlete/user records. `auth_user_id` (FK to Supabase Auth), `display_name` (nullable), `email`, `tag_id` (auto-assigned 0–586 via sequence), `tag_assigned_at`, `home_gym_id` FK→gyms
 - `videos` — raw video metadata: `camera_id`, `source_path`, `recorded_at`, `status`, `metadata` (jsonb), `gym_id` FK→gyms
-- `clips` — processed clips: `video_id` FK, `match_id`, `file_path`, `storage_bucket`, `storage_object_path`, `start_seconds`, `end_seconds`, `fighter_a_tag_id`, `fighter_b_tag_id`, `fighter_a_profile_id`, `fighter_b_profile_id` (nullable FKs→profiles)
+- `clips` — processed clips: `video_id` FK, `match_id`, `file_path`, `storage_bucket`, `storage_object_path`, `start_seconds`, `end_seconds`, `fighter_a_tag_id`, `fighter_b_tag_id`, `fighter_a_profile_id`, `fighter_b_profile_id` (nullable FKs→profiles), `global_person_id_a`, `global_person_id_b` (cross-camera identity, CP14f)
 - `log_events` — audit log: `clip_id`/`video_id` FK, `event_type`, `event_level`, `message`, `details`
 - `gyms` — `name`, `owner_profile_id`, `owner_auth_user_id` (denormalized), `address`, `wifi_ssid`, `wifi_bssid`, `latitude`, `longitude`
 - `gym_checkins` — `profile_id`, `gym_id`, `checked_in_at`, `auto_expires_at` (trigger-managed +3hr, slides on upsert), `is_active`, `source` (`manual` or `wifi_auto`). Unique on `(profile_id, gym_id)` — enables upsert for sliding TTL.
@@ -283,6 +283,9 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 
 **Applied migrations (CP14e: session-level export):**
 - `20260324000001_clips_source_video_ids.sql` — `source_video_ids text[]` on clips for multi-source session matches, backfill from existing video_id
+
+**Applied migrations (CP14f: cross-camera identity merge):**
+- `20260325000001_clips_global_person_ids.sql` — `global_person_id_a text`, `global_person_id_b text` on clips for cross-camera identity linking
 
 ---
 
@@ -410,6 +413,7 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 | Session-level stitching: schedule-based clip grouping (CP14a) | Decided | `SCHEDULE_JSON` env var (same one nest_recorder uses) provides gym class windows. Processor groups clips by session (date + start time), writes per-camera `.phase1_complete_{cam_id}` sentinels, then `.session_ready` or `.tag_required` when all-cameras-Phase-1 + wall-clock buffer gates pass. `SessionOutputLayout` in `f0_paths.py` provides canonical session output paths under `outputs/{gym_id}/sessions/{date}/{session_id}/`. Session-level D/E/F invocation is CP14c. |
 | Session-level Stage F export (CP14e) | Decided | `session_f_run.py` exports session-level match clips. Multi-source extraction: determines which source MP4s overlap each match's frame range, extracts per-source segments via `export_clip()`, concatenates via ffmpeg concat demuxer. `source_video_paths` in export manifest `clip_row` enables uploader to resolve multiple `source_video_ids`. `clips.source_video_ids text[]` column added via migration. Processor runs full D→E→F per camera: `run_session_d()` returns `SessionManifest`, passed to Stage E via adapter, then `run_session_f()`. `run_session_d()` always returns manifest even if D4 skipped (Stage E handles missing inputs gracefully). Post-review patch: `clip_row` omits `video_id` key (uploader sets it from `resolved_ids[0]`); `_LogProxy.source_match_ids` uses `str(match_id)` for type consistency. |
 | Stage E two-layer engagement detection (CP14d) | Decided | Stage E uses two detection layers: (1) cap2 GROUP seeds from person_spans (existing), (2) proximity hysteresis from person_tracks world coords (new). Both layers are optional — either one can produce engagement intervals independently. Unioned per-pair with gap-based merging, buffered, then optionally adjusted by buzzer audio events. Config: `engage_dist_m=0.75`, `disengage_dist_m=2.0`, `engage_min_frames=15`, `hysteresis_frames=450` (~15s@30fps), `min_clip_duration_frames=150` (~5s), `clip_buffer_frames=45` (~1.5s), `buzzer_boundary_window_frames=90` (~3s). Session frame bounds derived from actual data ranges (not assumed 0-based). Zero matches is valid — writes empty JSONL, logs audit event, does not raise. Both inputs missing → PipelineError. |
+| Cross-camera identity merge (CP14f) | Decided | `cross_camera_merge.py` links the same athlete across cameras via AprilTag co-observation within a session. Presence-based linking (Option 1): same `tag_id` on 2+ cameras in the same session = same athlete. Filters by `min_tag_observations` (evidence.total_tag_frames >= 2) and `min_assignment_confidence` (>= 0.5). Intra-camera dedup: at most one (cam_id, person_id) per (cam_id, tag_id) — ties with equal confidence skip the tag. Union-find over cross-camera links → deterministic `gp_` prefixed global IDs (sha256 of sorted member keys). Every (cam_id, person_id) gets a global ID whether linked or standalone. Output: `cross_camera_identities.jsonl` under `SessionOutputLayout.stage_dir("D")`. Processor restructured: Loop 1 (D+E per camera) → cross-camera merge → Loop 2 (F per camera with `global_id_map`). Merge failure logs error and passes empty map — never blocks Stage F export. `clips` table gets `global_person_id_a/b text` columns. `co_observation_window_frames` is a documented no-op config parameter — future hook for buzzer-based clock sync. Config: `cross_camera.clock_sync_method="filename"`, `co_observation_window_frames=90`, `min_tag_observations=2`, `min_assignment_confidence=0.5`. |
 
 ---
 
@@ -433,7 +437,7 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
   - `/admin/pricing` — Admin-only business model pricing simulator (4 tabs: Model, Unit Economics, Sensitivity, Notes). Gated by `AdminGate` component checking session email against `VITE_ADMIN_EMAIL` env var.
   - **Auth:** `AdminGate` wraps protected routes. Email+password sign-in via Supabase. Admin email checked from env, never hardcoded.
   - **Local dev:** `.env.example` provided. Set `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `VITE_ADMIN_EMAIL`.
-- **Supabase:** All migrations applied (22 migration files total). Remote Supabase linked (project `zwwdduccwrkmkvawwjpc`). Edge Function `send_push_notification` for FCM V1 push delivery. RLS on all 10 tables. Storage read policy on `match-clips` bucket. `cameras` table auto-populated by `nest_recorder`. `gym_checkins` has `UNIQUE(profile_id, gym_id)` for sliding TTL upsert.
+- **Supabase:** All migrations applied (23 migration files total). Remote Supabase linked (project `zwwdduccwrkmkvawwjpc`). Edge Function `send_push_notification` for FCM V1 push delivery. RLS on all 10 tables. Storage read policy on `match-clips` bucket. `cameras` table auto-populated by `nest_recorder`. `gym_checkins` has `UNIQUE(profile_id, gym_id)` for sliding TTL upsert.
 - **E2E verified:** 2026-03-17 — nest_recorder → processor → uploader chain tested end-to-end. Tagged clip (FP7oJQ-tag_0-60s.mp4) processed A→F, uploaded to local Supabase, 2 clip rows + 2 log_events inserted. Already-processed guard confirmed working.
 - **Performance baseline (final validation run 2026-03-22):**
 

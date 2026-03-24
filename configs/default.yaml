@@ -345,3 +345,15 @@ session:
   end_buffer_minutes: 10       # wait after class end before triggering Phase 2
   tag_required_blocks_phase2: true
   # buzzer heuristics populated in CP14d
+
+# Cross-camera identity merge (CP14f)
+cross_camera:
+  clock_sync_method: "filename"
+  # co_observation_window_frames: future hook for buzzer-based clock sync.
+  # With clock_sync_method: "filename", session boundary is the temporal
+  # constraint — same tag on 2+ cameras in the same session = same athlete.
+  # When clock_sync_method: "buzzer" is implemented, this window gates
+  # the temporal overlap check between tag observation ranges.
+  co_observation_window_frames: 90
+  min_tag_observations: 2
+  min_assignment_confidence: 0.5

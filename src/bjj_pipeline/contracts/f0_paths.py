@@ -224,6 +224,9 @@ class SessionOutputLayout:
     def session_identity_merge_jsonl(self) -> Path:
         return self.stage_dir("D") / "identity_merge.jsonl"
 
+    def session_cross_camera_identities_jsonl(self) -> Path:
+        return self.stage_dir("D") / "cross_camera_identities.jsonl"
+
     # ---- Stage E (session-level) ----
     def session_match_sessions_jsonl(self) -> Path:
         return self.stage_dir("E") / "match_sessions.jsonl"

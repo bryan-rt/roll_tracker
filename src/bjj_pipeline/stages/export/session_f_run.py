@@ -296,6 +296,7 @@ def run_session_f(
     session_clips: List[Tuple[Path, str]],
     cam_id: str,
     output_root: Path,
+    global_id_map: Optional[Dict[str, str]] = None,
 ) -> dict:
     """Run session-level Stage F for one camera.
 
@@ -476,6 +477,8 @@ def run_session_f(
                 "status": str(initial_status),
                 "fighter_a_tag_id": april_tag_a,
                 "fighter_b_tag_id": april_tag_b,
+                "global_person_id_a": global_id_map.get(f"{cam_id}:{person_id_a}") if global_id_map else None,
+                "global_person_id_b": global_id_map.get(f"{cam_id}:{person_id_b}") if global_id_map else None,
                 # source_video_paths: popped by uploader, used to resolve source_video_ids
                 "source_video_paths": source_video_paths,
                 "metadata": {

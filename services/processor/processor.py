@@ -45,6 +45,7 @@ from bjj_pipeline.stages.stitch.session_d_run import (
     run_session_d,
     SessionStageLayoutAdapter,
 )
+from bjj_pipeline.stages.stitch.cross_camera_merge import run_cross_camera_merge
 
 # Keywords in PipelineError messages that indicate an empty/uninteresting clip
 # rather than a real pipeline failure. Case-insensitive matching.
@@ -515,6 +516,10 @@ def _run_session_phase2(
         else:
             cfg, _, _ = _load_config(first_cam, None)
 
+        # --- Loop 1: all cameras → D + E ---
+        adapters: dict[str, SessionStageLayoutAdapter] = {}
+        manifests: dict[str, object] = {}
+
         for cam_id in cam_ids:
             if not _is_camera_phase1_complete(session_layout, cam_id):
                 _log("session_d_skipped", session_id=session_id, cam_id=cam_id,
@@ -546,11 +551,15 @@ def _run_session_phase2(
                 _log("session_d_error", session_id=session_id, cam_id=cam_id,
                      error=str(e), traceback=traceback.format_exc())
 
+            adapter = SessionStageLayoutAdapter(session_layout, cam_id)
+            adapters[cam_id] = adapter
+            if session_manifest is not None:
+                manifests[cam_id] = session_manifest
+
             # --- Stage E (session-level) ---
             if session_manifest is not None:
                 try:
                     _log("session_e_start", session_id=session_id, cam_id=cam_id)
-                    adapter = SessionStageLayoutAdapter(session_layout, cam_id)
                     from bjj_pipeline.stages.matches.run import run as run_stage_e
                     run_stage_e(cfg, {"layout": adapter, "manifest": session_manifest})
                     _log("session_e_completed", session_id=session_id, cam_id=cam_id)
@@ -566,7 +575,27 @@ def _run_session_phase2(
                     _log("session_e_error", session_id=session_id, cam_id=cam_id,
                          error=str(e), traceback=traceback.format_exc())
 
-            # --- Stage F (session-level) ---
+        # --- Cross-camera identity merge (CP14f) ---
+        global_id_map: dict[str, str] = {}
+        if len(adapters) > 0:
+            try:
+                _log("cross_camera_merge_start", session_id=session_id,
+                     cam_count=len(adapters))
+                global_id_map = run_cross_camera_merge(
+                    config=cfg,
+                    session_layout=session_layout,
+                    cam_ids=list(adapters.keys()),
+                    adapter_map=adapters,
+                )
+                _log("cross_camera_merge_completed", session_id=session_id,
+                     n_global_ids=len(global_id_map))
+            except Exception as e:
+                _log("cross_camera_merge_error", session_id=session_id,
+                     error=str(e), traceback=traceback.format_exc())
+                global_id_map = {}
+
+        # --- Loop 2: all cameras → F ---
+        for cam_id in cam_ids:
             try:
                 _log("session_f_start", session_id=session_id, cam_id=cam_id)
                 from bjj_pipeline.stages.export.session_f_run import run_session_f
@@ -576,6 +605,7 @@ def _run_session_phase2(
                     session_clips=session_clips,
                     cam_id=cam_id,
                     output_root=settings.OUTPUT_ROOT,
+                    global_id_map=global_id_map,
                 )
                 _log("session_f_completed", session_id=session_id, cam_id=cam_id)
             except PipelineError as e:
