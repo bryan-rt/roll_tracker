@@ -41,7 +41,10 @@ from bjj_pipeline.stages.orchestration.pipeline import (
 )
 from bjj_pipeline.stages.orchestration.cli import _load_config
 from bjj_pipeline.contracts.f0_paths import ClipOutputLayout, SessionOutputLayout
-from bjj_pipeline.stages.stitch.session_d_run import run_session_d
+from bjj_pipeline.stages.stitch.session_d_run import (
+    run_session_d,
+    SessionStageLayoutAdapter,
+)
 
 # Keywords in PipelineError messages that indicate an empty/uninteresting clip
 # rather than a real pipeline failure. Case-insensitive matching.
@@ -490,7 +493,7 @@ def _run_session_phase2(
     session_clips: list[tuple[Path, str]],
     settings: ProcessorSettings,
 ) -> None:
-    """Run session-level Stage D for each camera that completed Phase 1.
+    """Run session-level Stages D → E → F for each camera that completed Phase 1.
 
     Invoked when .session_ready sentinel exists. Writes .processing sentinel
     at start, clears on completion or error. Never raises.
@@ -518,9 +521,12 @@ def _run_session_phase2(
                      reason="phase1_not_complete")
                 continue
 
+            session_manifest = None
+
+            # --- Stage D ---
             try:
                 _log("session_d_start", session_id=session_id, cam_id=cam_id)
-                run_session_d(
+                session_manifest = run_session_d(
                     config=cfg,
                     session_layout=session_layout,
                     session_clips=session_clips,
@@ -538,6 +544,50 @@ def _run_session_phase2(
                          error=str(e), traceback=traceback.format_exc())
             except Exception as e:
                 _log("session_d_error", session_id=session_id, cam_id=cam_id,
+                     error=str(e), traceback=traceback.format_exc())
+
+            # --- Stage E (session-level) ---
+            if session_manifest is not None:
+                try:
+                    _log("session_e_start", session_id=session_id, cam_id=cam_id)
+                    adapter = SessionStageLayoutAdapter(session_layout, cam_id)
+                    from bjj_pipeline.stages.matches.run import run as run_stage_e
+                    run_stage_e(cfg, {"layout": adapter, "manifest": session_manifest})
+                    _log("session_e_completed", session_id=session_id, cam_id=cam_id)
+                except PipelineError as e:
+                    err_str = str(e).lower()
+                    if any(kw in err_str for kw in _SKIP_KEYWORDS):
+                        _log("session_e_skipped", session_id=session_id, cam_id=cam_id,
+                             reason=str(e))
+                    else:
+                        _log("session_e_error", session_id=session_id, cam_id=cam_id,
+                             error=str(e), traceback=traceback.format_exc())
+                except Exception as e:
+                    _log("session_e_error", session_id=session_id, cam_id=cam_id,
+                         error=str(e), traceback=traceback.format_exc())
+
+            # --- Stage F (session-level) ---
+            try:
+                _log("session_f_start", session_id=session_id, cam_id=cam_id)
+                from bjj_pipeline.stages.export.session_f_run import run_session_f
+                run_session_f(
+                    config=cfg,
+                    session_layout=session_layout,
+                    session_clips=session_clips,
+                    cam_id=cam_id,
+                    output_root=settings.OUTPUT_ROOT,
+                )
+                _log("session_f_completed", session_id=session_id, cam_id=cam_id)
+            except PipelineError as e:
+                err_str = str(e).lower()
+                if any(kw in err_str for kw in _SKIP_KEYWORDS):
+                    _log("session_f_skipped", session_id=session_id, cam_id=cam_id,
+                         reason=str(e))
+                else:
+                    _log("session_f_error", session_id=session_id, cam_id=cam_id,
+                         error=str(e), traceback=traceback.format_exc())
+            except Exception as e:
+                _log("session_f_error", session_id=session_id, cam_id=cam_id,
                      error=str(e), traceback=traceback.format_exc())
 
         _log("session_phase2_completed", session_id=session_id)
