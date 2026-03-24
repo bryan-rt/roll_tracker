@@ -255,6 +255,9 @@ class SessionOutputLayout:
     def uploaded_sentinel(self) -> Path:
         return self.session_root / ".uploaded"
 
+    def session_completed_sentinel(self) -> Path:
+        return self.session_root / ".session_completed"
+
     # ---- Utility ----
     def ensure_session_root(self) -> None:
         self.session_root.mkdir(parents=True, exist_ok=True)

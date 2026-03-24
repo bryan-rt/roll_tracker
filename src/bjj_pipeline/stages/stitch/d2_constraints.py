@@ -79,7 +79,7 @@ def normalize_identity_constraints(identity_hints_path: Path) -> Dict[str, Any]:
 			if anchor_key.startswith("tag:"):
 				n_tag_pings_raw += 1
 				evidence = ev.get("evidence") if isinstance(ev.get("evidence"), dict) else None
-				fi = evidence.get("frame_index", None) if isinstance(evidence, dict) else None
+				fi = (evidence.get("frame_index") or evidence.get("first_seen_frame")) if isinstance(evidence, dict) else None
 				if fi is None:
 					n_tag_pings_missing_frame_index += 1
 				else:

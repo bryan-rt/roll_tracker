@@ -179,9 +179,10 @@ def run_cross_camera_merge(
     )
 
     # --- Step 2b: Intra-camera dedup ---
-    # For each (cam_id, tag_id), keep only the highest-confidence record.
-    # Ties with different person_ids → skip that tag entirely (conflict).
-    skip_tags: Set[str] = set()
+    # For each (cam_id, tag_id), keep only the highest-confidence person_id.
+    # Genuine ties (multiple person_ids at max confidence) → skip that tag
+    # for THAT camera only. Other cameras with a clear winner still participate.
+    n_cam_tag_skips = 0
 
     # Group: (cam_id, tag_id) → list of (person_id, confidence)
     cam_tag_index: Dict[Tuple[str, str], List[Tuple[str, float]]] = defaultdict(list)
@@ -209,26 +210,25 @@ def run_cross_camera_merge(
                 cam_id, tag_id, best_entries[0][0], best_conf, len(entries) - 1,
             )
         else:
-            # Tie — conflicting person_ids with equal confidence
+            # Genuine tie — skip this tag for THIS camera only
             conflicting_pids = [e[0] for e in best_entries]
-            skip_tags.add(tag_id)
+            n_cam_tag_skips += 1
             logger.warning(
                 "cross_camera_merge: CONFLICT cam={} tag={}: person_ids={} "
-                "have equal confidence={:.2f} — skipping tag for linking",
+                "have equal confidence={:.2f} — skipping tag for this camera",
                 cam_id, tag_id, conflicting_pids, best_conf,
             )
 
-    if skip_tags:
+    if n_cam_tag_skips:
         logger.info(
-            "cross_camera_merge: {} tags skipped due to intra-camera conflicts: {}",
-            len(skip_tags), sorted(skip_tags),
+            "cross_camera_merge: {} (cam_id, tag_id) pairs skipped due to "
+            "intra-camera confidence ties",
+            n_cam_tag_skips,
         )
 
     # --- Step 3: Build tag_id → List[(cam_id, person_id)] index ---
     tag_index: Dict[str, List[Tuple[str, str]]] = defaultdict(list)
     for (cam_id, tag_id), person_id in deduped.items():
-        if tag_id in skip_tags:
-            continue
         tag_index[tag_id].append((cam_id, person_id))
 
     # --- Step 4: Union-find over cross-camera links ---
@@ -331,8 +331,7 @@ def run_cross_camera_merge(
         "n_cameras": len(cam_ids),
         "n_raw_records": len(all_records),
         "n_filtered_records": len(filtered),
-        "n_skip_tags": len(skip_tags),
-        "skip_tags": sorted(skip_tags),
+        "n_cam_tag_skips": n_cam_tag_skips,
         "n_links": n_links,
         "n_linked_components": n_linked_components,
         "n_global_ids": len(global_id_map),

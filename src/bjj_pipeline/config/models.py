@@ -616,6 +616,19 @@ class StageEConfig(BaseModel):
     # Confidence assigned to sessions in v1 (seed/merge based).
     seed_confidence: float = Field(default=0.70, ge=0.0, le=1.0)
 
+    # Proximity hysteresis (CP14d)
+    engage_dist_m: float = Field(default=0.75, ge=0.0)
+    disengage_dist_m: float = Field(default=2.0, ge=0.0)
+    engage_min_frames: int = Field(default=15, ge=0)
+    hysteresis_frames: int = Field(default=450, ge=0)
+
+    # Clip shaping
+    min_clip_duration_frames: int = Field(default=150, ge=0)
+    clip_buffer_frames: int = Field(default=45, ge=0)
+
+    # Buzzer soft gate
+    buzzer_boundary_window_frames: int = Field(default=90, ge=0)
+
 
 class StageFConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")

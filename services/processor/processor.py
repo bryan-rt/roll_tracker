@@ -406,8 +406,10 @@ def _evaluate_session_readiness(
 
         session_layout = _get_session_layout(session_id, date_str, gym_id, settings)
 
-        # Already decided — skip
-        if _is_session_ready(session_layout) or _is_session_tag_required(session_layout):
+        # Already decided or completed — skip
+        if (_is_session_ready(session_layout)
+                or _is_session_tag_required(session_layout)
+                or session_layout.session_completed_sentinel().exists()):
             return
 
         # Step 1: Check per-camera Phase 1 completion
@@ -620,6 +622,7 @@ def _run_session_phase2(
                 _log("session_f_error", session_id=session_id, cam_id=cam_id,
                      error=str(e), traceback=traceback.format_exc())
 
+        session_layout.session_completed_sentinel().touch()
         _log("session_phase2_completed", session_id=session_id)
 
     except Exception as e:
@@ -733,7 +736,10 @@ def main() -> None:
                 schedule = _parse_schedule_json(settings.SCHEDULE_JSON)
                 if schedule is not None:
                     sessions: dict[tuple[str, str, str], dict] = {}
-                    for mp4, cam_id in work:
+                    for mp4 in clips:
+                        cam_id = _derive_cam_id(mp4, settings)
+                        if cam_id is None:
+                            continue
                         clip_dt = _clip_wall_clock_dt(mp4, cam_id)
                         if clip_dt is None:
                             continue
@@ -781,6 +787,7 @@ def main() -> None:
                             _is_session_ready(session_layout)
                             and not session_layout.processing_sentinel().exists()
                             and not _is_session_uploaded(session_layout)
+                            and not session_layout.session_completed_sentinel().exists()
                         ):
                             _log("session_phase2_trigger",
                                  session_id=session_id,
