@@ -42,6 +42,30 @@ def run_upload(manifest_path: str, cfg) -> None:
 
             clip_row["video_id"] = video_id
 
+            # Session-level: resolve source_video_ids from source_video_paths
+            source_video_paths = clip_row.pop("source_video_paths", None)
+            if source_video_paths and isinstance(source_video_paths, list):
+                resolved_video_ids = []
+                for src_path in source_video_paths:
+                    vid_id = db.find_video(src_path)
+                    if not vid_id:
+                        vid_id = db.create_video(
+                            camera_id=rec.camera_id,
+                            source_path=src_path,
+                            gym_id=rec.gym_id,
+                        )
+                    elif rec.gym_id is not None:
+                        db.update_video_gym_id(vid_id, rec.gym_id)
+                    resolved_video_ids.append(vid_id)
+                clip_row["source_video_ids"] = resolved_video_ids
+                # Set video_id to first source for backward compat with existing FK
+                if resolved_video_ids and clip_row.get("video_id") is None:
+                    clip_row["video_id"] = resolved_video_ids[0]
+                print(
+                    f"[uploader] resolved {len(resolved_video_ids)} source_video_ids "
+                    f"for export_id={export_id}"
+                )
+
             # Phase C: resolve tag IDs → profile IDs via active gym check-ins
             gym_id = rec.gym_id
             if gym_id is None:

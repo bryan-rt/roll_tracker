@@ -5,11 +5,15 @@ combined bank, then runs the existing D1→D4 ILP pipeline via a layout
 adapter that redirects all path lookups to session-level directories.
 
 CP14c: session-level stitching for cross-clip identity resolution.
+CP14e: frame index offset fix — per-clip 0-based frame indices are offset
+       by wall-clock time relative to session start before aggregation.
 """
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -65,14 +69,15 @@ class SessionManifest:
 
 
 # ---------------------------------------------------------------------------
-# SessionStageLayoutAdapter — duck-typed layout for D1→D4
+# SessionStageLayoutAdapter — duck-typed layout for D1→D4, E, F
 # ---------------------------------------------------------------------------
 
 class SessionStageLayoutAdapter:
     """Wraps SessionOutputLayout to expose the same method interface that
-    run_d1, run_d2, run_d3, run_d4 call on ClipOutputLayout.
+    run_d1, run_d2, run_d3, run_d4, Stage E, and Stage F call on
+    ClipOutputLayout.
 
-    All write paths point to session_layout.stage_dir("D").
+    All write paths point to session_layout.stage_dir(stage).
     All read paths point to aggregated session bank files.
     """
 
@@ -145,6 +150,19 @@ class SessionStageLayoutAdapter:
     def match_sessions_jsonl(self) -> Path:
         return self._sl.session_match_sessions_jsonl()
 
+    # ---- Stage F write paths ----
+    def export_manifest_jsonl(self) -> Path:
+        return self._sl.session_export_manifest_jsonl()
+
+    def exports_dir(self) -> Path:
+        return self._sl.stage_dir("F") / "exports"
+
+    def ensure_exports_dir(self) -> None:
+        self.exports_dir().mkdir(parents=True, exist_ok=True)
+
+    def ensure_dirs_for_stage(self, stage: StageLetter) -> None:
+        self.stage_dir(stage)  # stage_dir already creates on demand
+
     # ---- Audit ----
     def audit_jsonl(self, stage: StageLetter) -> Path:
         return self._sl.session_audit_jsonl(stage)
@@ -159,6 +177,48 @@ class SessionStageLayoutAdapter:
             return str(path.relative_to(self._sl.session_root))
         except ValueError:
             return str(path)
+
+
+# ---------------------------------------------------------------------------
+# Frame offset helpers (CP14e)
+# ---------------------------------------------------------------------------
+
+_CLIP_TS_RE = re.compile(r"-(\d{8})-(\d{6})\.")
+
+
+def parse_clip_timestamp(mp4_path: Path) -> Optional[datetime]:
+    """Parse clip start time from MP4 filename.
+
+    Filename format: {cam_id}-{YYYYMMDD}-{HHMMSS}.mp4
+    e.g. FP7oJQ-20260318-200014.mp4 → 2026-03-18 20:00:14
+
+    Returns None on any parse failure.
+    """
+    m = _CLIP_TS_RE.search(mp4_path.name)
+    if not m:
+        return None
+    try:
+        date_str, time_str = m.group(1), m.group(2)
+        return datetime.strptime(f"{date_str}{time_str}", "%Y%m%d%H%M%S")
+    except (ValueError, IndexError):
+        return None
+
+
+def derive_clip_frame_offset(
+    mp4_path: Path, session_start_dt: datetime, fps: float
+) -> int:
+    """Compute frame offset for a clip relative to session start.
+
+    Returns int: round((clip_start_dt - session_start_dt).total_seconds() * fps)
+    Returns 0 on any parse failure (conservative fallback).
+    """
+    clip_dt = parse_clip_timestamp(mp4_path)
+    if clip_dt is None or fps <= 0:
+        return 0
+    delta_sec = (clip_dt - session_start_dt).total_seconds()
+    if delta_sec < 0:
+        return 0
+    return round(delta_sec * fps)
 
 
 # ---------------------------------------------------------------------------
@@ -182,6 +242,7 @@ def aggregate_session_bank(
     session_clips: List[Tuple[Path, str]],
     cam_id: str,
     output_root: Path,
+    fps: float,
 ) -> Tuple[Path, Path, Path, Path]:
     """Aggregate per-clip D0 bank outputs for a single camera into session-level
     combined bank files.
@@ -190,22 +251,44 @@ def aggregate_session_bank(
 
     Tracklet ID namespacing: every tracklet_id is prefixed with
     "{clip_id}:{original_tracklet_id}" before concatenation.
+
+    Frame index offsetting (CP14e): per-clip 0-based frame indices are offset
+    by the clip's wall-clock offset relative to the earliest clip in the session.
+    This ensures D1 sees correct temporal ordering across clips.
     """
+    # --- Pre-scan: parse clip timestamps, find session start ---
+    cam_clips: List[Tuple[Path, Optional[datetime]]] = []
+    for mp4_path, clip_cam_id in session_clips:
+        if clip_cam_id != cam_id:
+            continue
+        dt = parse_clip_timestamp(mp4_path)
+        cam_clips.append((mp4_path, dt))
+
+    valid_dts = [dt for _, dt in cam_clips if dt is not None]
+    session_start_dt = min(valid_dts) if valid_dts else None
+
     all_frames: List[pd.DataFrame] = []
     all_summaries: List[pd.DataFrame] = []
     all_detections: List[pd.DataFrame] = []
     all_hints: List[dict] = []
 
-    for mp4_path, clip_cam_id in session_clips:
-        if clip_cam_id != cam_id:
-            continue
-
+    for mp4_path, clip_dt in cam_clips:
         layout = _get_clip_layout(mp4_path, cam_id, output_root)
         if layout is None:
             logger.warning("session_bank: cannot derive layout for {}", mp4_path.name)
             continue
 
         clip_id_prefix = mp4_path.stem
+
+        # Compute frame offset for this clip
+        frame_offset = 0
+        if session_start_dt is not None:
+            frame_offset = derive_clip_frame_offset(mp4_path, session_start_dt, fps)
+        if frame_offset > 0:
+            logger.info(
+                "session_bank: {} offset={} frames ({:.1f}s)",
+                clip_id_prefix, frame_offset, frame_offset / fps if fps > 0 else 0,
+            )
 
         # --- Bank frames ---
         frames_path = layout.tracklet_bank_frames_parquet()
@@ -216,6 +299,9 @@ def aggregate_session_bank(
         frames_df = pd.read_parquet(frames_path)
         if "tracklet_id" in frames_df.columns:
             frames_df["tracklet_id"] = clip_id_prefix + ":" + frames_df["tracklet_id"].astype(str)
+        # Apply frame offset (CP14e)
+        if frame_offset > 0 and "frame_index" in frames_df.columns:
+            frames_df["frame_index"] = frames_df["frame_index"] + frame_offset
         all_frames.append(frames_df)
 
         # --- Bank summaries ---
@@ -224,6 +310,12 @@ def aggregate_session_bank(
             summ_df = pd.read_parquet(summ_path)
             if "tracklet_id" in summ_df.columns:
                 summ_df["tracklet_id"] = clip_id_prefix + ":" + summ_df["tracklet_id"].astype(str)
+            # Apply frame offset to summary frame ranges (CP14e)
+            if frame_offset > 0:
+                if "start_frame" in summ_df.columns:
+                    summ_df["start_frame"] = summ_df["start_frame"] + frame_offset
+                if "end_frame" in summ_df.columns:
+                    summ_df["end_frame"] = summ_df["end_frame"] + frame_offset
             all_summaries.append(summ_df)
         else:
             logger.warning("session_bank: missing bank summaries for {}", clip_id_prefix)
@@ -232,11 +324,18 @@ def aggregate_session_bank(
         det_path = layout.detections_parquet()
         if det_path.exists():
             det_df = pd.read_parquet(det_path)
+            # Apply frame offset to detections (CP14e)
+            if frame_offset > 0 and "frame_index" in det_df.columns:
+                det_df["frame_index"] = det_df["frame_index"] + frame_offset
             all_detections.append(det_df)
         else:
             logger.warning("session_bank: missing detections for {}", clip_id_prefix)
 
         # --- Identity hints ---
+        # NOTE: Identity hint frame_index is NOT offset. Hints use clip-local
+        # frame indices by design — D3 matches tag pings to nodes using the
+        # same clip-local frame space established during Stage C. The tracklet_id
+        # namespacing ({clip_id}:{tracklet_id}) is sufficient for correct binding.
         hints_path = layout.identity_hints_jsonl()
         if hints_path.exists():
             with open(hints_path, "r", encoding="utf-8") as f:
@@ -314,26 +413,21 @@ def run_session_d(
     session_clips: List[Tuple[Path, str]],
     cam_id: str,
     output_root: Path,
-) -> None:
+) -> Optional[SessionManifest]:
     """Run session-level Stage D (D1→D4) for one camera.
 
-    1. aggregate_session_bank() — build combined bank
-    2. Build SessionManifest from first available per-clip ClipManifest
-    3. Build SessionStageLayoutAdapter
+    1. Scan per-clip manifests for fps (needed before aggregation)
+    2. aggregate_session_bank() — build combined bank with frame offsets
+    3. Build SessionManifest
     4. Run D1 → register artifacts → D2 → register artifacts → D3 → D4
+
+    Returns SessionManifest (always, when fps is available) so the processor
+    can pass it to Stage E and F. Returns None only if no valid manifest
+    with fps>0 was found.
     """
     adapter = SessionStageLayoutAdapter(session_layout, cam_id)
 
-    # --- Step 1: Aggregate ---
-    frames_out, summaries_out, detections_out, hints_out = aggregate_session_bank(
-        session_layout=session_layout,
-        adapter=adapter,
-        session_clips=session_clips,
-        cam_id=cam_id,
-        output_root=output_root,
-    )
-
-    # --- Step 2: Build SessionManifest from first available per-clip manifest ---
+    # --- Step 1: Scan manifests for fps (must happen before aggregation) ---
     fps: Optional[float] = None
     pipeline_version: str = ""
     total_frame_count: int = 0
@@ -367,6 +461,17 @@ def run_session_d(
             f"{session_layout.session_id} cam={cam_id}"
         )
 
+    # --- Step 2: Aggregate with frame offsets ---
+    frames_out, summaries_out, detections_out, hints_out = aggregate_session_bank(
+        session_layout=session_layout,
+        adapter=adapter,
+        session_clips=session_clips,
+        cam_id=cam_id,
+        output_root=output_root,
+        fps=fps,
+    )
+
+    # --- Step 3: Build SessionManifest ---
     session_manifest = SessionManifest(
         clip_id=session_layout.session_id,
         camera_id=cam_id,
@@ -378,13 +483,13 @@ def run_session_d(
         input_video_path="",
     )
 
-    # --- Step 3: Build inputs dict ---
+    # --- Step 4: Build inputs dict ---
     inputs: Dict[str, Any] = {
         "layout": adapter,
         "manifest": session_manifest,
     }
 
-    # --- Step 4: D1 ---
+    # --- Step 5: D1 ---
     from bjj_pipeline.stages.stitch.d1_graph_build import run_d1
 
     logger.info("session_d: running D1 for session={} cam={}", session_layout.session_id, cam_id)
@@ -400,7 +505,7 @@ def run_session_d(
         relpath=adapter.rel_to_clip_root(adapter.d1_graph_edges_parquet()),
     )
 
-    # --- Step 5: D2 ---
+    # --- Step 6: D2 ---
     from bjj_pipeline.stages.stitch.d2_run import run_d2
 
     logger.info("session_d: running D2 for session={} cam={}", session_layout.session_id, cam_id)
@@ -416,13 +521,13 @@ def run_session_d(
         relpath=adapter.rel_to_clip_root(adapter.d2_constraints_json()),
     )
 
-    # --- Step 6: D3 — use existing run_d3 dispatch (handles compile + solver) ---
+    # --- Step 7: D3 — use existing run_d3 dispatch (handles compile + solver) ---
     from bjj_pipeline.stages.stitch.solver import run_d3
 
     logger.info("session_d: running D3 for session={} cam={}", session_layout.session_id, cam_id)
     compiled, ilp_res = run_d3(config=config, inputs=inputs)
 
-    # --- Step 7: D4 ---
+    # --- Step 8: D4 ---
     if ilp_res is None:
         checkpoint = _cfg_get(config, "stages.stage_D.d3_checkpoint", None)
         if checkpoint is None:
@@ -431,7 +536,8 @@ def run_session_d(
             "session_d: D3 checkpoint={} did not produce ILP result — skipping D4",
             checkpoint,
         )
-        return
+        # Return manifest even if D4 skipped — Stage E handles missing inputs
+        return session_manifest
 
     from bjj_pipeline.stages.stitch.d4_emit import run_d4_emit
 
@@ -454,3 +560,5 @@ def run_session_d(
         cam_id,
         adapter.person_tracks_parquet(),
     )
+
+    return session_manifest
