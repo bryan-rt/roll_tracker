@@ -145,7 +145,15 @@ The pipeline has two phases:
   - D3: ILP compile + solve (two solvers: `d3_ilp`, `d3_ilp2`)
   - D4: emit resolved person_tracks
   - Uses Google OR-Tools for ILP solver backend.
-- **Stage E** `matches`: Match session detection from resolved tracks.
+- **Stage E** `matches`: Two-layer engagement detection. Sub-steps E0–E6:
+  - E0: plumbing + input validation (person_spans optional, person_tracks optional, both missing = error)
+  - E1: cap2 GROUP seed extraction (from person_spans)
+  - E2: proximity hysteresis state machine (from person_tracks world coords)
+  - E3: union seeds + proximity intervals, apply clip buffer
+  - E4: buzzer soft gate (optional, from audio_events.jsonl when Stage A.5 built)
+  - E5: minimum duration filter + emit (zero matches = valid, no exception)
+  - E6: identity enrichment (April tag labels from Stage D)
+  - Outputs: `match_sessions.jsonl`, `audit.jsonl`
 - **Stage F** `export`: ffmpeg clip cutting, redaction, Supabase DB write, manifest.
 
 **Orchestration CLI:**
@@ -396,13 +404,14 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 | Session-level Stage D aggregation (CP14c) | Decided | Per-clip D0 banks aggregated into session-level combined bank with `{clip_id}:{tracklet_id}` namespacing. D1→D4 run unchanged via `SessionStageLayoutAdapter` + `SessionManifest`. Processor triggers session Phase 2 from `.session_ready` sentinel. Session E/F are separate briefs (CP14e/CP14f). |
 | Gym setup calibration tool | Planned | `tools/detect_buzzer.py` is the first module of what will become a production gym setup/calibration tool for gym owners. Future scope: blueprint builder, homography calibration, buzzer profile collection, AprilTag visibility mapping. All gym-onboarding calibration workflows consolidated into a single guided tool. |
 | Session-level stitching: schedule-based clip grouping (CP14a) | Decided | `SCHEDULE_JSON` env var (same one nest_recorder uses) provides gym class windows. Processor groups clips by session (date + start time), writes per-camera `.phase1_complete_{cam_id}` sentinels, then `.session_ready` or `.tag_required` when all-cameras-Phase-1 + wall-clock buffer gates pass. `SessionOutputLayout` in `f0_paths.py` provides canonical session output paths under `outputs/{gym_id}/sessions/{date}/{session_id}/`. Session-level D/E/F invocation is CP14c. |
+| Stage E two-layer engagement detection (CP14d) | Decided | Stage E uses two detection layers: (1) cap2 GROUP seeds from person_spans (existing), (2) proximity hysteresis from person_tracks world coords (new). Both layers are optional — either one can produce engagement intervals independently. Unioned per-pair with gap-based merging, buffered, then optionally adjusted by buzzer audio events. Config: `engage_dist_m=0.75`, `disengage_dist_m=2.0`, `engage_min_frames=15`, `hysteresis_frames=450` (~15s@30fps), `min_clip_duration_frames=150` (~5s), `clip_buffer_frames=45` (~1.5s), `buzzer_boundary_window_frames=90` (~3s). Session frame bounds derived from actual data ranges (not assumed 0-based). Zero matches is valid — writes empty JSONL, logs audit event, does not raise. Both inputs missing → PipelineError. |
 
 ---
 
 ## Current Branch & Status
 
 - **Active branch:** `services_uploader`
-- **Head commit:** `a7363bf`
+- **Head commit:** `fd0a3b6`
 - **Pipeline:** Full pipeline (A→F) verified end-to-end. Ingest accepts gym-scoped paths (`{gym_id}/{cam_id}/{date}/{hour}/`) and legacy paths (`{cam_id}/{date}/{hour}/`). `gym_id` stored in `ClipManifest`. Stages A, C produce tag observations + identity hints. Stage D (ILP stitching) resolves person tracks. Stage E detects match sessions. Stage F exports clips with privacy redaction.
 - **Services:** `nest_recorder` working — auto-registers cameras to Supabase on discovery. `uploader` working — resolves fighter tag IDs → profile IDs via active gym check-ins at upload time (Phase C identity bridge). `processor` working.
 - **Apps:** Flutter mobile app at `app_mobile/`. End-to-end tested on Pixel 7 Pro against local Supabase.

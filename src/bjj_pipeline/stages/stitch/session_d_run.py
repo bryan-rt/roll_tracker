@@ -141,6 +141,10 @@ class SessionStageLayoutAdapter:
     def identity_assignments_jsonl(self) -> Path:
         return self._stage_d / f"identity_assignments_{self._cam_id}.jsonl"
 
+    # ---- Stage E write paths ----
+    def match_sessions_jsonl(self) -> Path:
+        return self._sl.session_match_sessions_jsonl()
+
     # ---- Audit ----
     def audit_jsonl(self, stage: StageLetter) -> Path:
         return self._sl.session_audit_jsonl(stage)
