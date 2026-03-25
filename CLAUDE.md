@@ -430,7 +430,7 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 ## Current Branch & Status
 
 - **Active branch:** `services_uploader`
-- **Head commit:** `598ac0f`
+- **Head commit:** `6544897`
 - **Pipeline:** Full pipeline (A→F) verified end-to-end. Session-level pipeline (CP14a→CP15) validated on Alpha BJJ 3-camera data (FP7oJQ, J_EDEw, PPDmUg). Ingest accepts gym-scoped paths (`{gym_id}/{cam_id}/{date}/{hour}/`) and legacy paths (`{cam_id}/{date}/{hour}/`). `gym_id` stored in `ClipManifest`. Stages A, C produce tag observations + identity hints. Stage D (ILP stitching) resolves person tracks. Stage E detects match sessions. Stage F exports clips with privacy redaction.
 - **CP15: Closed (2026-03-24).** Seven fixes validated E2E on 3-camera Alpha BJJ data: (1) StageEConfig missing fields, (2) session evaluator clip iteration, (3) `.session_completed` sentinel, (4) session clip_id validation, (5) D2 tag ping field name fix (latent bug — `first_seen_frame` vs `frame_index`), (6) session hint frame offset, (7) cross-camera dedup per-camera scoping. Cross-camera links = 0 on test data due to single-tag ambiguity (all assignments confidence=1.0 with multiple claimants per camera). Fix is structurally correct — will produce links when distinct tags are in use.
 - **Post-CP15 bug fix (2026-03-25):** Session export manifest overwrite fixed. Per-camera manifests (`export_manifest_{cam_id}.jsonl`) + explicit merge step in processor. Committed `598ac0f`.
