@@ -309,6 +309,7 @@ def _run_interactive(
     # Manual points (support undo)
     manual_img: List[Tuple[float, float]] = []
     manual_mat: List[Tuple[float, float]] = []
+    manual_edge_idx: List[int] = []
     edge_artists: List[Any] = []
     state: Dict[str, Any] = {
         "mode": "click",
@@ -417,6 +418,7 @@ def _run_interactive(
             )
             manual_img.append((cx, cy))
             manual_mat.append(world_xy)
+            manual_edge_idx.append(edge_idx)
             print(
                 f"  manual #{len(manual_img)-1} edge={_EDGE_NAMES[edge_idx]} "
                 f"t={t:.3f} pixel=({cx:.1f},{cy:.1f}) "
@@ -468,6 +470,7 @@ def _run_interactive(
         else:
             px, py = manual_img.pop(best_idx)
             manual_mat.pop(best_idx)
+            manual_edge_idx.pop(best_idx)
             print(f"[lens_cal] Deleted manual point at ({px:.1f},{py:.1f})")
 
         _redraw_all_points()
@@ -490,6 +493,7 @@ def _run_interactive(
             if manual_img:
                 manual_img.pop()
                 manual_mat.pop()
+                manual_edge_idx.pop()
                 print(f"[lens_cal] Undo manual → {len(manual_img)} manual points remain")
                 _redraw_all_points()
             return
@@ -497,6 +501,7 @@ def _run_interactive(
         if k == "c" and state["mode"] == "click":
             manual_img.clear()
             manual_mat.clear()
+            manual_edge_idx.clear()
             _run_auto_detect()
             _setup_base_view()
             _redraw_all_points()
@@ -524,6 +529,7 @@ def _run_interactive(
             state["mode"] = "click"
             manual_img.clear()
             manual_mat.clear()
+            manual_edge_idx.clear()
             _run_auto_detect()
             _setup_base_view()
             _redraw_all_points()
@@ -531,45 +537,135 @@ def _run_interactive(
 
     fig.canvas.mpl_connect("key_press_event", on_key)
 
+    # --- Collinearity cost helpers ---
+    # Corner i belongs to these edges (each corner touches 2 edges)
+    _corner_edges = {0: [0, 3], 1: [0, 1], 2: [1, 2], 3: [2, 3]}
+
+    def _build_edge_groups(
+        all_img_pts: np.ndarray,
+    ) -> Dict[int, List[int]]:
+        """Map edge_idx → list of point indices in all_img_pts.
+
+        Order: 4 corners, then auto points, then manual points.
+        """
+        groups: Dict[int, List[int]] = {0: [], 1: [], 2: [], 3: []}
+        # Corners (indices 0–3) → both adjacent edges
+        for ci in range(4):
+            for ei in _corner_edges[ci]:
+                groups[ei].append(ci)
+        # Auto points (indices 4 .. 4+len(auto))
+        offset = 4
+        for i, ei in enumerate(auto_edge_idx):
+            groups[ei].append(offset + i)
+        # Manual points
+        offset = 4 + len(auto_img)
+        for i, ei in enumerate(manual_edge_idx):
+            groups[ei].append(offset + i)
+        return groups
+
+    def _line_fit_residuals(pts_2d: np.ndarray) -> np.ndarray:
+        """Perpendicular distances from points to their best-fit line.
+
+        pts_2d: (N, 2) array of 2D points.
+        Returns: (N,) array of signed perpendicular distances.
+        """
+        n = pts_2d.shape[0]
+        if n < 2:
+            return np.zeros(n, dtype=np.float64)
+        # PCA: direction of maximum variance = line direction
+        centroid = pts_2d.mean(axis=0)
+        centered = pts_2d - centroid
+        _, _, vt = np.linalg.svd(centered, full_matrices=False)
+        # Normal to the line (second singular vector direction)
+        normal = vt[1]  # (2,)
+        return centered @ normal  # perpendicular distances
+
+    def _collinearity_cost(
+        params: np.ndarray,
+        all_img_arr: np.ndarray,
+        edge_groups: Dict[int, List[int]],
+        cx: float,
+        cy: float,
+    ) -> float:
+        """Total sum of squared perpendicular distances from fitted lines."""
+        f, k1, k2 = float(params[0]), float(params[1]), float(params[2])
+        K_trial = np.array([[f, 0, cx], [0, f, cy], [0, 0, 1]], dtype=np.float64)
+        dist_trial = np.array([k1, k2, 0.0, 0.0], dtype=np.float64)
+
+        pts = all_img_arr.reshape(-1, 1, 2).astype(np.float64)
+        undist = cv2.undistortPoints(pts, K_trial, dist_trial, P=K_trial)
+        undist_2d = undist.reshape(-1, 2)
+
+        total = 0.0
+        for ei in range(4):
+            idxs = edge_groups.get(ei, [])
+            if len(idxs) < 2:
+                continue
+            edge_pts = undist_2d[idxs]
+            resid = _line_fit_residuals(edge_pts)
+            total += float(np.sum(resid ** 2))
+        return total
+
     # --- Solve callback ---
     def _solve(fig_: Any, ax_: Any) -> None:
-        all_img = list(corners_img) + list(auto_img) + list(manual_img)
-        all_mat = list(corners_mat) + list(auto_mat) + list(manual_mat)
+        from scipy.optimize import minimize as sp_minimize
 
-        obj_pts = np.array(
-            [[mx, my, 0.0] for (mx, my) in all_mat], dtype=np.float32,
-        )
-        img_pts = np.array(
-            [[ux, uy] for (ux, uy) in all_img], dtype=np.float32,
-        )
+        all_img_list = list(corners_img) + list(auto_img) + list(manual_img)
+        all_img_arr = np.array(all_img_list, dtype=np.float64)
+        edge_groups = _build_edge_groups(all_img_arr)
 
-        calib_flags = (
-            cv2.CALIB_FIX_TANGENT_DIST
-            | cv2.CALIB_FIX_PRINCIPAL_POINT
-            | cv2.CALIB_FIX_ASPECT_RATIO
-        )
+        cx = img_w / 2.0
+        cy = img_h / 2.0
+        f0 = float(max(img_w, img_h))
 
-        ret, K, dist_full, rvecs, tvecs = cv2.calibrateCamera(
-            [obj_pts],
-            [img_pts],
-            imageSize=(img_w, img_h),
-            cameraMatrix=None,
-            distCoeffs=None,
-            flags=calib_flags,
+        result = sp_minimize(
+            _collinearity_cost,
+            x0=np.array([f0, 0.0, 0.0]),
+            args=(all_img_arr, edge_groups, cx, cy),
+            method="Powell",
+            bounds=[(200.0, 3000.0), (-1.0, 1.0), (-1.0, 1.0)],
+            options={"maxiter": 5000, "ftol": 1e-6},
         )
 
-        dist_4 = dist_full.ravel()[:4]  # [k1, k2, p1, p2]
+        f_opt, k1_opt, k2_opt = float(result.x[0]), float(result.x[1]), float(result.x[2])
+        K = np.array([[f_opt, 0, cx], [0, f_opt, cy], [0, 0, 1]], dtype=np.float64)
+        dist_4 = np.array([k1_opt, k2_opt, 0.0, 0.0], dtype=np.float64)
+        dist_full = np.array([[k1_opt, k2_opt, 0.0, 0.0, 0.0]], dtype=np.float64)
+
+        # Compute per-edge RMS
+        pts = all_img_arr.reshape(-1, 1, 2)
+        undist = cv2.undistortPoints(pts, K, dist_4, P=K).reshape(-1, 2)
+        per_edge_rms: Dict[str, float] = {}
+        for ei in range(4):
+            idxs = edge_groups.get(ei, [])
+            if len(idxs) < 2:
+                per_edge_rms[_EDGE_NAMES[ei]] = 0.0
+                continue
+            resid = _line_fit_residuals(undist[idxs])
+            per_edge_rms[_EDGE_NAMES[ei]] = float(np.sqrt(np.mean(resid ** 2)))
+
+        total_cost = float(result.fun)
+
         state["K"] = K
         state["dist"] = dist_full
         state["dist_4"] = dist_4
-        state["rms"] = ret
-        state["num_points"] = len(all_img)
+        state["rms"] = total_cost  # collinearity cost (px²)
+        state["per_edge_rms"] = per_edge_rms
+        state["f_opt"] = f_opt
+        state["k1_opt"] = k1_opt
+        state["k2_opt"] = k2_opt
+        state["num_points"] = len(all_img_list)
         state["num_auto"] = len(auto_img)
         state["num_manual"] = len(manual_img)
 
-        print(f"[lens_cal] RMS reprojection error: {ret:.4f} px")
-        print(f"[lens_cal] K:\n{K}")
-        print(f"[lens_cal] dist (k1,k2,p1,p2): {dist_4}")
+        print(f"[lens_cal] Optimization result:")
+        print(f"  f = {f_opt:.1f}, k1 = {k1_opt:.4f}, k2 = {k2_opt:.4f}")
+        print(f"  Total collinearity cost: {total_cost:.1f} px²")
+        per_edge_str = ", ".join(
+            f"{name}={per_edge_rms[name]:.2f}px" for name in _EDGE_NAMES
+        )
+        print(f"  Per-edge RMS: {per_edge_str}")
+        print(f"  Converged: {result.success}, iterations: {result.nit}")
 
         # Show undistorted frame
         undistorted_bgr = cv2.undistort(frame_bgr, K, dist_full)
@@ -577,8 +673,8 @@ def _run_interactive(
 
         ax_.clear()
         ax_.set_title(
-            f"Undistorted: {camera_id}  |  RMS={ret:.3f}px  |  "
-            f"{len(all_img)} pts (4+{len(auto_img)}auto+{len(manual_img)}man)  |  "
+            f"Undistorted: {camera_id}  |  cost={total_cost:.1f}px²  |  "
+            f"f={f_opt:.0f} k1={k1_opt:.3f} k2={k2_opt:.3f}  |  "
             "a=accept  r=redo  q=quit",
             fontsize=9,
         )
@@ -586,28 +682,33 @@ def _run_interactive(
         ax_.set_xlim(0, img_w)
         ax_.set_ylim(img_h, 0)
 
-        # Re-project all points
-        proj_pts, _ = cv2.projectPoints(
-            obj_pts.reshape(-1, 1, 3),
-            rvecs[0], tvecs[0], K, dist_full,
-        )
-        proj_pts = proj_pts.reshape(-1, 2)
+        # Draw undistorted points on the undistorted frame
         for i, cid in enumerate(corner_ids):
-            ax_.plot(proj_pts[i, 0], proj_pts[i, 1], "gs", markersize=10)
+            ax_.plot(undist[i, 0], undist[i, 1], "gs", markersize=10)
             ax_.annotate(
-                cid, (proj_pts[i, 0], proj_pts[i, 1]),
+                cid, (undist[i, 0], undist[i, 1]),
                 textcoords="offset points", xytext=(5, 5),
                 fontsize=8, color="lime", fontweight="bold",
             )
-        for i in range(4, len(proj_pts)):
-            ax_.plot(proj_pts[i, 0], proj_pts[i, 1], "co", markersize=4)
+        for i in range(4, len(undist)):
+            ax_.plot(undist[i, 0], undist[i, 1], "co", markersize=4)
 
-        for a_idx, b_idx in edge_pairs:
-            ax_.plot(
-                [proj_pts[a_idx, 0], proj_pts[b_idx, 0]],
-                [proj_pts[a_idx, 1], proj_pts[b_idx, 1]],
-                "g-", linewidth=1, alpha=0.7,
-            )
+        # Draw fitted lines through undistorted points per edge
+        for ei in range(4):
+            idxs = edge_groups.get(ei, [])
+            if len(idxs) < 2:
+                continue
+            edge_pts = undist[idxs]
+            # Sort by primary coordinate for clean line drawing
+            centroid = edge_pts.mean(axis=0)
+            centered = edge_pts - centroid
+            _, _, vt = np.linalg.svd(centered, full_matrices=False)
+            direction = vt[0]
+            # Project onto direction for sorting
+            proj = centered @ direction
+            order = np.argsort(proj)
+            sorted_pts = edge_pts[order]
+            ax_.plot(sorted_pts[:, 0], sorted_pts[:, 1], "g-", linewidth=1, alpha=0.7)
 
         fig_.canvas.draw_idle()
         state["mode"] = "verify"
@@ -617,23 +718,32 @@ def _run_interactive(
     def _accept() -> None:
         K = state["K"]
         dist_4 = state["dist_4"]
-        rms = state["rms"]
         num_pts = state["num_points"]
         num_auto = state.get("num_auto", 0)
         num_manual = state.get("num_manual", 0)
         auto_stats = state.get("auto_stats", {})
+        per_edge_rms = state.get("per_edge_rms", {})
+        f_opt = state.get("f_opt", 0.0)
+        k1_opt = state.get("k1_opt", 0.0)
+        k2_opt = state.get("k2_opt", 0.0)
+        total_cost = state.get("rms", 0.0)
 
         existing = json.loads(homography_json_path.read_text(encoding="utf-8"))
         existing["camera_matrix"] = K.tolist()
         existing["dist_coefficients"] = dist_4.tolist()
         existing["lens_calibration"] = {
-            "rms_reprojection_error": float(rms),
+            "method": "collinearity_optimization",
+            "f": float(f_opt),
+            "k1": float(k1_opt),
+            "k2": float(k2_opt),
+            "collinearity_cost": float(total_cost),
+            "per_edge_rms": {k: round(v, 3) for k, v in per_edge_rms.items()},
             "num_points": num_pts,
             "auto_detected_points": num_auto,
             "manual_points": num_manual,
             "rejected_points": auto_stats.get("total_rejected", 0),
             "points_per_edge": auto_stats.get("per_edge", {}),
-            "flags": "CALIB_FIX_TANGENT_DIST|CALIB_FIX_PRINCIPAL_POINT|CALIB_FIX_ASPECT_RATIO",
+            "flags": "FIX_PRINCIPAL_POINT|FIX_ASPECT_RATIO|FIX_TANGENT_DIST",
             "image_size": [img_w, img_h],
             "created_at": _iso_utc_now(),
         }
@@ -643,7 +753,8 @@ def _run_interactive(
 
         print(f"[lens_cal] Wrote K + dist to {homography_json_path}")
         print(
-            f"[lens_cal] RMS={rms:.4f}px, {num_pts} pts "
+            f"[lens_cal] f={f_opt:.1f}, k1={k1_opt:.4f}, k2={k2_opt:.4f}, "
+            f"cost={total_cost:.1f}px², {num_pts} pts "
             f"({num_auto} auto + {num_manual} manual + 4 corners)"
         )
 
