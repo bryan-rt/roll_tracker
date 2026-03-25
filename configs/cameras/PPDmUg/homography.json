@@ -1,6 +1,27 @@
 {
-  "camera_matrix": null,
-  "dist_coefficients": null,
+  "camera_matrix": [
+    [
+      1116.3843655413666,
+      0.0,
+      640.0
+    ],
+    [
+      0.0,
+      1116.3843655413666,
+      360.0
+    ],
+    [
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "dist_coefficients": [
+    -0.5015526153596579,
+    0.2625057595809528,
+    0.0,
+    0.0
+  ],
   "H": [
     [
       -26.894766958265542,
@@ -84,5 +105,34 @@
     "grid_spacing_m": 0.5,
     "sample_step_m": 0.05,
     "accepted": true
+  },
+  "lens_calibration": {
+    "method": "collinearity_optimization",
+    "f": 1116.3843655413666,
+    "k1": -0.5015526153596579,
+    "k2": 0.2625057595809528,
+    "collinearity_cost": 169.26828937990192,
+    "per_edge_rms": {
+      "top": 1.412,
+      "right": 1.697,
+      "bottom": 0.646,
+      "left": 1.003
+    },
+    "num_points": 84,
+    "auto_detected_points": 80,
+    "manual_points": 0,
+    "rejected_points": 16,
+    "points_per_edge": {
+      "top": 21,
+      "right": 36,
+      "bottom": 9,
+      "left": 24
+    },
+    "flags": "FIX_PRINCIPAL_POINT|FIX_ASPECT_RATIO|FIX_TANGENT_DIST",
+    "image_size": [
+      1280,
+      720
+    ],
+    "created_at": "2026-03-25T20:26:28.536250+00:00"
   }
 }
