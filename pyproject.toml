@@ -27,7 +27,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/bjj_pipeline"]
+packages = ["src/bjj_pipeline", "src/calibration_pipeline"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src/bjj_pipeline"]
+include = ["src/bjj_pipeline", "src/calibration_pipeline"]
