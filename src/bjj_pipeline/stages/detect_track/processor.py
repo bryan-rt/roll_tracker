@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any, Dict, Optional
+
 import numpy as np
 
 from bjj_pipeline.stages.detect_track.detector import DetectorBackend
 from bjj_pipeline.stages.detect_track.tracker import TrackerBackend
 from bjj_pipeline.stages.detect_track.types import Detection, TrackState, OverlayItem
+from bjj_pipeline.contracts.f0_projection import project_to_world
 from bjj_pipeline.stages.detect_track.quality import (
     bbox_from_mask,
     bbox_fallback_mask,
@@ -13,7 +17,6 @@ from bjj_pipeline.stages.detect_track.quality import (
     mask_passes_gate,
     contact_point_from_mask,
     contact_point_from_bbox,
-    project_uv_to_xy,
     point_in_mat,
     compute_velocity,
     is_physics_warning,
@@ -60,6 +63,8 @@ class StageAProcessor:
         *,
         config: Any,
         homography: np.ndarray,
+        camera_matrix: Optional[np.ndarray] = None,
+        dist_coefficients: Optional[np.ndarray] = None,
         mat_blueprint: Any,
         writer: StageAWriter,
         detector: DetectorBackend,
@@ -67,13 +72,51 @@ class StageAProcessor:
     ):
         self.cfg = config
         self.H = homography
+        self.camera_matrix = camera_matrix
+        self.dist_coefficients = dist_coefficients
         self.mat_blueprint = mat_blueprint
         self.writer = writer
         self.detector = detector
         self.tracker = tracker
+        self._projection_debug_written = False
 
         # Tracklet state for velocity / physics
         self._track_state: Dict[str, TrackState] = {}
+
+    # ---------------------------------------------------------
+    # Debug helpers (CP16a)
+    # ---------------------------------------------------------
+
+    def _write_projection_debug(
+        self, frame_index: int, u: float, v: float, x_m: float, y_m: float
+    ) -> None:
+        """Write first-point-per-clip projection debug artifact to _debug/."""
+        self._projection_debug_written = True
+        undistortion_active = (
+            self.camera_matrix is not None and self.dist_coefficients is not None
+        )
+        debug_dir = Path(self.writer.layout.clip_root) / "_debug"
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        entry = {
+            "frame": frame_index,
+            "pixel_xy": [u, v],
+            "world_xy": [x_m, y_m],
+            "undistortion_applied": undistortion_active,
+            "camera_id": self.writer.camera_id,
+        }
+        debug_path = debug_dir / "projection_debug.jsonl"
+        with open(debug_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry) + "\n")
+        # Also emit audit event for the projection config
+        self.writer.audit(
+            "projection_config",
+            {
+                "undistortion_active": undistortion_active,
+                "camera_matrix_present": self.camera_matrix is not None,
+                "dist_coefficients_present": self.dist_coefficients is not None,
+                "projection_utility": "f0_projection.project_to_world",
+            },
+        )
 
     # ---------------------------------------------------------
     # Public API
@@ -301,8 +344,17 @@ class StageAProcessor:
             x_m = y_m = None
             on_mat = None
             if u is not None and v is not None:
-                x_m, y_m = project_uv_to_xy(self.H, float(u), float(v))
+                x_m, y_m = project_to_world(
+                    (float(u), float(v)),
+                    self.H,
+                    camera_matrix=self.camera_matrix,
+                    dist_coefficients=self.dist_coefficients,
+                )
                 on_mat = point_in_mat(float(x_m), float(y_m), self.mat_blueprint)
+
+                # CP16a: write first-point debug artifact once per clip
+                if not self._projection_debug_written:
+                    self._write_projection_debug(frame_index, float(u), float(v), float(x_m), float(y_m))
 
             vx = vy = None
             # physics audit only

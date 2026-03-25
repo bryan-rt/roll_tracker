@@ -24,6 +24,7 @@ import numpy as np
 import pandas as pd
 
 from bjj_pipeline.contracts.f0_paths import ClipOutputLayout
+from bjj_pipeline.contracts.f0_projection import CameraProjection, load_calibration_from_payload
 from bjj_pipeline.contracts.f0_validate import (
 	validate_detections_df,
 	validate_stage_A_contact_points_df,
@@ -74,15 +75,21 @@ def _load_mat_blueprint(cfg: Any) -> Dict[str, Any]:
 	return {}
 
 
-def _load_homography_matrix(cfg: Any, camera_id: str) -> np.ndarray:
-	# Prefer explicit config path
+def _load_homography_matrix(cfg: Any, camera_id: str) -> CameraProjection:
+	"""Load homography + optional lens calibration for camera.
+
+	NOTE: This isolation-path loader does NOT apply direction correction
+	(unlike the multiplex_runner version). Known pre-existing issue — not
+	addressed in CP16a.
+	"""
 	p = _cfg_get(cfg, "homography_path", None)
 	if p:
 		pp = Path(p)
 		if pp.exists():
 			j = _load_json(pp)
-			H = np.asarray(j.get("H", j.get("homography", j.get("matrix"))), dtype=np.float64)
-			return H.reshape((3, 3))
+			H = np.asarray(j.get("H", j.get("homography", j.get("matrix"))), dtype=np.float64).reshape((3, 3))
+			cm, dc = load_calibration_from_payload(j)
+			return CameraProjection(H=H, camera_matrix=cm, dist_coefficients=dc)
 
 	# Typical camera config locations
 	cam_dir = Path("configs") / "cameras" / camera_id
@@ -94,8 +101,9 @@ def _load_homography_matrix(cfg: Any, camera_id: str) -> np.ndarray:
 	for pp in candidates:
 		if pp.exists():
 			j = _load_json(pp)
-			H = np.asarray(j.get("H", j.get("homography", j.get("matrix"))), dtype=np.float64)
-			return H.reshape((3, 3))
+			H = np.asarray(j.get("H", j.get("homography", j.get("matrix"))), dtype=np.float64).reshape((3, 3))
+			cm, dc = load_calibration_from_payload(j)
+			return CameraProjection(H=H, camera_matrix=cm, dist_coefficients=dc)
 
 	raise FileNotFoundError(
 		f"Homography not found for camera_id={camera_id}. "
@@ -145,8 +153,8 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 			raise KeyError("Stage A real mode requires inputs['clip_path'] (or inputs['clip']).")
 		frame_iter = FrameIterator(Path(str(clip_path)))
 
-	# Load homography + blueprint
-	H = _load_homography_matrix(config, camera_id)
+	# Load homography + calibration + blueprint
+	proj = _load_homography_matrix(config, camera_id)
 	mat_blueprint = inputs.get("mat_blueprint", None) or _load_mat_blueprint(config)
 
 	# Writer
@@ -192,7 +200,9 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 
 	processor = StageAProcessor(
 		config=config,
-		homography=H,
+		homography=proj.H,
+		camera_matrix=proj.camera_matrix,
+		dist_coefficients=proj.dist_coefficients,
 		mat_blueprint=mat_blueprint,
 		writer=writer,
 		detector=detector,

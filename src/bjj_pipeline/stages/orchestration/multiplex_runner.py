@@ -11,6 +11,7 @@ import pandas as pd
 
 from bjj_pipeline.contracts.f0_manifest import ClipManifest, write_manifest
 from bjj_pipeline.contracts.f0_paths import ClipOutputLayout
+from bjj_pipeline.contracts.f0_projection import CameraProjection, load_calibration_from_payload
 from bjj_pipeline.core.frame_iterator import FrameIterator, FramePacket
 from bjj_pipeline.viz.mux_visualizer import MuxVisualizer, load_mat_blueprint
 
@@ -81,12 +82,16 @@ def _homography_to_img_to_mat(h: np.ndarray, payload: Dict[str, Any] | None = No
     return np.linalg.inv(H)
 
 
-def _load_homography_matrix(cfg: Any, camera_id: str) -> np.ndarray:
-    """Load 3x3 homography matrix for camera.
+def _load_homography_matrix(cfg: Any, camera_id: str) -> CameraProjection:
+    """Load 3x3 homography matrix + optional calibration for camera.
 
     D7 preflight guarantees this exists and is valid. For Stage A geometry, we require
     an image(px)->mat/world transform. Repo homography.json currently stores mat->image,
     so we convert to image->mat here (with a correspondence-based direction check).
+
+    Returns a ``CameraProjection`` named tuple with H, camera_matrix, and
+    dist_coefficients.  camera_matrix / dist_coefficients are None until CP16b
+    provides real lens calibration values.
     """
     p = _cfg_get(cfg, "homography_path", None)
     if p:
@@ -94,7 +99,8 @@ def _load_homography_matrix(cfg: Any, camera_id: str) -> np.ndarray:
         if pp.exists():
             j = _load_json(pp)
             H_raw = np.asarray(j.get("H", j.get("homography", j.get("matrix"))), dtype=np.float64)
-            return _homography_to_img_to_mat(H_raw, j)
+            cm, dc = load_calibration_from_payload(j)
+            return CameraProjection(H=_homography_to_img_to_mat(H_raw, j), camera_matrix=cm, dist_coefficients=dc)
 
     cam_dir = Path("configs") / "cameras" / camera_id
     candidates = [
@@ -106,7 +112,8 @@ def _load_homography_matrix(cfg: Any, camera_id: str) -> np.ndarray:
         if pp.exists():
             j = _load_json(pp)
             H_raw = np.asarray(j.get("H", j.get("homography", j.get("matrix"))), dtype=np.float64)
-            return _homography_to_img_to_mat(H_raw, j)
+            cm, dc = load_calibration_from_payload(j)
+            return CameraProjection(H=_homography_to_img_to_mat(H_raw, j), camera_matrix=cm, dist_coefficients=dc)
 
     raise FileNotFoundError(f"Homography not found for camera_id={camera_id}. Tried: {candidates}")
 
@@ -409,7 +416,7 @@ def run_multiplex_AC(*,
                     ) from e
             else:
                 layout.ensure_dirs_for_stage("A")
-                H = _load_homography_matrix(resolved_config, camera_id)
+                proj = _load_homography_matrix(resolved_config, camera_id)
                 blueprint = load_mat_blueprint(Path("configs") / "mat_blueprint.json")
 
                 stage_a_writer = StageAWriter(layout=layout, clip_id=manifest.clip_id, camera_id=camera_id)
@@ -478,7 +485,9 @@ def run_multiplex_AC(*,
 
                     stage_a_processor = StageAProcessor(
                         config=resolved_config,
-                        homography=H,
+                        homography=proj.H,
+                        camera_matrix=proj.camera_matrix,
+                        dist_coefficients=proj.dist_coefficients,
                         mat_blueprint=blueprint,
                         writer=stage_a_writer,
                         detector=detector,

@@ -46,6 +46,14 @@ class CameraConfig(BaseModel):
         default=None,
         description="Optional 3x3 homography matrix (row-major)",
     )
+    camera_matrix: Optional[List[List[Numeric]]] = Field(
+        default=None,
+        description="Optional 3x3 intrinsic camera matrix K (row-major). CP16b populates.",
+    )
+    dist_coefficients: Optional[List[Numeric]] = Field(
+        default=None,
+        description="Optional distortion coefficients [k1,k2,p1,p2]. CP16b populates.",
+    )
     meters_per_pixel: Optional[float] = Field(default=None, gt=0, description="Metric scale for pixel distance")
     fps: Optional[float] = Field(default=None, gt=0, description="Frames per second for the clip")
     mat_width: Optional[int] = Field(default=None, gt=0, description="Optional mat width in pixels")
