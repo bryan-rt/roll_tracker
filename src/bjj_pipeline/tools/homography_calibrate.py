@@ -47,6 +47,21 @@ def _load_existing_json(path: Path) -> Dict[str, Any]:
         return json.load(f)
 
 
+def _load_lens_calibration(path: Path) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+    """Load K + dist from existing homography.json if present and non-null."""
+    if not path.exists():
+        return None, None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        cm = data.get("camera_matrix")
+        dc = data.get("dist_coefficients")
+        if cm is not None and dc is not None:
+            return np.asarray(cm, dtype=np.float64), np.asarray(dc, dtype=np.float64)
+    except (json.JSONDecodeError, OSError):
+        pass
+    return None, None
+
+
 def _write_homography_json(
     out_path: Path,
     camera_id: str,
@@ -56,17 +71,24 @@ def _write_homography_json(
 ) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # Read-then-merge: preserve fields from existing file (e.g. camera_matrix,
+    # dist_coefficients written by lens_calibration).
+    existing: Dict[str, Any] = {}
+    if out_path.exists():
+        try:
+            existing = json.loads(out_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            existing = {}
+
     payload: Dict[str, Any] = {
-        "H": _normalize_h(H).astype(float).tolist(),  # matches your reference artifact
+        **existing,
+        "H": _normalize_h(H).astype(float).tolist(),
         "camera_id": camera_id,
         "source": source,
         "created_at": _iso_utc_now(),
     }
     if extra:
-        # Additive only — never break existing keys
         for k, v in extra.items():
-            if k in payload:
-                continue
             payload[k] = v
 
     with out_path.open("w") as f:
@@ -381,6 +403,12 @@ def _interactive_calibrate(
     if not ok or frame_bgr is None:
         raise RuntimeError(f"Could not read first frame from: {video_path}")
 
+    # Auto-undistort if lens calibration exists (CP16b)
+    _K, _dist = _load_lens_calibration(out_path)
+    if _K is not None and _dist is not None:
+        frame_bgr = cv2.undistort(frame_bgr, _K, _dist)
+        print(f"[D7] Applied lens undistortion (K diag: {_K[0,0]:.1f}, {_K[1,1]:.1f})")
+
     frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
 
     blueprint = _try_load_mat_blueprint(mat_blueprint_path)
@@ -606,6 +634,13 @@ def _interactive_calibrate_overlay_rect_fixed(
     cap.release()
     if not ok or frame_bgr is None:
         raise RuntimeError(f"Could not read first frame from: {video_path}")
+
+    # Auto-undistort if lens calibration exists (CP16b)
+    _K, _dist = _load_lens_calibration(out_path)
+    if _K is not None and _dist is not None:
+        frame_bgr = cv2.undistort(frame_bgr, _K, _dist)
+        print(f"[D7] Applied lens undistortion (K diag: {_K[0,0]:.1f}, {_K[1,1]:.1f})")
+
     frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
     img_h, img_w = frame_rgb.shape[:2]
 
