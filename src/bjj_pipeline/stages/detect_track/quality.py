@@ -180,7 +180,12 @@ def contact_point_from_mask(
 
 
 def project_uv_to_xy(H: np.ndarray, u_px: float, v_px: float) -> Tuple[float, float]:
-	"""Apply 3x3 homography H to pixel point (u,v) -> (x,y) in world/mat space."""
+	"""Apply 3x3 homography H to pixel point (u,v) -> (x,y) in world/mat space.
+
+	.. deprecated:: CP16a
+		Use ``bjj_pipeline.contracts.f0_projection.project_to_world()`` instead.
+		That utility adds optional lens undistortion before homography.
+	"""
 	p = np.array([u_px, v_px, 1.0], dtype=np.float64)
 	q = H @ p
 	if float(q[2]) == 0.0:

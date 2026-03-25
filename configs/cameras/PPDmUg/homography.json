@@ -1,4 +1,6 @@
 {
+  "camera_matrix": null,
+  "dist_coefficients": null,
   "H": [
     [
       -26.894766958265542,
