@@ -623,7 +623,7 @@ def _run_interactive(
             x0=np.array([f0, 0.0, 0.0]),
             args=(all_img_arr, edge_groups, cx, cy),
             method="Powell",
-            bounds=[(200.0, 3000.0), (-1.0, 1.0), (-1.0, 1.0)],
+            bounds=[(200.0, 3000.0), (-5.0, 5.0), (-5.0, 5.0)],
             options={"maxiter": 5000, "ftol": 1e-6},
         )
 
