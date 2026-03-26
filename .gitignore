@@ -179,9 +179,11 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 
-# Media outputs (never commit videos)
+# Media outputs (never commit videos or images)
 *.mp4
 *.MP4
+*.png
+*.PNG
 
 # Project archives (do not commit retained artifacts)
 archive/
