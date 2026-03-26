@@ -217,7 +217,6 @@ def _process_clip_phase1(mp4_path_str: str, cam_id: str, settings_dict: dict) ->
             config_sources=cfg_sources,
             config_hash_override=cfg_hash,
             to_stage="C",
-            mode="multiplex_AC",
             visualize=settings.VISUALIZE,
         )
         return {"status": "completed", "clip": mp4_path_str, "cam_id": cam_id}
@@ -244,7 +243,6 @@ def _process_clip_phase2(mp4_path: Path, cam_id: str, settings: ProcessorSetting
         config_hash_override=cfg_hash,
         from_stage="D",
         to_stage="F",
-        mode="multiplex_AC",
         visualize=False,
     )
 

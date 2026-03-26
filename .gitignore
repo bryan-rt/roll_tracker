@@ -184,6 +184,8 @@ cython_debug/
 *.MP4
 *.png
 *.PNG
+*.zip
+*.ZIP
 
 # Project archives (do not commit retained artifacts)
 archive/

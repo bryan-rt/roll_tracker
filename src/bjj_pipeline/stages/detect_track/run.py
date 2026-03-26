@@ -1,5 +1,9 @@
 """Stage A runner: Detect + Tracklets (local association).
 
+WARNING: This isolation runner does NOT apply homography direction correction.
+It is preserved for standalone Stage A debugging only.
+For production runs, use the CLI (which always runs via multiplex_AC).
+
 This module intentionally exposes a stable orchestration contract:
 
 	run(config: dict, inputs: dict) -> dict
