@@ -431,6 +431,7 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 | Calibration pipeline as separate top-level module | Decided | `src/calibration_pipeline/` sits alongside `src/bjj_pipeline`, not inside it. Rationale: mat walk and drift detection are gym initialization and maintenance workflows, not per-session pipeline stages. Outputs (K + distortion coefficients, refined homographies) feed into `src/bjj_pipeline` via shared config files and Supabase. One-time and periodic runs, not triggered by the session processor. |
 | Inter-camera homography sync approach | Decided | Mat walk uses single known tagged person walking mat grid. Labeled world coordinate correspondences across cameras at same timestamps. Least-squares affine solve aligns per-camera coordinate systems globally. Requires per-camera lens undistortion first (K + distortion coefficients) before homography computation — undistorted frames only. Three correction layers with different update frequencies: (1) Lens calibration — one-time per camera, essentially permanent. (2) Per-camera homography — nightly recalibration attempt. (3) Inter-camera affine alignment — derived from mat walk. |
 | Multipass mode removed (CP16-cleanup) | Decided | `multipass` execution mode removed from CLI and pipeline. `multiplex_AC` is now the only execution path — no `--mode` flag. Phase 1 (A+C) always runs via `run_multiplex_AC()` (single video decode), Phase 2 (D+E+F) runs sequentially. `detect_track/run.py` preserved as standalone Stage A isolation runner with warning comment (does NOT apply homography direction correction). Processor service unchanged (already used multiplex_AC). |
+| Stage C tag detection sensitivity tuning | Decided | Tuned 4 parameters to increase tag observation frequency for CP17. `k_verify: 30→10` (3x more checks in verified state — highest impact, produced +1 observation on test clip). `n_ramp: 60→90` (longer aggressive scan window). `blur.min_var: 60→50` (moderate relaxation — 60 was rejecting 37% of candidates; 40 tested but added wasted attempts with no extra hits; 50 is the sweet spot). `motion.dv_thresh_mps: 2.5→2.0` (catch tags during slower transitions). NOT changed: require_on_mat (off-mat rejections are correct), contrast.min_std (not a rejection source), min_roi_side_px/min_roi_area_px (negligible rejections). Validated on 3 clips: +50% observations on FP7oJQ-200247, same on others (tag visibility is the fundamental limit with single-tag test data). |
 
 ---
 
@@ -482,7 +483,7 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 
   **Known open issue:** PPDmUg-20260318-202751 fails consistently at Stage D2 — `int(bank_df["frame_index"].min())` returns NAType. Degenerate clip with extremely sparse tracklets producing all-NaN frame_index column. Requires null-safe integer handling fix in D2 `compute_edge_costs()`. All other 35 clips pass A→F.
 
-- **Last updated:** 2026-03-26 (d3_ilp removed — consolidated on d3_ilp2 MCF solver, shared helpers in d3_common.py)
+- **Last updated:** 2026-03-26 (Stage C tag detection sensitivity tuning — k_verify 30→10, n_ramp 60→90, blur 60→50, motion 2.5→2.0)
 
 ---
 
