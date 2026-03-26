@@ -85,10 +85,9 @@ def run(
 	to_stage: Optional[str] = typer.Option(None, help="Stage letter to end at (A..F)"),
 	force: bool = typer.Option(False, help="Force rerun all stages in window"),
 	force_stage: List[str] = typer.Option([], help="Force specific stage letters (repeatable)"),
-	mode: str = typer.Option("multipass", help="Execution mode: multipass|multiplex_AC"),
 	visualize: bool = typer.Option(
 		False,
-		help="Write dev-only debug videos under outputs/<clip_id>/_debug/ (multiplex mode).",
+		help="Write dev-only debug videos under outputs/<clip_id>/_debug/.",
 	),
 	interactive: bool = typer.Option(False, help="Enable interactive calibrators (e.g., homography preflight)"),
 ) -> None:
@@ -119,11 +118,8 @@ def run(
 			cfg_hash = _config_hash(cfg)
 			cfg_sources = list(cfg_sources) + ["<runtime>:--visualize enables stages.stage_D.qa.enabled"]
 
-		# Default multiplex window to A..C unless user overrides to_stage
 		effective_from = from_stage if from_stage in {"A","B","C","D","E","F"} else None
 		effective_to = to_stage if to_stage in {"A","B","C","D","E","F"} else None
-		if mode == "multiplex_AC" and effective_to is None:
-			effective_to = "C"
 
 		fl = [s for s in force_stage]
 		fl_letters = [s for s in fl if s in {"A","B","C","D","E","F"}]
@@ -144,7 +140,6 @@ def run(
 			config_hash_override=cfg_hash,
 			from_stage=effective_from,
 			to_stage=effective_to,
-			mode=mode,
 			visualize=visualize,
 		)
 		return None

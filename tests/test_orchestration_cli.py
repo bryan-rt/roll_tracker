@@ -8,11 +8,22 @@ import pytest
 from typer.testing import CliRunner
 
 from bjj_pipeline.stages.orchestration.cli import app
-from bjj_pipeline.stages.orchestration.pipeline import required_outputs_for_stage
+from bjj_pipeline.stages.orchestration.pipeline import (
+    required_outputs_for_stage,
+    validate_ingest_path,
+    compute_output_root,
+)
 from bjj_pipeline.contracts.f0_paths import ClipOutputLayout
 
 
 runner = CliRunner()
+
+
+def _layout_for_clip(ingest: Path, cam: str) -> ClipOutputLayout:
+    """Build a ClipOutputLayout matching the pipeline's actual output path."""
+    info = validate_ingest_path(ingest, cam)
+    scoped_root = compute_output_root(info)
+    return ClipOutputLayout(clip_id=ingest.stem, root=scoped_root)
 
 
 def make_ingest_path(tmp_path: Path, cam: str, stem: str) -> Path:
@@ -267,6 +278,25 @@ def fake_run_factory(letter: str):
     return _run
 
 
+def fake_multiplex_AC(*, ingest_path, layout, manifest, camera_id,
+                      runtime_config, resolved_config, cfg_hash, run_plan,
+                      visualize=False):
+    """Test double for run_multiplex_AC — writes Stage A and/or C outputs."""
+    clip_id = layout.clip_id
+    cam = camera_id
+    if run_plan.get("A", {}).get("should_run", False):
+        write_stage_a(layout, clip_id, cam)
+    if run_plan.get("C", {}).get("should_run", False):
+        write_stage_c(layout, clip_id, cam)
+
+
+def failing_multiplex_AC(*, ingest_path, layout, manifest, camera_id,
+                         runtime_config, resolved_config, cfg_hash, run_plan,
+                         visualize=False):
+    """Test double that raises to simulate Stage A failure."""
+    raise RuntimeError("boom")
+
+
 @pytest.fixture
 def clip_env(tmp_path: Path):
     cam = "cam03"
@@ -306,8 +336,10 @@ def test_missing_homography_fails_fast_noninteractive(monkeypatch, clip_env, tmp
 def test_homography_present_allows_stage_a(monkeypatch, clip_env, tmp_path):
     monkeypatch.chdir(tmp_path)
     _write_homography(tmp_path, clip_env["cam"])
-    from bjj_pipeline.stages.detect_track import run as mA
-    monkeypatch.setattr(mA, "run", fake_run_factory("A"))
+    monkeypatch.setattr(
+        "bjj_pipeline.stages.orchestration.multiplex_runner.run_multiplex_AC",
+        fake_multiplex_AC,
+    )
     res = runner.invoke(app, [
         "run",
         "--clip", str(clip_env["ingest"]),
@@ -341,19 +373,19 @@ def test_run_creates_manifest_and_audit(monkeypatch, clip_env, tmp_path):
         "bjj_pipeline.stages.orchestration.pipeline._probe_video_meta_opencv",
         lambda path: (30.0, 60, 2000)
     )
-    # Patch all stage runs to write minimal outputs
     # Ensure homography present for Stage A preflight
     monkeypatch.chdir(tmp_path)
     _write_homography(tmp_path, clip_env["cam"])
-    from bjj_pipeline.stages.detect_track import run as mA
+    # A+C handled by multiplex mock; D/E/F by sequential loop mocks
+    monkeypatch.setattr(
+        "bjj_pipeline.stages.orchestration.multiplex_runner.run_multiplex_AC",
+        fake_multiplex_AC,
+    )
     from bjj_pipeline.stages.masks import run as mB
-    from bjj_pipeline.stages.tags import run as mC
     from bjj_pipeline.stages.stitch import run as mD
     from bjj_pipeline.stages.matches import run as mE
     from bjj_pipeline.stages.export import run as mF
-    monkeypatch.setattr(mA, "run", fake_run_factory("A"))
     monkeypatch.setattr(mB, "run", fake_run_factory("B"))
-    monkeypatch.setattr(mC, "run", fake_run_factory("C"))
     monkeypatch.setattr(mD, "run", fake_run_factory("D"))
     monkeypatch.setattr(mE, "run", fake_run_factory("E"))
     monkeypatch.setattr(mF, "run", fake_run_factory("F"))
@@ -366,7 +398,7 @@ def test_run_creates_manifest_and_audit(monkeypatch, clip_env, tmp_path):
     ])
     assert res.exit_code == 0
 
-    layout = ClipOutputLayout(clip_id=clip_env["stem"])
+    layout = _layout_for_clip(clip_env["ingest"], clip_env["cam"])
     assert (layout.clip_manifest_path()).exists()
     audit = layout.clip_root / "orchestration_audit.jsonl"
     assert audit.exists()
@@ -378,8 +410,10 @@ def test_skip_when_complete_and_same_config(monkeypatch, clip_env, tmp_path):
     # First run to populate A
     monkeypatch.chdir(tmp_path)
     _write_homography(tmp_path, clip_env["cam"])
-    from bjj_pipeline.stages.detect_track import run as mA
-    monkeypatch.setattr(mA, "run", fake_run_factory("A"))
+    monkeypatch.setattr(
+        "bjj_pipeline.stages.orchestration.multiplex_runner.run_multiplex_AC",
+        fake_multiplex_AC,
+    )
     res1 = runner.invoke(app, [
         "run",
         "--clip", str(clip_env["ingest"]),
@@ -398,15 +432,17 @@ def test_skip_when_complete_and_same_config(monkeypatch, clip_env, tmp_path):
         "--to-stage", "A",
     ])
     assert res2.exit_code == 0
-    audit = (ClipOutputLayout(clip_id=clip_env["stem"]).clip_root / "orchestration_audit.jsonl").read_text(encoding="utf-8")
+    audit = (_layout_for_clip(clip_env["ingest"], clip_env["cam"]).clip_root / "orchestration_audit.jsonl").read_text(encoding="utf-8")
     assert "stage_skipped" in audit
 
 
 def test_force_reruns(monkeypatch, clip_env, tmp_path):
     monkeypatch.chdir(tmp_path)
     _write_homography(tmp_path, clip_env["cam"])
-    from bjj_pipeline.stages.detect_track import run as mA
-    monkeypatch.setattr(mA, "run", fake_run_factory("A"))
+    monkeypatch.setattr(
+        "bjj_pipeline.stages.orchestration.multiplex_runner.run_multiplex_AC",
+        fake_multiplex_AC,
+    )
     # initial run
     runner.invoke(app, [
         "run",
@@ -425,16 +461,15 @@ def test_force_reruns(monkeypatch, clip_env, tmp_path):
         "--force",
     ])
     assert res.exit_code == 0
-    audit = (ClipOutputLayout(clip_id=clip_env["stem"]).clip_root / "orchestration_audit.jsonl").read_text(encoding="utf-8")
+    audit = (_layout_for_clip(clip_env["ingest"], clip_env["cam"]).clip_root / "orchestration_audit.jsonl").read_text(encoding="utf-8")
     assert "stage_started" in audit
 
 
 def test_failure_writes_stage_failed(monkeypatch, clip_env):
-    # Make stage A run raise
-    def bad_run(config, inputs):
-        raise RuntimeError("boom")
-    from bjj_pipeline.stages.detect_track import run as mA
-    monkeypatch.setattr(mA, "run", bad_run)
+    monkeypatch.setattr(
+        "bjj_pipeline.stages.orchestration.multiplex_runner.run_multiplex_AC",
+        failing_multiplex_AC,
+    )
 
     res = runner.invoke(app, [
         "run",
@@ -445,14 +480,16 @@ def test_failure_writes_stage_failed(monkeypatch, clip_env):
         "--force",
     ])
     assert res.exit_code != 0
-    audit = (ClipOutputLayout(clip_id=clip_env["stem"]).clip_root / "orchestration_audit.jsonl").read_text(encoding="utf-8")
+    audit = (_layout_for_clip(clip_env["ingest"], clip_env["cam"]).clip_root / "orchestration_audit.jsonl").read_text(encoding="utf-8")
     assert "stage_failed" in audit
 
 
 def test_status_reports_correctly(monkeypatch, clip_env):
     # Populate A outputs
-    from bjj_pipeline.stages.detect_track import run as mA
-    monkeypatch.setattr(mA, "run", fake_run_factory("A"))
+    monkeypatch.setattr(
+        "bjj_pipeline.stages.orchestration.multiplex_runner.run_multiplex_AC",
+        fake_multiplex_AC,
+    )
     runner.invoke(app, [
         "run",
         "--clip", str(clip_env["ingest"]),
@@ -473,7 +510,7 @@ def test_status_reports_correctly(monkeypatch, clip_env):
 
 def test_validate_nonzero_on_problem(monkeypatch, clip_env):
     # Write invalid detections (bbox x2 < x1) to trigger validation failure
-    layout = ClipOutputLayout(clip_id=clip_env["stem"])
+    layout = _layout_for_clip(clip_env["ingest"], clip_env["cam"])
     layout.ensure_dirs_for_stage("A")
     det = pd.DataFrame([
         {

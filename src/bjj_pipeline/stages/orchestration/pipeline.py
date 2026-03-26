@@ -647,7 +647,6 @@ def run_pipeline(ingest_path: Path, camera_id: str, config: Dict[str, Any], *,
                  from_stage: Optional[StageLetter] = None,
                  to_stage: Optional[StageLetter] = None,
                  interactive: bool = False,
-                 mode: str = "multipass",
                  visualize: bool = False,
                  config_sources: Optional[List[str]] = None,
                  config_hash_override: Optional[str] = None) -> None:
@@ -711,117 +710,110 @@ def run_pipeline(ingest_path: Path, camera_id: str, config: Dict[str, Any], *,
                 ingest_path=ingest_path,
             )
 
-        allowed_modes = {'multipass', 'multiplex_AC'}
-        if mode not in allowed_modes:
-            raise PipelineError(f"invalid mode: {mode}; expected one of {sorted(allowed_modes)}")
-
-        # Optional single-pass multiplexer for stages A/C
-        if mode == 'multiplex_AC':
-            abc_letters = [s.letter for s in stage_list if s.letter in {'A','C'}]
-            if abc_letters:
-                from bjj_pipeline.stages.orchestration.multiplex_runner import run_multiplex_AC
-                run_plan = _compute_stage_run_plan(
-                    manifest,
-                    layout,
-                    abc_letters,
-                    cfg_hash=cfg_hash,
-                    resolved_config=resolved_config,
-                    force_stages=force_stages,
-                )
-                stage_starts: Dict[StageLetter, Tuple[int, str]] = {}
-                # Emit stage_started / stage_skipped events consistent with multipass behavior
-                for letter in abc_letters:
-                    spec0 = next(s for s in stage_list if s.letter == letter)
-                    stage_start_ts0 = _now_ms()
-                    stage_starts[letter] = (stage_start_ts0, spec0.key)
+        # Single-pass multiplexer for stages A/C
+        abc_letters = [s.letter for s in stage_list if s.letter in {'A','C'}]
+        if abc_letters:
+            from bjj_pipeline.stages.orchestration.multiplex_runner import run_multiplex_AC
+            run_plan = _compute_stage_run_plan(
+                manifest,
+                layout,
+                abc_letters,
+                cfg_hash=cfg_hash,
+                resolved_config=resolved_config,
+                force_stages=force_stages,
+            )
+            stage_starts: Dict[StageLetter, Tuple[int, str]] = {}
+            for letter in abc_letters:
+                spec0 = next(s for s in stage_list if s.letter == letter)
+                stage_start_ts0 = _now_ms()
+                stage_starts[letter] = (stage_start_ts0, spec0.key)
+                append_audit(layout, {
+                    'event': 'stage_started',
+                    'timestamp': stage_start_ts0,
+                    'clip_id': clip_id,
+                    'camera_id': camera_id,
+                    'stage': letter,
+                    'stage_key': spec0.key,
+                    'config_hash': cfg_hash,
+                })
+                if not run_plan[letter]['should_run']:
                     append_audit(layout, {
-                        'event': 'stage_started',
-                        'timestamp': stage_start_ts0,
+                        'event': 'stage_skipped',
+                        'timestamp': _now_ms(),
                         'clip_id': clip_id,
                         'camera_id': camera_id,
                         'stage': letter,
                         'stage_key': spec0.key,
                         'config_hash': cfg_hash,
+                        'reason': run_plan[letter]['reason'],
+                        'durations_ms': {'stage': _now_ms() - stage_start_ts0},
                     })
-                    if not run_plan[letter]['should_run']:
+
+            letters_to_run = [l for l in abc_letters if run_plan[l]['should_run']]
+            if letters_to_run or visualize:
+                try:
+                    run_multiplex_AC(
+                        ingest_path=ingest_path,
+                        layout=layout,
+                        manifest=manifest,
+                        camera_id=camera_id,
+                        runtime_config=runtime_config,
+                        resolved_config=resolved_config,
+                        cfg_hash=cfg_hash,
+                        run_plan=run_plan,
+                        visualize=visualize,
+                    )
+                    for letter in letters_to_run:
+                        stage_start_ts0, stage_key0 = stage_starts[letter]
+                        if letter == 'A':
+                            register_stage_A_defaults(manifest, layout)
+                        elif letter == 'C':
+                            manifest.register_artifact(
+                                stage='C', key='tag_observations_jsonl',
+                                relpath=layout.rel_to_clip_root(layout.tag_observations_jsonl()),
+                                content_type='application/jsonl',
+                            )
+                            manifest.register_artifact(
+                                stage='C', key='identity_hints_jsonl',
+                                relpath=layout.rel_to_clip_root(layout.identity_hints_jsonl()),
+                                content_type='application/jsonl',
+                            )
+                            manifest.register_artifact(
+                                stage='C', key='audit_jsonl',
+                                relpath=layout.rel_to_clip_root(layout.audit_jsonl('C')),
+                                content_type='application/jsonl',
+                            )
+                        _validate_stage_outputs(manifest, layout, letter, resolved_config=resolved_config)
+                        write_manifest(manifest, layout.clip_manifest_path())
+
                         append_audit(layout, {
-                            'event': 'stage_skipped',
+                            'event': 'stage_succeeded',
                             'timestamp': _now_ms(),
                             'clip_id': clip_id,
                             'camera_id': camera_id,
                             'stage': letter,
-                            'stage_key': spec0.key,
+                            'stage_key': stage_key0,
                             'config_hash': cfg_hash,
-                            'reason': run_plan[letter]['reason'],
                             'durations_ms': {'stage': _now_ms() - stage_start_ts0},
                         })
+                except Exception as e:
+                    for letter in letters_to_run:
+                        stage_start_ts0, stage_key0 = stage_starts[letter]
+                        append_audit(layout, {
+                            'event': 'stage_failed',
+                            'timestamp': _now_ms(),
+                            'clip_id': clip_id,
+                            'camera_id': camera_id,
+                            'stage': letter,
+                            'stage_key': stage_key0,
+                            'config_hash': cfg_hash,
+                            'error_summary': str(e),
+                            'durations_ms': {'stage': _now_ms() - stage_start_ts0},
+                        })
+                    raise
 
-                letters_to_run = [l for l in abc_letters if run_plan[l]['should_run']]
-                if letters_to_run or visualize:
-                    try:
-                        run_multiplex_AC(
-                            ingest_path=ingest_path,
-                            layout=layout,
-                            manifest=manifest,
-                            camera_id=camera_id,
-                            runtime_config=runtime_config,
-                            resolved_config=resolved_config,
-                            cfg_hash=cfg_hash,
-                            run_plan=run_plan,
-                            visualize=visualize,
-                        )
-                        for letter in letters_to_run:
-                            stage_start_ts0, stage_key0 = stage_starts[letter]
-                            # Register canonical artifacts exactly as in multipass mode
-                            if letter == 'A':
-                                register_stage_A_defaults(manifest, layout)
-                            elif letter == 'C':
-                                manifest.register_artifact(
-                                    stage='C', key='tag_observations_jsonl',
-                                    relpath=layout.rel_to_clip_root(layout.tag_observations_jsonl()),
-                                    content_type='application/jsonl',
-                                )
-                                manifest.register_artifact(
-                                    stage='C', key='identity_hints_jsonl',
-                                    relpath=layout.rel_to_clip_root(layout.identity_hints_jsonl()),
-                                    content_type='application/jsonl',
-                                )
-                                manifest.register_artifact(
-                                    stage='C', key='audit_jsonl',
-                                    relpath=layout.rel_to_clip_root(layout.audit_jsonl('C')),
-                                    content_type='application/jsonl',
-                                )
-                            _validate_stage_outputs(manifest, layout, letter, resolved_config=resolved_config)
-                            write_manifest(manifest, layout.clip_manifest_path())
-
-                            append_audit(layout, {
-                                'event': 'stage_succeeded',
-                                'timestamp': _now_ms(),
-                                'clip_id': clip_id,
-                                'camera_id': camera_id,
-                                'stage': letter,
-                                'stage_key': stage_key0,
-                                'config_hash': cfg_hash,
-                                'durations_ms': {'stage': _now_ms() - stage_start_ts0},
-                            })
-                    except Exception as e:
-                        for letter in letters_to_run:
-                            stage_start_ts0, stage_key0 = stage_starts[letter]
-                            append_audit(layout, {
-                                'event': 'stage_failed',
-                                'timestamp': _now_ms(),
-                                'clip_id': clip_id,
-                                'camera_id': camera_id,
-                                'stage': letter,
-                                'stage_key': stage_key0,
-                                'config_hash': cfg_hash,
-                                'error_summary': str(e),
-                                'durations_ms': {'stage': _now_ms() - stage_start_ts0},
-                            })
-                        raise
-
-                # Remove handled stages so they are not executed again in multipass loop
-                stage_list = [s for s in stage_list if s.letter not in {'A','C'}]
+            # Remove A/C so they are not re-executed in the sequential loop
+            stage_list = [s for s in stage_list if s.letter not in {'A','C'}]
 
         for spec in stage_list:
             stage_letter = spec.letter

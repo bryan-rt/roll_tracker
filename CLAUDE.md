@@ -219,7 +219,7 @@ stage's internals directly.
 | Service | Status | Responsibility |
 |---|---|---|
 | `nest_recorder` | Working | OAuth2 → Nest API → MP4 segments. Production path: `data/raw/nest/{gym_id}/{cam_id}/{YYYY-MM-DD}/{HH}/`. Diag path (no GYM_ID): `data/raw/nest/diag/{TS}/`. Auto-registers cameras to Supabase. `entrypoint.sh` delegates to `diag_v8.sh` scheduler. |
-| `processor` | Working | Polls `data/raw/nest/` for new MP4s, invokes `bjj_pipeline` (A→F) in `multiplex_AC` mode. Wall-clock filter (`MAX_CLIP_AGE_HOURS`, default 6) skips stale clips. Empty-video failures log as `clip_skipped` (not `clip_error`). Session state machine (CP14a): when `SCHEDULE_JSON` is set, groups clips by gym schedule window, writes `.phase1_complete_{cam_id}` / `.session_ready` / `.tag_required` sentinels under `SessionOutputLayout`. Config: `SCAN_ROOT`, `OUTPUT_ROOT`, `POLL_INTERVAL_SECONDS`, `GYM_ID`, `MAX_CLIP_AGE_HOURS`, `SCHEDULE_JSON`, `SESSION_END_BUFFER_MINUTES`. |
+| `processor` | Working | Polls `data/raw/nest/` for new MP4s, invokes `bjj_pipeline` (A→F). Wall-clock filter (`MAX_CLIP_AGE_HOURS`, default 6) skips stale clips. Empty-video failures log as `clip_skipped` (not `clip_error`). Session state machine (CP14a): when `SCHEDULE_JSON` is set, groups clips by gym schedule window, writes `.phase1_complete_{cam_id}` / `.session_ready` / `.tag_required` sentinels under `SessionOutputLayout`. Config: `SCAN_ROOT`, `OUTPUT_ROOT`, `POLL_INTERVAL_SECONDS`, `GYM_ID`, `MAX_CLIP_AGE_HOURS`, `SCHEDULE_JSON`, `SESSION_END_BUFFER_MINUTES`. |
 | `uploader` | Working | Polls `outputs/`, bundles + uploads to Supabase, writes `gym_id` to `videos` row from export manifest, resolves fighter tag IDs → profile IDs via active gym check-ins, skips `no_matches` manifests, deletes on confirm |
 
 The processor service has a documented I/O contract at `services/processor/contracts/input_output.md`.
@@ -430,6 +430,7 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 | Option B undistort-on-projection | Decided | Pixel-to-world projection uses `cv2.undistortPoints()` on pixel coordinates before applying homography rather than undistorting full frames. More efficient than full-frame undistortion at 30fps across multiple cameras. Strict enforcement: `project_to_world()` is the only permitted projection path in `src/bjj_pipeline` — no stage calls homography directly. |
 | Calibration pipeline as separate top-level module | Decided | `src/calibration_pipeline/` sits alongside `src/bjj_pipeline`, not inside it. Rationale: mat walk and drift detection are gym initialization and maintenance workflows, not per-session pipeline stages. Outputs (K + distortion coefficients, refined homographies) feed into `src/bjj_pipeline` via shared config files and Supabase. One-time and periodic runs, not triggered by the session processor. |
 | Inter-camera homography sync approach | Decided | Mat walk uses single known tagged person walking mat grid. Labeled world coordinate correspondences across cameras at same timestamps. Least-squares affine solve aligns per-camera coordinate systems globally. Requires per-camera lens undistortion first (K + distortion coefficients) before homography computation — undistorted frames only. Three correction layers with different update frequencies: (1) Lens calibration — one-time per camera, essentially permanent. (2) Per-camera homography — nightly recalibration attempt. (3) Inter-camera affine alignment — derived from mat walk. |
+| Multipass mode removed (CP16-cleanup) | Decided | `multipass` execution mode removed from CLI and pipeline. `multiplex_AC` is now the only execution path — no `--mode` flag. Phase 1 (A+C) always runs via `run_multiplex_AC()` (single video decode), Phase 2 (D+E+F) runs sequentially. `detect_track/run.py` preserved as standalone Stage A isolation runner with warning comment (does NOT apply homography direction correction). Processor service unchanged (already used multiplex_AC). |
 
 ---
 
@@ -481,7 +482,7 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 
   **Known open issue:** PPDmUg-20260318-202751 fails consistently at Stage D2 — `int(bank_df["frame_index"].min())` returns NAType. Degenerate clip with extremely sparse tracklets producing all-NaN frame_index column. Requires null-safe integer handling fix in D2 `compute_edge_costs()`. All other 35 clips pass A→F.
 
-- **Last updated:** 2026-03-25 (CP16b completed — calibration pipeline skeleton + functional lens calibration)
+- **Last updated:** 2026-03-26 (CP16-cleanup — removed multipass mode, multiplex_AC is now the only execution path)
 
 ---
 
