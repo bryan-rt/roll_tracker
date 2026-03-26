@@ -353,3 +353,6 @@ cross_camera:
   co_observation_window_frames: 90
   min_tag_observations: 2
   min_assignment_confidence: 0.5
+  # CP17: two-pass re-solve with cross-camera tag corroboration
+  pass2_enabled: true
+  corroboration_miss_multiplier: 10.0

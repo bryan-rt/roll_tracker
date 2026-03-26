@@ -640,17 +640,29 @@ def _extract_must_link_groups_from_constraints(constraints: Dict[str, Any] | Non
 	if not constraints or not isinstance(constraints, dict):
 		return {}
 	mg = constraints.get("must_link_groups")
-	if not isinstance(mg, dict):
-		return {}
 	out: Dict[str, List[str]] = {}
-	for k, v in mg.items():
-		tk = _normalize_tag_key(k)
-		if tk is None:
-			continue
-		if isinstance(v, list):
-			out[tk] = [str(x) for x in v]
-		else:
-			out[tk] = [str(v)]
+	if isinstance(mg, list):
+		# D2 canonical format: list of {anchor_key, tracklet_ids}
+		for g in mg:
+			if not isinstance(g, dict):
+				continue
+			ak = g.get("anchor_key")
+			tk = _normalize_tag_key(ak) if isinstance(ak, str) else None
+			if tk is None:
+				continue
+			tids = g.get("tracklet_ids", [])
+			if isinstance(tids, list):
+				out.setdefault(tk, []).extend(str(x) for x in tids)
+	elif isinstance(mg, dict):
+		# Legacy dict format: {anchor_key: [tracklet_ids]}
+		for k, v in mg.items():
+			tk = _normalize_tag_key(k)
+			if tk is None:
+				continue
+			if isinstance(v, list):
+				out[tk] = [str(x) for x in v]
+			else:
+				out[tk] = [str(v)]
 	for tk in list(out.keys()):
 		vals = []
 		for x in out.get(tk, []):
@@ -1459,9 +1471,17 @@ def _solve_identity_ilp2_identity_only(
 		# deterministic fallback
 		miss_penalty_scaled = int(round(50.0 * float(scale)))
 
+	# CP17: extract cross-camera corroboration evidence for per-tag penalty boost
+	cross_camera = (constraints or {}).get("cross_camera_evidence", {})
+	corroborated_tags: Dict[str, Any] = cross_camera.get("corroborated_tags", {})
+	corroboration_multiplier = float(
+		(constraints or {}).get("corroboration_miss_multiplier", 10.0)
+	)
+
 	# These are created later (after model exists) in the MCF-2a block.
 	visit_vars: Dict[str, Any] = {}
 	miss_vars: Dict[str, Any] = {}
+	miss_var_tag_key: Dict[str, str] = {}  # ping_id -> tag_key (for per-tag penalty)
 	must_link_visit_vars: Dict[str, Any] = {}
 	must_link_miss_vars: Dict[str, Any] = {}
 	tag_pair_pref_vars: Dict[str, Any] = {}
@@ -1844,6 +1864,7 @@ def _solve_identity_ilp2_identity_only(
 
 			visit_vars[pid] = visit
 			miss_vars[pid] = miss
+			miss_var_tag_key[pid] = tk
 
 	# --- MCF-3a: soft must-link support from resolved nodes ---
 	# If a tag has resolved must-link-supported nodes in the current graph, prefer that
@@ -1970,14 +1991,23 @@ def _solve_identity_ilp2_identity_only(
 			terms.append(int(penalty_scaled) * uvar)
 
 	# MCF-2a: miss penalties (soft enforcement)
+	# CP17: corroborated tags get boosted miss penalty
 	if bound_pings and miss_vars and miss_penalty_scaled > 0:
 		for pid, mv in miss_vars.items():
-			terms.append(int(miss_penalty_scaled) * mv)
+			tk = miss_var_tag_key.get(pid, "")
+			if tk in corroborated_tags:
+				terms.append(int(miss_penalty_scaled * corroboration_multiplier) * mv)
+			else:
+				terms.append(int(miss_penalty_scaled) * mv)
 
 	# MCF-3a: must-link support miss penalties (soft behavioral preference)
+	# CP17: corroborated tags get boosted must-link penalty
 	if must_link_miss_vars and must_link_penalty_scaled > 0:
 		for tk, mv in must_link_miss_vars.items():
-			terms.append(int(must_link_penalty_scaled) * mv)
+			if tk in corroborated_tags:
+				terms.append(int(must_link_penalty_scaled * corroboration_multiplier) * mv)
+			else:
+				terms.append(int(must_link_penalty_scaled) * mv)
 
 	# MCF-3b: reward local tag-consistent pair realization through GROUP/GROUPISH nodes.
 	# This is the primary hypothesis-steering mechanism that should make the identity

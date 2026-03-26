@@ -595,6 +595,70 @@ def _run_session_phase2(
                      error=str(e), traceback=traceback.format_exc())
                 global_id_map = {}
 
+        # --- CP17 Pass 2: re-solve with cross-camera tag corroboration ---
+        cc_cfg = cfg.get("cross_camera", {})
+        pass2_enabled = bool(cc_cfg.get("pass2_enabled", False))
+        if pass2_enabled and len(adapters) >= 2 and len(manifests) >= 2:
+            try:
+                from bjj_pipeline.stages.stitch.cross_camera_evidence import (
+                    build_cross_camera_tag_evidence,
+                )
+                cc_evidence = build_cross_camera_tag_evidence(
+                    cam_ids=list(adapters.keys()),
+                    adapter_map=adapters,
+                )
+                n_corr = cc_evidence.get("n_corroborated_tags", 0)
+                _log("cp17_pass2_evidence", session_id=session_id,
+                     n_corroborated_tags=n_corr,
+                     n_total_tags=cc_evidence.get("n_total_tags_observed", 0))
+
+                if n_corr > 0:
+                    corr_mult = float(cc_cfg.get("corroboration_miss_multiplier", 10.0))
+                    overlay = {
+                        "cross_camera_evidence": cc_evidence,
+                        "corroboration_miss_multiplier": corr_mult,
+                    }
+                    for cam_id in cam_ids:
+                        if cam_id not in manifests:
+                            continue
+                        try:
+                            _log("cp17_pass2_start", session_id=session_id, cam_id=cam_id)
+                            p2_manifest = run_session_d(
+                                config=cfg,
+                                session_layout=session_layout,
+                                session_clips=session_clips,
+                                cam_id=cam_id,
+                                output_root=settings.OUTPUT_ROOT,
+                                constraints_overlay=overlay,
+                            )
+                            if p2_manifest is not None:
+                                manifests[cam_id] = p2_manifest
+                            _log("cp17_pass2_completed", session_id=session_id, cam_id=cam_id)
+                        except Exception as e:
+                            _log("cp17_pass2_error", session_id=session_id, cam_id=cam_id,
+                                 error=str(e), traceback=traceback.format_exc())
+
+                    # Re-run cross-camera merge on Pass 2 identity assignments
+                    try:
+                        _log("cp17_pass2_merge_start", session_id=session_id)
+                        global_id_map = run_cross_camera_merge(
+                            config=cfg,
+                            session_layout=session_layout,
+                            cam_ids=list(adapters.keys()),
+                            adapter_map=adapters,
+                        )
+                        _log("cp17_pass2_merge_completed", session_id=session_id,
+                             n_global_ids=len(global_id_map))
+                    except Exception as e:
+                        _log("cp17_pass2_merge_error", session_id=session_id,
+                             error=str(e), traceback=traceback.format_exc())
+                else:
+                    _log("cp17_pass2_skipped", session_id=session_id,
+                         reason="no_corroborated_tags")
+            except Exception as e:
+                _log("cp17_pass2_error", session_id=session_id,
+                     error=str(e), traceback=traceback.format_exc())
+
         # --- Loop 2: all cameras → F ---
         for cam_id in cam_ids:
             try:
