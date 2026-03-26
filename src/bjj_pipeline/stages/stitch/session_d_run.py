@@ -423,6 +423,7 @@ def run_session_d(
     session_clips: List[Tuple[Path, str]],
     cam_id: str,
     output_root: Path,
+    constraints_overlay: Optional[Dict[str, Any]] = None,
 ) -> Optional[SessionManifest]:
     """Run session-level Stage D (D1→D4) for one camera.
 
@@ -530,6 +531,33 @@ def run_session_d(
         stage="D", key="d2_constraints_json",
         relpath=adapter.rel_to_clip_root(adapter.d2_constraints_json()),
     )
+
+    # --- Step 6b: Optional constraints overlay (CP17 Pass 2) ---
+    if constraints_overlay:
+        constraints_path = adapter.d2_constraints_json()
+        try:
+            existing = json.loads(constraints_path.read_text(encoding="utf-8"))
+        except Exception:
+            existing = {}
+        for key, val in constraints_overlay.items():
+            existing[key] = val
+        constraints_path.write_text(
+            json.dumps(existing, sort_keys=True, indent=2), encoding="utf-8"
+        )
+        from bjj_pipeline.stages.stitch.d3_audit import append_audit_event
+        append_audit_event(
+            layout=adapter,
+            event={
+                "event_type": "cp17_constraints_overlay_applied",
+                "clip_id": session_manifest.clip_id,
+                "camera_id": cam_id,
+                "overlay_keys": sorted(constraints_overlay.keys()),
+            },
+        )
+        logger.info(
+            "session_d: CP17 constraints overlay applied for session={} cam={} keys={}",
+            session_layout.session_id, cam_id, sorted(constraints_overlay.keys()),
+        )
 
     # --- Step 7: D3 — use existing run_d3 dispatch (handles compile + solver) ---
     from bjj_pipeline.stages.stitch.solver import run_d3

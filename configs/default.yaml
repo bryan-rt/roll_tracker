@@ -79,8 +79,8 @@ stages:
     c0_scheduler:
       enabled: true
       k_seek: 1
-      k_verify: 30
-      n_ramp: 60
+      k_verify: 10
+      n_ramp: 90
       gating:
         enabled: true
         bbox_pad_frac: 0.15
@@ -93,7 +93,7 @@ stages:
         prior_path: null
         blur:
           method: "laplacian_var"
-          min_var: 60.0
+          min_var: 50.0
         contrast:
           method: "gray_std"
           min_std: 18.0
@@ -109,7 +109,7 @@ stages:
         motion:
           enabled: true
           prefer_metric: true
-          dv_thresh_mps: 2.5
+          dv_thresh_mps: 2.0
           a_thresh_mps2: 12.0
           dv_thresh_pxps: 250.0
           a_thresh_pxps2: 1200.0
@@ -353,3 +353,6 @@ cross_camera:
   co_observation_window_frames: 90
   min_tag_observations: 2
   min_assignment_confidence: 0.5
+  # CP17: two-pass re-solve with cross-camera tag corroboration
+  pass2_enabled: true
+  corroboration_miss_multiplier: 10.0
