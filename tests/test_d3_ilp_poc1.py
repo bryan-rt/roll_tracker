@@ -5,7 +5,7 @@ import pytest
 
 cp_model = pytest.importorskip("ortools.sat.python.cp_model")
 
-from bjj_pipeline.stages.stitch.d3_ilp import solve_structure_ilp_core
+from bjj_pipeline.stages.stitch.d3_ilp2 import solve_structure_ilp2_core
 
 
 def test_d3_poc1_ilp_selects_unique_path_and_is_deterministic() -> None:
@@ -35,8 +35,8 @@ def test_d3_poc1_ilp_selects_unique_path_and_is_deterministic() -> None:
 		]
 	)
 
-	res1 = solve_structure_ilp_core(nodes_df=nodes, edges_df=edges, costs_df=costs)
-	res2 = solve_structure_ilp_core(nodes_df=nodes, edges_df=edges, costs_df=costs)
+	res1, _, _ = solve_structure_ilp2_core(nodes_df=nodes, edges_df=edges, costs_df=costs)
+	res2, _, _ = solve_structure_ilp2_core(nodes_df=nodes, edges_df=edges, costs_df=costs)
 
 	assert res1.status in ("OPTIMAL", "FEASIBLE")
 	assert res2.status in ("OPTIMAL", "FEASIBLE")

@@ -267,10 +267,6 @@ stages:
       shadowed_reconnect_policy: disallow   # disallow|penalize|allow
       shadowed_reconnect_penalty: 10.0
     d3:
-      # D3 solver implementation toggle.
-      # - ilp1: existing implementation in d3_ilp.py (default / stable)
-      # - ilp2: alternate implementation in d3_ilp2.py (experimental; e.g. tag multi-commodity work)
-      solver_impl: "ilp2"
       # D3 — “explain each tracklet or pay a penalty”
       # If a base tracklet_id appears in D1 nodes (SINGLE_TRACKLET), but the selected solution uses none
       # of its nodes, we pay this penalty once per base_tracklet_id.
