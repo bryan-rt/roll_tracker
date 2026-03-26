@@ -147,7 +147,7 @@ The pipeline has two phases:
   - D0: tracklet bank tables
   - D1: graph build (merge/split triggers, group spans)
   - D2: constraint generation
-  - D3: ILP compile + solve (two solvers: `d3_ilp`, `d3_ilp2`)
+  - D3: ILP compile + solve (`d3_ilp2` MCF solver, shared helpers in `d3_common`)
   - D4: emit resolved person_tracks
   - Uses Google OR-Tools for ILP solver backend.
 - **Stage E** `matches`: Two-layer engagement detection. Sub-steps E0–E6:
@@ -359,8 +359,8 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 - **AprilTags for identity** — athletes wear AprilTag IDs. Online pass observes tags,
   offline ILP pass resolves global identities across tracklet fragments.
 - **MCF/ILP for stitching** — tracklet identity assignment treated as a min-cost flow
-  problem. OR-Tools solver. Two ILP solver variants exist (d3_ilp, d3_ilp2) — d3_ilp2
-  is the current preferred path.
+  problem. OR-Tools solver. Single solver: `d3_ilp2` (MCF overlay per tag). Shared debug
+  helpers in `d3_common.py`. `solver.py` dispatches directly to ilp2 for all checkpoints.
 - **Session-level Stage D aggregation (CP14c)** — `session_d_run.py` aggregates per-clip
   D0 bank outputs (frames, summaries, detections, identity hints) into a combined session
   bank, namespacing tracklet IDs with `{clip_id}:{tracklet_id}`. Runs existing D1→D4
@@ -482,7 +482,7 @@ Idempotency is critical for the uploader — re-runs must not duplicate uploads.
 
   **Known open issue:** PPDmUg-20260318-202751 fails consistently at Stage D2 — `int(bank_df["frame_index"].min())` returns NAType. Degenerate clip with extremely sparse tracklets producing all-NaN frame_index column. Requires null-safe integer handling fix in D2 `compute_edge_costs()`. All other 35 clips pass A→F.
 
-- **Last updated:** 2026-03-26 (CP16-cleanup — removed multipass mode, multiplex_AC is now the only execution path)
+- **Last updated:** 2026-03-26 (d3_ilp removed — consolidated on d3_ilp2 MCF solver, shared helpers in d3_common.py)
 
 ---
 

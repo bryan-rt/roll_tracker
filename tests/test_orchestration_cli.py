@@ -465,7 +465,9 @@ def test_force_reruns(monkeypatch, clip_env, tmp_path):
     assert "stage_started" in audit
 
 
-def test_failure_writes_stage_failed(monkeypatch, clip_env):
+def test_failure_writes_stage_failed(monkeypatch, clip_env, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    _write_homography(tmp_path, clip_env["cam"])
     monkeypatch.setattr(
         "bjj_pipeline.stages.orchestration.multiplex_runner.run_multiplex_AC",
         failing_multiplex_AC,
@@ -484,8 +486,10 @@ def test_failure_writes_stage_failed(monkeypatch, clip_env):
     assert "stage_failed" in audit
 
 
-def test_status_reports_correctly(monkeypatch, clip_env):
+def test_status_reports_correctly(monkeypatch, clip_env, tmp_path):
     # Populate A outputs
+    monkeypatch.chdir(tmp_path)
+    _write_homography(tmp_path, clip_env["cam"])
     monkeypatch.setattr(
         "bjj_pipeline.stages.orchestration.multiplex_runner.run_multiplex_AC",
         fake_multiplex_AC,

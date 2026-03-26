@@ -540,15 +540,7 @@ class StageD2CostsConfig(BaseModel):
 class StageD3Config(BaseModel):
     """Stage D3 (solver) configuration."""
 
-    model_config = ConfigDict(extra="forbid")
-
-    # D3 solver implementation toggle.
-    # - ilp1: existing implementation in d3_ilp.py (default / stable)
-    # - ilp2: alternate implementation in d3_ilp2.py (experimental; e.g. tag multi-commodity work)
-    solver_impl: Literal["ilp1", "ilp2"] = Field(
-        default="ilp1",
-        description="Select D3 solver backend implementation (ilp1|ilp2).",
-    )
+    model_config = ConfigDict(extra="ignore")
 
     # "Explain each tracklet OR pay a penalty":
     # We define a boolean per base_tracklet_id present in D1 SINGLE_TRACKLET nodes.
@@ -586,7 +578,7 @@ class StageD3Config(BaseModel):
     tag_fragment_start_penalty_abs: float | None = Field(default=None, ge=0.0)
 
     # Frames near the start/end of the clip considered "boundary" for group gating logic
-    # in D3. This is read in stages/stitch/solver.py and consumed by d3_ilp.py.
+    # in D3. This is read in stages/stitch/solver.py and consumed by d3_ilp2.py.
     group_boundary_window_frames: int = Field(default=10, ge=0)
 
 

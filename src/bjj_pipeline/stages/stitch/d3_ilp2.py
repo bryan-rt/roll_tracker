@@ -26,6 +26,12 @@ from bjj_pipeline.contracts.f0_manifest import ClipManifest
 from bjj_pipeline.contracts.f0_paths import ClipOutputLayout
 from bjj_pipeline.stages.stitch.d3_audit import append_audit_event
 from bjj_pipeline.stages.stitch.d3_compile import CompiledInputs
+from bjj_pipeline.stages.stitch.d3_common import (
+	_debug_dir,
+	_find_unique_node_id,
+	_write_entities_format_a,
+	_write_solution_ledger_json,
+)
 
 # Breadcrumb constants (written into audit + debug ledger copy).
 _SOLVER_IMPL: str = "ilp2"
@@ -37,8 +43,7 @@ _SOLVER_VERSION: str = "mcf3b_group_pair_steering"
 class ILPResult:
 	"""Public result contract consumed by Stage D4.
 
-	Stage D4 only relies on a subset of fields (selected_edge_ids, flow_by_edge_id),
-	but we keep parity with d3_ilp.ILPResult to make A/B comparisons easy.
+	Stage D4 only relies on a subset of fields (selected_edge_ids, flow_by_edge_id).
 	"""
 
 	status: str
@@ -64,10 +69,6 @@ class ILPResult:
 	explained_tracklet_ids: List[str]
 	# D4 handoff: realized local in/out pairings through GROUP/GROUPISH nodes
 	realized_group_pairings: List[Dict[str, Any]]
-
-
-def _debug_dir(layout: ClipOutputLayout) -> Path:
-	return layout.clip_root / "_debug"
 
 
 def _write_json_atomic(*, path: Path, payload: Dict[str, Any]) -> None:
@@ -122,14 +123,6 @@ def _scaled_costs(costs_df: pd.DataFrame, *, scale: int) -> tuple[Dict[str, int]
 		"rounding_max_abs_cost_error": float(max_abs_scaled_err) / float(scale) if scale > 0 else float("nan"),
 	}
 	return out, stats
-
-
-def _find_unique_node_id(nodes_df: pd.DataFrame, *, node_type: str) -> str:
-	_require_columns(nodes_df, name="d1_graph_nodes", cols=["node_id", "node_type"])
-	m = nodes_df[nodes_df["node_type"].astype(str) == node_type]
-	if len(m) != 1:
-		raise ValueError(f"Expected exactly 1 node with node_type={node_type}, found {len(m)}")
-	return str(m.iloc[0]["node_id"])
 
 
 def _parse_payload_desired_capacity(payload_json: Any) -> Optional[int]:
@@ -2273,11 +2266,7 @@ def solve_structure_ilp2(
 	unexplained_tracklet_penalty: float | None = None,
 	group_boundary_window_frames: int = 10,
 ) -> ILPResult:
-	"""Wrapper: solve + write the standard debug/audit outputs.
-
-	This keeps the same external behavior as d3_ilp.solve_structure_ilp so Stage D3/D4
-	do not care which solver module is used.
-	"""
+	"""Wrapper: solve + write the standard debug/audit outputs."""
 	dbg = _debug_dir(layout)
 	dbg.mkdir(parents=True, exist_ok=True)
 
@@ -2307,15 +2296,7 @@ def solve_structure_ilp2(
 	)
 	elapsed_ms = int(round((time.time() - t0) * 1000.0))
 
-	# --- Standard debug outputs (parity with d3_ilp) ---
-	# Keep these written by reusing d3_ilp helpers for now; when d3_ilp2 diverges,
-	# we will port only what we need.
-	from bjj_pipeline.stages.stitch.d3_ilp import (
-		_write_entities_format_a as _write_entities_format_a,
-		_write_solution_ledger_json as _write_solution_ledger_json,
-		_find_unique_node_id as _find_unique_node_id,
-	)
-
+	# --- Standard debug outputs ---
 	# Selected edges parquet
 	edges = compiled.edges_df.copy()
 	edges["edge_id"] = edges["edge_id"].astype(str)
