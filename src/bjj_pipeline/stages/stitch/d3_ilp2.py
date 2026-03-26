@@ -29,6 +29,7 @@ from bjj_pipeline.stages.stitch.d3_compile import CompiledInputs
 from bjj_pipeline.stages.stitch.d3_common import (
 	_debug_dir,
 	_find_unique_node_id,
+	_require_columns,
 	_write_entities_format_a,
 	_write_solution_ledger_json,
 )
@@ -85,12 +86,6 @@ def _write_solver_breadcrumbs_json(*, debug_dir: Path, payload: Dict[str, Any]) 
 	out = debug_dir / "d3_solver_breadcrumbs.json"
 	_write_json_atomic(path=out, payload=payload)
 	return out
-
-
-def _require_columns(df: pd.DataFrame, *, name: str, cols: List[str]) -> None:
-	missing = [c for c in cols if c not in df.columns]
-	if missing:
-		raise ValueError(f"{name} missing required columns: {', '.join(missing)}")
 
 
 def _cost_scale_for(_: pd.Series | None = None) -> int:
