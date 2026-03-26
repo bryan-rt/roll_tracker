@@ -156,7 +156,7 @@ def run_cross_camera_merge(
     )
 
     # --- Step 2: Filter by min_tag_observations and min_assignment_confidence ---
-    filtered: List[Tuple[str, str, str, float]] = []  # (cam_id, person_id, tag_id, confidence)
+    filtered: List[Tuple[str, str, str, float, int]] = []  # (cam_id, person_id, tag_id, confidence, total_tag_frames)
     for cam_id, rec in all_records:
         tag_id = rec.get("tag_id")
         person_id = rec.get("person_id")
@@ -171,7 +171,7 @@ def run_cross_camera_merge(
         if confidence < min_confidence:
             continue
 
-        filtered.append((cam_id, str(person_id), str(tag_id), confidence))
+        filtered.append((cam_id, str(person_id), str(tag_id), confidence, total_tag_frames))
 
     logger.info(
         "cross_camera_merge: after filter (min_obs={}, min_conf={:.2f}): {} records",
@@ -182,48 +182,48 @@ def run_cross_camera_merge(
     # For each (cam_id, tag_id), keep only the highest-confidence person_id.
     # Genuine ties (multiple person_ids at max confidence) → skip that tag
     # for THAT camera only. Other cameras with a clear winner still participate.
-    n_cam_tag_skips = 0
+    n_cam_tag_skips = 0  # legacy counter (ties now broken, but kept for audit schema)
 
-    # Group: (cam_id, tag_id) → list of (person_id, confidence)
-    cam_tag_index: Dict[Tuple[str, str], List[Tuple[str, float]]] = defaultdict(list)
-    for cam_id, person_id, tag_id, confidence in filtered:
-        cam_tag_index[(cam_id, tag_id)].append((person_id, confidence))
+    # Group: (cam_id, tag_id) → list of (person_id, confidence, total_tag_frames)
+    cam_tag_index: Dict[Tuple[str, str], List[Tuple[str, float, int]]] = defaultdict(list)
+    for cam_id, person_id, tag_id, confidence, total_tag_frames in filtered:
+        cam_tag_index[(cam_id, tag_id)].append((person_id, confidence, total_tag_frames))
 
     # Deduped: (cam_id, tag_id) → person_id
     deduped: Dict[Tuple[str, str], str] = {}
+    n_cam_tag_tiebreaks = 0
     for (cam_id, tag_id), entries in cam_tag_index.items():
         if len(entries) == 1:
             deduped[(cam_id, tag_id)] = entries[0][0]
             continue
 
         # Multiple person_ids for same (cam_id, tag_id)
-        entries.sort(key=lambda e: e[1], reverse=True)
-        best_conf = entries[0][1]
-        best_entries = [e for e in entries if e[1] == best_conf]
+        # Sort by: confidence desc, total_tag_frames desc, person_id asc (deterministic)
+        entries.sort(key=lambda e: (-e[1], -e[2], e[0]))
+        winner = entries[0]
+        deduped[(cam_id, tag_id)] = winner[0]
 
-        if len(best_entries) == 1:
+        if entries[0][1] != entries[1][1]:
             # Clear winner by confidence
-            deduped[(cam_id, tag_id)] = best_entries[0][0]
             logger.info(
                 "cross_camera_merge: dedup cam={} tag={}: kept person={} (conf={:.2f}), "
                 "dropped {} others",
-                cam_id, tag_id, best_entries[0][0], best_conf, len(entries) - 1,
+                cam_id, tag_id, winner[0], winner[1], len(entries) - 1,
             )
         else:
-            # Genuine tie — skip this tag for THIS camera only
-            conflicting_pids = [e[0] for e in best_entries]
-            n_cam_tag_skips += 1
-            logger.warning(
-                "cross_camera_merge: CONFLICT cam={} tag={}: person_ids={} "
-                "have equal confidence={:.2f} — skipping tag for this camera",
-                cam_id, tag_id, conflicting_pids, best_conf,
+            # Confidence tied — broken by total_tag_frames or person_id
+            n_cam_tag_tiebreaks += 1
+            logger.info(
+                "cross_camera_merge: tie-break cam={} tag={}: winner person={} "
+                "(conf={:.2f}, tag_frames={}) over {} others with equal confidence",
+                cam_id, tag_id, winner[0], winner[1], winner[2], len(entries) - 1,
             )
 
-    if n_cam_tag_skips:
+    if n_cam_tag_tiebreaks:
         logger.info(
-            "cross_camera_merge: {} (cam_id, tag_id) pairs skipped due to "
-            "intra-camera confidence ties",
-            n_cam_tag_skips,
+            "cross_camera_merge: {} (cam_id, tag_id) pairs resolved via tie-breaking "
+            "(total_tag_frames then person_id)",
+            n_cam_tag_tiebreaks,
         )
 
     # --- Step 3: Build tag_id → List[(cam_id, person_id)] index ---
@@ -236,7 +236,7 @@ def run_cross_camera_merge(
 
     # Ensure all (cam_id, person_id) keys are registered in union-find
     all_keys: Set[str] = set()
-    for cam_id, person_id, tag_id, confidence in filtered:
+    for cam_id, person_id, tag_id, confidence, _ttf in filtered:
         key = f"{cam_id}:{person_id}"
         all_keys.add(key)
         uf.find(key)  # register
