@@ -576,6 +576,31 @@ def _run_session_phase2(
                     _log("session_e_error", session_id=session_id, cam_id=cam_id,
                          error=str(e), traceback=traceback.format_exc())
 
+        # --- Merge per-camera match_sessions into shared file ---
+        stage_e_dir = session_layout.stage_dir("E")
+        merged_matches_path = session_layout.session_match_sessions_jsonl()
+        all_match_records: list[dict] = []
+        for cam_id in cam_ids:
+            cam_matches = stage_e_dir / f"match_sessions_{cam_id}.jsonl"
+            if not cam_matches.exists():
+                continue
+            with cam_matches.open("r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        all_match_records.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
+        merged_matches_path.parent.mkdir(parents=True, exist_ok=True)
+        with merged_matches_path.open("w", encoding="utf-8") as f:
+            for rec in all_match_records:
+                f.write(json.dumps(rec, sort_keys=True, separators=(",", ":"),
+                                   ensure_ascii=False) + "\n")
+        _log("session_match_merge_completed", session_id=session_id,
+             n_cameras=len(cam_ids), total_matches=len(all_match_records))
+
         # --- Cross-camera identity merge (CP14f) ---
         global_id_map: dict[str, str] = {}
         if len(adapters) > 0:
