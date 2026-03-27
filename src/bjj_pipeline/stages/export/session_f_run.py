@@ -342,9 +342,15 @@ def run_session_f(
         "cam_id": cam_id,
     })
 
-    # --- Load match sessions ---
-    match_sessions_path = session_layout.session_match_sessions_jsonl()
+    # --- Load match sessions (prefer per-camera file, fall back to shared) ---
+    per_cam_match_path = session_layout.stage_dir("E") / f"match_sessions_{cam_id}.jsonl"
+    if per_cam_match_path.exists():
+        match_sessions_path = per_cam_match_path
+    else:
+        match_sessions_path = session_layout.session_match_sessions_jsonl()
     matches = _load_match_sessions(match_sessions_path)
+    # Defense-in-depth: filter to matches for this camera only
+    matches = [m for m in matches if m.get("camera_id") is None or str(m.get("camera_id")) == str(cam_id)]
 
     if not matches:
         # Write no_matches manifest so already-processed guard fires

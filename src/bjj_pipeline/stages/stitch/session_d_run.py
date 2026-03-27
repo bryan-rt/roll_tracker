@@ -148,7 +148,7 @@ class SessionStageLayoutAdapter:
 
     # ---- Stage E write paths ----
     def match_sessions_jsonl(self) -> Path:
-        return self._sl.session_match_sessions_jsonl()
+        return self._sl.stage_dir("E") / f"match_sessions_{self._cam_id}.jsonl"
 
     # ---- Stage F write paths ----
     def export_manifest_jsonl(self) -> Path:
