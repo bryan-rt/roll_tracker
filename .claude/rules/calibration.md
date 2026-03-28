@@ -29,9 +29,24 @@ and Supabase.
 2. **Per-camera homography** — nightly recalibration attempt.
 3. **Inter-camera affine alignment** — derived from mat walk, updated when drift detected.
 
-## CP18 Stubs (planned)
-- `mat_walk.py` — tagged person walks grid, produces labeled correspondences across cameras.
-  Least-squares affine solve for global coordinate consistency.
+## CP18 — Homography Refinement (implemented)
+
+Two-layer calibration from mat cleaning footage:
+
+- **Layer 1** (`mat_walk.py`): Single-camera RANSAC affine correction. Uses tracklet
+  birth/death positions near mat edges as correspondences. Identity-regularized 6-param
+  affine fit prevents wild solutions. Quality gates: >40% coverage, 6+ edge touches,
+  2+ distinct edges. Writes `calibration_correction.json` per camera.
+- **Layer 2** (`inter_camera_sync.py`): Cross-camera alignment via overlap (co-temporal
+  detections) or handoff (death→birth matching) methods. Opportunistic — never blocks
+  Layer 1.
+- `blueprint_geometry.py`: MatBlueprint class — Shapely polygon union of panel rectangles,
+  geometric queries (contains, nearest edge, signed distance).
+- `tracklet_classifier.py`: Classifies tracklets as cleaning/lingering, detects
+  perpendicular vs parallel edge crossings for correspondence quality.
+- `calibrate.py`: Orchestrator with CLI. Runs Layer 1 per camera, Layer 2 per pair,
+  writes reports + correction JSONs.
+
+## Stubs (future)
 - `drift_detection.py` — empty-mat baseline snapshot, daily edge comparison, drift score
   to Supabase. Alert to gym owner on severe drift.
-- `inter_camera_sync.py` — cross-camera affine alignment from mat walk data.

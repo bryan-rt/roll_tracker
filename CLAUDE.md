@@ -27,7 +27,7 @@ questions in Pass 1. Do not resolve silently or guess.
 
 ```
 src/bjj_pipeline/        # CV pipeline package (stages A→F, contracts, config, core)
-src/calibration_pipeline/ # Gym setup tools (lens cal, mat walk stubs)
+src/calibration_pipeline/ # Gym setup tools (lens cal, CP18 homography refinement)
 services/                 # Docker: nest_recorder, processor, uploader
 backend/supabase/         # Migrations, config.toml
 app_mobile/               # Flutter athlete app
@@ -60,8 +60,8 @@ configs/                  # default.yaml, per-camera overrides, homography.json
 
 - **Head:** `0f5edd5` | Pipeline A→F verified E2E. Session pipeline validated (3-camera).
 - **CP17 Tier 1 implemented:** Two-pass cross-camera ILP with tag corroboration.
+- **CP18 implemented:** Single-camera homography refinement (Layer 1) + cross-camera alignment (Layer 2). RANSAC affine correction from cleaning footage edge correspondences. Validated on 3-camera calibration data.
 - **Open issue:** PPDmUg-202751 — NAType in frame_index at D2. Needs null-safe fix.
-- **Next:** CP17 Tier 2/3 (coordinate evidence) stubbed for CP18.
 - **Apps:** Flutter tested on Pixel 7 Pro. Web app has mat editor + admin pricing.
 - **Supabase:** 23 migrations applied locally and remotely.
 
