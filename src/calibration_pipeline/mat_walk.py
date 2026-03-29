@@ -1,13 +1,12 @@
-"""Layer 1 — Single-camera homography refinement via mat cleaning footage.
+"""Layer 1 — Single-camera homography refinement.
 
-Uses tracklet birth/death positions near mat edges as correspondences to fit
-an affine correction on top of the existing homography. The correction is small
-(translation + minor rotation) — the base homography from corner overlay is
-assumed roughly correct.
+Primary signal: mat line correspondences (detected mat edges vs blueprint edges).
+Secondary signal: footpath fitting (cleaning positions inside polygon).
+Edge touches are computed for diagnostics only — not in the cost function.
 
-Replaces the CP16b mat_walk stub (grid pattern detection from tagged walker).
-The cleaning-footage RANSAC approach was validated by evidence-driven design
-in the CP18 exploration phase.
+CP18 v2: Replaces edge-touch RANSAC (v1) with mat-line + footpath cost function.
+Mat lines are dense, geometric, behavior-independent. Footpath fitting uses
+thousands of independent "should be inside polygon" constraints.
 """
 
 from __future__ import annotations
@@ -27,6 +26,7 @@ from shapely.geometry import Point
 from shapely.prepared import prep as shapely_prep
 
 from calibration_pipeline.blueprint_geometry import MatBlueprint
+from calibration_pipeline.mat_line_detection import MatLineResult
 from calibration_pipeline.tracklet_classifier import TrackletFeatures
 
 
@@ -38,9 +38,15 @@ class CalibrationResult:
 
     # Quality metrics
     n_cleaning_tracklets: int = 0
-    n_edge_touches: int = 0
-    n_distinct_edges: int = 0
+    n_edge_touches: int = 0  # diagnostic only (v2)
+    n_distinct_edges: int = 0  # diagnostic only (v2)
     coverage_fraction: float = 0.0
+
+    # Mat line metrics (v2)
+    n_matched_lines: int = 0
+    n_matched_line_edges: int = 0  # distinct blueprint edges matched by lines
+    n_cleaning_positions: int = 0
+    signal_type: str = ""  # "mat_lines+footpath" | "mat_lines_only" | "footpath_only"
 
     # Before/after comparison
     inside_mat_fraction_before: float = 0.0
@@ -61,13 +67,12 @@ def calibrate_single_camera(
     tracklet_features: list[TrackletFeatures],
     blueprint: MatBlueprint,
     camera_id: str,
+    mat_line_result: Optional[MatLineResult] = None,
     min_coverage_fraction: float = 0.4,
-    min_edge_touches: int = 6,
-    min_distinct_edges: int = 2,
     ransac_iterations: int = 200,
     ransac_inlier_threshold: float = 0.5,
-    w_edge: float = 1.0,
-    w_interior: float = 0.1,
+    w_mat_lines: float = 1.0,
+    w_footpath: float = 0.3,
     w_negative: float = 0.1,
     w_regularization: float = 0.5,
     cell_size: float = 0.5,
@@ -82,198 +87,252 @@ def calibrate_single_camera(
         Parsed mat blueprint.
     camera_id : str
         Camera identifier.
+    mat_line_result : Optional[MatLineResult]
+        Detected mat lines (primary signal). None = footpath-only fallback.
     min_coverage_fraction : float
-        Minimum fraction of visible area covered by cleaning tracklets.
-    min_edge_touches : int
-        Minimum valid (perpendicular) edge touches required.
-    min_distinct_edges : int
-        Minimum distinct blueprint edges touched.
+        Minimum coverage for footpath-only mode.
     ransac_iterations : int
-        Number of RANSAC iterations.
+        RANSAC iterations (used with mat lines).
     ransac_inlier_threshold : float
-        Maximum edge residual (m) for a correspondence to be an inlier.
-    w_edge, w_interior, w_negative : float
+        Maximum residual for RANSAC inlier (world meters).
+    w_mat_lines, w_footpath, w_negative : float
         Cost function weights.
     w_regularization : float
-        Penalty weight for deviation from identity transform. Prevents wild
-        solutions from noisy 3-point samples — expected corrections are small
-        (a few feet translation, 1-2° rotation, negligible scale).
+        Near-identity penalty.
     cell_size : float
         Grid cell size (m) for coverage computation.
     """
-    result = CalibrationResult(camera_id=camera_id, correction_matrix=None,
-                               confidence="inconclusive")
-
-    if not tracklet_features:
-        result.details = {"reason": "no tracklet features provided"}
-        return result
-
-    # --- Step 1: Data sufficiency check ---
-    cleaning = [f for f in tracklet_features if f.classification == "cleaning"]
-    result.n_cleaning_tracklets = len(cleaning)
-
-    # Valid edge touches: perpendicular crossings within distance threshold
-    edge_correspondences = _build_edge_correspondences(tracklet_features, blueprint)
-    result.n_edge_touches = len(edge_correspondences)
-    touched_edges = set(ec["edge_index"] for ec in edge_correspondences)
-    result.n_distinct_edges = len(touched_edges)
-
-    # Coverage: grid cells occupied by cleaning tracklets / total visible cells
-    all_positions = []
-    cleaning_positions = []
-    for f in tracklet_features:
-        all_positions.extend(f.positions)
-        if f.classification == "cleaning":
-            cleaning_positions.extend(f.positions)
-
-    if not all_positions:
-        result.details = {"reason": "no valid positions"}
-        return result
-
-    all_cells = set(
-        (int(x / cell_size), int(y / cell_size)) for x, y in all_positions
+    result = CalibrationResult(
+        camera_id=camera_id, correction_matrix=None, confidence="inconclusive"
     )
-    clean_cells = set(
-        (int(x / cell_size), int(y / cell_size)) for x, y in cleaning_positions
-    )
-    result.coverage_fraction = len(clean_cells & all_cells) / max(1, len(all_cells))
 
-    # Off-mat walkers: lingering tracklets that are mostly outside the polygon
+    # --- Collect positions and classify ---
+    all_positions: list[tuple[float, float]] = []
+    cleaning_positions: list[tuple[float, float]] = []
+    cleaning = []
+
+    if tracklet_features:
+        cleaning = [f for f in tracklet_features if f.classification == "cleaning"]
+        result.n_cleaning_tracklets = len(cleaning)
+
+        for f in tracklet_features:
+            all_positions.extend(f.positions)
+            if f.classification == "cleaning":
+                cleaning_positions.extend(f.positions)
+
+    result.n_cleaning_positions = len(cleaning_positions)
+
+    # Diagnostic: edge touch counts (not used in cost function)
+    if tracklet_features:
+        edge_correspondences = _build_edge_correspondences(tracklet_features, blueprint)
+        result.n_edge_touches = len(edge_correspondences)
+        touched_edges = set(ec["edge_index"] for ec in edge_correspondences)
+        result.n_distinct_edges = len(touched_edges)
+    else:
+        edge_correspondences = []
+
+    # Coverage
+    if all_positions:
+        all_cells = set(
+            (int(x / cell_size), int(y / cell_size)) for x, y in all_positions
+        )
+        clean_cells = set(
+            (int(x / cell_size), int(y / cell_size)) for x, y in cleaning_positions
+        )
+        result.coverage_fraction = len(clean_cells & all_cells) / max(1, len(all_cells))
+
+    # Off-mat walkers (negative constraints)
     off_mat_walkers = [
-        f for f in tracklet_features
+        f for f in (tracklet_features or [])
         if f.classification == "lingering" and f.on_mat_fraction < 0.3
     ]
     result.n_off_mat_walkers = len(off_mat_walkers)
 
-    # Gate check
-    gates_passed = True
-    gate_failures = []
-    if result.n_edge_touches < min_edge_touches:
-        gate_failures.append(
-            f"edge_touches={result.n_edge_touches} < {min_edge_touches}"
-        )
-        gates_passed = False
-    if result.n_distinct_edges < min_distinct_edges:
-        gate_failures.append(
-            f"distinct_edges={result.n_distinct_edges} < {min_distinct_edges}"
-        )
-        gates_passed = False
-    if result.coverage_fraction < min_coverage_fraction:
-        gate_failures.append(
-            f"coverage={result.coverage_fraction:.2f} < {min_coverage_fraction}"
-        )
-        gates_passed = False
+    # --- Determine signal availability ---
+    has_mat_lines = (
+        mat_line_result is not None
+        and mat_line_result.n_lines_matched >= 3
+    )
+    has_footpath = len(cleaning_positions) >= 100
 
-    if not gates_passed:
-        result.details = {"reason": "quality gates failed", "failures": gate_failures}
+    if has_mat_lines:
+        mat_line_correspondences = _build_mat_line_correspondences(
+            mat_line_result, blueprint
+        )
+        matched_edge_indices = set(
+            ml.matched_edge_index for ml in mat_line_result.matched_lines
+        )
+        result.n_matched_lines = mat_line_result.n_lines_matched
+        result.n_matched_line_edges = len(matched_edge_indices)
+        # Need at least 2 distinct edges for a good constraint
+        if result.n_matched_line_edges < 2:
+            has_mat_lines = False
+            mat_line_correspondences = []
+    else:
+        mat_line_correspondences = []
+
+    if has_mat_lines and has_footpath:
+        result.signal_type = "mat_lines+footpath"
+    elif has_mat_lines:
+        result.signal_type = "mat_lines_only"
+    elif has_footpath:
+        result.signal_type = "footpath_only"
+    else:
+        result.details = {
+            "reason": "insufficient signals",
+            "n_matched_lines": mat_line_result.n_lines_matched if mat_line_result else 0,
+            "n_cleaning_positions": len(cleaning_positions),
+        }
         return result
 
-    # --- Step 2-4: Build constraint sets ---
-    # Interior positions (cleaning tracklets, on-mat)
+    # Footpath-only quality gate
+    if not has_mat_lines and result.coverage_fraction < min_coverage_fraction:
+        result.details = {
+            "reason": "footpath-only but insufficient coverage",
+            "coverage": result.coverage_fraction,
+        }
+        return result
+
+    # --- Build constraint sets ---
+    # Interior positions (cleaning, on-mat) for footpath cost
     interior_points = []
     for f in cleaning:
         for x, y in f.positions:
             if blueprint.contains_point(x, y):
                 interior_points.append((x, y))
 
-    # Negative constraint positions (off-mat walkers)
+    # Negative constraint positions
     negative_points = []
     for f in off_mat_walkers:
         for x, y in f.positions:
             if not blueprint.contains_point(x, y):
                 negative_points.append((x, y))
 
-    # Subsample interior/negative to keep cost function fast
-    if len(interior_points) > 50:
-        interior_points = random.sample(interior_points, 50)
-    if len(negative_points) > 30:
-        negative_points = random.sample(negative_points, 30)
+    # Subsample for performance
+    if len(interior_points) > 200:
+        interior_points = random.sample(interior_points, 200)
+    if len(negative_points) > 100:
+        negative_points = random.sample(negative_points, 100)
 
     # --- Before metrics ---
-    result.inside_mat_fraction_before = _compute_inside_fraction(
-        all_positions, blueprint
-    )
-    result.mean_edge_residual_before = _mean_edge_residual(
-        edge_correspondences, blueprint, np.eye(3)[:2]
-    )
+    if all_positions:
+        result.inside_mat_fraction_before = _compute_inside_fraction(
+            all_positions, blueprint
+        )
+    if edge_correspondences:
+        result.mean_edge_residual_before = _mean_edge_residual(
+            edge_correspondences, blueprint, np.eye(3)[:2]
+        )
 
-    # --- Step 5: RANSAC affine fit ---
-    best_affine, best_inliers, best_score = _ransac_affine(
-        edge_correspondences=edge_correspondences,
-        interior_points=interior_points,
-        negative_points=negative_points,
-        blueprint=blueprint,
-        n_iterations=ransac_iterations,
-        inlier_threshold=ransac_inlier_threshold,
-        w_edge=w_edge,
-        w_interior=w_interior,
-        w_negative=w_negative,
-        w_regularization=w_regularization,
-    )
+    # --- Optimization ---
+    prepared = shapely_prep(blueprint.polygon)
+    int_arr = np.array(interior_points) if interior_points else np.empty((0, 2))
+    neg_arr = np.array(negative_points) if negative_points else np.empty((0, 2))
 
-    if best_affine is None:
-        result.details = {"reason": "RANSAC failed to find valid solution"}
-        return result
+    if has_mat_lines:
+        # RANSAC with mat line correspondences
+        best_affine, best_inliers, best_score = _ransac_mat_lines(
+            mat_line_correspondences=mat_line_correspondences,
+            interior_points_arr=int_arr,
+            negative_points_arr=neg_arr,
+            prepared_polygon=prepared,
+            blueprint=blueprint,
+            n_iterations=ransac_iterations,
+            inlier_threshold=ransac_inlier_threshold,
+            w_mat_lines=w_mat_lines,
+            w_footpath=w_footpath,
+            w_negative=w_negative,
+            w_regularization=w_regularization,
+        )
 
-    result.n_ransac_inliers = len(best_inliers)
-    result.n_ransac_outliers = len(edge_correspondences) - len(best_inliers)
+        if best_affine is None:
+            # Fall through to footpath-only if available
+            if has_footpath:
+                has_mat_lines = False
+                result.signal_type = "footpath_only"
+            else:
+                result.details = {"reason": "RANSAC failed on mat lines"}
+                return result
 
-    # Refit on all inliers for final solution
-    final_affine = _fit_affine_on_inliers(
-        inlier_correspondences=[edge_correspondences[i] for i in best_inliers],
-        interior_points=interior_points,
-        negative_points=negative_points,
-        blueprint=blueprint,
-        w_edge=w_edge,
-        w_interior=w_interior,
-        w_negative=w_negative,
-        w_regularization=w_regularization,
-    )
+        if best_affine is not None:
+            result.n_ransac_inliers = len(best_inliers)
+            result.n_ransac_outliers = len(mat_line_correspondences) - len(best_inliers)
+            final_affine = best_affine
 
-    # --- Step 6: Validate correction ---
-    corrected_positions = _apply_affine(all_positions, final_affine)
-    result.inside_mat_fraction_after = _compute_inside_fraction(
-        corrected_positions, blueprint
-    )
-    result.mean_edge_residual_after = _mean_edge_residual(
-        edge_correspondences, blueprint, final_affine
-    )
+    if not has_mat_lines and has_footpath:
+        # Direct optimization from identity (no RANSAC needed — smooth surface)
+        opt_result = minimize(
+            _cost_function,
+            _identity_params(),
+            args=(
+                [], int_arr, neg_arr, prepared, blueprint,
+                w_mat_lines, w_footpath, w_negative, w_regularization,
+            ),
+            method="Powell",
+            options={"maxiter": 2000, "ftol": 1e-10},
+        )
+        final_affine = _affine_params_to_matrix(opt_result.x)
 
-    # If correction made things worse, discard
-    if result.inside_mat_fraction_after < result.inside_mat_fraction_before:
+    # --- Validate correction ---
+    corrected_positions = _apply_affine(all_positions, final_affine) if all_positions else []
+    if corrected_positions:
+        result.inside_mat_fraction_after = _compute_inside_fraction(
+            corrected_positions, blueprint
+        )
+    if edge_correspondences:
+        result.mean_edge_residual_after = _mean_edge_residual(
+            edge_correspondences, blueprint, final_affine
+        )
+
+    # Discard if correction made things worse
+    if all_positions and result.inside_mat_fraction_after < result.inside_mat_fraction_before:
         result.confidence = "low"
         result.correction_matrix = None
         result.details = {
             "reason": "correction decreased inside-mat fraction",
             "before": result.inside_mat_fraction_before,
             "after": result.inside_mat_fraction_after,
+            "signal_type": result.signal_type,
         }
         return result
 
     result.correction_matrix = final_affine
 
-    # Assign confidence
-    improvement = (
-        result.inside_mat_fraction_after - result.inside_mat_fraction_before
-    )
-    if (
-        result.coverage_fraction > 0.6
-        and result.n_edge_touches >= 10
-        and result.n_distinct_edges >= 3
-        and improvement > 0.20
-    ):
-        result.confidence = "high"
-    elif (
-        result.coverage_fraction > 0.4
-        and result.n_edge_touches >= 6
-        and result.n_distinct_edges >= 2
-        and improvement > 0.0
-    ):
-        result.confidence = "medium"
-    else:
-        result.confidence = "low"
+    # --- Confidence grading ---
+    improvement = result.inside_mat_fraction_after - result.inside_mat_fraction_before
+
+    if result.signal_type == "mat_lines+footpath":
+        if (
+            result.n_matched_line_edges >= 3
+            and result.n_cleaning_positions >= 200
+            and improvement > 0.20
+        ):
+            result.confidence = "high"
+        elif improvement > 0.0:
+            result.confidence = "medium"
+        else:
+            result.confidence = "low"
+    elif result.signal_type == "mat_lines_only":
+        if result.n_matched_line_edges >= 3 and improvement > 0.10:
+            result.confidence = "high"
+        elif result.n_matched_line_edges >= 2 and improvement > 0.0:
+            result.confidence = "medium"
+        else:
+            result.confidence = "low"
+    elif result.signal_type == "footpath_only":
+        if (
+            result.coverage_fraction > 0.6
+            and result.n_cleaning_positions >= 500
+            and improvement > 0.10
+        ):
+            result.confidence = "medium"
+        elif improvement > 0.0:
+            result.confidence = "low"
+        else:
+            result.confidence = "low"
 
     result.details = {
+        "signal_type": result.signal_type,
         "n_interior_constraints": len(interior_points),
         "n_negative_constraints": len(negative_points),
         "improvement": round(improvement, 4),
@@ -306,6 +365,10 @@ def write_correction_json(
         "correction_matrix": result.correction_matrix.tolist(),
         "confidence": result.confidence,
         "calibrated_at": datetime.now(timezone.utc).isoformat(),
+        "signal_type": result.signal_type,
+        "n_matched_lines": result.n_matched_lines,
+        "n_matched_line_edges": result.n_matched_line_edges,
+        "n_cleaning_positions": result.n_cleaning_positions,
         "n_edge_touches": result.n_edge_touches,
         "n_cleaning_tracklets": result.n_cleaning_tracklets,
         "coverage_fraction": round(result.coverage_fraction, 4),
@@ -325,6 +388,44 @@ def write_correction_json(
 # ---------------------------------------------------------------------------
 
 
+def _build_mat_line_correspondences(
+    mat_line_result: MatLineResult,
+    blueprint: MatBlueprint,
+    n_sample_points: int = 10,
+) -> list[dict]:
+    """Convert matched mat lines into world-space correspondences for the cost function.
+
+    Each correspondence dict has:
+    - blueprint_sample_points: list of (x,y) along the blueprint edge
+    - detected_world_line: ((x1,y1), (x2,y2)) detected line in world space
+    - edge_index: which blueprint edge
+    """
+    correspondences = []
+    for ml in mat_line_result.matched_lines:
+        if ml.matched_edge_index < 0:
+            continue
+
+        edge = blueprint.boundary_edges[ml.matched_edge_index]
+        (ex1, ey1), (ex2, ey2) = edge
+
+        # Sample points along the blueprint edge
+        sample_pts = []
+        for k in range(n_sample_points):
+            t = k / max(1, n_sample_points - 1)
+            sample_pts.append((
+                ex1 + t * (ex2 - ex1),
+                ey1 + t * (ey2 - ey1),
+            ))
+
+        correspondences.append({
+            "blueprint_sample_points": sample_pts,
+            "detected_world_line": (ml.world_start, ml.world_end),
+            "edge_index": ml.matched_edge_index,
+        })
+
+    return correspondences
+
+
 def _build_edge_correspondences(
     features: list[TrackletFeatures],
     blueprint: MatBlueprint,
@@ -332,7 +433,7 @@ def _build_edge_correspondences(
 ) -> list[dict]:
     """Extract edge correspondences from tracklet birth/death positions.
 
-    Only includes perpendicular crossings within edge_touch_distance.
+    Diagnostic only in v2 — used for before/after reporting, not cost function.
     """
     correspondences = []
     for f in features:
@@ -416,51 +517,58 @@ def _point_to_edge_distance(
     return math.sqrt((x - proj_x) ** 2 + (y - proj_y) ** 2)
 
 
+def _point_to_line_distance_world(
+    x: float, y: float,
+    line: tuple[tuple[float, float], tuple[float, float]],
+) -> float:
+    """Distance from point to a line segment in world space."""
+    (lx1, ly1), (lx2, ly2) = line
+    return _point_to_edge_distance(x, y, ((lx1, ly1), (lx2, ly2)))
+
+
 def _cost_function(
     params: np.ndarray,
-    edge_correspondences: list[dict],
+    mat_line_correspondences: list[dict],
     interior_points_arr: np.ndarray,
     negative_points_arr: np.ndarray,
     prepared_polygon,
-    w_edge: float,
-    w_interior: float,
+    blueprint: MatBlueprint,
+    w_mat_lines: float,
+    w_footpath: float,
     w_negative: float,
     w_regularization: float,
 ) -> float:
     """Cost function for affine correction optimization.
 
-    Minimizes:
-    - Edge residuals (corrected edge touch should lie on matched edge)
-    - Interior violations (corrected on-mat points should stay inside)
-    - Negative violations (corrected off-mat points should stay outside)
-    - Regularization (deviation from identity transform — prevents wild
-      solutions from noisy 3-point samples)
-
-    Uses vectorized numpy for interior/negative constraints instead of
-    per-point Shapely calls for performance.
+    Combines:
+    1. Mat line alignment (primary): corrected blueprint edge points should
+       lie close to the detected line in world space.
+    2. Footpath fitting (secondary): corrected cleaning positions should
+       remain inside the polygon.
+    3. Negative constraints: off-mat positions should stay outside.
+    4. Regularization: near-identity penalty.
     """
     affine = _affine_params_to_matrix(params)
-
     cost = 0.0
 
-    # Edge correspondences: minimize distance to matched edge (primary signal)
-    for ec in edge_correspondences:
-        cx, cy = _apply_affine_single(*ec["position"], affine)
-        d = _point_to_edge_distance(cx, cy, ec["edge_segment"])
-        cost += w_edge * d * d
+    # 1. Mat line alignment (PRIMARY)
+    for corr in mat_line_correspondences:
+        detected_line = corr["detected_world_line"]
+        for world_pt in corr["blueprint_sample_points"]:
+            cx, cy = _apply_affine_single(*world_pt, affine)
+            d = _point_to_line_distance_world(cx, cy, detected_line)
+            cost += w_mat_lines * d * d
 
-    # Interior constraint: penalize count of on-mat points that end up outside
-    # Uses a simple penalty per violation rather than expensive signed_distance
-    if len(interior_points_arr) > 0 and w_interior > 0:
+    # 2. Footpath fitting (SECONDARY)
+    if len(interior_points_arr) > 0 and w_footpath > 0:
         corrected = _apply_affine_batch(interior_points_arr, affine)
         violations = sum(
             1 for cx, cy in corrected
             if not prepared_polygon.contains(Point(cx, cy))
         )
-        # Penalty proportional to violation fraction
-        cost += w_interior * violations
+        cost += w_footpath * violations
 
-    # Negative constraint: penalize count of off-mat points that end up inside
+    # 3. Negative constraints
     if len(negative_points_arr) > 0 and w_negative > 0:
         corrected = _apply_affine_batch(negative_points_arr, affine)
         violations = sum(
@@ -469,7 +577,7 @@ def _cost_function(
         )
         cost += w_negative * violations
 
-    # Regularization: penalize deviation from identity
+    # 4. Regularization toward identity
     identity = _identity_params()
     deviation = params - identity
     cost += w_regularization * float(np.sum(deviation**2))
@@ -477,30 +585,41 @@ def _cost_function(
     return cost
 
 
-def _ransac_affine(
-    edge_correspondences: list[dict],
-    interior_points: list[tuple[float, float]],
-    negative_points: list[tuple[float, float]],
+def _ransac_mat_lines(
+    mat_line_correspondences: list[dict],
+    interior_points_arr: np.ndarray,
+    negative_points_arr: np.ndarray,
+    prepared_polygon,
     blueprint: MatBlueprint,
     n_iterations: int = 200,
     inlier_threshold: float = 0.5,
-    w_edge: float = 1.0,
-    w_interior: float = 0.1,
+    w_mat_lines: float = 1.0,
+    w_footpath: float = 0.3,
     w_negative: float = 0.1,
     w_regularization: float = 0.5,
 ) -> tuple[Optional[np.ndarray], list[int], float]:
-    """RANSAC loop: sample 3 correspondences, fit affine, score all.
+    """RANSAC: sample 3 mat line correspondences, fit affine, score all.
 
     Returns (best_affine_2x3, inlier_indices, best_score) or (None, [], inf).
     """
-    n = len(edge_correspondences)
+    n = len(mat_line_correspondences)
     if n < 3:
+        # Not enough for RANSAC — try direct optimization with all
+        if n > 0:
+            result = minimize(
+                _cost_function,
+                _identity_params(),
+                args=(
+                    mat_line_correspondences, interior_points_arr,
+                    negative_points_arr, prepared_polygon, blueprint,
+                    w_mat_lines, w_footpath, w_negative, w_regularization,
+                ),
+                method="Powell",
+                options={"maxiter": 2000, "ftol": 1e-10},
+            )
+            affine = _affine_params_to_matrix(result.x)
+            return affine, list(range(n)), result.fun
         return None, [], float("inf")
-
-    # Pre-compute for cost function performance
-    prepared = shapely_prep(blueprint.polygon)
-    int_arr = np.array(interior_points) if interior_points else np.empty((0, 2))
-    neg_arr = np.array(negative_points) if negative_points else np.empty((0, 2))
 
     best_affine = None
     best_inliers: list[int] = []
@@ -508,15 +627,15 @@ def _ransac_affine(
 
     for _ in range(n_iterations):
         sample_indices = random.sample(range(n), min(3, n))
-        sample = [edge_correspondences[i] for i in sample_indices]
+        sample = [mat_line_correspondences[i] for i in sample_indices]
 
-        # Fit affine starting from identity — regularization prevents wild jumps
         result = minimize(
             _cost_function,
             _identity_params(),
             args=(
-                sample, int_arr, neg_arr, prepared,
-                w_edge, w_interior, w_negative, w_regularization,
+                sample, interior_points_arr, negative_points_arr,
+                prepared_polygon, blueprint,
+                w_mat_lines, w_footpath, w_negative, w_regularization,
             ),
             method="Powell",
             options={"maxiter": 500, "ftol": 1e-8},
@@ -527,12 +646,16 @@ def _ransac_affine(
 
         affine = _affine_params_to_matrix(result.x)
 
-        # Score: count inliers (edge residual < threshold)
+        # Score: inlier = all sample points on a correspondence are within threshold
         inliers = []
-        for i, ec in enumerate(edge_correspondences):
-            cx, cy = _apply_affine_single(*ec["position"], affine)
-            d = _point_to_edge_distance(cx, cy, ec["edge_segment"])
-            if d < inlier_threshold:
+        for i, corr in enumerate(mat_line_correspondences):
+            detected_line = corr["detected_world_line"]
+            residuals = []
+            for world_pt in corr["blueprint_sample_points"]:
+                cx, cy = _apply_affine_single(*world_pt, affine)
+                d = _point_to_line_distance_world(cx, cy, detected_line)
+                residuals.append(d)
+            if residuals and (sum(residuals) / len(residuals)) < inlier_threshold:
                 inliers.append(i)
 
         if len(inliers) > len(best_inliers) or (
@@ -542,35 +665,23 @@ def _ransac_affine(
             best_inliers = inliers
             best_score = result.fun
 
+    # Refit on all inliers
+    if best_affine is not None and len(best_inliers) > 0:
+        inlier_corrs = [mat_line_correspondences[i] for i in best_inliers]
+        refit = minimize(
+            _cost_function,
+            _identity_params(),
+            args=(
+                inlier_corrs, interior_points_arr, negative_points_arr,
+                prepared_polygon, blueprint,
+                w_mat_lines, w_footpath, w_negative, w_regularization,
+            ),
+            method="Powell",
+            options={"maxiter": 2000, "ftol": 1e-10},
+        )
+        best_affine = _affine_params_to_matrix(refit.x)
+
     return best_affine, best_inliers, best_score
-
-
-def _fit_affine_on_inliers(
-    inlier_correspondences: list[dict],
-    interior_points: list[tuple[float, float]],
-    negative_points: list[tuple[float, float]],
-    blueprint: MatBlueprint,
-    w_edge: float = 1.0,
-    w_interior: float = 0.1,
-    w_negative: float = 0.1,
-    w_regularization: float = 0.5,
-) -> np.ndarray:
-    """Refit affine on all inlier correspondences for final solution."""
-    prepared = shapely_prep(blueprint.polygon)
-    int_arr = np.array(interior_points) if interior_points else np.empty((0, 2))
-    neg_arr = np.array(negative_points) if negative_points else np.empty((0, 2))
-
-    result = minimize(
-        _cost_function,
-        _identity_params(),
-        args=(
-            inlier_correspondences, int_arr, neg_arr, prepared,
-            w_edge, w_interior, w_negative, w_regularization,
-        ),
-        method="Powell",
-        options={"maxiter": 2000, "ftol": 1e-10},
-    )
-    return _affine_params_to_matrix(result.x)
 
 
 def _compute_inside_fraction(
@@ -588,7 +699,10 @@ def _mean_edge_residual(
     blueprint: MatBlueprint,
     affine: np.ndarray,
 ) -> float:
-    """Mean distance of corrected edge touch positions to their matched edges."""
+    """Mean distance of corrected edge touch positions to their matched edges.
+
+    Diagnostic metric — not used in cost function.
+    """
     if not edge_correspondences:
         return 0.0
     total = 0.0

@@ -12,8 +12,9 @@ Modules
 lens_calibration    — Estimate K + distortion from mat edge clicks (CP16b)
 blueprint_geometry  — Mat blueprint parsing + geometric queries (CP18)
 tracklet_classifier — Tracklet classification + feature extraction (CP18)
-mat_walk            — Layer 1: single-camera homography refinement via RANSAC (CP18)
-inter_camera_sync   — Layer 2: cross-camera affine alignment (CP18)
-calibrate           — Full calibration orchestrator (CP18)
+mat_line_detection  — Video-based mat edge detection + blueprint matching (CP18 v2)
+mat_walk            — Layer 1: mat line + footpath homography refinement (CP18 v2)
+inter_camera_sync   — Layer 2: spatial fingerprint cross-camera alignment (CP18 v2)
+calibrate           — Full calibration orchestrator with iterative refinement (CP18 v2)
 drift_detection     — Daily baseline comparison for camera drift (future)
 """

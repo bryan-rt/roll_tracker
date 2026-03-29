@@ -1,24 +1,26 @@
-"""Layer 2 — Cross-camera alignment (opportunistic).
+"""Layer 2 — Cross-camera alignment via spatial fingerprint registration.
 
 After Layer 1 per-camera corrections, cameras with overlapping or adjacent
-views can cross-validate and correct relative alignment. Two methods:
+views are aligned using spatial occupancy patterns — no clock sync needed.
 
-  - Overlap: simultaneous co-observations of the same person on both cameras
-  - Handoff: sequential tracklet death on cam A → birth on cam B
+Two methods:
+  - Overlap: occupancy grid cross-correlation (shared coverage area)
+  - Adjacent: boundary contour stitching (exit vectors ↔ entry vectors)
 
-Layer 2 is opportunistic — Layer 1 stands alone when cameras have no overlap.
-Never blocks Layer 1 results on failure.
+CP18 v2: Replaces temporal point matching (v1) with spatial fingerprints.
+Clock-sync independent. Handles overlap via cross-correlation and adjacency
+via boundary contour stitching.
 """
 
 from __future__ import annotations
 
+import json
 import math
 import random
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-import json
 import numpy as np
 from scipy.optimize import minimize
 
@@ -27,15 +29,28 @@ from calibration_pipeline.mat_walk import (
     CalibrationResult,
     _affine_params_to_matrix,
     _apply_affine_single,
+    _apply_affine_batch,
     _identity_params,
 )
 from calibration_pipeline.tracklet_classifier import TrackletFeatures
 
 
 @dataclass
+class SpatialFingerprint:
+    """Occupancy grid from cleaning tracklet positions."""
+
+    camera_id: str
+    grid: np.ndarray  # 2D binary array (occupied/not)
+    cell_size: float  # meters per cell
+    origin: tuple[float, float]  # world-space origin (x_min, y_min)
+    n_occupied_cells: int
+    bounding_box: tuple[float, float, float, float]  # (x_min, y_min, x_max, y_max)
+
+
+@dataclass
 class CrossCameraResult:
     camera_pair: tuple[str, str]
-    method: str  # "overlap" | "handoff" | "none"
+    method: str  # "overlap" | "adjacent" | "none"
     pairwise_correction: Optional[np.ndarray]  # 2x3 affine: cam_b → cam_a
     confidence: str  # "high" | "medium" | "low" | "none"
     n_correspondences: int = 0
@@ -54,20 +69,20 @@ def align_camera_pair(
     ransac_iterations: int = 100,
     ransac_inlier_threshold: float = 0.5,
 ) -> CrossCameraResult:
-    """Align a pair of cameras using overlap or handoff correspondences.
+    """Align a pair of cameras using spatial fingerprint registration.
 
     Parameters
     ----------
     features_a, features_b : list[TrackletFeatures]
         Classified tracklets for each camera.
     correction_a, correction_b : CalibrationResult
-        Layer 1 correction results (applied before comparison).
+        Layer 1 correction results (applied before fingerprinting).
     blueprint : MatBlueprint
-        Mat blueprint for bounding box / polygon reference.
+        Mat blueprint for reference.
     time_window_s : float
-        Maximum time gap for handoff matching (seconds).
+        Unused in v2 (kept for API compat). Was handoff time window.
     spatial_threshold_m : float
-        Maximum spatial distance for overlap matching (meters).
+        Max distance for boundary vector matching.
     ransac_iterations : int
         RANSAC iterations for affine fit.
     ransac_inlier_threshold : float
@@ -77,78 +92,329 @@ def align_camera_pair(
     cam_b = correction_b.camera_id
 
     result = CrossCameraResult(
-        camera_pair=(cam_a, cam_b), method="none",
-        pairwise_correction=None, confidence="none",
+        camera_pair=(cam_a, cam_b),
+        method="none",
+        pairwise_correction=None,
+        confidence="none",
     )
 
-    # Apply Layer 1 corrections to positions
-    affine_a = correction_a.correction_matrix if correction_a.correction_matrix is not None else np.eye(3)[:2]
-    affine_b = correction_b.correction_matrix if correction_b.correction_matrix is not None else np.eye(3)[:2]
+    # Build spatial fingerprints
+    fp_a = build_fingerprint(features_a, correction_a)
+    fp_b = build_fingerprint(features_b, correction_b)
 
-    # Compute corrected bounding boxes
-    bbox_a = _corrected_bbox(features_a, affine_a)
-    bbox_b = _corrected_bbox(features_b, affine_b)
-
-    if bbox_a is None or bbox_b is None:
-        result.details = {"reason": "insufficient data for bounding box"}
+    if fp_a is None or fp_b is None:
+        result.details = {"reason": "insufficient data for fingerprint"}
         return result
 
-    # Step 1: Detect overlap vs adjacency
-    overlap = _bbox_intersection(bbox_a, bbox_b)
-    area_a = (bbox_a[2] - bbox_a[0]) * (bbox_a[3] - bbox_a[1])
-    area_b = (bbox_b[2] - bbox_b[0]) * (bbox_b[3] - bbox_b[1])
+    # Detect relationship
+    relationship = detect_camera_relationship(fp_a, fp_b)
+    result.details["relationship"] = relationship
 
-    if overlap is not None:
-        overlap_area = (overlap[2] - overlap[0]) * (overlap[3] - overlap[1])
-        overlap_frac = max(overlap_area / max(area_a, 1e-6),
-                          overlap_area / max(area_b, 1e-6))
+    if relationship == "overlap":
+        overlap_result = align_overlapping(fp_a, fp_b)
+        if overlap_result.pairwise_correction is not None:
+            return overlap_result
+
+    if relationship in ("overlap", "adjacent"):
+        adjacent_result = align_adjacent(
+            fp_a, fp_b, features_a, features_b,
+            correction_a, correction_b,
+            spatial_threshold=spatial_threshold_m,
+            ransac_iterations=ransac_iterations,
+            ransac_inlier_threshold=ransac_inlier_threshold,
+        )
+        if adjacent_result.pairwise_correction is not None:
+            return adjacent_result
+
+    result.details["reason"] = f"no alignment found ({relationship})"
+    return result
+
+
+def build_fingerprint(
+    features: list[TrackletFeatures],
+    correction: CalibrationResult,
+    cell_size: float = 0.25,
+) -> Optional[SpatialFingerprint]:
+    """Build occupancy grid from corrected cleaning positions.
+
+    Parameters
+    ----------
+    features : Classified tracklets.
+    correction : Layer 1 result (correction_matrix applied to positions).
+    cell_size : Grid resolution in meters.
+
+    Returns
+    -------
+    SpatialFingerprint or None if insufficient data.
+    """
+    affine = (
+        correction.correction_matrix
+        if correction.correction_matrix is not None
+        else np.eye(3)[:2]
+    )
+
+    # Collect corrected cleaning positions
+    cleaning_pts = []
+    for f in features:
+        if f.classification == "cleaning":
+            for x, y in f.positions:
+                cx, cy = _apply_affine_single(x, y, affine)
+                cleaning_pts.append((cx, cy))
+
+    if len(cleaning_pts) < 10:
+        return None
+
+    pts = np.array(cleaning_pts)
+    x_min, y_min = pts.min(axis=0)
+    x_max, y_max = pts.max(axis=0)
+
+    # Build grid
+    n_cols = max(1, int(math.ceil((x_max - x_min) / cell_size)))
+    n_rows = max(1, int(math.ceil((y_max - y_min) / cell_size)))
+    grid = np.zeros((n_rows, n_cols), dtype=np.uint8)
+
+    for cx, cy in cleaning_pts:
+        col = min(int((cx - x_min) / cell_size), n_cols - 1)
+        row = min(int((cy - y_min) / cell_size), n_rows - 1)
+        grid[row, col] = 1
+
+    n_occupied = int(grid.sum())
+
+    return SpatialFingerprint(
+        camera_id=correction.camera_id,
+        grid=grid,
+        cell_size=cell_size,
+        origin=(float(x_min), float(y_min)),
+        n_occupied_cells=n_occupied,
+        bounding_box=(float(x_min), float(y_min), float(x_max), float(y_max)),
+    )
+
+
+def detect_camera_relationship(
+    fp_a: SpatialFingerprint,
+    fp_b: SpatialFingerprint,
+) -> str:
+    """Determine if two cameras overlap, are adjacent, or separated.
+
+    Returns "overlap", "adjacent", or "separated".
+    """
+    bbox_a = fp_a.bounding_box
+    bbox_b = fp_b.bounding_box
+
+    intersection = _bbox_intersection(bbox_a, bbox_b)
+
+    if intersection is not None:
+        int_area = (intersection[2] - intersection[0]) * (intersection[3] - intersection[1])
+        area_a = max(1e-6, (bbox_a[2] - bbox_a[0]) * (bbox_a[3] - bbox_a[1]))
+        area_b = max(1e-6, (bbox_b[2] - bbox_b[0]) * (bbox_b[3] - bbox_b[1]))
+        overlap_frac = max(int_area / area_a, int_area / area_b)
+
+        if overlap_frac > 0.1:
+            return "overlap"
+
+    # Check adjacency: gap < 2 meters in any direction
+    gap_x = max(0, max(bbox_a[0], bbox_b[0]) - min(bbox_a[2], bbox_b[2]))
+    gap_y = max(0, max(bbox_a[1], bbox_b[1]) - min(bbox_a[3], bbox_b[3]))
+    gap = math.sqrt(gap_x**2 + gap_y**2)
+
+    if gap < 2.0:
+        return "adjacent"
+
+    return "separated"
+
+
+def align_overlapping(
+    fp_a: SpatialFingerprint,
+    fp_b: SpatialFingerprint,
+) -> CrossCameraResult:
+    """Occupancy grid cross-correlation for overlapping cameras.
+
+    Slides grid B over grid A at integer cell offsets.
+    Score = count of co-occupied cells at each offset.
+    Best offset = translation correction.
+    """
+    cam_a = fp_a.camera_id
+    cam_b = fp_b.camera_id
+    result = CrossCameraResult(
+        camera_pair=(cam_a, cam_b),
+        method="overlap",
+        pairwise_correction=None,
+        confidence="none",
+    )
+
+    # Compute the offset between grid origins in cell units
+    cell_size = fp_a.cell_size
+    base_offset_x = (fp_b.origin[0] - fp_a.origin[0]) / cell_size
+    base_offset_y = (fp_b.origin[1] - fp_a.origin[1]) / cell_size
+
+    # Search range: +/- search_radius cells
+    search_radius = 10
+    best_score = 0
+    best_dx = 0
+    best_dy = 0
+
+    grid_a = fp_a.grid
+    grid_b = fp_b.grid
+
+    for dy in range(-search_radius, search_radius + 1):
+        for dx in range(-search_radius, search_radius + 1):
+            # Effective offset for grid B onto grid A's coordinate system
+            off_y = int(round(base_offset_y)) + dy
+            off_x = int(round(base_offset_x)) + dx
+
+            # Compute overlap region
+            a_y_start = max(0, off_y)
+            a_y_end = min(grid_a.shape[0], grid_b.shape[0] + off_y)
+            a_x_start = max(0, off_x)
+            a_x_end = min(grid_a.shape[1], grid_b.shape[1] + off_x)
+
+            b_y_start = max(0, -off_y)
+            b_y_end = b_y_start + (a_y_end - a_y_start)
+            b_x_start = max(0, -off_x)
+            b_x_end = b_x_start + (a_x_end - a_x_start)
+
+            if a_y_end <= a_y_start or a_x_end <= a_x_start:
+                continue
+
+            overlap = grid_a[a_y_start:a_y_end, a_x_start:a_x_end].astype(int)
+            b_slice = grid_b[b_y_start:b_y_end, b_x_start:b_x_end].astype(int)
+
+            if overlap.shape != b_slice.shape:
+                continue
+
+            score = int((overlap * b_slice).sum())
+            if score > best_score:
+                best_score = score
+                best_dx = dx
+                best_dy = dy
+
+    if best_score < 3:
+        result.details = {
+            "reason": "insufficient overlap co-occupancy",
+            "best_score": best_score,
+        }
+        return result
+
+    # Convert cell offset correction to world-space translation
+    correction_x = best_dx * cell_size
+    correction_y = best_dy * cell_size
+
+    # Build 2x3 affine: translate cam_b positions to align with cam_a
+    pairwise = np.array([
+        [1.0, 0.0, -correction_x],
+        [0.0, 1.0, -correction_y],
+    ])
+
+    result.pairwise_correction = pairwise
+    result.n_correspondences = best_score
+    result.mean_residual = cell_size  # resolution-limited
+
+    # Confidence based on co-occupied cell count
+    if best_score >= 20:
+        result.confidence = "high"
+    elif best_score >= 10:
+        result.confidence = "medium"
     else:
-        overlap_frac = 0.0
+        result.confidence = "low"
 
-    # Try overlap method first, then handoff
-    correspondences = []
+    result.details = {
+        "method": "grid_cross_correlation",
+        "best_offset_cells": (best_dx, best_dy),
+        "correction_meters": (round(correction_x, 3), round(correction_y, 3)),
+        "co_occupied_cells": best_score,
+        "search_radius": search_radius,
+    }
 
-    if overlap_frac > 0.1 and overlap is not None:
-        # Step 2a: Overlap method — co-temporal detections
-        correspondences = _find_overlap_correspondences(
-            features_a, features_b, affine_a, affine_b,
-            overlap, spatial_threshold_m,
-        )
-        if len(correspondences) >= 3:
-            result.method = "overlap"
+    return result
 
-    if len(correspondences) < 3:
-        # Step 2b: Handoff method — death→birth matching
-        handoff_corr = _find_handoff_correspondences(
-            features_a, features_b, affine_a, affine_b,
-            time_window_s,
-        )
-        if len(handoff_corr) >= len(correspondences):
-            correspondences = handoff_corr
-            result.method = "handoff"
+
+def align_adjacent(
+    fp_a: SpatialFingerprint,
+    fp_b: SpatialFingerprint,
+    features_a: list[TrackletFeatures],
+    features_b: list[TrackletFeatures],
+    correction_a: CalibrationResult,
+    correction_b: CalibrationResult,
+    spatial_threshold: float = 3.0,
+    ransac_iterations: int = 100,
+    ransac_inlier_threshold: float = 0.5,
+) -> CrossCameraResult:
+    """Boundary contour stitching for adjacent cameras.
+
+    Extracts exit/entry vectors near FOV edges:
+    - Exit vectors: last N positions of tracklets dying near FOV boundary
+    - Entry vectors: first N positions of tracklets born near FOV boundary
+
+    At the shared boundary, exit vectors from A should spatially continue
+    as entry vectors from B (and vice versa).
+    """
+    cam_a = correction_a.camera_id
+    cam_b = correction_b.camera_id
+
+    result = CrossCameraResult(
+        camera_pair=(cam_a, cam_b),
+        method="adjacent",
+        pairwise_correction=None,
+        confidence="none",
+    )
+
+    affine_a = (
+        correction_a.correction_matrix
+        if correction_a.correction_matrix is not None
+        else np.eye(3)[:2]
+    )
+    affine_b = (
+        correction_b.correction_matrix
+        if correction_b.correction_matrix is not None
+        else np.eye(3)[:2]
+    )
+
+    # Extract boundary crossing vectors
+    exits_a = _extract_boundary_vectors(features_a, affine_a, fp_a, is_exit=True)
+    entries_b = _extract_boundary_vectors(features_b, affine_b, fp_b, is_exit=False)
+    exits_b = _extract_boundary_vectors(features_b, affine_b, fp_b, is_exit=True)
+    entries_a = _extract_boundary_vectors(features_a, affine_a, fp_a, is_exit=False)
+
+    # Match A exits → B entries
+    correspondences = _match_boundary_vectors(
+        exits_a, entries_b, spatial_threshold
+    )
+    # Also match B exits → A entries
+    reverse_corr = _match_boundary_vectors(
+        exits_b, entries_a, spatial_threshold
+    )
+    # For reverse correspondences, swap pos_a/pos_b
+    for c in reverse_corr:
+        correspondences.append({
+            "pos_a": c["pos_b"],
+            "pos_b": c["pos_a"],
+            "distance": c["distance"],
+        })
 
     result.n_correspondences = len(correspondences)
 
     if len(correspondences) < 3:
         result.details = {
-            "reason": f"insufficient correspondences ({len(correspondences)} < 3)",
-            "overlap_fraction": round(overlap_frac, 4),
+            "reason": f"insufficient boundary correspondences ({len(correspondences)} < 3)",
+            "exits_a": len(exits_a),
+            "entries_b": len(entries_b),
+            "exits_b": len(exits_b),
+            "entries_a": len(entries_a),
         }
         return result
 
-    # Step 3: RANSAC affine fit (cam_b positions → cam_a positions)
+    # RANSAC affine fit: cam_b → cam_a
     affine, inliers, residual = _ransac_pairwise(
         correspondences, ransac_iterations, ransac_inlier_threshold,
     )
 
     if affine is None or len(inliers) < 3:
-        result.details = {"reason": "RANSAC failed"}
+        result.details = {"reason": "RANSAC failed on boundary vectors"}
         return result
 
     result.pairwise_correction = affine
     result.mean_residual = residual
 
-    # Assign confidence
     if len(inliers) >= 10 and residual < 0.3:
         result.confidence = "high"
     elif len(inliers) >= 5 and residual < 0.5:
@@ -157,7 +423,7 @@ def align_camera_pair(
         result.confidence = "low"
 
     result.details = {
-        "overlap_fraction": round(overlap_frac, 4),
+        "method": "boundary_contour_stitching",
         "n_inliers": len(inliers),
         "n_outliers": len(correspondences) - len(inliers),
         "mean_residual_m": round(residual, 4),
@@ -185,7 +451,8 @@ def write_alignment_json(
         "mean_residual_m": round(result.mean_residual, 4),
         "pairwise_correction": (
             result.pairwise_correction.tolist()
-            if result.pairwise_correction is not None else None
+            if result.pairwise_correction is not None
+            else None
         ),
         "details": result.details,
     }
@@ -200,20 +467,116 @@ def write_alignment_json(
 # ---------------------------------------------------------------------------
 
 
-def _corrected_bbox(
-    features: list[TrackletFeatures], affine: np.ndarray
-) -> Optional[tuple[float, float, float, float]]:
-    """Compute bounding box of all corrected positions."""
-    all_pts = []
+def _extract_boundary_vectors(
+    features: list[TrackletFeatures],
+    affine: np.ndarray,
+    fingerprint: SpatialFingerprint,
+    is_exit: bool,
+    n_positions: int = 5,
+    boundary_margin: float = 1.0,
+) -> list[dict]:
+    """Extract exit or entry vectors near the FOV boundary.
+
+    For exits: last N corrected positions of tracklets dying near boundary.
+    For entries: first N corrected positions of tracklets born near boundary.
+    """
+    x_min, y_min, x_max, y_max = fingerprint.bounding_box
+    vectors = []
+
     for f in features:
-        for x, y in f.positions:
-            cx, cy = _apply_affine_single(x, y, affine)
-            all_pts.append((cx, cy))
-    if not all_pts:
-        return None
-    xs = [p[0] for p in all_pts]
-    ys = [p[1] for p in all_pts]
-    return (min(xs), min(ys), max(xs), max(ys))
+        if len(f.positions) < n_positions:
+            continue
+
+        if is_exit:
+            # Check death position near FOV boundary
+            cx, cy = _apply_affine_single(*f.death_position, affine)
+            near_boundary = (
+                abs(cx - x_min) < boundary_margin
+                or abs(cx - x_max) < boundary_margin
+                or abs(cy - y_min) < boundary_margin
+                or abs(cy - y_max) < boundary_margin
+            )
+            if not near_boundary:
+                continue
+
+            # Last N positions
+            tail = f.positions[-n_positions:]
+            corrected = [_apply_affine_single(x, y, affine) for x, y in tail]
+            position = corrected[-1]  # exit point
+        else:
+            # Check birth position near FOV boundary
+            cx, cy = _apply_affine_single(*f.birth_position, affine)
+            near_boundary = (
+                abs(cx - x_min) < boundary_margin
+                or abs(cx - x_max) < boundary_margin
+                or abs(cy - y_min) < boundary_margin
+                or abs(cy - y_max) < boundary_margin
+            )
+            if not near_boundary:
+                continue
+
+            # First N positions
+            head = f.positions[:n_positions]
+            corrected = [_apply_affine_single(x, y, affine) for x, y in head]
+            position = corrected[0]  # entry point
+
+        # Compute direction vector
+        if len(corrected) >= 2:
+            dx = corrected[-1][0] - corrected[0][0]
+            dy = corrected[-1][1] - corrected[0][1]
+            mag = math.sqrt(dx**2 + dy**2)
+            if mag > 0.01:
+                direction = (dx / mag, dy / mag)
+            else:
+                direction = (0.0, 0.0)
+        else:
+            direction = (0.0, 0.0)
+
+        vectors.append({
+            "tracklet_id": f.tracklet_id,
+            "position": position,
+            "direction": direction,
+            "positions": corrected,
+        })
+
+    return vectors
+
+
+def _match_boundary_vectors(
+    exits: list[dict],
+    entries: list[dict],
+    spatial_threshold: float,
+) -> list[dict]:
+    """Match exit vectors to entry vectors by spatial proximity."""
+    correspondences = []
+    used_entries = set()
+
+    for ex in exits:
+        best_dist = float("inf")
+        best_entry = None
+        best_idx = -1
+
+        for i, en in enumerate(entries):
+            if i in used_entries:
+                continue
+            d = math.sqrt(
+                (ex["position"][0] - en["position"][0]) ** 2
+                + (ex["position"][1] - en["position"][1]) ** 2
+            )
+            if d < spatial_threshold and d < best_dist:
+                best_dist = d
+                best_entry = en
+                best_idx = i
+
+        if best_entry is not None:
+            correspondences.append({
+                "pos_a": ex["position"],
+                "pos_b": best_entry["position"],
+                "distance": best_dist,
+            })
+            used_entries.add(best_idx)
+
+    return correspondences
 
 
 def _bbox_intersection(
@@ -228,164 +591,6 @@ def _bbox_intersection(
     if x_min < x_max and y_min < y_max:
         return (x_min, y_min, x_max, y_max)
     return None
-
-
-def _find_overlap_correspondences(
-    features_a: list[TrackletFeatures],
-    features_b: list[TrackletFeatures],
-    affine_a: np.ndarray,
-    affine_b: np.ndarray,
-    overlap_bbox: tuple[float, float, float, float],
-    spatial_threshold: float,
-) -> list[dict]:
-    """Find co-temporal detections in the overlap zone.
-
-    Builds a frame-indexed lookup of positions, matches by proximity.
-    Uses timestamp_ms from positions is not available, so we use
-    frame_index-based matching: same frame_index = same time.
-    Since we only have (x,y) positions in TrackletFeatures, we build
-    a simplified approach: for each tracklet pair where both have
-    positions in the overlap zone, check average position proximity.
-    """
-    # Build per-tracklet corrected centroids in overlap zone
-    centroids_a = _overlap_centroids(features_a, affine_a, overlap_bbox)
-    centroids_b = _overlap_centroids(features_b, affine_b, overlap_bbox)
-
-    correspondences = []
-    used_b = set()
-
-    for tid_a, (cx_a, cy_a, dur_a) in centroids_a.items():
-        best_dist = float("inf")
-        best_b = None
-        for tid_b, (cx_b, cy_b, dur_b) in centroids_b.items():
-            if tid_b in used_b:
-                continue
-            d = math.sqrt((cx_a - cx_b) ** 2 + (cy_a - cy_b) ** 2)
-            if d < spatial_threshold and d < best_dist:
-                best_dist = d
-                best_b = tid_b
-
-        if best_b is not None:
-            cx_b, cy_b, _ = centroids_b[best_b]
-            correspondences.append({
-                "pos_a": (cx_a, cy_a),
-                "pos_b": (cx_b, cy_b),
-                "distance": best_dist,
-            })
-            used_b.add(best_b)
-
-    return correspondences
-
-
-def _overlap_centroids(
-    features: list[TrackletFeatures],
-    affine: np.ndarray,
-    overlap_bbox: tuple[float, float, float, float],
-) -> dict[str, tuple[float, float, float]]:
-    """Compute corrected centroids of tracklets that pass through overlap zone."""
-    result = {}
-    x_min, y_min, x_max, y_max = overlap_bbox
-
-    for f in features:
-        overlap_pts = []
-        for x, y in f.positions:
-            cx, cy = _apply_affine_single(x, y, affine)
-            if x_min <= cx <= x_max and y_min <= cy <= y_max:
-                overlap_pts.append((cx, cy))
-
-        if len(overlap_pts) >= 5:  # need meaningful presence in overlap
-            mean_x = sum(p[0] for p in overlap_pts) / len(overlap_pts)
-            mean_y = sum(p[1] for p in overlap_pts) / len(overlap_pts)
-            result[f.tracklet_id] = (mean_x, mean_y, f.duration_s)
-
-    return result
-
-
-def _find_handoff_correspondences(
-    features_a: list[TrackletFeatures],
-    features_b: list[TrackletFeatures],
-    affine_a: np.ndarray,
-    affine_b: np.ndarray,
-    time_window_s: float,
-) -> list[dict]:
-    """Find death→birth handoffs between cameras.
-
-    Match tracklet death on cam A to tracklet birth on cam B within time window.
-    Uses last_frame / first_frame as proxy for timestamps (assumes same fps).
-    """
-    # Build death events for A and birth events for B
-    deaths_a = []
-    for f in features_a:
-        if f.positions:
-            cx, cy = _apply_affine_single(*f.death_position, affine_a)
-            # Use last_frame from positions length as proxy
-            deaths_a.append({
-                "tracklet_id": f.tracklet_id,
-                "position": (cx, cy),
-                "frame": len(f.positions),  # relative end frame
-                "time_proxy": f.duration_s,
-            })
-
-    births_b = []
-    for f in features_b:
-        if f.positions:
-            cx, cy = _apply_affine_single(*f.birth_position, affine_b)
-            births_b.append({
-                "tracklet_id": f.tracklet_id,
-                "position": (cx, cy),
-                "frame": 0,
-                "time_proxy": 0.0,
-            })
-
-    # Also try: death on B → birth on A
-    deaths_b = []
-    for f in features_b:
-        if f.positions:
-            cx, cy = _apply_affine_single(*f.death_position, affine_b)
-            deaths_b.append({
-                "tracklet_id": f.tracklet_id,
-                "position": (cx, cy),
-                "time_proxy": f.duration_s,
-            })
-
-    births_a = []
-    for f in features_a:
-        if f.positions:
-            cx, cy = _apply_affine_single(*f.birth_position, affine_a)
-            births_a.append({
-                "tracklet_id": f.tracklet_id,
-                "position": (cx, cy),
-                "time_proxy": 0.0,
-            })
-
-    # Simple spatial matching — handoff pairs should be spatially close
-    correspondences = []
-    used = set()
-
-    for death in deaths_a:
-        best_dist = float("inf")
-        best_birth = None
-        for birth in births_b:
-            key = ("ab", death["tracklet_id"], birth["tracklet_id"])
-            if key in used:
-                continue
-            d = math.sqrt(
-                (death["position"][0] - birth["position"][0]) ** 2
-                + (death["position"][1] - birth["position"][1]) ** 2
-            )
-            if d < 5.0 and d < best_dist:  # generous spatial threshold for handoffs
-                best_dist = d
-                best_birth = birth
-
-        if best_birth is not None:
-            correspondences.append({
-                "pos_a": death["position"],
-                "pos_b": best_birth["position"],
-                "distance": best_dist,
-            })
-            used.add(("ab", death["tracklet_id"], best_birth["tracklet_id"]))
-
-    return correspondences
 
 
 def _ransac_pairwise(
@@ -405,16 +610,13 @@ def _ransac_pairwise(
     for _ in range(n_iterations):
         sample = random.sample(range(n), 3)
 
-        # Build point pairs
         src = np.array([correspondences[i]["pos_b"] for i in sample])
         dst = np.array([correspondences[i]["pos_a"] for i in sample])
 
-        # Fit affine: minimize || A @ src_aug - dst ||
         affine = _fit_affine_lsq(src, dst)
         if affine is None:
             continue
 
-        # Score all correspondences
         inliers = []
         residuals = []
         for i, c in enumerate(correspondences):
@@ -427,7 +629,6 @@ def _ransac_pairwise(
         if len(inliers) > len(best_inliers):
             best_inliers = inliers
             best_residual = sum(residuals) / max(1, len(residuals))
-            # Refit on inliers
             src_all = np.array([correspondences[i]["pos_b"] for i in inliers])
             dst_all = np.array([correspondences[i]["pos_a"] for i in inliers])
             best_affine = _fit_affine_lsq(src_all, dst_all)
@@ -447,7 +648,6 @@ def _fit_affine_lsq(
     if n < 3:
         return None
 
-    # Build system: [x y 1 0 0 0; 0 0 0 x y 1] * [a b tx c d ty]^T = [dx dy]
     A = np.zeros((2 * n, 6))
     b = np.zeros(2 * n)
     for i in range(n):
