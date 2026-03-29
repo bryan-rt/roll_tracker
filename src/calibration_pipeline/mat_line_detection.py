@@ -4,8 +4,8 @@ Detects visible mat panel seams/edges in video frames via Canny + HoughLinesP,
 projects blueprint edges to pixel space, and matches detected lines to expected
 positions. Provides the primary signal for Layer 1 homography refinement.
 
-The inverse projection (world→pixel) lives here in the calibration pipeline,
-NOT in f0_projection.py (which is the main pipeline's pixel→world path).
+The inverse projection (world->pixel) lives here in the calibration pipeline,
+NOT in f0_projection.py (which is the main pipeline's pixel->world path).
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from typing import Optional
 import cv2
 import numpy as np
 import pandas as pd
+from shapely.geometry import LineString, box as shapely_box
 
 from calibration_pipeline.blueprint_geometry import MatBlueprint
 
@@ -46,6 +47,8 @@ class MatLineResult:
     projected_blueprint_edges_px: list[
         tuple[tuple[float, float], tuple[float, float]]
     ]
+    # Maps each entry in projected_blueprint_edges_px back to blueprint.boundary_edges index
+    projected_edge_indices: list[int] = field(default_factory=list)
     details: dict = field(default_factory=dict)
 
 
@@ -64,16 +67,7 @@ def project_world_to_pixel(
     pipeline simple: undistort frame, then all pixel-space comparisons
     are in the same undistorted coordinate system.
 
-    Parameters
-    ----------
-    world_xy : (x, y) in world/mat coordinates.
-    H : 3x3 homography (pixel -> world).
-    camera_matrix, dist_coefficients : unused for inverse direction
-        (we skip re-distortion by design — see docstring).
-
-    Returns
-    -------
-    (u, v) in undistorted pixel coordinates, or (nan, nan) if degenerate.
+    Returns (nan, nan) for degenerate or wildly out-of-bounds projections.
     """
     try:
         H_inv = np.linalg.inv(H)
@@ -82,9 +76,13 @@ def project_world_to_pixel(
     p = np.array([world_xy[0], world_xy[1], 1.0], dtype=np.float64)
     q = H_inv @ p
     w = q[2]
-    if abs(w) < 1e-12:
+    if abs(w) < 1e-6:
         return (float("nan"), float("nan"))
-    return (q[0] / w, q[1] / w)
+    u, v = q[0] / w, q[1] / w
+    # Filter wildly out-of-bounds projections (behind camera, etc.)
+    if abs(u) > 10000 or abs(v) > 10000:
+        return (float("nan"), float("nan"))
+    return (u, v)
 
 
 def detect_mat_lines(
@@ -100,7 +98,7 @@ def detect_mat_lines(
     hough_threshold: int = 80,
     hough_min_length: int = 50,
     hough_max_gap: int = 10,
-    match_distance_threshold: float = 30.0,
+    match_distance_threshold: float = 80.0,
 ) -> MatLineResult:
     """Detect mat edges in video frames and match to blueprint.
 
@@ -120,29 +118,29 @@ def detect_mat_lines(
     -------
     MatLineResult with matched lines and diagnostics.
     """
-    # Project blueprint edges to pixel space
-    projected_edges = _project_blueprint_edges_to_pixel(
-        blueprint, H, camera_matrix, dist_coefficients
-    )
-
     # Select frames to analyze
     frame_indices = _select_low_occupancy_frames(
         video_path, tracklet_frames_df, n_frames
     )
 
     if not frame_indices:
+        projected_edges, edge_indices = _project_blueprint_edges_to_pixel(
+            blueprint, H, camera_matrix, dist_coefficients
+        )
         return MatLineResult(
             n_frames_analyzed=0,
             n_lines_detected=0,
             n_lines_matched=0,
             matched_lines=[],
             projected_blueprint_edges_px=projected_edges,
+            projected_edge_indices=edge_indices,
             details={"reason": "no frames selected"},
         )
 
-    # Detect lines in each frame and accumulate matches
+    # Detect lines in each frame and get image dimensions
     all_detected: list[tuple[tuple[float, float], tuple[float, float]]] = []
     n_frames_read = 0
+    image_wh: tuple[int, int] | None = None
 
     cap = cv2.VideoCapture(str(video_path))
     try:
@@ -153,6 +151,11 @@ def detect_mat_lines(
                 continue
             n_frames_read += 1
 
+            # Capture image dimensions from first frame read
+            if image_wh is None:
+                h, w = frame_bgr.shape[:2]
+                image_wh = (w, h)
+
             lines = _detect_lines_in_frame(
                 frame_bgr, camera_matrix, dist_coefficients,
                 canny_low, canny_high,
@@ -162,6 +165,11 @@ def detect_mat_lines(
     finally:
         cap.release()
 
+    # Project blueprint edges to pixel space (clipped to frame)
+    projected_edges, edge_indices = _project_blueprint_edges_to_pixel(
+        blueprint, H, camera_matrix, dist_coefficients, image_wh=image_wh,
+    )
+
     if not all_detected:
         return MatLineResult(
             n_frames_analyzed=n_frames_read,
@@ -169,6 +177,7 @@ def detect_mat_lines(
             n_lines_matched=0,
             matched_lines=[],
             projected_blueprint_edges_px=projected_edges,
+            projected_edge_indices=edge_indices,
             details={"reason": "no lines detected in any frame"},
         )
 
@@ -177,8 +186,8 @@ def detect_mat_lines(
 
     # Match detected lines to projected blueprint edges
     matched = _match_lines_to_edges(
-        merged, projected_edges, H, camera_matrix, dist_coefficients,
-        match_distance_threshold,
+        merged, projected_edges, edge_indices, H,
+        camera_matrix, dist_coefficients, match_distance_threshold,
     )
 
     return MatLineResult(
@@ -187,11 +196,14 @@ def detect_mat_lines(
         n_lines_matched=len(matched),
         matched_lines=matched,
         projected_blueprint_edges_px=projected_edges,
+        projected_edge_indices=edge_indices,
         details={
             "frame_indices": frame_indices,
             "raw_detections_per_frame": len(all_detected) / max(1, n_frames_read),
             "merged_segments": len(merged),
             "raw_detected_lines": all_detected,
+            "n_projected_edges_clipped": len(projected_edges),
+            "n_blueprint_edges_total": len(blueprint.boundary_edges),
         },
     )
 
@@ -249,20 +261,74 @@ def _select_low_occupancy_frames(
     return [i * step for i in range(n_frames)]
 
 
+def _clip_segment_to_frame(
+    p1: tuple[float, float],
+    p2: tuple[float, float],
+    width: int,
+    height: int,
+    min_length: float = 10.0,
+) -> tuple[tuple[float, float], tuple[float, float]] | None:
+    """Clip a line segment to the frame rectangle using Shapely.
+
+    Returns clipped (start, end) or None if segment is off-screen or too short.
+    """
+    line = LineString([p1, p2])
+    frame = shapely_box(0, 0, width, height)
+    clipped = line.intersection(frame)
+    if clipped.is_empty or clipped.length < min_length:
+        return None
+    if clipped.geom_type == "LineString":
+        coords = list(clipped.coords)
+        return (coords[0], coords[-1])
+    # MultiLineString — take the longest piece
+    if clipped.geom_type == "MultiLineString":
+        best = max(clipped.geoms, key=lambda g: g.length)
+        if best.length < min_length:
+            return None
+        coords = list(best.coords)
+        return (coords[0], coords[-1])
+    return None
+
+
 def _project_blueprint_edges_to_pixel(
     blueprint: MatBlueprint,
     H: np.ndarray,
     camera_matrix: np.ndarray | None,
     dist_coefficients: np.ndarray | None,
-) -> list[tuple[tuple[float, float], tuple[float, float]]]:
-    """Project all blueprint boundary edges to pixel space."""
+    image_wh: tuple[int, int] | None = None,
+) -> tuple[
+    list[tuple[tuple[float, float], tuple[float, float]]],
+    list[int],
+]:
+    """Project blueprint boundary edges to pixel space, optionally clipping to frame.
+
+    Returns
+    -------
+    (projected_segments, edge_indices) where edge_indices[i] is the index into
+    blueprint.boundary_edges that projected_segments[i] came from.
+    """
     projected = []
-    for (wx1, wy1), (wx2, wy2) in blueprint.boundary_edges:
+    edge_indices = []
+
+    for ei, ((wx1, wy1), (wx2, wy2)) in enumerate(blueprint.boundary_edges):
         px1 = project_world_to_pixel((wx1, wy1), H, camera_matrix, dist_coefficients)
         px2 = project_world_to_pixel((wx2, wy2), H, camera_matrix, dist_coefficients)
-        if not (math.isnan(px1[0]) or math.isnan(px2[0])):
+
+        # Skip degenerate projections
+        if math.isnan(px1[0]) or math.isnan(px2[0]):
+            continue
+
+        if image_wh is not None:
+            w, h = image_wh
+            clipped = _clip_segment_to_frame(px1, px2, w, h)
+            if clipped is None:
+                continue
+            projected.append(clipped)
+        else:
             projected.append((px1, px2))
-    return projected
+        edge_indices.append(ei)
+
+    return projected, edge_indices
 
 
 def _detect_lines_in_frame(
@@ -389,9 +455,28 @@ def _merge_collinear_segments(
     return merged
 
 
+def _angle_of_segment(
+    p1: tuple[float, float], p2: tuple[float, float]
+) -> float:
+    """Angle in degrees [0, 180) of a line segment."""
+    dx, dy = p2[0] - p1[0], p2[1] - p1[1]
+    return math.degrees(math.atan2(dy, dx)) % 180
+
+
+def _angle_compatible(
+    angle1: float, angle2: float, threshold: float = 20.0
+) -> bool:
+    """Check if two angles (in [0,180)) are within threshold degrees."""
+    diff = abs(angle1 - angle2)
+    if diff > 90:
+        diff = 180 - diff
+    return diff < threshold
+
+
 def _match_lines_to_edges(
     detected_lines: list[tuple[tuple[float, float], tuple[float, float]]],
     projected_edges: list[tuple[tuple[float, float], tuple[float, float]]],
+    edge_indices: list[int],
     H: np.ndarray,
     camera_matrix: np.ndarray | None,
     dist_coefficients: np.ndarray | None,
@@ -401,9 +486,13 @@ def _match_lines_to_edges(
 
     For each detected line, find the nearest projected edge by average
     perpendicular distance (sampled along the detected segment).
+    Only considers edges with compatible orientation (within 20 degrees).
     """
     if not detected_lines or not projected_edges:
         return []
+
+    # Pre-compute angles for projected edges
+    edge_angles = [_angle_of_segment(e[0], e[1]) for e in projected_edges]
 
     matched = []
     for (px1, py1), (px2, py2) in detected_lines:
@@ -411,11 +500,17 @@ def _match_lines_to_edges(
         if seg_len < 10:  # skip very short segments
             continue
 
-        # Find nearest projected edge
-        best_idx = -1
+        det_angle = _angle_of_segment((px1, py1), (px2, py2))
+
+        # Find nearest projected edge with compatible orientation
+        best_proj_idx = -1
         best_dist = float("inf")
 
-        for ei, ((ex1, ey1), (ex2, ey2)) in enumerate(projected_edges):
+        for pi, ((ex1, ey1), (ex2, ey2)) in enumerate(projected_edges):
+            # Orientation pre-filter
+            if not _angle_compatible(det_angle, edge_angles[pi]):
+                continue
+
             # Average perpendicular distance: sample points along detected segment
             n_samples = max(3, int(seg_len / 20))
             total_d = 0.0
@@ -429,9 +524,12 @@ def _match_lines_to_edges(
 
             if avg_d < best_dist:
                 best_dist = avg_d
-                best_idx = ei
+                best_proj_idx = pi
 
-        if best_idx >= 0 and best_dist < match_distance_threshold:
+        if best_proj_idx >= 0 and best_dist < match_distance_threshold:
+            # Map projected index back to blueprint edge index
+            blueprint_edge_idx = edge_indices[best_proj_idx]
+
             # Project detected line endpoints to world space
             w_start = _pixel_to_world(px1, py1, H, camera_matrix, dist_coefficients)
             w_end = _pixel_to_world(px2, py2, H, camera_matrix, dist_coefficients)
@@ -441,7 +539,7 @@ def _match_lines_to_edges(
                 pixel_end=(px2, py2),
                 world_start=w_start,
                 world_end=w_end,
-                matched_edge_index=best_idx,
+                matched_edge_index=blueprint_edge_idx,
                 match_distance=best_dist,
                 length_px=seg_len,
             ))
@@ -487,10 +585,10 @@ def save_diagnostic_image(
 ) -> None:
     """Save annotated diagnostic image showing frame + projected edges + detected lines.
 
-    Layers:
+    Layers (drawn in order):
     - Video frame (undistorted if K available) as background
-    - Projected blueprint boundary edges in GREEN (2px solid)
     - All detected Hough lines in RED (1px)
+    - Projected blueprint boundary edges in GREEN with black outline (3px)
     - Matched lines (if any) in YELLOW with distance labels
     - Legend in top-left corner
     """
@@ -514,22 +612,7 @@ def save_diagnostic_image(
 
     canvas = frame_bgr.copy()
 
-    # Draw projected blueprint edges in GREEN
-    projected = _project_blueprint_edges_to_pixel(
-        blueprint, H, camera_matrix, dist_coefficients
-    )
-    for i, ((px1, py1), (px2, py2)) in enumerate(projected):
-        p1 = (int(round(px1)), int(round(py1)))
-        p2 = (int(round(px2)), int(round(py2)))
-        cv2.line(canvas, p1, p2, (0, 255, 0), 2)
-        cv2.circle(canvas, p1, 4, (0, 255, 0), -1)
-        cv2.circle(canvas, p2, 4, (0, 255, 0), -1)
-        # Edge index label at midpoint
-        mx, my = (p1[0] + p2[0]) // 2, (p1[1] + p2[1]) // 2
-        cv2.putText(canvas, str(i), (mx, my - 5),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
-
-    # Draw all detected lines (raw, pre-merge) in RED
+    # Layer 1: Draw all detected lines (raw, pre-merge) in RED
     raw_lines = mat_line_result.details.get("raw_detected_lines", [])
     for (rx1, ry1), (rx2, ry2) in raw_lines:
         cv2.line(canvas,
@@ -537,7 +620,27 @@ def save_diagnostic_image(
                  (int(round(rx2)), int(round(ry2))),
                  (0, 0, 255), 1)
 
-    # Draw matched lines in YELLOW with distance labels
+    # Layer 2: Draw projected blueprint edges (clipped) in GREEN with black outline
+    projected = mat_line_result.projected_blueprint_edges_px
+    proj_indices = mat_line_result.projected_edge_indices
+    for i, ((px1, py1), (px2, py2)) in enumerate(projected):
+        p1 = (int(round(px1)), int(round(py1)))
+        p2 = (int(round(px2)), int(round(py2)))
+        # Black outline
+        cv2.line(canvas, p1, p2, (0, 0, 0), 5)
+        # Green fill
+        cv2.line(canvas, p1, p2, (0, 255, 0), 3)
+        cv2.circle(canvas, p1, 5, (0, 255, 0), -1)
+        cv2.circle(canvas, p2, 5, (0, 255, 0), -1)
+        # Edge index label at midpoint
+        edge_label = str(proj_indices[i]) if i < len(proj_indices) else str(i)
+        mx, my = (p1[0] + p2[0]) // 2, (p1[1] + p2[1]) // 2
+        cv2.putText(canvas, f"e{edge_label}", (mx + 5, my - 8),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
+        cv2.putText(canvas, f"e{edge_label}", (mx + 5, my - 8),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+
+    # Layer 3: Draw matched lines in YELLOW with distance labels
     for ml in mat_line_result.matched_lines:
         p1 = (int(round(ml.pixel_start[0])), int(round(ml.pixel_start[1])))
         p2 = (int(round(ml.pixel_end[0])), int(round(ml.pixel_end[1])))
@@ -548,11 +651,11 @@ def save_diagnostic_image(
                     (mx, my - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
 
     # Legend
-    h = canvas.shape[0]
     y0 = 30
     cv2.putText(canvas, f"Frame {frame_index}", (10, y0),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-    cv2.putText(canvas, f"GREEN: projected blueprint ({len(projected)} edges)",
+    cv2.putText(canvas, f"GREEN: projected edges ({len(projected)} clipped from "
+                f"{mat_line_result.details.get('n_blueprint_edges_total', '?')})",
                 (10, y0 + 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
     cv2.putText(canvas, f"RED: detected lines ({len(raw_lines)} raw)",
                 (10, y0 + 50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
