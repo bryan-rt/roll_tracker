@@ -629,15 +629,17 @@ def save_diagnostic_image(
     mat_line_result: MatLineResult,
     output_path: Path,
     frame_index: int = 0,
+    green_only: bool = False,
 ) -> None:
     """Save annotated diagnostic image.
 
-    Layers (drawn in order):
-    - Video frame (undistorted if K available)
-    - Detected Hough lines in RED (1px)
-    - Projected polylines in GREEN with black outline (3px)
-    - Matched lines in YELLOW with distance labels
-    - Legend
+    Layer order (back to front):
+    1. Video frame (undistorted if K available)
+    2. GREEN projected polylines — broad (white 9px outline + green 7px fill)
+    3. RED detected Hough lines — thin (2px), drawn on top of green
+    4. YELLOW matched lines (if any) — 2px with distance labels
+
+    When green_only=True, skips layers 3 and 4 for a clean projection view.
     """
     if mat_line_result.details.get("frame_indices"):
         frame_index = mat_line_result.details["frame_indices"][0]
@@ -656,27 +658,17 @@ def save_diagnostic_image(
 
     canvas = frame_bgr.copy()
 
-    # Layer 1: Detected lines in RED
-    raw_lines = mat_line_result.details.get("raw_detected_lines", [])
-    for (rx1, ry1), (rx2, ry2) in raw_lines:
-        cv2.line(canvas,
-                 (int(round(rx1)), int(round(ry1))),
-                 (int(round(rx2)), int(round(ry2))),
-                 (0, 0, 255), 1)
-
-    # Layer 2: Projected polylines in GREEN with black outline
+    # Layer 1 (background): Projected polylines in GREEN — broad for visibility
     polylines = mat_line_result.projected_polylines
     poly_indices = mat_line_result.projected_edge_indices
     for i, polyline in enumerate(polylines):
         pts = [(int(round(x)), int(round(y))) for x, y in polyline]
         for j in range(len(pts) - 1):
-            cv2.line(canvas, pts[j], pts[j + 1], (0, 0, 0), 5)
-            cv2.line(canvas, pts[j], pts[j + 1], (0, 255, 0), 3)
-        # Vertex dots at endpoints
+            cv2.line(canvas, pts[j], pts[j + 1], (255, 255, 255), 9)  # white outline
+            cv2.line(canvas, pts[j], pts[j + 1], (0, 255, 0), 7)      # green fill
         if pts:
-            cv2.circle(canvas, pts[0], 5, (0, 255, 0), -1)
-            cv2.circle(canvas, pts[-1], 5, (0, 255, 0), -1)
-        # Edge index label at midpoint
+            cv2.circle(canvas, pts[0], 6, (0, 255, 0), -1)
+            cv2.circle(canvas, pts[-1], 6, (0, 255, 0), -1)
         if len(pts) >= 2:
             mid_idx = len(pts) // 2
             mx, my = pts[mid_idx]
@@ -686,15 +678,24 @@ def save_diagnostic_image(
             cv2.putText(canvas, f"e{edge_label}", (mx + 5, my - 8),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
-    # Layer 3: Matched lines in YELLOW
-    for ml in mat_line_result.matched_lines:
-        p1 = (int(round(ml.pixel_start[0])), int(round(ml.pixel_start[1])))
-        p2 = (int(round(ml.pixel_end[0])), int(round(ml.pixel_end[1])))
-        cv2.line(canvas, p1, p2, (0, 255, 255), 2)
-        mx = (p1[0] + p2[0]) // 2
-        my = (p1[1] + p2[1]) // 2
-        cv2.putText(canvas, f"{ml.match_distance:.0f}px e{ml.matched_edge_index}",
-                    (mx, my - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
+    if not green_only:
+        # Layer 2 (foreground): Detected Hough lines in RED — thin on top
+        raw_lines = mat_line_result.details.get("raw_detected_lines", [])
+        for (rx1, ry1), (rx2, ry2) in raw_lines:
+            cv2.line(canvas,
+                     (int(round(rx1)), int(round(ry1))),
+                     (int(round(rx2)), int(round(ry2))),
+                     (0, 0, 255), 2)
+
+        # Layer 3: Matched lines in YELLOW
+        for ml in mat_line_result.matched_lines:
+            p1 = (int(round(ml.pixel_start[0])), int(round(ml.pixel_start[1])))
+            p2 = (int(round(ml.pixel_end[0])), int(round(ml.pixel_end[1])))
+            cv2.line(canvas, p1, p2, (0, 255, 255), 2)
+            mx = (p1[0] + p2[0]) // 2
+            my = (p1[1] + p2[1]) // 2
+            cv2.putText(canvas, f"{ml.match_distance:.0f}px e{ml.matched_edge_index}",
+                        (mx, my - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
 
     # Legend
     y0 = 30
@@ -703,10 +704,12 @@ def save_diagnostic_image(
     n_edges = mat_line_result.details.get("n_all_edges", len(mat_line_result.all_edges))
     cv2.putText(canvas, f"GREEN: {len(polylines)} polylines from {n_edges} edges",
                 (10, y0 + 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-    cv2.putText(canvas, f"RED: {len(raw_lines)} detected lines",
-                (10, y0 + 50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
-    cv2.putText(canvas, f"YELLOW: {mat_line_result.n_lines_matched} matched",
-                (10, y0 + 75), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+    if not green_only:
+        raw_lines = mat_line_result.details.get("raw_detected_lines", [])
+        cv2.putText(canvas, f"RED: {len(raw_lines)} detected lines",
+                    (10, y0 + 50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+        cv2.putText(canvas, f"YELLOW: {mat_line_result.n_lines_matched} matched",
+                    (10, y0 + 75), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(output_path), canvas)

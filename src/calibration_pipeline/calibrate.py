@@ -125,7 +125,7 @@ def run_calibration(
                   f"lines detected: {mlr.n_lines_detected}, "
                   f"matched: {mlr.n_lines_matched}")
 
-            # Save diagnostic image
+            # Save diagnostic images (full + green-only)
             diag_path = output_dir / "diagnostics" / f"{camera_id}_mat_lines.png"
             save_diagnostic_image(
                 video_path,
@@ -136,7 +136,18 @@ def run_calibration(
                 mlr,
                 diag_path,
             )
-            print(f"  Diagnostic image: {diag_path}")
+            green_path = output_dir / "diagnostics" / f"{camera_id}_green_only.png"
+            save_diagnostic_image(
+                video_path,
+                homography_data["H"],
+                homography_data.get("camera_matrix"),
+                homography_data.get("dist_coefficients"),
+                blueprint,
+                mlr,
+                green_path,
+                green_only=True,
+            )
+            print(f"  Diagnostic images: {diag_path}")
 
     # 4. Iterative refinement loop
     layer1_results: dict[str, CalibrationResult] = {}
