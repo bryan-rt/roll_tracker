@@ -32,7 +32,7 @@ import pandas as pd
 
 from calibration_pipeline.blueprint_geometry import MatBlueprint
 from calibration_pipeline.tracklet_classifier import TrackletFeatures, classify_tracklets
-from calibration_pipeline.mat_line_detection import detect_mat_lines, MatLineResult
+from calibration_pipeline.mat_line_detection import detect_mat_lines, MatLineResult, save_diagnostic_image
 from calibration_pipeline.mat_walk import (
     CalibrationResult,
     calibrate_single_camera,
@@ -124,6 +124,19 @@ def run_calibration(
             print(f"  Frames: {mlr.n_frames_analyzed}, "
                   f"lines detected: {mlr.n_lines_detected}, "
                   f"matched: {mlr.n_lines_matched}")
+
+            # Save diagnostic image
+            diag_path = output_dir / "diagnostics" / f"{camera_id}_mat_lines.png"
+            save_diagnostic_image(
+                video_path,
+                homography_data["H"],
+                homography_data.get("camera_matrix"),
+                homography_data.get("dist_coefficients"),
+                blueprint,
+                mlr,
+                diag_path,
+            )
+            print(f"  Diagnostic image: {diag_path}")
 
     # 4. Iterative refinement loop
     layer1_results: dict[str, CalibrationResult] = {}

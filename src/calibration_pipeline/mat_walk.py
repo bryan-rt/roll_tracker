@@ -194,25 +194,23 @@ def calibrate_single_camera(
         return result
 
     # --- Build constraint sets ---
-    # Interior positions (cleaning, on-mat) for footpath cost
-    interior_points = []
-    for f in cleaning:
-        for x, y in f.positions:
-            if blueprint.contains_point(x, y):
-                interior_points.append((x, y))
+    # Interior positions: ALL cleaning positions (should be inside after correction).
+    # Includes positions currently outside the polygon — those are exactly what the
+    # optimizer needs to push inside. Using only already-inside points gives zero
+    # gradient at identity.
+    interior_points = list(cleaning_positions)
 
-    # Negative constraint positions
+    # Negative constraint positions: ALL off-mat walker positions (should stay outside).
     negative_points = []
     for f in off_mat_walkers:
-        for x, y in f.positions:
-            if not blueprint.contains_point(x, y):
-                negative_points.append((x, y))
+        negative_points.extend(f.positions)
 
-    # Subsample for performance
-    if len(interior_points) > 200:
-        interior_points = random.sample(interior_points, 200)
-    if len(negative_points) > 100:
-        negative_points = random.sample(negative_points, 100)
+    # Subsample for performance — continuous signed distance is more expensive
+    # per point than discrete counting, so keep samples smaller
+    if len(interior_points) > 50:
+        interior_points = random.sample(interior_points, 50)
+    if len(negative_points) > 30:
+        negative_points = random.sample(negative_points, 30)
 
     # --- Before metrics ---
     if all_positions:
@@ -559,23 +557,23 @@ def _cost_function(
             d = _point_to_line_distance_world(cx, cy, detected_line)
             cost += w_mat_lines * d * d
 
-    # 2. Footpath fitting (SECONDARY)
+    # 2. Footpath fitting (SECONDARY) — continuous signed distance
+    # Uses nearest_edge_distance for positions outside polygon, giving
+    # a smooth gradient that Powell can follow (vs discrete violation counts).
     if len(interior_points_arr) > 0 and w_footpath > 0:
         corrected = _apply_affine_batch(interior_points_arr, affine)
-        violations = sum(
-            1 for cx, cy in corrected
-            if not prepared_polygon.contains(Point(cx, cy))
-        )
-        cost += w_footpath * violations
+        for cx, cy in corrected:
+            if not prepared_polygon.contains(Point(cx, cy)):
+                d, _ = blueprint.nearest_edge_distance(cx, cy)
+                cost += w_footpath * d * d
 
-    # 3. Negative constraints
+    # 3. Negative constraints — continuous signed distance
     if len(negative_points_arr) > 0 and w_negative > 0:
         corrected = _apply_affine_batch(negative_points_arr, affine)
-        violations = sum(
-            1 for cx, cy in corrected
-            if prepared_polygon.contains(Point(cx, cy))
-        )
-        cost += w_negative * violations
+        for cx, cy in corrected:
+            if prepared_polygon.contains(Point(cx, cy)):
+                d, _ = blueprint.nearest_edge_distance(cx, cy)
+                cost += w_negative * d * d
 
     # 4. Regularization toward identity
     identity = _identity_params()

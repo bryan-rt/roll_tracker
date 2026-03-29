@@ -191,6 +191,7 @@ def detect_mat_lines(
             "frame_indices": frame_indices,
             "raw_detections_per_frame": len(all_detected) / max(1, n_frames_read),
             "merged_segments": len(merged),
+            "raw_detected_lines": all_detected,
         },
     )
 
@@ -472,6 +473,94 @@ def _pixel_to_world(
     if abs(w) < 1e-12:
         return (float("nan"), float("nan"))
     return (q[0] / w, q[1] / w)
+
+
+def save_diagnostic_image(
+    video_path: Path,
+    H: np.ndarray,
+    camera_matrix: np.ndarray | None,
+    dist_coefficients: np.ndarray | None,
+    blueprint: MatBlueprint,
+    mat_line_result: MatLineResult,
+    output_path: Path,
+    frame_index: int = 0,
+) -> None:
+    """Save annotated diagnostic image showing frame + projected edges + detected lines.
+
+    Layers:
+    - Video frame (undistorted if K available) as background
+    - Projected blueprint boundary edges in GREEN (2px solid)
+    - All detected Hough lines in RED (1px)
+    - Matched lines (if any) in YELLOW with distance labels
+    - Legend in top-left corner
+    """
+    # Use frame_index from detection if available
+    if mat_line_result.details.get("frame_indices"):
+        frame_index = mat_line_result.details["frame_indices"][0]
+
+    # Read frame
+    cap = cv2.VideoCapture(str(video_path))
+    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+    ok, frame_bgr = cap.read()
+    cap.release()
+    if not ok:
+        return
+
+    # Undistort if K available
+    if camera_matrix is not None and dist_coefficients is not None:
+        K = np.asarray(camera_matrix, dtype=np.float64).reshape((3, 3))
+        D = np.asarray(dist_coefficients, dtype=np.float64).ravel()
+        frame_bgr = cv2.undistort(frame_bgr, K, D)
+
+    canvas = frame_bgr.copy()
+
+    # Draw projected blueprint edges in GREEN
+    projected = _project_blueprint_edges_to_pixel(
+        blueprint, H, camera_matrix, dist_coefficients
+    )
+    for i, ((px1, py1), (px2, py2)) in enumerate(projected):
+        p1 = (int(round(px1)), int(round(py1)))
+        p2 = (int(round(px2)), int(round(py2)))
+        cv2.line(canvas, p1, p2, (0, 255, 0), 2)
+        cv2.circle(canvas, p1, 4, (0, 255, 0), -1)
+        cv2.circle(canvas, p2, 4, (0, 255, 0), -1)
+        # Edge index label at midpoint
+        mx, my = (p1[0] + p2[0]) // 2, (p1[1] + p2[1]) // 2
+        cv2.putText(canvas, str(i), (mx, my - 5),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
+
+    # Draw all detected lines (raw, pre-merge) in RED
+    raw_lines = mat_line_result.details.get("raw_detected_lines", [])
+    for (rx1, ry1), (rx2, ry2) in raw_lines:
+        cv2.line(canvas,
+                 (int(round(rx1)), int(round(ry1))),
+                 (int(round(rx2)), int(round(ry2))),
+                 (0, 0, 255), 1)
+
+    # Draw matched lines in YELLOW with distance labels
+    for ml in mat_line_result.matched_lines:
+        p1 = (int(round(ml.pixel_start[0])), int(round(ml.pixel_start[1])))
+        p2 = (int(round(ml.pixel_end[0])), int(round(ml.pixel_end[1])))
+        cv2.line(canvas, p1, p2, (0, 255, 255), 2)
+        mx = (p1[0] + p2[0]) // 2
+        my = (p1[1] + p2[1]) // 2
+        cv2.putText(canvas, f"{ml.match_distance:.0f}px e{ml.matched_edge_index}",
+                    (mx, my - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
+
+    # Legend
+    h = canvas.shape[0]
+    y0 = 30
+    cv2.putText(canvas, f"Frame {frame_index}", (10, y0),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+    cv2.putText(canvas, f"GREEN: projected blueprint ({len(projected)} edges)",
+                (10, y0 + 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+    cv2.putText(canvas, f"RED: detected lines ({len(raw_lines)} raw)",
+                (10, y0 + 50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+    cv2.putText(canvas, f"YELLOW: matched ({mat_line_result.n_lines_matched})",
+                (10, y0 + 75), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(output_path), canvas)
 
 
 def _point_to_segment_dist_px(
