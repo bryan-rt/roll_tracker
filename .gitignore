@@ -193,6 +193,9 @@ archive/
 # Generated outputs and local data (do not commit)
 outputs/
 data/
+calibration_artifacts/
+calibration_results/
+calibration_test/output/
 
 services/uploader/.env
 services/processor/.env
