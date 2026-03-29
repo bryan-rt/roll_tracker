@@ -83,6 +83,48 @@ def project_world_to_pixel(
     return (u, v)
 
 
+def _load_projected_polylines(
+    homography_data: dict,
+) -> tuple[list[list[tuple[float, float]]], list[int], list[tuple[tuple[float, float], tuple[float, float]]]] | None:
+    """Load pre-computed projected polylines from homography.json.
+
+    Returns (polylines, edge_indices, all_edges) or None if not available.
+    Polylines are in undistorted pixel space, computed at calibration time
+    using the proven-correct H_mat_to_img projection.
+    """
+    pp = homography_data.get("projected_polylines")
+    if pp is None:
+        return None
+
+    polylines: list[list[tuple[float, float]]] = []
+    edge_indices: list[int] = []
+    for pl in pp.get("polylines", []):
+        points = [(float(p[0]), float(p[1])) for p in pl["pixel_points"]]
+        if len(points) >= 2:
+            polylines.append(points)
+            edge_indices.append(pl["edge_index"])
+
+    if not polylines:
+        return None
+
+    # Reconstruct all_edges from the polyline world coordinates
+    edges_by_idx: dict[int, tuple[tuple[float, float], tuple[float, float]]] = {}
+    for pl in pp.get("polylines", []):
+        idx = pl["edge_index"]
+        if idx not in edges_by_idx:
+            ws = pl["world_start"]
+            we = pl["world_end"]
+            edges_by_idx[idx] = ((float(ws[0]), float(ws[1])), (float(we[0]), float(we[1])))
+    # Build list covering all indices
+    max_idx = max(edges_by_idx.keys()) if edges_by_idx else -1
+    all_edges: list[tuple[tuple[float, float], tuple[float, float]]] = [
+        edges_by_idx.get(i, ((0.0, 0.0), (0.0, 0.0)))
+        for i in range(max_idx + 1)
+    ]
+
+    return polylines, edge_indices, all_edges
+
+
 def detect_mat_lines(
     video_path: Path,
     H: np.ndarray,
@@ -90,6 +132,7 @@ def detect_mat_lines(
     dist_coefficients: np.ndarray | None,
     blueprint: MatBlueprint,
     tracklet_frames_df: pd.DataFrame | None = None,
+    homography_data: dict | None = None,
     n_frames: int = 5,
     canny_low: int = 50,
     canny_high: int = 150,
@@ -100,12 +143,22 @@ def detect_mat_lines(
 ) -> MatLineResult:
     """Detect mat edges in video frames and match to blueprint.
 
-    Projects all panel edges (boundary + internal seams) via dense point
-    sampling, keeping only in-frame portions as polylines. Matches detected
-    Hough lines to these polylines by distance + angle compatibility.
+    Uses pre-computed projected polylines from homography.json when available
+    (generated at calibration time with proven-correct H_mat_to_img projection).
+    Falls back to dense H_inv sampling when not available.
     """
-    # Get all panel edges (boundary + internal seams)
-    all_edges = _get_all_panel_edges(blueprint)
+    # Try loading pre-computed polylines first
+    precomputed = None
+    if homography_data is not None:
+        precomputed = _load_projected_polylines(homography_data)
+
+    if precomputed is not None:
+        polylines, poly_indices, all_edges = precomputed
+        polyline_source = "precomputed"
+    else:
+        all_edges = _get_all_panel_edges(blueprint)
+        polylines, poly_indices = [], []
+        polyline_source = "h_inv_fallback"
 
     # Select frames to analyze
     frame_indices = _select_low_occupancy_frames(
@@ -113,14 +166,11 @@ def detect_mat_lines(
     )
 
     if not frame_indices:
-        polylines, poly_indices = _project_edges_dense(
-            all_edges, H, camera_matrix, dist_coefficients
-        )
         return MatLineResult(
             n_frames_analyzed=0, n_lines_detected=0, n_lines_matched=0,
             matched_lines=[], projected_polylines=polylines,
             projected_edge_indices=poly_indices, all_edges=all_edges,
-            details={"reason": "no frames selected"},
+            details={"reason": "no frames selected", "polyline_source": polyline_source},
         )
 
     # Detect lines in each frame and get image dimensions
@@ -149,17 +199,18 @@ def detect_mat_lines(
     finally:
         cap.release()
 
-    # Project edges via dense sampling, clipped to frame
-    polylines, poly_indices = _project_edges_dense(
-        all_edges, H, camera_matrix, dist_coefficients, image_wh=image_wh,
-    )
+    # If no precomputed polylines, fall back to dense H_inv projection
+    if polyline_source == "h_inv_fallback":
+        polylines, poly_indices = _project_edges_dense(
+            all_edges, H, camera_matrix, dist_coefficients, image_wh=image_wh,
+        )
 
     if not all_detected:
         return MatLineResult(
             n_frames_analyzed=n_frames_read, n_lines_detected=0, n_lines_matched=0,
             matched_lines=[], projected_polylines=polylines,
             projected_edge_indices=poly_indices, all_edges=all_edges,
-            details={"reason": "no lines detected in any frame"},
+            details={"reason": "no lines detected in any frame", "polyline_source": polyline_source},
         )
 
     # Merge collinear segments across frames
@@ -186,6 +237,7 @@ def detect_mat_lines(
             "raw_detected_lines": all_detected,
             "n_projected_polylines": len(polylines),
             "n_all_edges": len(all_edges),
+            "polyline_source": polyline_source,
         },
     )
 

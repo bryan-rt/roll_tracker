@@ -266,6 +266,91 @@ def _iter_masked_polylines_constant_y(
     return segments
 
 
+def _extract_contiguous_runs(items: list) -> list:
+    """Split a list with None gaps into sublists of consecutive non-None items."""
+    runs = []
+    current = []
+    for item in items:
+        if item is not None:
+            current.append(item)
+        else:
+            if len(current) >= 2:
+                runs.append(current)
+            current = []
+    if len(current) >= 2:
+        runs.append(current)
+    return runs
+
+
+def _generate_projected_polylines(
+    H_mat_to_img: np.ndarray,
+    rects: List[Tuple[float, float, float, float, str]],
+    image_wh: Tuple[int, int],
+    sample_spacing: float = 0.25,
+    frame_margin: float = 50.0,
+) -> Dict[str, Any]:
+    """Generate densely sampled projected polylines for all panel edges.
+
+    Projects world-space panel edge points through H_mat_to_img to pixel space.
+    Filters to in-frame points, extracts contiguous visible segments.
+    """
+    import cv2 as _cv2  # noqa
+
+    width, height = image_wh
+
+    # Compute all unique panel edges
+    edges_set: set = set()
+    for (x, y, w, h, _) in rects:
+        corners = [(float(x), float(y)), (float(x + w), float(y)),
+                   (float(x + w), float(y + h)), (float(x), float(y + h))]
+        for i in range(4):
+            c1, c2 = corners[i], corners[(i + 1) % 4]
+            normalized = tuple(sorted([c1, c2]))
+            edges_set.add(normalized)
+    all_edges = [((e[0][0], e[0][1]), (e[1][0], e[1][1])) for e in edges_set]
+
+    polylines = []
+    H64 = np.asarray(H_mat_to_img, dtype=np.float64)
+
+    for edge_idx, ((wx1, wy1), (wx2, wy2)) in enumerate(all_edges):
+        edge_len = ((wx2 - wx1) ** 2 + (wy2 - wy1) ** 2) ** 0.5
+        n_samples = max(2, int(edge_len / sample_spacing))
+
+        projected_points: list = []
+        for k in range(n_samples):
+            t = k / max(1, n_samples - 1)
+            wx = wx1 + t * (wx2 - wx1)
+            wy = wy1 + t * (wy2 - wy1)
+
+            world_pt = np.array([[[wx, wy]]], dtype=np.float32)
+            pixel_pt = _cv2.perspectiveTransform(world_pt, H64)
+            u, v = float(pixel_pt[0, 0, 0]), float(pixel_pt[0, 0, 1])
+
+            if (isfinite(u) and isfinite(v)
+                    and -frame_margin <= u <= width + frame_margin
+                    and -frame_margin <= v <= height + frame_margin):
+                projected_points.append([round(u, 1), round(v, 1)])
+            else:
+                projected_points.append(None)
+
+        for run in _extract_contiguous_runs(projected_points):
+            polylines.append({
+                "edge_index": edge_idx,
+                "world_start": [wx1, wy1],
+                "world_end": [wx2, wy2],
+                "pixel_points": run,
+            })
+
+    return {
+        "image_wh": [width, height],
+        "sample_spacing": sample_spacing,
+        "polylines": polylines,
+        "n_polylines": len(polylines),
+        "n_edges_total": len(all_edges),
+        "created_at": _iso_utc_now(),
+    }
+
+
 def _project_polyline_mat_to_img(H: np.ndarray, pts_mat: np.ndarray) -> np.ndarray:
     """
     pts_mat: (N,2) in mat coords. Returns (N,2) image coords.
@@ -573,6 +658,14 @@ def _interactive_calibrate(
                 fig.canvas.draw_idle()
                 return
 
+            # Generate projected polylines for mat line detection
+            polyline_data = _generate_projected_polylines(
+                H_mat_to_img=H, rects=rects,
+                image_wh=(frame_rgb.shape[1], frame_rgb.shape[0]),
+            )
+            print(f"[D7] Generated {polyline_data['n_polylines']} projected polylines "
+                  f"from {polyline_data['n_edges_total']} panel edges")
+
             _write_homography_json(
                 out_path=out_path,
                 camera_id=camera_id,
@@ -593,6 +686,7 @@ def _interactive_calibrate(
                         "sample_step_m": 0.05,
                         "accepted": True,
                     },
+                    "projected_polylines": polyline_data,
                 },
             )
             print("[D7] Saved homography (accepted). Closing calibrator and returning to pipeline...")
@@ -1067,6 +1161,14 @@ def _interactive_calibrate_overlay_rect_fixed(
             )
             if not accepted:
                 print("[D7] QA rejected. Continue adjusting overlay, then press 's' again."); return
+
+            # Generate projected polylines for mat line detection
+            polyline_data = _generate_projected_polylines(
+                H_mat_to_img=H, rects=rects, image_wh=(img_w, img_h),
+            )
+            print(f"[D7] Generated {polyline_data['n_polylines']} projected polylines "
+                  f"from {polyline_data['n_edges_total']} panel edges")
+
             _write_homography_json(
                 out_path=out_path,
                 camera_id=camera_id,
@@ -1089,6 +1191,7 @@ def _interactive_calibrate_overlay_rect_fixed(
                         "sample_step_m": float(sample_step_m),
                         "accepted": True,
                     },
+                    "projected_polylines": polyline_data,
                 },
             )
             print("[D7] Saved homography. Closing calibrator and returning to pipeline...")

@@ -12,6 +12,7 @@ from calibration_pipeline.mat_line_detection import (
     project_world_to_pixel,
     _project_edges_dense,
     _get_all_panel_edges,
+    _load_projected_polylines,
     _match_lines_to_polylines,
     _merge_collinear_segments,
     _extract_contiguous_runs,
@@ -244,3 +245,42 @@ class TestPolylineMatching:
             match_distance_threshold=80.0,
         )
         assert len(matched) == 0
+
+
+class TestLoadProjectedPolylines:
+    def test_loads_valid_data(self):
+        data = {
+            "projected_polylines": {
+                "polylines": [
+                    {
+                        "edge_index": 0,
+                        "world_start": [50.0, 42.0],
+                        "world_end": [58.0, 42.0],
+                        "pixel_points": [[100.0, 200.0], [300.0, 200.0], [500.0, 200.0]],
+                    },
+                    {
+                        "edge_index": 2,
+                        "world_start": [50.0, 50.0],
+                        "world_end": [50.0, 42.0],
+                        "pixel_points": [[100.0, 100.0], [100.0, 300.0]],
+                    },
+                ],
+            }
+        }
+        result = _load_projected_polylines(data)
+        assert result is not None
+        polylines, indices, all_edges = result
+        assert len(polylines) == 2
+        assert len(indices) == 2
+        assert indices[0] == 0
+        assert indices[1] == 2
+        assert len(polylines[0]) == 3
+        assert len(all_edges) >= 3  # indices 0, 1(placeholder), 2
+
+    def test_returns_none_when_missing(self):
+        assert _load_projected_polylines({}) is None
+        assert _load_projected_polylines({"projected_polylines": None}) is None
+
+    def test_returns_none_when_empty_polylines(self):
+        data = {"projected_polylines": {"polylines": []}}
+        assert _load_projected_polylines(data) is None

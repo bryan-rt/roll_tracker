@@ -119,11 +119,14 @@ def run_calibration(
                 dist_coefficients=homography_data.get("dist_coefficients"),
                 blueprint=blueprint,
                 tracklet_frames_df=df,
+                homography_data=homography_data.get("full_payload"),
             )
             mat_line_results[camera_id] = mlr
+            polyline_src = mlr.details.get("polyline_source", "unknown")
             print(f"  Frames: {mlr.n_frames_analyzed}, "
                   f"lines detected: {mlr.n_lines_detected}, "
-                  f"matched: {mlr.n_lines_matched}")
+                  f"matched: {mlr.n_lines_matched} "
+                  f"(polylines: {polyline_src})")
 
             # Save diagnostic images (full + green-only)
             diag_path = output_dir / "diagnostics" / f"{camera_id}_mat_lines.png"
@@ -259,6 +262,7 @@ def _load_homography(
 
     result = {
         "H": np.asarray(payload["H"], dtype=np.float64).reshape((3, 3)),
+        "full_payload": payload,
     }
 
     if "camera_matrix" in payload and payload["camera_matrix"] is not None:
