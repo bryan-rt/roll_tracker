@@ -394,16 +394,17 @@ def _build_mat_line_correspondences(
     """Convert matched mat lines into world-space correspondences for the cost function.
 
     Each correspondence dict has:
-    - blueprint_sample_points: list of (x,y) along the blueprint edge
+    - blueprint_sample_points: list of (x,y) along the edge
     - detected_world_line: ((x1,y1), (x2,y2)) detected line in world space
-    - edge_index: which blueprint edge
+    - edge_index: index into mat_line_result.all_edges
     """
+    all_edges = mat_line_result.all_edges
     correspondences = []
     for ml in mat_line_result.matched_lines:
-        if ml.matched_edge_index < 0:
+        if ml.matched_edge_index < 0 or ml.matched_edge_index >= len(all_edges):
             continue
 
-        edge = blueprint.boundary_edges[ml.matched_edge_index]
+        edge = all_edges[ml.matched_edge_index]
         (ex1, ey1), (ex2, ey2) = edge
 
         # Sample points along the blueprint edge
