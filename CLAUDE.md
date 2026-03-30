@@ -27,7 +27,7 @@ questions in Pass 1. Do not resolve silently or guess.
 
 ```
 src/bjj_pipeline/        # CV pipeline package (stages A→F, contracts, config, core)
-src/calibration_pipeline/ # Gym setup tools (lens cal, CP18 homography refinement)
+src/calibration_pipeline/ # Gym setup: lens cal, CP18 calibration (mat lines + footpath + fingerprints)
 services/                 # Docker: nest_recorder, processor, uploader
 backend/supabase/         # Migrations, config.toml
 app_mobile/               # Flutter athlete app
@@ -58,9 +58,19 @@ configs/                  # default.yaml, per-camera overrides, homography.json
 
 ## Current Status
 
-- **Head:** `0f5edd5` | Pipeline A→F verified E2E. Session pipeline validated (3-camera).
+- **Head:** `7ee966c` | Pipeline A→F verified E2E. Session pipeline validated (3-camera).
 - **CP17 Tier 1 implemented:** Two-pass cross-camera ILP with tag corroboration.
-- **CP18 implemented:** Single-camera homography refinement (Layer 1) + cross-camera alignment (Layer 2). RANSAC affine correction from cleaning footage edge correspondences. Validated on 3-camera calibration data.
+- **CP18 complete:** Calibration pipeline with correction integration into Stage A.
+  - **Layer 1:** Footpath fitting (primary, continuous signed distance) + mat line detection
+    (21/18/7 matches on FP7oJQ/J_EDEw/PPDmUg). Guard: mat lines fall back to footpath-only
+    when combined signal conflicts. Results: FP7oJQ 45→68%, J_EDEw 62→71%, PPDmUg 95%.
+  - **Layer 2:** Spatial fingerprint registration (occupancy grid cross-correlation +
+    boundary contour stitching). Clock-sync independent.
+  - **Integration:** Correction matrix loaded in StageAProcessor, applied after
+    `project_to_world()`. Config: `stages.stage_A.calibration_correction.enabled`.
+  - **H direction:** On disk = mat→img. `multiplex_runner` inverts to img→mat for
+    `project_to_world()`. Projected polylines saved at calibration time via
+    `cv2.perspectiveTransform(pts, H_mat_to_img)`.
 - **Open issue:** PPDmUg-202751 — NAType in frame_index at D2. Needs null-safe fix.
 - **Apps:** Flutter tested on Pixel 7 Pro. Web app has mat editor + admin pricing.
 - **Supabase:** 23 migrations applied locally and remotely.

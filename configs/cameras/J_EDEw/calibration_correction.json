@@ -1,0 +1,28 @@
+{
+  "camera_id": "J_EDEw",
+  "correction_matrix": [
+    [
+      1.0293265950386905,
+      -0.01246567452483706,
+      0.011506240154692364
+    ],
+    [
+      6.488103213997358e-08,
+      1.0000001028064887,
+      -1.4591948332618925e-08
+    ]
+  ],
+  "confidence": "low",
+  "calibrated_at": "2026-03-30T01:19:25.375842+00:00",
+  "signal_type": "footpath_only",
+  "n_matched_lines": 18,
+  "n_matched_line_edges": 7,
+  "n_cleaning_positions": 4097,
+  "n_edge_touches": 3,
+  "n_cleaning_tracklets": 9,
+  "coverage_fraction": 0.6588,
+  "inside_mat_before": 0.6146,
+  "inside_mat_after": 0.7138,
+  "mean_edge_residual_before": 0.5166,
+  "mean_edge_residual_after": 0.6054
+}

@@ -1,0 +1,28 @@
+{
+  "camera_id": "FP7oJQ",
+  "correction_matrix": [
+    [
+      0.9398795541183923,
+      0.06925257847244394,
+      0.005050399183599558
+    ],
+    [
+      -3.3039337339553614e-09,
+      0.9999999994553106,
+      -2.4606593776054256e-13
+    ]
+  ],
+  "confidence": "low",
+  "calibrated_at": "2026-03-30T01:18:51.026801+00:00",
+  "signal_type": "footpath_only",
+  "n_matched_lines": 21,
+  "n_matched_line_edges": 11,
+  "n_cleaning_positions": 2549,
+  "n_edge_touches": 12,
+  "n_cleaning_tracklets": 13,
+  "coverage_fraction": 0.5458,
+  "inside_mat_before": 0.4536,
+  "inside_mat_after": 0.6819,
+  "mean_edge_residual_before": 0.5913,
+  "mean_edge_residual_after": 0.5472
+}

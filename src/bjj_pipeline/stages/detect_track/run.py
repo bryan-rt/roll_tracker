@@ -161,6 +161,20 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 	proj = _load_homography_matrix(config, camera_id)
 	mat_blueprint = inputs.get("mat_blueprint", None) or _load_mat_blueprint(config)
 
+	# CP18: load calibration correction if available
+	correction_matrix = None
+	correction_enabled = _cfg_get(config, "stages.stage_A.calibration_correction.enabled", True)
+	if correction_enabled:
+		corr_path = Path("configs") / "cameras" / camera_id / "calibration_correction.json"
+		if corr_path.exists():
+			try:
+				corr_data = json.loads(corr_path.read_text(encoding="utf-8"))
+				cm = corr_data.get("correction_matrix")
+				if cm is not None:
+					correction_matrix = np.asarray(cm, dtype=np.float64)
+			except (json.JSONDecodeError, OSError, ValueError):
+				pass
+
 	# Writer
 	writer = StageAWriter(layout=layout, clip_id=clip_id, camera_id=camera_id)
 
@@ -207,6 +221,7 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 		homography=proj.H,
 		camera_matrix=proj.camera_matrix,
 		dist_coefficients=proj.dist_coefficients,
+		correction_matrix=correction_matrix,
 		mat_blueprint=mat_blueprint,
 		writer=writer,
 		detector=detector,

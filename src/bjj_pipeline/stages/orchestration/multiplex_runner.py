@@ -4,10 +4,11 @@ from collections import defaultdict
 import json
 from pathlib import Path
 import traceback
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import numpy as np
 import pandas as pd
+from loguru import logger
 
 from bjj_pipeline.contracts.f0_manifest import ClipManifest, write_manifest
 from bjj_pipeline.contracts.f0_paths import ClipOutputLayout
@@ -80,6 +81,25 @@ def _homography_to_img_to_mat(h: np.ndarray, payload: Dict[str, Any] | None = No
 
     # Conservative default: invert (consistent with current cam03 payloads).
     return np.linalg.inv(H)
+
+
+def _load_correction_matrix(camera_id: str, configs_root: Path = Path("configs")) -> Optional[np.ndarray]:
+    """Load CP18 calibration correction matrix if available.
+
+    Checks configs/cameras/{camera_id}/calibration_correction.json.
+    Returns 2x3 numpy array or None.
+    """
+    path = configs_root / "cameras" / camera_id / "calibration_correction.json"
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        cm = data.get("correction_matrix")
+        if cm is None:
+            return None
+        return np.asarray(cm, dtype=np.float64)
+    except (json.JSONDecodeError, OSError, ValueError):
+        return None
 
 
 def _load_homography_matrix(cfg: Any, camera_id: str) -> CameraProjection:
@@ -419,6 +439,18 @@ def run_multiplex_AC(*,
                 proj = _load_homography_matrix(resolved_config, camera_id)
                 blueprint = load_mat_blueprint(Path("configs") / "mat_blueprint.json")
 
+                # CP18: load calibration correction if available and enabled
+                correction_enabled = _cfg_get(
+                    resolved_config,
+                    "stages.stage_A.calibration_correction.enabled",
+                    True,  # default: enabled when file exists
+                )
+                correction_matrix = None
+                if correction_enabled:
+                    correction_matrix = _load_correction_matrix(camera_id)
+                    if correction_matrix is not None:
+                        logger.info(f"CP18 correction loaded for {camera_id}")
+
                 stage_a_writer = StageAWriter(layout=layout, clip_id=manifest.clip_id, camera_id=camera_id)
 
                 stage_a_writer.audit(
@@ -488,6 +520,7 @@ def run_multiplex_AC(*,
                         homography=proj.H,
                         camera_matrix=proj.camera_matrix,
                         dist_coefficients=proj.dist_coefficients,
+                        correction_matrix=correction_matrix,
                         mat_blueprint=blueprint,
                         writer=stage_a_writer,
                         detector=detector,

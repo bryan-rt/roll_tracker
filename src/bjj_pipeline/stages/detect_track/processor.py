@@ -65,6 +65,7 @@ class StageAProcessor:
         homography: np.ndarray,
         camera_matrix: Optional[np.ndarray] = None,
         dist_coefficients: Optional[np.ndarray] = None,
+        correction_matrix: Optional[np.ndarray] = None,
         mat_blueprint: Any,
         writer: StageAWriter,
         detector: DetectorBackend,
@@ -74,6 +75,7 @@ class StageAProcessor:
         self.H = homography
         self.camera_matrix = camera_matrix
         self.dist_coefficients = dist_coefficients
+        self.correction_matrix = correction_matrix
         self.mat_blueprint = mat_blueprint
         self.writer = writer
         self.detector = detector
@@ -350,6 +352,14 @@ class StageAProcessor:
                     camera_matrix=self.camera_matrix,
                     dist_coefficients=self.dist_coefficients,
                 )
+
+                # CP18: apply calibration correction if available
+                if self.correction_matrix is not None:
+                    cm = self.correction_matrix
+                    x_c = cm[0, 0] * x_m + cm[0, 1] * y_m + cm[0, 2]
+                    y_c = cm[1, 0] * x_m + cm[1, 1] * y_m + cm[1, 2]
+                    x_m, y_m = float(x_c), float(y_c)
+
                 on_mat = point_in_mat(float(x_m), float(y_m), self.mat_blueprint)
 
                 # CP16a: write first-point debug artifact once per clip
