@@ -69,7 +69,7 @@ def calibrate_single_camera(
     camera_id: str,
     mat_line_result: Optional[MatLineResult] = None,
     min_coverage_fraction: float = 0.4,
-    ransac_iterations: int = 200,
+    ransac_iterations: int = 50,
     ransac_inlier_threshold: float = 0.5,
     w_mat_lines: float = 1.0,
     w_footpath: float = 0.3,
@@ -227,24 +227,58 @@ def calibrate_single_camera(
     int_arr = np.array(interior_points) if interior_points else np.empty((0, 2))
     neg_arr = np.array(negative_points) if negative_points else np.empty((0, 2))
 
-    if has_mat_lines:
-        # RANSAC with mat line correspondences
-        best_affine, best_inliers, best_score = _ransac_mat_lines(
-            mat_line_correspondences=mat_line_correspondences,
-            interior_points_arr=int_arr,
-            negative_points_arr=neg_arr,
-            prepared_polygon=prepared,
-            blueprint=blueprint,
-            n_iterations=ransac_iterations,
-            inlier_threshold=ransac_inlier_threshold,
-            w_mat_lines=w_mat_lines,
-            w_footpath=w_footpath,
-            w_negative=w_negative,
-            w_regularization=w_regularization,
+    # --- Compute footpath-only result first (for fallback guard) ---
+    footpath_affine = None
+    footpath_inside = result.inside_mat_fraction_before
+    if has_footpath:
+        fp_result = minimize(
+            _cost_function,
+            _identity_params(),
+            args=(
+                [], int_arr, neg_arr, prepared, blueprint,
+                w_mat_lines, w_footpath, w_negative, w_regularization,
+            ),
+            method="Powell",
+            options={"maxiter": 2000, "ftol": 1e-10},
         )
+        footpath_affine = _affine_params_to_matrix(fp_result.x)
+        fp_corrected = _apply_affine(all_positions, footpath_affine) if all_positions else []
+        if fp_corrected:
+            footpath_inside = _compute_inside_fraction(fp_corrected, blueprint)
+
+    if has_mat_lines:
+        n_corr = len(mat_line_correspondences)
+        if n_corr >= 10:
+            # Enough correspondences — skip RANSAC, single Powell on all
+            opt_result = minimize(
+                _cost_function,
+                _identity_params(),
+                args=(
+                    mat_line_correspondences, int_arr, neg_arr, prepared, blueprint,
+                    w_mat_lines, w_footpath, w_negative, w_regularization,
+                ),
+                method="Powell",
+                options={"maxiter": 2000, "ftol": 1e-10},
+            )
+            best_affine = _affine_params_to_matrix(opt_result.x)
+            best_inliers = list(range(n_corr))
+        else:
+            # RANSAC with mat line correspondences
+            best_affine, best_inliers, best_score = _ransac_mat_lines(
+                mat_line_correspondences=mat_line_correspondences,
+                interior_points_arr=int_arr,
+                negative_points_arr=neg_arr,
+                prepared_polygon=prepared,
+                blueprint=blueprint,
+                n_iterations=ransac_iterations,
+                inlier_threshold=ransac_inlier_threshold,
+                w_mat_lines=w_mat_lines,
+                w_footpath=w_footpath,
+                w_negative=w_negative,
+                w_regularization=w_regularization,
+            )
 
         if best_affine is None:
-            # Fall through to footpath-only if available
             if has_footpath:
                 has_mat_lines = False
                 result.signal_type = "footpath_only"
@@ -258,18 +292,7 @@ def calibrate_single_camera(
             final_affine = best_affine
 
     if not has_mat_lines and has_footpath:
-        # Direct optimization from identity (no RANSAC needed — smooth surface)
-        opt_result = minimize(
-            _cost_function,
-            _identity_params(),
-            args=(
-                [], int_arr, neg_arr, prepared, blueprint,
-                w_mat_lines, w_footpath, w_negative, w_regularization,
-            ),
-            method="Powell",
-            options={"maxiter": 2000, "ftol": 1e-10},
-        )
-        final_affine = _affine_params_to_matrix(opt_result.x)
+        final_affine = footpath_affine
 
     # --- Validate correction ---
     corrected_positions = _apply_affine(all_positions, final_affine) if all_positions else []
@@ -282,7 +305,22 @@ def calibrate_single_camera(
             edge_correspondences, blueprint, final_affine
         )
 
-    # Discard if correction made things worse
+    # Guard: if mat_lines+footpath is worse than footpath-only, fall back
+    if (has_mat_lines and footpath_affine is not None
+            and result.inside_mat_fraction_after < footpath_inside):
+        result.signal_type = "footpath_only"
+        final_affine = footpath_affine
+        corrected_positions = _apply_affine(all_positions, final_affine) if all_positions else []
+        if corrected_positions:
+            result.inside_mat_fraction_after = _compute_inside_fraction(
+                corrected_positions, blueprint
+            )
+        if edge_correspondences:
+            result.mean_edge_residual_after = _mean_edge_residual(
+                edge_correspondences, blueprint, final_affine
+            )
+
+    # Discard if correction made things worse than baseline
     if all_positions and result.inside_mat_fraction_after < result.inside_mat_fraction_before:
         result.confidence = "low"
         result.correction_matrix = None
@@ -637,7 +675,7 @@ def _ransac_mat_lines(
                 w_mat_lines, w_footpath, w_negative, w_regularization,
             ),
             method="Powell",
-            options={"maxiter": 500, "ftol": 1e-8},
+            options={"maxiter": 200, "ftol": 1e-8},
         )
 
         if not result.success and result.fun > 1e6:
