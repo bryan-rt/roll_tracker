@@ -14,9 +14,10 @@ paths:
 - **Tag channel (active):** Hard must_link constraints for high-confidence tag co-observations
   (same tag_id on 2+ cameras). Deterministic, forces assignment. `corroboration_miss_multiplier`
   default 10x boosts MCF-2a miss penalty and MCF-3a must-link penalty.
-- **Coordinate channel (stubbed):** Soft cost modifications — modifies edge costs, solver
-  prefers but can override. Activated by CP18 when inter-camera alignment is available.
-  Confidence score weights influence on second solve.
+- **Coordinate channel (stubbed in ILP):** Soft cost modifications — modifies edge costs,
+  solver prefers but can override. CP18 corrections now flow through Stage A (corrected
+  x_m/y_m), but CP17 Tier 2 coordinate evidence injection into the ILP constraints_overlay
+  is still stubbed. Requires validated inter-camera alignment before activation.
 
 ## Evidence Builder
 - `cross_camera_evidence.py` builds evidence from Pass 1 identity assignments.

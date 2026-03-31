@@ -58,19 +58,29 @@ configs/                  # default.yaml, per-camera overrides, homography.json
 
 ## Current Status
 
-- **Head:** `7ee966c` | Pipeline A→F verified E2E. Session pipeline validated (3-camera).
+- **Head:** `22cd0ae` | Pipeline A→F verified E2E. Session pipeline validated (3-camera).
 - **CP17 Tier 1 implemented:** Two-pass cross-camera ILP with tag corroboration.
-- **CP18 complete:** Calibration pipeline with correction integration into Stage A.
+- **CP18 calibration pipeline complete, integration validated with A/B comparison:**
   - **Layer 1:** Footpath fitting (primary, continuous signed distance) + mat line detection
     (21/18/7 matches on FP7oJQ/J_EDEw/PPDmUg). Guard: mat lines fall back to footpath-only
-    when combined signal conflicts. Results: FP7oJQ 45→68%, J_EDEw 62→71%, PPDmUg 95%.
+    when combined signal conflicts.
   - **Layer 2:** Spatial fingerprint registration (occupancy grid cross-correlation +
     boundary contour stitching). Clock-sync independent.
-  - **Integration:** Correction matrix loaded in StageAProcessor, applied after
-    `project_to_world()`. Config: `stages.stage_A.calibration_correction.enabled`.
+  - **Integration:** Correction matrix loaded in Stage A `run()` (`detect_track/run.py`),
+    applied after `project_to_world()`. Config: `stages.stage_A.calibration_correction.enabled`
+    (defaults True). Files: `configs/cameras/{cam_id}/calibration_correction.json`.
   - **H direction:** On disk = mat→img. `multiplex_runner` inverts to img→mat for
     `project_to_world()`. Projected polylines saved at calibration time via
     `cv2.perspectiveTransform(pts, H_mat_to_img)`.
+  - **A/B comparison (2026-03-30):** Full pipeline re-run with corrections vs baseline.
+    Exports: 122 vs 121 (+1). Cross-camera links: 1 tag link (tag:1) in both.
+    FP7oJQ on_mat: 97.3→98.0% (+0.7%, 986 positions improved, 0 regressed).
+    **J_EDEw regression: 99.6→87.6% (18,902 positions moved off-mat)** — correction
+    shifts x_m rightward past east mat edge (x>58). PPDmUg: 91.8% unchanged.
+    Stage D stitching: FP7oJQ 48→50 persons, J_EDEw 53→55 persons (marginally worse).
+  - **Planned next step:** Recompute H directly from polyline correspondences instead
+    of post-hoc affine correction layer. The correction approach is inherently limited
+    by the original H quality.
 - **Open issue:** PPDmUg-202751 — NAType in frame_index at D2. Needs null-safe fix.
 - **Apps:** Flutter tested on Pixel 7 Pro. Web app has mat editor + admin pricing.
 - **Supabase:** 23 migrations applied locally and remotely.

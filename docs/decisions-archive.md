@@ -50,9 +50,13 @@ bug fix history. It is NOT auto-loaded by Claude Code. Access it manually when n
 | CP16a: F0 projection utility | ✅ Completed | project_to_world() in f0_projection.py. Debug artifact projection_debug.jsonl. |
 | CP16b: Calibration pipeline skeleton | ✅ Completed | Functional lens calibration + 3 stubs. Two-step chain. |
 | CP17 Tier 1: Two-pass cross-camera ILP | ✅ Implemented | Tag corroboration. corroboration_miss_multiplier 10x. Must-link bug fixed. |
-| Gym setup calibration tool | 🔧 In Progress | lens_calibration functional. mat_walk/drift/inter_camera = stubs → CP18. |
-| CP17 Tier 2/3: Coordinate evidence | 📋 Planned | Stubbed. Activated by CP18 inter-camera alignment. |
-| CP18: Calibration pipeline fleshed out | 📋 Planned | Mat walk, drift detection, coordinate evidence activation. |
+| Gym setup calibration tool | 🔧 In Progress | lens_calibration functional. mat_walk + mat_line_detection implemented. drift_detection stub. |
+| CP17 Tier 2/3: Coordinate evidence | 📋 Planned | ILP injection still stubbed. CP18 corrections flow through Stage A x_m/y_m but ILP coordinate channel not yet activated. |
+| CP18: Calibration pipeline | 🔧 In Progress | Layer 1 (footpath + mat line) + Layer 2 (fingerprint) implemented. Pipeline integration complete. A/B comparison shows J_EDEw regression — affine correction layer approach limited. Next: recompute H from polyline correspondences. |
+| H on disk is mat→img | ✅ Decided | multiplex_runner auto-detects and inverts to img→mat. projected_polylines use mat→img (the on-disk direction). |
+| Footpath primary over edge touches | ✅ Decided | Mat line detection guarded — falls back to footpath-only when combined signal conflicts. |
+| Projected polylines saved at calibration time | ✅ Decided | Dense-sampled mat edge points in homography.json. Used by mat_line_detection for line matching. |
+| Recompute H from polyline correspondences | 📋 Planned | Replace affine correction layer with direct H recomputation using matched mat line↔blueprint edge correspondences. |
 | Processor service dockerization | 📋 MVP task | Pipeline runs natively now. Docker for Linux deployment. |
 | Notification channel for drift alerts | 📋 TBD | Supabase Realtime likely. |
 | Gym owner web app stack | 📋 TBD | Blueprint + homography calibration UI. |
