@@ -154,12 +154,20 @@ class StageAConfig(BaseModel):
                 raise ValueError("Only tracker.mode='botsort' is supported in this build")
             return v
 
+    class CalibrationCorrectionConfig(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+        enabled: bool = Field(default=True, description="Apply CP18 calibration correction if available")
+
     # Optional stride for POC perf (0/None means no skipping)
     frame_stride: Optional[int] = Field(default=None, ge=0, description="Frame stride; 0/None means no skipping")
 
     detector: DetectorConfig = Field(default_factory=lambda: StageAConfig.DetectorConfig())
     masks: MasksConfig = Field(default_factory=lambda: StageAConfig.MasksConfig())
     tracker: TrackerConfig = Field(default_factory=lambda: StageAConfig.TrackerConfig())
+    calibration_correction: CalibrationCorrectionConfig = Field(
+        default_factory=lambda: StageAConfig.CalibrationCorrectionConfig()
+    )
 
 
 class StageBConfig(BaseModel):
