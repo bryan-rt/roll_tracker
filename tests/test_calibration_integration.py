@@ -133,7 +133,9 @@ class TestEdgeCases:
             n_lines_detected=0,
             n_lines_matched=0,
             matched_lines=[],
-            projected_blueprint_edges_px=[],
+            projected_polylines=[],
+            projected_edge_indices=[],
+            all_edges=[],
         )
         result = calibrate_single_camera(
             [], blueprint, "test_cam", mat_line_result=empty_mlr

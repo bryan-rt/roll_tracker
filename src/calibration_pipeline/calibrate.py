@@ -32,7 +32,7 @@ import pandas as pd
 
 from calibration_pipeline.blueprint_geometry import MatBlueprint
 from calibration_pipeline.tracklet_classifier import TrackletFeatures, classify_tracklets
-from calibration_pipeline.mat_line_detection import detect_mat_lines, MatLineResult
+from calibration_pipeline.mat_line_detection import detect_mat_lines, MatLineResult, save_diagnostic_image
 from calibration_pipeline.mat_walk import (
     CalibrationResult,
     calibrate_single_camera,
@@ -119,11 +119,38 @@ def run_calibration(
                 dist_coefficients=homography_data.get("dist_coefficients"),
                 blueprint=blueprint,
                 tracklet_frames_df=df,
+                homography_data=homography_data.get("full_payload"),
             )
             mat_line_results[camera_id] = mlr
+            polyline_src = mlr.details.get("polyline_source", "unknown")
             print(f"  Frames: {mlr.n_frames_analyzed}, "
                   f"lines detected: {mlr.n_lines_detected}, "
-                  f"matched: {mlr.n_lines_matched}")
+                  f"matched: {mlr.n_lines_matched} "
+                  f"(polylines: {polyline_src})")
+
+            # Save diagnostic images (full + green-only)
+            diag_path = output_dir / "diagnostics" / f"{camera_id}_mat_lines.png"
+            save_diagnostic_image(
+                video_path,
+                homography_data["H"],
+                homography_data.get("camera_matrix"),
+                homography_data.get("dist_coefficients"),
+                blueprint,
+                mlr,
+                diag_path,
+            )
+            green_path = output_dir / "diagnostics" / f"{camera_id}_green_only.png"
+            save_diagnostic_image(
+                video_path,
+                homography_data["H"],
+                homography_data.get("camera_matrix"),
+                homography_data.get("dist_coefficients"),
+                blueprint,
+                mlr,
+                green_path,
+                green_only=True,
+            )
+            print(f"  Diagnostic images: {diag_path}")
 
     # 4. Iterative refinement loop
     layer1_results: dict[str, CalibrationResult] = {}
@@ -235,6 +262,7 @@ def _load_homography(
 
     result = {
         "H": np.asarray(payload["H"], dtype=np.float64).reshape((3, 3)),
+        "full_payload": payload,
     }
 
     if "camera_matrix" in payload and payload["camera_matrix"] is not None:
