@@ -21,19 +21,18 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from bjj_pipeline.tools.homography_calibrate import (
-    _detect_edge_points_along_polylines,
     _ensure_3x3,
+    _find_empty_frame,
     _generate_projected_polylines,
     _parse_rects_from_blueprint,
     _polyline_lens_calibration,
-    _recompute_h_for_space,
-    _redistort_points,
     _refine_h_from_mat_lines,
     _write_homography_json,
 )
 
 
 CONFIGS_ROOT = Path("configs")
+CALIBRATION_TEST_ROOT = Path("data/raw/nest/calibration_test")
 CAMERAS = ["FP7oJQ", "J_EDEw", "PPDmUg"]
 
 
@@ -47,6 +46,22 @@ def _load_blueprint() -> list:
     return json.loads(bp_path.read_text(encoding="utf-8"))
 
 
+def _find_calibration_video(cam_id: str) -> str:
+    """Find the best calibration video for a camera.
+
+    Prefers calibration_test videos (empty-mat recordings) over the
+    source video from homography.json (which may have people on the mat).
+    """
+    cal_dir = CALIBRATION_TEST_ROOT / cam_id
+    if cal_dir.is_dir():
+        mp4s = sorted(cal_dir.rglob("*.mp4"))
+        if mp4s:
+            return str(mp4s[0])
+    # Fall back to source video from homography.json
+    hom_data = _load_homography_json(cam_id)
+    return hom_data["source"]["video"]
+
+
 def recalibrate_camera(cam_id: str, *, dry_run: bool = False) -> dict:
     """Run CP19 unified calibration on a single camera. Returns quality_metrics."""
     print(f"\n{'='*60}")
@@ -57,28 +72,20 @@ def recalibrate_camera(cam_id: str, *, dry_run: bool = False) -> dict:
     blueprint_raw = _load_blueprint()
     rects = _parse_rects_from_blueprint(blueprint_raw)
 
-    # Load existing correspondences
+    # Load existing correspondences (now stored in raw pixel space after CP19)
     corr = hom_data["correspondences"]
     img_pts = np.array(corr["image_points_px"], dtype=np.float64)
     mat_pts = np.array(corr["mat_points"], dtype=np.float64)
     corner_ids = corr.get("corner_ids", ["tl", "tr", "br", "bl"])
 
-    # Load existing K+dist (anchor img_pts are in this undistorted space)
-    old_K = None
-    old_dist = None
-    cm = hom_data.get("camera_matrix")
-    dc = hom_data.get("dist_coefficients")
-    if cm is not None and dc is not None:
-        old_K = np.asarray(cm, dtype=np.float64).reshape(3, 3)
-        old_dist = np.asarray(dc, dtype=np.float64).ravel()
+    # Find calibration video (prefer calibration_test, fall back to source)
+    video_path = _find_calibration_video(cam_id)
+    is_cal_test = "calibration_test" in video_path
+    print(f"  Video: {video_path}" + (" (calibration_test)" if is_cal_test else " (source)"))
 
-    # Load source video, grab first frame
-    video_path = hom_data["source"]["video"]
-    cap = cv2.VideoCapture(video_path)
-    ok, frame_bgr_raw = cap.read()
-    cap.release()
-    if not ok:
-        raise RuntimeError(f"Could not read frame from: {video_path}")
+    # Find the emptiest frame via temporal median comparison
+    frame_bgr_raw, frame_idx = _find_empty_frame(video_path)
+    print(f"  Selected frame {frame_idx} (lowest activity)")
 
     img_h, img_w = frame_bgr_raw.shape[:2]
     image_wh = (img_w, img_h)
@@ -87,26 +94,17 @@ def recalibrate_camera(cam_id: str, *, dry_run: bool = False) -> dict:
     print(f"  Frame: {img_w}x{img_h}")
     print(f"  Anchor: {len(img_pts)} points, corner_ids={corner_ids}")
     print(f"  Blueprint: {len(rects)} rectangles")
-    if old_K is not None:
-        print(f"  Existing K: f={old_K[0,0]:.1f}, dist=[{old_dist[0]:.4f}, {old_dist[1]:.4f}]")
 
-    # --- Coordinate space handling ---
-    # img_pts are in old-undistorted pixel space (if old K+dist exist).
-    # Phase A needs H that maps mat → RAW pixel space.
-    # Phase B needs H that maps mat → new-undistorted pixel space.
+    # --- Clean flow: no prior K+dist dependency ---
+    # img_pts are in raw pixel space (CP19 saves raw-space correspondences).
+    # H₀ maps mat → raw pixel directly.
+    H_initial, _ = cv2.findHomography(mat_pts, img_pts, method=0)
+    H_initial = _ensure_3x3(H_initial)
 
-    # Compute H_mat_to_raw for Phase A
-    H_mat_to_raw, raw_anchor_pts = _recompute_h_for_space(
-        mat_pts, img_pts,
-        from_K=old_K, from_dist=old_dist,
-        to_K=None, to_dist=None,  # target = raw pixel space
-    )
-    print(f"  H_mat_to_raw computed (anchor pts re-distorted to raw space)")
-
-    # --- Phase A: Polyline-based lens calibration ---
+    # --- Phase A: Polyline-based lens calibration on raw frame ---
     print(f"\n  Phase A: Polyline lens calibration...")
     K_new, dist_new, lens_metrics = _polyline_lens_calibration(
-        H_mat_to_img=H_mat_to_raw,  # projects to RAW pixel space
+        H_mat_to_img=H_initial,
         frame_bgr=frame_bgr_raw,
         frame_gray=frame_gray,
         rects=rects,
@@ -122,36 +120,27 @@ def recalibrate_camera(cam_id: str, *, dry_run: bool = False) -> dict:
         print(f"    Converged: {lens_metrics.get('converged', '?')}")
     else:
         print(f"    SKIPPED: {lens_metrics.get('reason', 'unknown')}")
-        # Fall back to existing K+dist
-        if old_K is not None:
-            K_new, dist_new = old_K, old_dist
-            print(f"    Using existing K+dist from homography.json")
-        else:
-            print(f"    No existing K+dist either — Phase B will run without undistortion")
+        print(f"    Phase B will run without undistortion.")
 
-    # Compare with old lens cal
-    old_lens = hom_data.get("lens_calibration", {})
-    if old_lens and K_new is not None and lens_metrics.get("f") is not None:
-        print(f"\n    Comparison with previous lens calibration:")
-        print(f"      f:  {old_lens.get('f', '?')} → {lens_metrics['f']:.1f}")
-        print(f"      k1: {old_lens.get('k1', '?')} → {lens_metrics['k1']:.4f}")
-        print(f"      k2: {old_lens.get('k2', '?')} → {lens_metrics['k2']:.4f}")
-        print(f"      pts: {old_lens.get('num_points', '?')} → {lens_metrics['n_edge_points']}")
+    # --- Transition to undistorted space for Phase B ---
+    if K_new is not None:
+        undist_anchor = cv2.undistortPoints(
+            img_pts.reshape(-1, 1, 2).astype(np.float64),
+            K_new, dist_new, P=K_new,
+        ).reshape(-1, 2)
+        H_for_phase_b, _ = cv2.findHomography(mat_pts, undist_anchor, method=0)
+        H_for_phase_b = _ensure_3x3(H_for_phase_b)
+    else:
+        undist_anchor = img_pts
+        H_for_phase_b = H_initial
 
-    # --- Phase B: Mat-line H refinement ---
-    # Recompute H and anchor pts for the new-undistorted pixel space
-    H_for_phase_b, new_undist_anchor = _recompute_h_for_space(
-        mat_pts, img_pts,
-        from_K=old_K, from_dist=old_dist,
-        to_K=K_new, to_dist=dist_new,  # target = new-undistorted space
-    )
+    # --- Phase B: Mat-line H refinement on undistorted frame ---
     print(f"\n  Phase B: Mat-line H refinement...")
-    print(f"    H recomputed for new-undistorted space")
     H_refined, h_metrics = _refine_h_from_mat_lines(
         H_initial=H_for_phase_b,
         frame_bgr=frame_bgr_raw,
         rects=rects,
-        anchor_img_pts=new_undist_anchor,
+        anchor_img_pts=undist_anchor,
         anchor_mat_pts=mat_pts,
         camera_matrix=K_new,
         dist_coefficients=dist_new,

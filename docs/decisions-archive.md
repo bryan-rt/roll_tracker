@@ -50,13 +50,13 @@ bug fix history. It is NOT auto-loaded by Claude Code. Access it manually when n
 | CP16a: F0 projection utility | ✅ Completed | project_to_world() in f0_projection.py. Debug artifact projection_debug.jsonl. |
 | CP16b: Calibration pipeline skeleton | ✅ Completed | Functional lens calibration + 3 stubs. Two-step chain. |
 | CP17 Tier 1: Two-pass cross-camera ILP | ✅ Implemented | Tag corroboration. corroboration_miss_multiplier 10x. Must-link bug fixed. |
-| Gym setup calibration tool | 🔧 In Progress | lens_calibration functional. mat_walk + mat_line_detection implemented. drift_detection stub. |
+| Gym setup calibration tool | 🔧 In Progress | lens_calibration functional. mat_walk + mat_line_detection implemented. drift_detection stub. CP19 adds unified calibration flow (auto Phase A+B after anchor placement). |
 | CP17 Tier 2/3: Coordinate evidence | 📋 Planned | ILP injection still stubbed. CP18 corrections flow through Stage A x_m/y_m but ILP coordinate channel not yet activated. |
-| CP18: Calibration pipeline | 🔧 In Progress | Layer 1 (footpath + mat line) + Layer 2 (fingerprint) implemented. Pipeline integration complete. A/B comparison shows J_EDEw regression — affine correction layer approach limited. Next: recompute H from polyline correspondences. |
+| CP18: Calibration pipeline | ✅ Completed | Layer 1 (footpath + mat line) + Layer 2 (fingerprint). Affine correction approach abandoned due to J_EDEw regression. Superseded by CP19 direct H refinement. |
 | H on disk is mat→img | ✅ Decided | multiplex_runner auto-detects and inverts to img→mat. projected_polylines use mat→img (the on-disk direction). |
 | Footpath primary over edge touches | ✅ Decided | Mat line detection guarded — falls back to footpath-only when combined signal conflicts. |
 | Projected polylines saved at calibration time | ✅ Decided | Dense-sampled mat edge points in homography.json. Used by mat_line_detection for line matching. |
-| Recompute H from polyline correspondences | 📋 Planned | Replace affine correction layer with direct H recomputation using matched mat line↔blueprint edge correspondences. |
+| CP19: Unified calibration pipeline | ✅ Implemented | Replaces CP18 affine correction. Phase A (polyline lens cal) + Phase B (mat-line H refinement via RANSAC). Integrated into save handlers + batch recalibration script. Empty-frame selection via temporal median. Results: 1.0-1.3px reproj, 61-82% inliers across 3 cameras. |
 | Processor service dockerization | 📋 MVP task | Pipeline runs natively now. Docker for Linux deployment. |
 | Notification channel for drift alerts | 📋 TBD | Supabase Realtime likely. |
 | Gym owner web app stack | 📋 TBD | Blueprint + homography calibration UI. |
