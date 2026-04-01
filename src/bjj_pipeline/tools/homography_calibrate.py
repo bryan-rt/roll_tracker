@@ -572,20 +572,26 @@ def _polyline_lens_calibration_v2(
     polyline_data: Dict[str, Any],
     image_wh: Tuple[int, int],
     *,
-    proximity_px: float = 20.0,
+    proximity_px: float = 10.0,
     canny_low: int = 40,
     canny_high: int = 120,
-    min_edge_pixels: int = 30,
+    min_edge_pixels: int = 20,
     min_edges_with_pixels: int = 4,
     f_bounds: Tuple[float, float] = (200.0, 5000.0),
     k_bounds: Tuple[float, float] = (-1.0, 1.0),
-    max_rms_per_edge: float = 3.0,
+    core_max_dist_px: float = 2.0,
 ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Dict[str, Any]]:
     """Lens calibration using Canny edge pixels grouped by polyline proximity.
 
     No world coordinates needed — only collinearity constraint per edge group.
     Each group of Canny pixels near a projected polyline should lie on a straight
     line after correct undistortion.
+
+    Two-stage filtering:
+      1. Proximity mask groups Canny pixels by nearest polyline edge
+      2. Core extraction: fit line to each group, keep only pixels within
+         core_max_dist_px of the fitted line — removes parallel shadow/texture
+         edges that inflate RMS and mislead the optimizer
 
     Returns (K, dist_4, lens_metrics) or (None, None, metrics) if insufficient data.
     """
@@ -637,17 +643,15 @@ def _polyline_lens_calibration_v2(
         # Mark these pixels as claimed
         claimed[ys, xs] = 255
 
-    # --- Pre-filter edge groups ---
-    def _line_fit_rms(pts_2d: np.ndarray) -> float:
-        """RMS of perpendicular distances from a fitted line (SVD)."""
+    # --- Pre-filter + core extraction ---
+    def _line_fit_residuals(pts_2d: np.ndarray) -> np.ndarray:
+        """Signed perpendicular distances from a fitted line (SVD)."""
         if pts_2d.shape[0] < 2:
-            return 0.0
+            return np.zeros(pts_2d.shape[0], dtype=np.float64)
         centroid = pts_2d.mean(axis=0)
         centered = pts_2d - centroid
-        _, s, vt = np.linalg.svd(centered, full_matrices=False)
-        normal = vt[1]
-        resid = centered @ normal
-        return float(np.sqrt(np.mean(resid ** 2)))
+        _, _, vt = np.linalg.svd(centered, full_matrices=False)
+        return centered @ vt[1]
 
     filtered_groups: Dict[int, np.ndarray] = {}
     rejected_reasons: List[str] = []
@@ -655,11 +659,14 @@ def _polyline_lens_calibration_v2(
         if coords.shape[0] < min_edge_pixels:
             rejected_reasons.append(f"edge {eidx}: {coords.shape[0]} pixels < {min_edge_pixels}")
             continue
-        rms = _line_fit_rms(coords)
-        if rms > max_rms_per_edge:
-            rejected_reasons.append(f"edge {eidx}: RMS {rms:.1f}px > {max_rms_per_edge}")
+        # Core extraction: fit line, keep only pixels within core_max_dist_px
+        resid = _line_fit_residuals(coords)
+        core_mask = np.abs(resid) <= core_max_dist_px
+        core = coords[core_mask]
+        if core.shape[0] < min_edge_pixels:
+            rejected_reasons.append(f"edge {eidx}: {core.shape[0]} core pixels < {min_edge_pixels}")
             continue
-        filtered_groups[eidx] = coords
+        filtered_groups[eidx] = core
 
     n_groups = len(filtered_groups)
     total_pixels = sum(c.shape[0] for c in filtered_groups.values())
@@ -745,7 +752,8 @@ def _polyline_lens_calibration_v2(
     per_edge_rms: Dict[int, float] = {}
     for eidx, idxs in group_indices.items():
         edge_pts = pts_undist[idxs]
-        per_edge_rms[eidx] = _line_fit_rms(edge_pts)
+        resid = _line_fit_residuals(edge_pts)
+        per_edge_rms[eidx] = float(np.sqrt(np.mean(resid ** 2)))
 
     mean_cost_per_pt = float(result.fun) / max(1, total_pixels)
 
