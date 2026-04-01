@@ -192,6 +192,8 @@ archive/
 
 # Generated outputs and local data (do not commit)
 outputs/
+outputs_corrected_h/
+outputs_corrected_blueprint/
 data/
 calibration_artifacts/
 calibration_results/

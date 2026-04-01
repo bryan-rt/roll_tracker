@@ -6,8 +6,11 @@ paths:
 # CV Pipeline Stages
 
 ## Phase 1 — Online (parallel, per-clip via multiplex_AC)
-- **Stage A** `detect_track`: YOLO detection + BoT-SORT. Outputs: detections, tracklet_frames,
-  tracklet_summaries, contact_points (all .parquet), audit.jsonl.
+- **Stage A** `detect_track`: YOLO detection + BoT-SORT. Loads
+  `calibration_correction.json` when present (CP18 affine correction applied after
+  `project_to_world()`; config: `stages.stage_A.calibration_correction.enabled`,
+  default True). Outputs: detections, tracklet_frames, tracklet_summaries,
+  contact_points (all .parquet), audit.jsonl.
 - **Stage B** `masks`: SAM — deferred for POC. Falls back to YOLO bbox.
 - **Stage C** `tags`: AprilTag identity. C0 scheduling/cadence, C1 ROI scan, C2 voting.
   Outputs: tag_observations.jsonl, identity_hints.jsonl.

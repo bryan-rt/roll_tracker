@@ -9,7 +9,17 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-from math import isfinite, cos, sin, pi
+from math import isfinite, cos, sin, pi, sqrt, hypot
+
+# CP19: Import mat line detection functions for H refinement.
+# These are stable pure functions (CP18); leading underscores are internal to
+# that module but the API is frozen and well-tested.
+from calibration_pipeline.mat_line_detection import (
+    _detect_lines_in_frame,
+    _merge_collinear_segments,
+    _match_lines_to_polylines,
+    DetectedMatLine,
+)
 
 
 def _iso_utc_now() -> str:
@@ -351,6 +361,746 @@ def _generate_projected_polylines(
     }
 
 
+# ---------------------------------------------------------------------------
+# CP19: Unified calibration — Phase A (polyline lens cal) + Phase B (H refinement)
+# ---------------------------------------------------------------------------
+
+
+def _find_empty_frame(
+    video_path: str,
+    *,
+    n_candidates: int = 20,
+) -> Tuple[np.ndarray, int]:
+    """Find the frame with least activity (closest to temporal median).
+
+    Samples n_candidates frames evenly across the video, computes the
+    per-pixel median, and returns the frame with the smallest mean
+    absolute deviation from that median. This selects for empty-mat
+    frames where no people or movement are present.
+
+    Returns (frame_bgr, frame_index).
+    """
+    import cv2 as _cv2
+
+    cap = _cv2.VideoCapture(video_path)
+    total = int(cap.get(_cv2.CAP_PROP_FRAME_COUNT))
+    if total <= 0:
+        ok, frame = cap.read()
+        cap.release()
+        if not ok or frame is None:
+            raise RuntimeError(f"Could not read any frame from: {video_path}")
+        return frame, 0
+
+    # Sample evenly spaced frames
+    indices = np.linspace(0, total - 1, min(n_candidates, total), dtype=int)
+    samples: List[Tuple[int, np.ndarray, np.ndarray]] = []  # (idx, gray, bgr)
+    for fi in indices:
+        cap.set(_cv2.CAP_PROP_POS_FRAMES, int(fi))
+        ok, frame = cap.read()
+        if ok and frame is not None:
+            gray = _cv2.cvtColor(frame, _cv2.COLOR_BGR2GRAY)
+            samples.append((int(fi), gray, frame))
+    cap.release()
+
+    if not samples:
+        raise RuntimeError(f"Could not read frames from: {video_path}")
+    if len(samples) == 1:
+        return samples[0][2], samples[0][0]
+
+    # Compute temporal median
+    grays = np.array([g for _, g, _ in samples], dtype=np.float32)
+    median = np.median(grays, axis=0)
+
+    # Pick frame closest to median (least activity)
+    best_idx = 0
+    best_diff = float("inf")
+    for i, (fi, gray, bgr) in enumerate(samples):
+        diff = float(np.mean(np.abs(gray.astype(np.float32) - median)))
+        if diff < best_diff:
+            best_diff = diff
+            best_idx = i
+
+    fi, _, bgr = samples[best_idx]
+    return bgr, fi
+
+
+def _redistort_points(
+    pts_undistorted: np.ndarray,
+    K: np.ndarray,
+    dist: np.ndarray,
+) -> np.ndarray:
+    """Convert undistorted pixel coords back to raw (distorted) pixel coords.
+
+    Applies the radial distortion model: given a point in undistorted pixel
+    space, computes where it would appear in the raw (distorted) image.
+    Assumes tangential distortion = 0 (p1=p2=0), which matches our calibration.
+
+    Args:
+        pts_undistorted: (N, 2) points in undistorted pixel space
+        K: 3x3 camera matrix
+        dist: [k1, k2, ...] distortion coefficients (only k1, k2 used)
+
+    Returns: (N, 2) points in raw pixel space
+    """
+    pts = np.asarray(pts_undistorted, dtype=np.float64).reshape(-1, 2)
+    K = np.asarray(K, dtype=np.float64).reshape(3, 3)
+    d = np.asarray(dist, dtype=np.float64).ravel()
+    k1 = float(d[0]) if len(d) > 0 else 0.0
+    k2 = float(d[1]) if len(d) > 1 else 0.0
+
+    fx, fy = K[0, 0], K[1, 1]
+    cx, cy = K[0, 2], K[1, 2]
+
+    # Normalize to camera coordinates
+    x_n = (pts[:, 0] - cx) / fx
+    y_n = (pts[:, 1] - cy) / fy
+
+    # Apply radial distortion
+    r2 = x_n ** 2 + y_n ** 2
+    radial = 1.0 + k1 * r2 + k2 * r2 ** 2
+    x_d = x_n * radial
+    y_d = y_n * radial
+
+    # Back to pixel coordinates
+    raw = np.column_stack([x_d * fx + cx, y_d * fy + cy])
+    return raw
+
+
+def _recompute_h_for_space(
+    mat_pts: np.ndarray,
+    anchor_img_pts: np.ndarray,
+    from_K: Optional[np.ndarray],
+    from_dist: Optional[np.ndarray],
+    to_K: Optional[np.ndarray],
+    to_dist: Optional[np.ndarray],
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Recompute H and anchor points for a different undistortion space.
+
+    anchor_img_pts are in the pixel space defined by from_K/from_dist
+    (undistorted with those params, or raw if both are None).
+
+    Returns (H_mat_to_target, target_anchor_pts) where the target pixel
+    space is defined by to_K/to_dist (raw if both None).
+    """
+    import cv2 as _cv2
+
+    pts = np.asarray(anchor_img_pts, dtype=np.float64).reshape(-1, 2)
+
+    # Step 1: Convert from current space to raw pixel space
+    if from_K is not None and from_dist is not None:
+        raw_pts = _redistort_points(pts, from_K, from_dist)
+    else:
+        raw_pts = pts.copy()
+
+    # Step 2: Convert from raw to target space
+    if to_K is not None and to_dist is not None:
+        target_pts = _cv2.undistortPoints(
+            raw_pts.reshape(-1, 1, 2).astype(np.float64),
+            np.asarray(to_K, dtype=np.float64).reshape(3, 3),
+            np.asarray(to_dist, dtype=np.float64).ravel(),
+            P=np.asarray(to_K, dtype=np.float64).reshape(3, 3),
+        ).reshape(-1, 2)
+    else:
+        target_pts = raw_pts
+
+    # Compute new H for the target space
+    H, _ = _cv2.findHomography(
+        np.asarray(mat_pts, dtype=np.float64),
+        target_pts.astype(np.float64),
+        method=0,
+    )
+    return _ensure_3x3(H), target_pts
+
+
+def _detect_edge_points_along_polylines(
+    frame_gray: np.ndarray,
+    polyline_data: Dict[str, Any],
+    *,
+    sample_spacing_px: int = 15,
+    profile_half_width_px: int = 30,
+    min_gradient_strength: float = 15.0,
+    max_deviation_px: float = 40.0,
+    edge_margin_frac: float = 0.05,
+) -> Tuple[
+    List[Tuple[float, float]],   # detected_img (pixel coords)
+    List[Tuple[float, float]],   # detected_mat (world coords)
+    List[int],                    # detected_edge_idx
+    Dict[str, Any],               # stats
+]:
+    """Detect mat edge points via perpendicular gradient profiles along projected polylines.
+
+    Generalizes _auto_detect_edge_points from lens_calibration.py: instead of 4
+    straight edges from corner pairs, works with N projected polylines covering
+    the full visible mat surface.
+    """
+    img_h, img_w = frame_gray.shape[:2]
+    detected_img: List[Tuple[float, float]] = []
+    detected_mat: List[Tuple[float, float]] = []
+    detected_edge_idx: List[int] = []
+    per_edge_counts: Dict[int, int] = {}
+    total_rejected = 0
+
+    for pl in polyline_data.get("polylines", []):
+        edge_idx = pl["edge_index"]
+        pixel_pts = pl["pixel_points"]
+        ws = pl["world_start"]
+        we = pl["world_end"]
+        wx1, wy1 = float(ws[0]), float(ws[1])
+        wx2, wy2 = float(we[0]), float(we[1])
+
+        if len(pixel_pts) < 3:
+            continue
+
+        # Compute polyline arc-length in pixels for sample spacing
+        arc_len = 0.0
+        for i in range(1, len(pixel_pts)):
+            dx = float(pixel_pts[i][0]) - float(pixel_pts[i - 1][0])
+            dy = float(pixel_pts[i][1]) - float(pixel_pts[i - 1][1])
+            arc_len += hypot(dx, dy)
+
+        if arc_len < 2.0 * sample_spacing_px:
+            continue
+
+        n_samples = max(1, int(arc_len / sample_spacing_px))
+        edge_count = 0
+        hw = profile_half_width_px
+
+        for si in range(n_samples):
+            # Fractional position along polyline, skipping margins
+            t_frac = edge_margin_frac + (1.0 - 2 * edge_margin_frac) * (si + 0.5) / n_samples
+
+            # Find the polyline point at this fractional arc-length
+            target_dist = t_frac * arc_len
+            cum_dist = 0.0
+            seg_i = 0
+            for j in range(1, len(pixel_pts)):
+                dx = float(pixel_pts[j][0]) - float(pixel_pts[j - 1][0])
+                dy = float(pixel_pts[j][1]) - float(pixel_pts[j - 1][1])
+                seg_len = hypot(dx, dy)
+                if cum_dist + seg_len >= target_dist and seg_len > 1e-6:
+                    seg_i = j - 1
+                    break
+                cum_dist += seg_len
+            else:
+                seg_i = max(0, len(pixel_pts) - 2)
+
+            # Interpolate position on this segment
+            p0x, p0y = float(pixel_pts[seg_i][0]), float(pixel_pts[seg_i][1])
+            p1x, p1y = float(pixel_pts[seg_i + 1][0]), float(pixel_pts[seg_i + 1][1])
+            seg_dx, seg_dy = p1x - p0x, p1y - p0y
+            seg_len = hypot(seg_dx, seg_dy)
+            if seg_len < 1e-6:
+                total_rejected += 1
+                continue
+            local_t = (target_dist - cum_dist) / seg_len
+            local_t = max(0.0, min(1.0, local_t))
+            sx = p0x + local_t * seg_dx
+            sy = p0y + local_t * seg_dy
+
+            # Compute local tangent via central difference on nearby polyline points
+            # Use the segment direction as tangent (robust for curved polylines)
+            # For better tangent at interior points, use adjacent polyline segments
+            if seg_i > 0 and seg_i + 1 < len(pixel_pts) - 1:
+                # Central difference across two segments
+                prev_x, prev_y = float(pixel_pts[seg_i][0]), float(pixel_pts[seg_i][1])
+                next_x, next_y = float(pixel_pts[seg_i + 1][0]), float(pixel_pts[seg_i + 1][1])
+                tx, ty = next_x - prev_x, next_y - prev_y
+            else:
+                tx, ty = seg_dx, seg_dy
+
+            t_len = hypot(tx, ty)
+            if t_len < 1e-6:
+                total_rejected += 1
+                continue
+            tx, ty = tx / t_len, ty / t_len
+            # Perpendicular (rotate 90°)
+            nx, ny = -ty, tx
+
+            # Skip samples too close to frame edge for a full perpendicular profile
+            if (sx < hw or sx >= img_w - hw or sy < hw or sy >= img_h - hw):
+                total_rejected += 1
+                continue
+
+            # Extract 1D intensity profile along perpendicular
+            profile = np.zeros(2 * hw + 1, dtype=np.float64)
+            valid = True
+            for pi in range(-hw, hw + 1):
+                px_f = sx + pi * nx
+                py_f = sy + pi * ny
+                px_i = int(round(px_f))
+                py_i = int(round(py_f))
+                if px_i < 0 or px_i >= img_w or py_i < 0 or py_i >= img_h:
+                    valid = False
+                    break
+                profile[pi + hw] = float(frame_gray[py_i, px_i])
+
+            if not valid:
+                total_rejected += 1
+                continue
+
+            # Gradient and strongest peak
+            grad = np.gradient(profile)
+            abs_grad = np.abs(grad)
+            peak_idx = int(np.argmax(abs_grad))
+            peak_strength = float(abs_grad[peak_idx])
+
+            if peak_strength < min_gradient_strength:
+                total_rejected += 1
+                continue
+
+            # Sub-pixel refinement via parabola fit
+            sub_offset = 0.0
+            if 1 <= peak_idx <= len(grad) - 2:
+                g_m1 = abs_grad[peak_idx - 1]
+                g_0 = abs_grad[peak_idx]
+                g_p1 = abs_grad[peak_idx + 1]
+                denom = 2.0 * (2.0 * g_0 - g_m1 - g_p1)
+                if abs(denom) > 1e-9:
+                    sub_offset = (g_m1 - g_p1) / denom
+
+            perp_offset = (peak_idx + sub_offset) - hw
+
+            # Detected pixel location
+            det_x = sx + perp_offset * nx
+            det_y = sy + perp_offset * ny
+
+            if abs(perp_offset) > max_deviation_px:
+                total_rejected += 1
+                continue
+
+            # World coordinate via parametric t along the blueprint edge
+            world_x = wx1 + t_frac * (wx2 - wx1)
+            world_y = wy1 + t_frac * (wy2 - wy1)
+
+            detected_img.append((float(det_x), float(det_y)))
+            detected_mat.append((world_x, world_y))
+            detected_edge_idx.append(edge_idx)
+            edge_count += 1
+
+        per_edge_counts[edge_idx] = per_edge_counts.get(edge_idx, 0) + edge_count
+
+    stats = {
+        "per_edge": per_edge_counts,
+        "total_detected": len(detected_img),
+        "total_rejected": total_rejected,
+        "n_edges_with_points": sum(1 for c in per_edge_counts.values() if c > 0),
+    }
+    return detected_img, detected_mat, detected_edge_idx, stats
+
+
+def _polyline_lens_calibration(
+    H_mat_to_img: np.ndarray,
+    frame_bgr: np.ndarray,
+    frame_gray: np.ndarray,
+    rects: List[Tuple[float, float, float, float, str]],
+    image_wh: Tuple[int, int],
+    *,
+    f_bounds: Tuple[float, float] = (200.0, 5000.0),
+    k_bounds: Tuple[float, float] = (-10.0, 10.0),
+    min_edge_points: int = 20,
+    min_edges_with_points: int = 4,
+    reg_lambda: float = 0.0,
+) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Dict[str, Any]]:
+    """Lens calibration using edge points detected along projected polylines.
+
+    Returns (K, dist_4, lens_metrics) or (None, None, metrics) if insufficient data.
+    K is 3x3 camera matrix. dist_4 is [k1, k2, 0, 0].
+    """
+    import cv2 as _cv2
+    from scipy.optimize import minimize as _sp_minimize
+
+    img_w, img_h = image_wh
+
+    # Generate projected polylines from H on the RAW (distorted) frame.
+    # frame_margin=0: strict in-frame clipping for edge detection (the default
+    # 50px margin is for visualization; edge detection needs all polyline points
+    # within bounds so perpendicular profiles don't extend outside the frame).
+    polyline_data = _generate_projected_polylines(
+        H_mat_to_img=H_mat_to_img, rects=rects, image_wh=image_wh,
+        frame_margin=0.0,
+    )
+
+    # Detect edge points along polylines (tighter defaults for noise robustness)
+    det_img, det_mat, det_eidx, stats = _detect_edge_points_along_polylines(
+        frame_gray, polyline_data,
+        max_deviation_px=12.0, min_gradient_strength=20.0,
+    )
+
+    # Per-edge consistency filter: reject edges where points don't form a
+    # clean line (high RMS = noise from people/shadows, not a real mat edge).
+    # Fit a line per edge in pixel space, discard edges with RMS > 3px.
+    if det_img:
+        _edge_groups_raw: Dict[int, List[int]] = {}
+        for i, eidx in enumerate(det_eidx):
+            _edge_groups_raw.setdefault(eidx, []).append(i)
+
+        keep_mask = [False] * len(det_img)
+        per_edge_rms_raw: Dict[int, float] = {}
+        for eidx, idxs in _edge_groups_raw.items():
+            if len(idxs) < 3:
+                # Too few points to assess — keep them
+                for i in idxs:
+                    keep_mask[i] = True
+                continue
+            pts = np.array([det_img[i] for i in idxs], dtype=np.float64)
+            centroid = pts.mean(axis=0)
+            centered = pts - centroid
+            _, _, vt = np.linalg.svd(centered, full_matrices=False)
+            resid = centered @ vt[1]
+            rms = float(np.sqrt(np.mean(resid ** 2)))
+            per_edge_rms_raw[eidx] = rms
+            if rms <= 3.0:
+                for i in idxs:
+                    keep_mask[i] = True
+
+        if any(keep_mask):
+            det_img = [p for i, p in enumerate(det_img) if keep_mask[i]]
+            det_mat = [p for i, p in enumerate(det_mat) if keep_mask[i]]
+            det_eidx = [e for i, e in enumerate(det_eidx) if keep_mask[i]]
+
+    n_pts = len(det_img)
+    distinct_edges = len(set(det_eidx))
+    n_edges = distinct_edges
+
+    if n_pts < min_edge_points or n_edges < min_edges_with_points:
+        return None, None, {
+            "reason": f"insufficient detections ({n_pts} pts, {n_edges} edges)",
+            "n_edge_points": n_pts,
+            "n_edges_with_points": n_edges,
+        }
+
+    # Build edge groups: edge_idx -> list of point indices
+    edge_groups: Dict[int, List[int]] = {}
+    for i, eidx in enumerate(det_eidx):
+        edge_groups.setdefault(eidx, []).append(i)
+
+    all_img_arr = np.array(det_img, dtype=np.float64)
+    cx = img_w / 2.0
+    cy = img_h / 2.0
+
+    # Collinearity cost: undistort points, fit line per edge, sum squared residuals
+    def _collinearity_cost(params: np.ndarray) -> float:
+        f, k1, k2 = float(params[0]), float(params[1]), float(params[2])
+        K_trial = np.array([[f, 0, cx], [0, f, cy], [0, 0, 1]], dtype=np.float64)
+        dist_trial = np.array([k1, k2, 0.0, 0.0], dtype=np.float64)
+
+        pts = all_img_arr.reshape(-1, 1, 2)
+        undist = _cv2.undistortPoints(pts, K_trial, dist_trial, P=K_trial)
+        undist_2d = undist.reshape(-1, 2)
+
+        total = 0.0
+        for eidx, idxs in edge_groups.items():
+            if len(idxs) < 2:
+                continue
+            edge_pts = undist_2d[idxs]
+            centroid = edge_pts.mean(axis=0)
+            centered = edge_pts - centroid
+            _, _, vt = np.linalg.svd(centered, full_matrices=False)
+            normal = vt[1]
+            resid = centered @ normal
+            total += float(np.sum(resid ** 2))
+        # Regularization: penalize large distortion coefficients to prevent
+        # overfitting. Without this, the optimizer pushes k2 to whatever bound
+        # is set because more distortion always reduces collinearity cost.
+        total += reg_lambda * (k1 ** 2 + k2 ** 2)
+        return total
+
+    # Powell optimization
+    f0 = float(max(img_w, img_h))
+    result = _sp_minimize(
+        _collinearity_cost,
+        x0=np.array([f0, 0.0, 0.0]),
+        method="Powell",
+        bounds=[f_bounds, k_bounds, k_bounds],
+        options={"maxiter": 5000, "ftol": 1e-6},
+    )
+
+    f_opt, k1_opt, k2_opt = float(result.x[0]), float(result.x[1]), float(result.x[2])
+
+    # Sanity check: if any parameter hit its bound, the optimization is likely
+    # underdetermined for this camera angle. Return None to skip Phase A.
+    k_lo, k_hi = k_bounds
+    f_lo, f_hi = f_bounds
+    at_bound = (
+        abs(k1_opt - k_lo) < 0.01 or abs(k1_opt - k_hi) < 0.01
+        or abs(k2_opt - k_lo) < 0.01 or abs(k2_opt - k_hi) < 0.01
+        or abs(f_opt - f_lo) < 1.0 or abs(f_opt - f_hi) < 1.0
+    )
+    if at_bound:
+        return None, None, {
+            "reason": f"optimizer hit bounds (f={f_opt:.1f}, k1={k1_opt:.4f}, k2={k2_opt:.4f})",
+            "n_edge_points": n_pts,
+            "n_edges_with_points": n_edges,
+            "f": f_opt, "k1": k1_opt, "k2": k2_opt,
+        }
+
+    K_opt = np.array([[f_opt, 0, cx], [0, f_opt, cy], [0, 0, 1]], dtype=np.float64)
+    dist_opt = np.array([k1_opt, k2_opt, 0.0, 0.0], dtype=np.float64)
+
+    # Compute per-edge RMS for diagnostics
+    pts = all_img_arr.reshape(-1, 1, 2)
+    undist = _cv2.undistortPoints(pts, K_opt, dist_opt, P=K_opt).reshape(-1, 2)
+    per_edge_rms: Dict[str, float] = {}
+    per_edge_npts: Dict[str, int] = {}
+    for eidx, idxs in edge_groups.items():
+        if len(idxs) < 2:
+            per_edge_rms[str(eidx)] = 0.0
+            per_edge_npts[str(eidx)] = len(idxs)
+            continue
+        edge_pts = undist[idxs]
+        centroid = edge_pts.mean(axis=0)
+        centered = edge_pts - centroid
+        _, _, vt = np.linalg.svd(centered, full_matrices=False)
+        resid = centered @ vt[1]
+        per_edge_rms[str(eidx)] = float(np.sqrt(np.mean(resid ** 2)))
+        per_edge_npts[str(eidx)] = len(idxs)
+
+    lens_metrics = {
+        "f": f_opt,
+        "k1": k1_opt,
+        "k2": k2_opt,
+        "collinearity_cost": float(result.fun),
+        "n_edge_points": n_pts,
+        "n_edges_with_points": n_edges,
+        "per_edge_rms": per_edge_rms,
+        "points_per_edge": per_edge_npts,
+        "converged": bool(result.success),
+        "iterations": int(result.nit),
+    }
+
+    return K_opt, dist_opt, lens_metrics
+
+
+def _refine_h_from_mat_lines(
+    H_initial: np.ndarray,
+    frame_bgr: np.ndarray,
+    rects: List[Tuple[float, float, float, float, str]],
+    anchor_img_pts: np.ndarray,
+    anchor_mat_pts: np.ndarray,
+    camera_matrix: Optional[np.ndarray] = None,
+    dist_coefficients: Optional[np.ndarray] = None,
+    max_iterations: int = 3,
+    ransac_reproj_threshold: float = 5.0,
+    min_matched_lines: int = 3,
+) -> Tuple[np.ndarray, Dict[str, Any]]:
+    """Refine H using observed mat lines. Returns (refined_H_mat_to_img, quality_metrics).
+
+    If K+dist provided, undistorts frame internally before detection.
+    All pixel coordinates in the output are in undistorted space.
+    """
+    import cv2 as _cv2
+
+    img_h, img_w = frame_bgr.shape[:2]
+    image_wh = (img_w, img_h)
+
+    # Undistort frame once if K+dist available
+    if camera_matrix is not None and dist_coefficients is not None:
+        K = np.asarray(camera_matrix, dtype=np.float64).reshape((3, 3))
+        D = np.asarray(dist_coefficients, dtype=np.float64).ravel()
+        frame_work = _cv2.undistort(frame_bgr, K, D)
+    else:
+        frame_work = frame_bgr
+
+    H_current = np.array(H_initial, dtype=np.float64)
+    prev_reproj_error = float("inf")
+
+    metrics: Dict[str, Any] = {
+        "mean_reproj_error_px": 0.0,
+        "max_reproj_error_px": 0.0,
+        "anchor_reproj_error_px": 0.0,
+        "n_inliers": 0,
+        "n_total_correspondences": 0,
+        "inlier_ratio": 0.0,
+        "n_matched_lines": 0,
+        "n_detected_lines": 0,
+        "n_distinct_edges_matched": 0,
+        "refinement_iterations": 0,
+        "ransac_reproj_threshold": ransac_reproj_threshold,
+        "converged": False,
+    }
+
+    for iteration in range(max_iterations):
+        # Generate projected polylines from current H (strict in-frame for matching)
+        polyline_data = _generate_projected_polylines(
+            H_mat_to_img=H_current, rects=rects, image_wh=image_wh,
+            frame_margin=0.0,
+        )
+
+        # Detect lines — pass None for K/dist (frame already undistorted or raw)
+        detected_lines = _detect_lines_in_frame(
+            frame_work, None, None, 50, 150, 80, 50, 10,
+        )
+
+        # Merge collinear segments
+        merged = _merge_collinear_segments(detected_lines)
+        metrics["n_detected_lines"] = len(merged)
+
+        # Convert polyline_data to format _match_lines_to_polylines expects
+        polylines_as_tuples: List[List[Tuple[float, float]]] = []
+        edge_indices: List[int] = []
+        for pl in polyline_data.get("polylines", []):
+            pts = [(float(p[0]), float(p[1])) for p in pl["pixel_points"]]
+            if len(pts) >= 2:
+                polylines_as_tuples.append(pts)
+                edge_indices.append(pl["edge_index"])
+
+        # Reconstruct all_edges from polyline data (option i — safe)
+        edges_by_idx: Dict[int, Tuple[Tuple[float, float], Tuple[float, float]]] = {}
+        for pl in polyline_data.get("polylines", []):
+            idx = pl["edge_index"]
+            if idx not in edges_by_idx:
+                ws, we = pl["world_start"], pl["world_end"]
+                edges_by_idx[idx] = (
+                    (float(ws[0]), float(ws[1])),
+                    (float(we[0]), float(we[1])),
+                )
+        max_edge_idx = max(edges_by_idx.keys()) if edges_by_idx else -1
+        all_edges: List[Tuple[Tuple[float, float], Tuple[float, float]]] = [
+            edges_by_idx.get(i, ((0.0, 0.0), (0.0, 0.0)))
+            for i in range(max_edge_idx + 1)
+        ]
+
+        # Match detected lines to polylines
+        H_img_to_world = np.linalg.inv(H_current)
+        matched = _match_lines_to_polylines(
+            merged, polylines_as_tuples, edge_indices,
+            H_img_to_world, None, None, 80.0,
+        )
+        metrics["n_matched_lines"] = len(matched)
+
+        if len(matched) < min_matched_lines:
+            metrics["converged"] = False
+            metrics["refinement_iterations"] = iteration + 1
+            if iteration == 0:
+                return H_initial, metrics
+            return H_current, metrics
+
+        # Extract correspondences from matched lines
+        world_corr: List[Tuple[float, float]] = []
+        pixel_corr: List[Tuple[float, float]] = []
+        matched_edge_set: set = set()
+
+        for ml in matched:
+            eidx = ml.matched_edge_index
+            if eidx < 0 or eidx >= len(all_edges):
+                continue
+            matched_edge_set.add(eidx)
+            (ewx1, ewy1), (ewx2, ewy2) = all_edges[eidx]
+
+            # Sample 15 world points along the blueprint edge
+            for k in range(15):
+                t = k / 14.0
+                w_x = ewx1 + t * (ewx2 - ewx1)
+                w_y = ewy1 + t * (ewy2 - ewy1)
+
+                # Find closest point on detected pixel segment
+                px1, py1 = ml.pixel_start
+                px2, py2 = ml.pixel_end
+                seg_dx = px2 - px1
+                seg_dy = py2 - py1
+                seg_len_sq = seg_dx * seg_dx + seg_dy * seg_dy
+
+                # Project world point to pixel using current H to get approximate pixel location
+                wp = np.array([w_x, w_y, 1.0], dtype=np.float64)
+                proj = H_current @ wp
+                if abs(proj[2]) < 1e-12:
+                    continue
+                approx_px = proj[0] / proj[2]
+                approx_py = proj[1] / proj[2]
+
+                # Find nearest point on detected segment to this projected point
+                if seg_len_sq < 1e-12:
+                    continue
+                t_seg = ((approx_px - px1) * seg_dx + (approx_py - py1) * seg_dy) / seg_len_sq
+                # Skip samples that project outside the detected segment
+                # (endpoint clamping creates wrong correspondences)
+                if t_seg < 0.02 or t_seg > 0.98:
+                    continue
+                near_x = px1 + t_seg * seg_dx
+                near_y = py1 + t_seg * seg_dy
+
+                world_corr.append((w_x, w_y))
+                pixel_corr.append((near_x, near_y))
+
+        metrics["n_distinct_edges_matched"] = len(matched_edge_set)
+
+        # Combine anchor + mat-line correspondences
+        all_world = list(anchor_mat_pts.tolist()) + [(w[0], w[1]) for w in world_corr]
+        all_pixel = list(anchor_img_pts.tolist()) + [(p[0], p[1]) for p in pixel_corr]
+
+        all_world_arr = np.array(all_world, dtype=np.float64)
+        all_pixel_arr = np.array(all_pixel, dtype=np.float64)
+        metrics["n_total_correspondences"] = len(all_world)
+
+        # RANSAC homography
+        H_new, inlier_mask = _cv2.findHomography(
+            all_world_arr, all_pixel_arr, _cv2.RANSAC, ransac_reproj_threshold,
+        )
+
+        if H_new is None or inlier_mask is None:
+            metrics["refinement_iterations"] = iteration + 1
+            if iteration == 0:
+                return H_initial, metrics
+            return H_current, metrics
+
+        inlier_count = int(inlier_mask.sum())
+        inlier_ratio = inlier_count / max(1, len(all_world))
+        metrics["n_inliers"] = inlier_count
+        metrics["inlier_ratio"] = round(inlier_ratio, 3)
+
+        if inlier_ratio < 0.15:
+            metrics["refinement_iterations"] = iteration + 1
+            if iteration == 0:
+                return H_initial, metrics
+            return H_current, metrics
+
+        H_new = _ensure_3x3(H_new)
+
+        # Compute reprojection errors for inliers
+        inlier_idxs = np.where(inlier_mask.ravel())[0]
+        reproj_errors = []
+        for idx in inlier_idxs:
+            wp = np.array([all_world_arr[idx, 0], all_world_arr[idx, 1], 1.0])
+            proj = H_new @ wp
+            if abs(proj[2]) < 1e-12:
+                continue
+            pred_x, pred_y = proj[0] / proj[2], proj[1] / proj[2]
+            err = hypot(pred_x - all_pixel_arr[idx, 0], pred_y - all_pixel_arr[idx, 1])
+            reproj_errors.append(err)
+
+        if reproj_errors:
+            mean_err = float(np.mean(reproj_errors))
+            max_err = float(np.max(reproj_errors))
+        else:
+            mean_err, max_err = 0.0, 0.0
+
+        # Anchor-only reprojection error
+        anchor_errors = []
+        for i in range(len(anchor_mat_pts)):
+            wp = np.array([anchor_mat_pts[i, 0], anchor_mat_pts[i, 1], 1.0])
+            proj = H_new @ wp
+            if abs(proj[2]) < 1e-12:
+                continue
+            pred_x, pred_y = proj[0] / proj[2], proj[1] / proj[2]
+            err = hypot(pred_x - anchor_img_pts[i, 0], pred_y - anchor_img_pts[i, 1])
+            anchor_errors.append(err)
+
+        metrics["mean_reproj_error_px"] = round(mean_err, 2)
+        metrics["max_reproj_error_px"] = round(max_err, 2)
+        metrics["anchor_reproj_error_px"] = round(float(np.mean(anchor_errors)) if anchor_errors else 0.0, 2)
+
+        H_current = H_new
+        metrics["refinement_iterations"] = iteration + 1
+
+        # Convergence check
+        if abs(prev_reproj_error - mean_err) < 0.1:
+            metrics["converged"] = True
+            break
+        prev_reproj_error = mean_err
+
+    return H_current, metrics
+
+
 def _project_polyline_mat_to_img(H: np.ndarray, pts_mat: np.ndarray) -> np.ndarray:
     """
     pts_mat: (N,2) in mat coords. Returns (N,2) image coords.
@@ -383,6 +1133,8 @@ def _qa_overlay_dialog(
     rects: List[Tuple[float, float, float, float, str]],
     grid_spacing_m: float = 0.5,
     sample_step_m: float = 0.05,
+    quality_metrics: Optional[Dict[str, Any]] = None,
+    projected_polylines: Optional[Dict[str, Any]] = None,
 ) -> bool:
     """
     Show a QA overlay window: mat-union grid (0.5m spacing) projected onto the frame via H.
@@ -446,6 +1198,45 @@ def _qa_overlay_dialog(
             pts_img = _project_polyline_mat_to_img(H_mat_to_img, pts_mat)
             _plot_polyline_img(pts_img)
 
+    # CP19: Render projected panel edge polylines in green
+    if projected_polylines is not None:
+        for pl in projected_polylines.get("polylines", []):
+            pts = pl.get("pixel_points", [])
+            if len(pts) >= 2:
+                xs = [float(p[0]) for p in pts]
+                ys = [float(p[1]) for p in pts]
+                ax.plot(xs, ys, color="lime", linewidth=1.5, alpha=0.8, clip_on=True)
+
+    # CP19: Render quality metrics text block at top-right
+    if quality_metrics is not None:
+        hm = quality_metrics.get("h_metrics", {})
+        lm = quality_metrics.get("lens_metrics", {})
+        lines = []
+        if hm:
+            lines.append(
+                f"Reproj: {hm.get('mean_reproj_error_px', 0):.1f}px mean / "
+                f"{hm.get('max_reproj_error_px', 0):.1f}px max "
+                f"({hm.get('n_inliers', 0)}/{hm.get('n_total_correspondences', 0)} inliers)"
+            )
+            lines.append(
+                f"Lines: {hm.get('n_matched_lines', 0)} matched from "
+                f"{hm.get('n_distinct_edges_matched', 0)} edges"
+            )
+        if lm and lm.get("f") is not None:
+            lines.append(
+                f"Lens: f={lm.get('f', 0):.0f} k1={lm.get('k1', 0):.2f} "
+                f"k2={lm.get('k2', 0):.2f} ({lm.get('n_edge_points', 0)} pts / "
+                f"{lm.get('n_edges_with_points', 0)} edges)"
+            )
+        if lines:
+            ax.text(
+                0.99, 0.99, "\n".join(lines),
+                transform=ax.transAxes, fontsize=8,
+                va="top", ha="right", family="monospace",
+                bbox=dict(boxstyle="round,pad=0.4", facecolor="black", alpha=0.6),
+                color="white",
+            )
+
     decision = {"accept": False, "redo": False}
 
     def on_key(event):
@@ -482,17 +1273,12 @@ def _interactive_calibrate(
     import cv2  # noqa
     import matplotlib.pyplot as plt  # noqa
 
-    cap = cv2.VideoCapture(str(video_path))
-    ok, frame_bgr = cap.read()
-    cap.release()
-    if not ok or frame_bgr is None:
-        raise RuntimeError(f"Could not read first frame from: {video_path}")
+    # CP19: Select emptiest frame via temporal median comparison
+    frame_bgr, frame_idx = _find_empty_frame(str(video_path))
+    print(f"[D7] Selected frame {frame_idx} (lowest activity)")
 
-    # Auto-undistort if lens calibration exists (CP16b)
-    _K, _dist = _load_lens_calibration(out_path)
-    if _K is not None and _dist is not None:
-        frame_bgr = cv2.undistort(frame_bgr, _K, _dist)
-        print(f"[D7] Applied lens undistortion (K diag: {_K[0,0]:.1f}, {_K[1,1]:.1f})")
+    # CP19: Work on RAW frame — no startup undistortion.
+    frame_bgr_raw = frame_bgr
 
     frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
 
@@ -521,7 +1307,7 @@ def _interactive_calibrate(
     if blueprint is not None:
         rects = _render_mat_blueprint_rects(ax_mat, blueprint)
 
-    state = {"expect": "img"}  # img then mat alternating
+    state = {"expect": "img", "qa_active": False}  # img then mat alternating
     # --- Persistent point/label artists (avoid ax.lines.clear(), which breaks on newer mpl) ---
     img_point_artists: List[Any] = []
     img_text_artists: List[Any] = []
@@ -612,6 +1398,8 @@ def _interactive_calibrate(
         fig.canvas.draw_idle()
 
     def on_key(event):
+        if state.get("qa_active"):
+            return
         k = (event.key or "").lower()
 
         if k == "u":
@@ -631,63 +1419,138 @@ def _interactive_calibrate(
 
             img_pts = np.array(pairs.image_points_px, dtype=float)
             mat_pts = np.array(pairs.mat_points, dtype=float)
-
-            # Compute H mapping mat -> image or image -> mat?
-            # Convention: we'll compute H such that [x_img,y_img,1]^T ~ H * [x_mat,y_mat,1]^T
-            # This matches the typical "project mat coords into image" overlay use.
             import cv2  # noqa
 
+            # 1. H₀ maps mat → raw pixel (user placed points on raw frame)
             H, mask = cv2.findHomography(mat_pts, img_pts, method=cv2.RANSAC)
             H = _ensure_3x3(H)
-
             inliers = int(mask.sum()) if mask is not None else None
-            # QA loop: overlay a 0.5m grid (union of blueprint rectangles) projected onto the frame.
-            # Accept -> write homography.json and exit. Redo -> clear points and continue selecting.
-            print("[D7] Computed homography. Launching QA overlay... (accept=a, redo=r)")
+            img_h_px, img_w_px = frame_rgb.shape[:2]
+
+            # 2. CP19 Phase A — Polyline-based lens calibration (on raw frame)
+            # H already maps mat → raw pixel, no coordinate transforms needed.
+            print("[CP19] Phase A: polyline lens calibration...")
+            K_new, dist_new, lens_metrics = _polyline_lens_calibration(
+                H_mat_to_img=H,
+                frame_bgr=frame_bgr_raw,
+                frame_gray=cv2.cvtColor(frame_bgr_raw, cv2.COLOR_BGR2GRAY),
+                rects=rects,
+                image_wh=(img_w_px, img_h_px),
+            )
+            if K_new is not None:
+                print(f"[CP19] Phase A: f={lens_metrics['f']:.1f} k1={lens_metrics['k1']:.4f} "
+                      f"k2={lens_metrics['k2']:.4f} ({lens_metrics['n_edge_points']} pts / "
+                      f"{lens_metrics['n_edges_with_points']} edges)")
+            else:
+                print(f"[CP19] Phase A skipped: {lens_metrics.get('reason', 'insufficient detections')}. "
+                      "Phase B will run without undistortion.")
+
+            # Save raw vs undistorted comparison images for visual verification
+            if K_new is not None:
+                frame_undist_compare = cv2.undistort(frame_bgr_raw, K_new, dist_new)
+                cv2.imwrite("/tmp/cp19_raw.png", frame_bgr_raw)
+                cv2.imwrite("/tmp/cp19_undistorted.png", frame_undist_compare)
+                print("[CP19] Saved /tmp/cp19_raw.png and /tmp/cp19_undistorted.png for comparison")
+
+            # 3. Transition to undistorted space for Phase B
+            if K_new is not None:
+                undist_anchor = cv2.undistortPoints(
+                    img_pts.reshape(-1, 1, 2).astype(np.float64),
+                    K_new, dist_new, P=K_new,
+                ).reshape(-1, 2)
+                H_undist, _ = cv2.findHomography(mat_pts, undist_anchor, method=0)
+                H_undist = _ensure_3x3(H_undist)
+            else:
+                undist_anchor = img_pts
+                H_undist = H
+
+            # 4. CP19 Phase B — Refine H using mat lines on undistorted frame
+            print("[CP19] Phase B: mat-line H refinement...")
+            H_refined, h_metrics = _refine_h_from_mat_lines(
+                H_initial=H_undist,
+                frame_bgr=frame_bgr_raw,
+                rects=rects,
+                anchor_img_pts=undist_anchor,
+                anchor_mat_pts=mat_pts,
+                camera_matrix=K_new,
+                dist_coefficients=dist_new,
+            )
+            print(f"[CP19] Phase B: reproj={h_metrics['mean_reproj_error_px']:.1f}px, "
+                  f"{h_metrics['n_matched_lines']} lines matched")
+
+            quality_metrics = {
+                "h_metrics": h_metrics,
+                "lens_metrics": lens_metrics,
+                "calibration_mode": "unified",
+            }
+
+            # 5. Undistort raw frame with new K+dist for QA
+            if K_new is not None:
+                frame_bgr_display = cv2.undistort(frame_bgr_raw, K_new, dist_new)
+            else:
+                frame_bgr_display = frame_bgr
+            frame_rgb_display = cv2.cvtColor(frame_bgr_display, cv2.COLOR_BGR2RGB)
+
+            # 5. QA with refined H + polylines + metrics
+            qa_polylines = _generate_projected_polylines(
+                H_mat_to_img=H_refined, rects=rects, image_wh=(img_w_px, img_h_px),
+                frame_margin=0.0,
+            )
+            print("[D7] Launching QA overlay... (accept=a, redo=r)")
+            state["qa_active"] = True
             accepted = _qa_overlay_dialog(
                 camera_id=camera_id,
-                frame_rgb=frame_rgb,
-                H_mat_to_img=H,
+                frame_rgb=frame_rgb_display,
+                H_mat_to_img=H_refined,
                 rects=rects,
                 grid_spacing_m=0.5,
                 sample_step_m=0.05,
+                quality_metrics=quality_metrics,
+                projected_polylines=qa_polylines,
             )
+            state["qa_active"] = False
             if not accepted:
                 print("[D7] QA requested redo. Clearing points; please re-select correspondences.")
                 _clear_all()
                 fig.canvas.draw_idle()
                 return
 
-            # Generate projected polylines for mat line detection
+            # 6. Generate polylines from refined H and save
             polyline_data = _generate_projected_polylines(
-                H_mat_to_img=H, rects=rects,
-                image_wh=(frame_rgb.shape[1], frame_rgb.shape[0]),
+                H_mat_to_img=H_refined, rects=rects,
+                image_wh=(img_w_px, img_h_px),
             )
             print(f"[D7] Generated {polyline_data['n_polylines']} projected polylines "
                   f"from {polyline_data['n_edges_total']} panel edges")
 
+            extra: Dict[str, Any] = {
+                "correspondences": {
+                    "image_points_px": pairs.image_points_px,
+                    "mat_points": pairs.mat_points,
+                },
+                "fit": {
+                    "method": "cv2.findHomography_ransac",
+                    "num_points": len(pairs.image_points_px),
+                    "inliers": inliers,
+                },
+                "qa": {
+                    "grid_spacing_m": 0.5,
+                    "sample_step_m": 0.05,
+                    "accepted": True,
+                },
+                "projected_polylines": polyline_data,
+                "quality_metrics": quality_metrics,
+            }
+            if K_new is not None:
+                extra["camera_matrix"] = K_new.tolist()
+                extra["dist_coefficients"] = dist_new.tolist()
+
             _write_homography_json(
                 out_path=out_path,
                 camera_id=camera_id,
-                H=H,
+                H=H_refined,
                 source={"type": "interactive_clicks", "video": str(video_path)},
-                extra={
-                    "correspondences": {
-                        "image_points_px": pairs.image_points_px,
-                        "mat_points": pairs.mat_points,
-                    },
-                    "fit": {
-                        "method": "cv2.findHomography_ransac",
-                        "num_points": len(pairs.image_points_px),
-                        "inliers": inliers,
-                    },
-                    "qa": {
-                        "grid_spacing_m": 0.5,
-                        "sample_step_m": 0.05,
-                        "accepted": True,
-                    },
-                    "projected_polylines": polyline_data,
-                },
+                extra=extra,
             )
             print("[D7] Saved homography (accepted). Closing calibrator and returning to pipeline...")
             plt.close(fig)
@@ -723,17 +1586,13 @@ def _interactive_calibrate_overlay_rect_fixed(
     import matplotlib.pyplot as plt  # noqa
     from matplotlib.patches import Polygon  # noqa
 
-    cap = cv2.VideoCapture(str(video_path))
-    ok, frame_bgr = cap.read()
-    cap.release()
-    if not ok or frame_bgr is None:
-        raise RuntimeError(f"Could not read first frame from: {video_path}")
+    # CP19: Select emptiest frame via temporal median comparison
+    frame_bgr, frame_idx = _find_empty_frame(str(video_path))
+    print(f"[D7] Selected frame {frame_idx} (lowest activity)")
 
-    # Auto-undistort if lens calibration exists (CP16b)
-    _K, _dist = _load_lens_calibration(out_path)
-    if _K is not None and _dist is not None:
-        frame_bgr = cv2.undistort(frame_bgr, _K, _dist)
-        print(f"[D7] Applied lens undistortion (K diag: {_K[0,0]:.1f}, {_K[1,1]:.1f})")
+    # CP19: Work on RAW frame — no startup undistortion.
+    # Phase A computes K+dist from scratch; no dependency on prior calibration.
+    frame_bgr_raw = frame_bgr  # raw frame for Phase A + Phase B
 
     frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
     img_h, img_w = frame_rgb.shape[:2]
@@ -747,14 +1606,15 @@ def _interactive_calibrate_overlay_rect_fixed(
 
     corner_ids = ["tl", "tr", "br", "bl"]
 
-    fig = plt.figure(figsize=(12, 7))
+    fig = plt.figure(figsize=(16, 10))
     ax_img = fig.add_subplot(1, 1, 1)
+    fig.subplots_adjust(left=0.02, right=0.98, top=0.95, bottom=0.02)
     fig.suptitle(f"Homography Calibrator (overlay_rect) — {camera_id}")
     # Base frame image
     ax_img.imshow(frame_rgb)
     ax_img.set_axis_off()
     # Allow the quad to extend beyond the frame by padding the view.
-    pad = max(50, int(0.08 * max(img_w, img_h)))
+    pad = max(20, int(0.03 * max(img_w, img_h)))
     ax_img.set_xlim(-pad, img_w + pad)
     ax_img.set_ylim(img_h + pad, -pad)
     ax_img.set_autoscale_on(False)
@@ -789,16 +1649,17 @@ def _interactive_calibrate_overlay_rect_fixed(
     }
 
     # This polygon shows the ANCHOR quad (not the union bbox).
-    poly = Polygon(state["img_pts"], closed=True, fill=False, linewidth=2)
+    # Semi-transparent so the frame beneath is visible for precise placement.
+    poly = Polygon(state["img_pts"], closed=True, fill=False, linewidth=2, alpha=0.4)
     ax_img.add_patch(poly)
 
     corner_text: List[Any] = []
     for (u, v), cid in zip(state["img_pts"], corner_ids):
-        corner_text.append(ax_img.text(u, v, cid, fontsize=10, ha="left", va="bottom"))
+        corner_text.append(ax_img.text(u, v, cid, fontsize=10, ha="left", va="bottom", alpha=0.5))
 
     corner_handle_artists: List[Any] = []
     for (u, v) in state["img_pts"]:
-        hdl = ax_img.plot([u], [v], marker="o", linestyle="none")[0]
+        hdl = ax_img.plot([u], [v], marker="o", linestyle="none", alpha=0.4)[0]
         corner_handle_artists.append(hdl)
 
     # --- Build a blueprint raster (source image) and warp it into the draggable quad ---
@@ -1081,6 +1942,9 @@ def _interactive_calibrate_overlay_rect_fixed(
         _redraw()
 
     def on_key(event):
+        # Ignore key events when CP19 QA dialog is active (prevents key leaks)
+        if state.get("qa_active"):
+            return
         k = (event.key or "").lower()
         if k in {"tab", "b", "v"}:
             page = state.get("page", "frame")
@@ -1149,50 +2013,133 @@ def _interactive_calibrate_overlay_rect_fixed(
             mat_pts = _mat_rect_corners(float(ar["x"]), float(ar["y"]), float(ar["width"]), float(ar["height"]))
             img_pts2 = np.asarray(state["img_pts"], dtype=float)
             import cv2  # noqa
+
+            # 1. H₀ maps mat → raw pixel (user placed points on raw frame)
             H, _ = cv2.findHomography(np.asarray(mat_pts, dtype=float), np.asarray(img_pts2, dtype=float), method=0)
             H = _ensure_3x3(H)
+            mat_pts_f = np.asarray(mat_pts, dtype=float)
+
+            # 2. CP19 Phase A — Polyline-based lens calibration (on raw frame)
+            # H already maps mat → raw pixel, no coordinate transforms needed.
+            print("[CP19] Phase A: polyline lens calibration...")
+            K_new, dist_new, lens_metrics = _polyline_lens_calibration(
+                H_mat_to_img=H,
+                frame_bgr=frame_bgr_raw,
+                frame_gray=cv2.cvtColor(frame_bgr_raw, cv2.COLOR_BGR2GRAY),
+                rects=rects,
+                image_wh=(img_w, img_h),
+            )
+            if K_new is not None:
+                print(f"[CP19] Phase A: f={lens_metrics['f']:.1f} k1={lens_metrics['k1']:.4f} "
+                      f"k2={lens_metrics['k2']:.4f} ({lens_metrics['n_edge_points']} pts / "
+                      f"{lens_metrics['n_edges_with_points']} edges)")
+            else:
+                print(f"[CP19] Phase A skipped: {lens_metrics.get('reason', 'insufficient detections')}. "
+                      "Phase B will run without undistortion.")
+
+            # Save raw vs undistorted comparison images for visual verification
+            if K_new is not None:
+                frame_undist_compare = cv2.undistort(frame_bgr_raw, K_new, dist_new)
+                cv2.imwrite("/tmp/cp19_raw.png", frame_bgr_raw)
+                cv2.imwrite("/tmp/cp19_undistorted.png", frame_undist_compare)
+                print("[CP19] Saved /tmp/cp19_raw.png and /tmp/cp19_undistorted.png for comparison")
+
+            # 3. Transition to undistorted space for Phase B
+            if K_new is not None:
+                undist_anchor = cv2.undistortPoints(
+                    img_pts2.reshape(-1, 1, 2).astype(np.float64),
+                    K_new, dist_new, P=K_new,
+                ).reshape(-1, 2)
+                H_undist, _ = cv2.findHomography(mat_pts_f, undist_anchor, method=0)
+                H_undist = _ensure_3x3(H_undist)
+            else:
+                undist_anchor = img_pts2
+                H_undist = H
+
+            # 4. CP19 Phase B — Refine H using mat lines on undistorted frame
+            print("[CP19] Phase B: mat-line H refinement...")
+            H_refined, h_metrics = _refine_h_from_mat_lines(
+                H_initial=H_undist,
+                frame_bgr=frame_bgr_raw,
+                rects=rects,
+                anchor_img_pts=undist_anchor,
+                anchor_mat_pts=mat_pts_f,
+                camera_matrix=K_new,
+                dist_coefficients=dist_new,
+            )
+            print(f"[CP19] Phase B: reproj={h_metrics['mean_reproj_error_px']:.1f}px, "
+                  f"{h_metrics['n_matched_lines']} lines matched")
+
+            quality_metrics = {
+                "h_metrics": h_metrics,
+                "lens_metrics": lens_metrics,
+                "calibration_mode": "unified",
+            }
+
+            # 5. Undistort raw frame with new K+dist for QA
+            if K_new is not None:
+                frame_bgr_display = cv2.undistort(frame_bgr_raw, K_new, dist_new)
+            else:
+                frame_bgr_display = frame_bgr
+            frame_rgb_display = cv2.cvtColor(frame_bgr_display, cv2.COLOR_BGR2RGB)
+
+            # 5. QA with refined H + polylines + metrics
+            qa_polylines = _generate_projected_polylines(
+                H_mat_to_img=H_refined, rects=rects, image_wh=(img_w, img_h),
+                frame_margin=0.0,
+            )
+            state["qa_active"] = True
             accepted = _qa_overlay_dialog(
                 camera_id=camera_id,
-                frame_rgb=frame_rgb,
+                frame_rgb=frame_rgb_display,
                 rects=rects,
-                H_mat_to_img=H,
+                H_mat_to_img=H_refined,
                 grid_spacing_m=grid_spacing_m,
                 sample_step_m=sample_step_m,
+                quality_metrics=quality_metrics,
+                projected_polylines=qa_polylines,
             )
+            state["qa_active"] = False
             if not accepted:
                 print("[D7] QA rejected. Continue adjusting overlay, then press 's' again."); return
 
-            # Generate projected polylines for mat line detection
+            # 6. Generate polylines from refined H and save
             polyline_data = _generate_projected_polylines(
-                H_mat_to_img=H, rects=rects, image_wh=(img_w, img_h),
+                H_mat_to_img=H_refined, rects=rects, image_wh=(img_w, img_h),
             )
             print(f"[D7] Generated {polyline_data['n_polylines']} projected polylines "
                   f"from {polyline_data['n_edges_total']} panel edges")
 
+            extra_save: Dict[str, Any] = {
+                "correspondences": {
+                    "image_points_px": img_pts2.tolist(),
+                    "mat_points": mat_pts.tolist(),
+                    "corner_ids": corner_ids,
+                },
+                "ui": {
+                    "calibration_ui": "overlay_rect",
+                    "note": "overlay_rect stores direct dragged image-space corners; corner_ids preserve mapping to chosen anchor rectangle corners (in mat coords).",
+                    "blueprint_alpha": float(state.get("blueprint_alpha", 0.35)),
+                    "anchor_rect": dict(state.get("anchor_rect", {})) if state.get("anchor_rect") else None,
+                },
+                "qa": {
+                    "grid_spacing_m": float(grid_spacing_m),
+                    "sample_step_m": float(sample_step_m),
+                    "accepted": True,
+                },
+                "projected_polylines": polyline_data,
+                "quality_metrics": quality_metrics,
+            }
+            if K_new is not None:
+                extra_save["camera_matrix"] = K_new.tolist()
+                extra_save["dist_coefficients"] = dist_new.tolist()
+
             _write_homography_json(
                 out_path=out_path,
                 camera_id=camera_id,
-                H=H,
+                H=H_refined,
                 source={"type": "overlay_rect", "video": str(video_path)},
-                extra={
-                    "correspondences": {
-                        "image_points_px": img_pts2.tolist(),
-                        "mat_points": mat_pts.tolist(),
-                        "corner_ids": corner_ids,
-                    },
-                    "ui": {
-                        "calibration_ui": "overlay_rect",
-                        "note": "overlay_rect stores direct dragged image-space corners; corner_ids preserve mapping to chosen anchor rectangle corners (in mat coords).",
-                        "blueprint_alpha": float(state.get("blueprint_alpha", 0.35)),
-                        "anchor_rect": dict(state.get("anchor_rect", {})) if state.get("anchor_rect") else None,
-                    },
-                    "qa": {
-                        "grid_spacing_m": float(grid_spacing_m),
-                        "sample_step_m": float(sample_step_m),
-                        "accepted": True,
-                    },
-                    "projected_polylines": polyline_data,
-                },
+                extra=extra_save,
             )
             print("[D7] Saved homography. Closing calibrator and returning to pipeline...")
             plt.close(fig)

@@ -288,11 +288,33 @@ These contracts are now considered **stable**.
 The following are intentionally out of scope for D7:
 
 - Continuous homography drift correction
-- Automatic calibration without operator involvement
 - Multi-camera joint calibration
 - Temporal homography changes
 
 These are future workers if needed.
+
+## CP19 Extension (2026-04-01): Unified Calibration Pipeline
+
+D7's save handlers were extended with automatic H refinement:
+
+1. **Phase A** (polyline lens cal): Detects edge points along projected polylines
+   across the visible mat. Powell optimization of collinearity cost. Falls back to
+   existing K+dist when results are dubious.
+2. **Phase B** (mat-line H refinement): Canny+Hough detection → polyline matching →
+   RANSAC homography from anchor + mat-line correspondences. Iterative (max 3 rounds).
+
+The user experience is unchanged — drag corners, press 's'. CP19 runs automatically
+between the anchor H computation and the QA overlay. Quality metrics are displayed
+on the QA overlay and saved in homography.json.
+
+Key implementation details:
+- `_recompute_h_for_space()` handles coordinate transforms between raw, old-undistorted,
+  and new-undistorted pixel spaces.
+- `_find_empty_frame()` selects the frame with least activity via temporal median.
+- Batch recalibration: `tools/cp19_recalibrate.py` re-runs on all cameras using
+  calibration_test videos from `data/raw/nest/calibration_test/{cam_id}/`.
+- Graceful degradation: Phase A < 20 edge points → skip; Phase B < 3 matched lines → skip.
+  Both skip → identical to pre-CP19 behavior.
 
 ---
 

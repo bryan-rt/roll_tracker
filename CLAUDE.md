@@ -58,19 +58,39 @@ configs/                  # default.yaml, per-camera overrides, homography.json
 
 ## Current Status
 
-- **Head:** `7ee966c` | Pipeline A→F verified E2E. Session pipeline validated (3-camera).
+- **Head:** `22cd0ae` | Pipeline A→F verified E2E. Session pipeline validated (3-camera).
 - **CP17 Tier 1 implemented:** Two-pass cross-camera ILP with tag corroboration.
-- **CP18 complete:** Calibration pipeline with correction integration into Stage A.
-  - **Layer 1:** Footpath fitting (primary, continuous signed distance) + mat line detection
-    (21/18/7 matches on FP7oJQ/J_EDEw/PPDmUg). Guard: mat lines fall back to footpath-only
-    when combined signal conflicts. Results: FP7oJQ 45→68%, J_EDEw 62→71%, PPDmUg 95%.
-  - **Layer 2:** Spatial fingerprint registration (occupancy grid cross-correlation +
-    boundary contour stitching). Clock-sync independent.
-  - **Integration:** Correction matrix loaded in StageAProcessor, applied after
-    `project_to_world()`. Config: `stages.stage_A.calibration_correction.enabled`.
-  - **H direction:** On disk = mat→img. `multiplex_runner` inverts to img→mat for
-    `project_to_world()`. Projected polylines saved at calibration time via
-    `cv2.perspectiveTransform(pts, H_mat_to_img)`.
+- **CP18 calibration pipeline complete:** Layer 1 (footpath + mat line) + Layer 2
+  (fingerprint). Affine correction approach abandoned — J_EDEw regression (99.6→87.6%).
+- **CP19 unified calibration pipeline implemented (2026-04-01):**
+  - **Replaces CP18 affine correction** with direct H refinement from mat-line observations.
+  - **Phase A** (polyline lens cal): Detects edge points along projected polylines across
+    entire visible mat (~100-170 points, 9-16 edges). Powell optimization of collinearity
+    cost (f, k1, k2). Falls back to existing K+dist when optimizer hits bounds or when
+    existing calibration available (interactive lens_calibration tool is more reliable
+    than automated detection on busy gym frames).
+  - **Phase B** (mat-line H refinement): Canny+Hough line detection → match to projected
+    polylines → extract dense world↔pixel correspondences → RANSAC homography with
+    anchor+line points. Iterative (max 3), converges at <0.1px mean reproj change.
+  - **Coordinate space handling:** `_recompute_h_for_space()` transforms anchor points
+    between raw/old-undistorted/new-undistorted pixel spaces. Phase A operates on raw
+    frame with H_mat_to_raw. Phase B operates on undistorted frame with H in matching space.
+  - **Empty frame selection:** `_find_empty_frame()` picks the frame closest to temporal
+    median (least activity/people). Used by recalibration script with calibration_test
+    videos from `data/raw/nest/calibration_test/{cam_id}/`.
+  - **Quality metrics** saved in `homography.json["quality_metrics"]`:
+    `h_metrics` (reproj error, inliers, matched lines) + `lens_metrics` + `calibration_mode`.
+  - **QA overlay** enhanced: displays metrics text block at top-right.
+  - **Results (calibration_test empty-mat frames):**
+    FP7oJQ: 17 lines/11 edges, 61% inliers, 1.3px reproj, converged.
+    J_EDEw: 11 lines/6 edges, 66% inliers, 1.0px reproj.
+    PPDmUg: 8 lines/7 edges, 82% inliers, 1.2px reproj, converged.
+  - **Integrated into both save handlers** (clicks + overlay_rect modes). Runs automatically
+    after user places anchor corners: Phase A → Phase B → QA with metrics → save.
+  - **Batch recalibration:** `tools/cp19_recalibrate.py` re-runs Phase A+B on all cameras
+    using existing anchor correspondences + calibration_test videos.
+  - **H direction:** On disk = mat→img (unchanged). Projected polylines regenerated from
+    refined H at save time.
 - **Open issue:** PPDmUg-202751 — NAType in frame_index at D2. Needs null-safe fix.
 - **Apps:** Flutter tested on Pixel 7 Pro. Web app has mat editor + admin pricing.
 - **Supabase:** 23 migrations applied locally and remotely.

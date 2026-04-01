@@ -152,6 +152,23 @@ POC requirement:
 
 > **POC note:** Drift monitoring is not required for the current A + C → D proof-of-concept. If implemented, it must emit **warnings/audit events** and must not silently mutate homography without an explicit interactive recalibration step.
 
+## CP19 Update (2026-04-01): Mat-line H refinement as drift correction
+
+CP19 implemented the “mat line alignment vs projected blueprint edges” option from
+the drift monitoring design above, but as an **active refinement step** rather than
+passive monitoring:
+
+- `_refine_h_from_mat_lines()` detects Canny+Hough lines on the calibration frame,
+  matches them to projected polylines from the current H, extracts dense correspondences,
+  and computes a refined H via RANSAC.
+- This effectively corrects for small camera shifts between the original calibration
+  and the current frame — exactly the “drift/jostle” scenario.
+- Batch recalibration via `tools/cp19_recalibrate.py` uses calibration_test videos
+  with empty-mat frames (selected via temporal median) for best results.
+- Quality metrics (reproj error, inlier ratio, matched lines) provide the “health check”
+  signal. Future work: run this automatically at pipeline start and emit warnings when
+  reproj error exceeds threshold.
+
 ---
 
 ## Deliverables back to Manager
