@@ -87,6 +87,26 @@ function MatBlueprint() {
     }
   };
 
+  const handleBringToFront = () => {
+    if (selectedIndex !== null && selectedIndex < sections.length - 1) {
+      const updated = [...sections];
+      const [item] = updated.splice(selectedIndex, 1);
+      updated.push(item);
+      setSections(updated);
+      setSelectedIndex(updated.length - 1);
+    }
+  };
+
+  const handleSendToBack = () => {
+    if (selectedIndex !== null && selectedIndex > 0) {
+      const updated = [...sections];
+      const [item] = updated.splice(selectedIndex, 1);
+      updated.unshift(item);
+      setSections(updated);
+      setSelectedIndex(0);
+    }
+  };
+
   const handleReset = () => {
     setSections([]);
     setSelectedIndex(null);
@@ -125,14 +145,16 @@ function MatBlueprint() {
     reader.readAsText(file);
   };
 
+  const selectedLabel = selectedIndex !== null ? (sections[selectedIndex]?.label || `Panel ${selectedIndex + 1}`) : null;
+
   return (
     <div style={{ display: 'flex', height: 'calc(100vh - 48px)' }}>
-      <div style={{ width: '300px', padding: '1rem', backgroundColor: '#f5f5f5' }}>
-        <h2>Mat Section Properties</h2>
+      <div style={styles.sidebar}>
+        <h2 style={{ marginTop: 0 }}>Mat Section Properties</h2>
 
-        <label>
+        <label style={styles.label}>
           Units:
-          <select value={unit} onChange={(e) => setUnit(e.target.value)}>
+          <select value={unit} onChange={(e) => setUnit(e.target.value)} style={styles.select}>
             <option value="m">Meters</option>
             <option value="ft">Feet</option>
           </select>
@@ -150,58 +172,80 @@ function MatBlueprint() {
             };
             setSections([...sections, newSection]);
           }}
+          style={{ marginTop: '1rem' }}
         >
-          <label>
+          <label style={styles.label}>
             Label:
             <input
               type="text"
               value={form.label}
               onChange={(e) => setForm({ ...form, label: e.target.value })}
+              style={styles.input}
             />
           </label>
-          <br />
 
-          <label>
+          <label style={styles.label}>
             Width ({unit}):
             <input
               type="number"
               value={form.width}
               onChange={(e) => setForm({ ...form, width: parseFloat(e.target.value) })}
+              style={styles.input}
             />
           </label>
-          <br />
 
-          <label>
+          <label style={styles.label}>
             Height ({unit}):
             <input
               type="number"
               value={form.height}
               onChange={(e) => setForm({ ...form, height: parseFloat(e.target.value) })}
+              style={styles.input}
             />
           </label>
-          <br />
 
-          <button type="submit">Add Section</button>
+          <button type="submit" style={styles.button}>Add Section</button>
         </form>
 
-        <button style={{ marginTop: '1rem' }} onClick={handleDelete} disabled={selectedIndex === null}>
+        <hr style={styles.divider} />
+
+        <div style={styles.selectionInfo}>
+          {selectedIndex !== null
+            ? `Selected: ${selectedLabel}`
+            : 'No panel selected'}
+        </div>
+
+        <button style={styles.button} onClick={handleDelete} disabled={selectedIndex === null}>
           Delete Selected
         </button>
 
-        <button style={{ marginTop: '0.5rem' }} onClick={handleReset}>
+        <button style={styles.button} onClick={handleBringToFront} disabled={selectedIndex === null || selectedIndex === sections.length - 1}>
+          Bring to Front
+        </button>
+
+        <button style={styles.button} onClick={handleSendToBack} disabled={selectedIndex === null || selectedIndex === 0}>
+          Send to Back
+        </button>
+
+        <hr style={styles.divider} />
+
+        <button style={styles.button} onClick={handleReset}>
           Reset Layout
         </button>
 
-        <button style={{ marginTop: '0.5rem' }} onClick={handleExport}>
+        <button style={styles.button} onClick={handleExport} disabled={sections.length === 0}>
           Export to JSON
         </button>
 
-        <input
-          type="file"
-          accept="application/json"
-          style={{ marginTop: '0.5rem' }}
-          onChange={handleImport}
-        />
+        <label style={{ ...styles.button, display: 'block', textAlign: 'center', marginTop: '0.5rem' }}>
+          Import JSON
+          <input
+            type="file"
+            accept="application/json"
+            style={{ display: 'none' }}
+            onChange={handleImport}
+          />
+        </label>
       </div>
 
       <div style={{ flexGrow: 1, backgroundColor: '#e0e0e0' }}>
@@ -253,5 +297,45 @@ function MatBlueprint() {
     </div>
   );
 }
+
+const styles = {
+  sidebar: {
+    width: '300px',
+    padding: '1rem',
+    backgroundColor: '#f5f5f5',
+    color: '#213547',
+    overflowY: 'auto',
+  },
+  label: {
+    display: 'block',
+    marginBottom: '0.5rem',
+    color: '#213547',
+  },
+  input: {
+    display: 'block',
+    width: '100%',
+    padding: '0.4em',
+    marginTop: '0.25rem',
+    boxSizing: 'border-box',
+  },
+  select: {
+    marginLeft: '0.5rem',
+  },
+  button: {
+    display: 'block',
+    width: '100%',
+    marginTop: '0.5rem',
+  },
+  divider: {
+    border: 'none',
+    borderTop: '1px solid #ccc',
+    margin: '1rem 0',
+  },
+  selectionInfo: {
+    fontSize: '0.9em',
+    color: '#555',
+    marginBottom: '0.5rem',
+  },
+};
 
 export default MatBlueprint;
