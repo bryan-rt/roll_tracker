@@ -44,6 +44,64 @@ def _iso_utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _find_empty_frame(
+    video_path: str,
+    *,
+    n_candidates: int = 20,
+) -> Tuple[np.ndarray, int]:
+    """Find the frame with least activity (closest to temporal median).
+
+    Samples n_candidates frames evenly across the video, computes the
+    per-pixel median, and returns the frame with the smallest mean
+    absolute deviation from that median. This selects for empty-mat
+    frames where no people or movement are present.
+
+    Returns (frame_bgr, frame_index).
+
+    Note: Duplicated from bjj_pipeline.tools.homography_calibrate to avoid
+    cross-package imports between calibration_pipeline and bjj_pipeline.
+    """
+    import cv2 as _cv2
+
+    cap = _cv2.VideoCapture(video_path)
+    total = int(cap.get(_cv2.CAP_PROP_FRAME_COUNT))
+    if total <= 0:
+        ok, frame = cap.read()
+        cap.release()
+        if not ok or frame is None:
+            raise RuntimeError(f"Could not read any frame from: {video_path}")
+        return frame, 0
+
+    indices = np.linspace(0, total - 1, min(n_candidates, total), dtype=int)
+    samples: List[Tuple[int, np.ndarray, np.ndarray]] = []
+    for fi in indices:
+        cap.set(_cv2.CAP_PROP_POS_FRAMES, int(fi))
+        ok, frame = cap.read()
+        if ok and frame is not None:
+            gray = _cv2.cvtColor(frame, _cv2.COLOR_BGR2GRAY)
+            samples.append((int(fi), gray, frame))
+    cap.release()
+
+    if not samples:
+        raise RuntimeError(f"Could not read frames from: {video_path}")
+    if len(samples) == 1:
+        return samples[0][2], samples[0][0]
+
+    grays = np.array([g for _, g, _ in samples], dtype=np.float32)
+    median = np.median(grays, axis=0)
+
+    best_idx = 0
+    best_diff = float("inf")
+    for i, (fi, gray, bgr) in enumerate(samples):
+        diff = float(np.mean(np.abs(gray.astype(np.float32) - median)))
+        if diff < best_diff:
+            best_diff = diff
+            best_idx = i
+
+    fi, _, bgr = samples[best_idx]
+    return bgr, fi
+
+
 # ---------------------------------------------------------------------------
 # Edge-snapping geometry
 # ---------------------------------------------------------------------------
@@ -287,12 +345,9 @@ def _run_interactive(
     corners_img: List[Tuple[float, float]] = [(float(p[0]), float(p[1])) for p in img_pts_raw]
     corners_mat: List[Tuple[float, float]] = [(float(p[0]), float(p[1])) for p in mat_pts_raw]
 
-    # --- Load first frame ---
-    cap = cv2.VideoCapture(str(video_path))
-    ok, frame_bgr = cap.read()
-    cap.release()
-    if not ok or frame_bgr is None:
-        raise RuntimeError(f"Could not read first frame from: {video_path}")
+    # --- Select emptiest frame (avoids people on mat) ---
+    frame_bgr, frame_idx = _find_empty_frame(str(video_path))
+    print(f"[lens_cal] Selected frame {frame_idx} (lowest activity)")
     frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
     frame_gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
     img_h, img_w = frame_rgb.shape[:2]
