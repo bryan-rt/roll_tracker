@@ -60,6 +60,14 @@ configs/                  # default.yaml, per-camera overrides, homography.json
 
 - **Head:** `22cd0ae` | Pipeline A→F verified E2E. Session pipeline validated (3-camera).
 - **CP17 Tier 1 implemented:** Two-pass cross-camera ILP with tag corroboration.
+- **CP17 Tier 2 implemented (2026-04-02):** Coordinate evidence channel. Compares D4
+  person track world coordinates across camera pairs via rolling-window spatial proximity.
+  Coordinate-corroborated tags merged into `corroborated_tags` (same 10x boost as tag
+  evidence). Conflicts logged to session audit JSONL (Signal C — audit-only, no user-facing
+  behavior yet). Config: `cross_camera.coordinate_evidence` (disabled by default).
+- **Undistortion pipeline audit complete (2026-04-02):** All 9 code paths verified correct.
+  Convention: u_px/v_px = raw pixel, x_m/y_m = world via `project_to_world()`. No fixes
+  needed. See `docs/undistortion_audit.md`.
 - **CP18 calibration pipeline complete:** Layer 1 (footpath + mat line) + Layer 2
   (fingerprint). Affine correction approach abandoned — J_EDEw regression (99.6→87.6%).
 - **CP19 unified calibration pipeline implemented (2026-04-01):**
