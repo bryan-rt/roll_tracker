@@ -238,6 +238,10 @@ def main() -> None:
         "--force", action="store_true",
         help="Redo all steps even if prior calibration exists.",
     )
+    p.add_argument(
+        "--verify", action="store_true",
+        help="Run cross-camera agreement verification after calibration.",
+    )
 
     args = p.parse_args()
 
@@ -272,6 +276,14 @@ def main() -> None:
 
     if len(cameras) > 1:
         print(f"\nAll {len(cameras)} cameras calibrated.")
+
+    if args.verify:
+        from bjj_pipeline.tools.calibration_verify import run_verify
+
+        print("\n" + "=" * 60)
+        print("  Cross-Camera Verification")
+        print("=" * 60)
+        run_verify(configs_root=configs_root, camera_ids=cameras)
 
 
 if __name__ == "__main__":
