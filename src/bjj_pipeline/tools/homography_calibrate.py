@@ -1464,7 +1464,7 @@ def _interactive_calibrate(
             mat_pts = np.array(pairs.mat_points, dtype=float)
             import cv2  # noqa
 
-            # H₀ maps mat → raw pixel (user placed points on raw frame)
+            # H₀ maps mat → display pixel (undistorted if K+dist exist, raw otherwise)
             H_raw, mask = cv2.findHomography(mat_pts, img_pts, method=cv2.RANSAC)
             H_raw = _ensure_3x3(H_raw)
             inliers = int(mask.sum()) if mask is not None else None
@@ -1475,14 +1475,12 @@ def _interactive_calibrate(
             K_existing, dist_existing = _load_lens_calibration(out_path)
 
             if K_existing is not None:
-                # === MODE B: K+dist exist — undistort + refine H ===
+                # === MODE B: K+dist exist — refine H on undistorted frame ===
+                # User clicked on already-undistorted display frame (undistorted at startup).
+                # img_pts are already in undistorted pixel space — use directly.
                 print("[CP19] Mode B: K+dist found, running mat-line H refinement...")
 
-                undist_anchor = cv2.undistortPoints(
-                    img_pts.reshape(-1, 1, 2).astype(np.float64),
-                    K_existing, dist_existing, P=K_existing,
-                ).reshape(-1, 2)
-                H_undist, _ = cv2.findHomography(mat_pts, undist_anchor, method=0)
+                H_undist, _ = cv2.findHomography(mat_pts, img_pts, method=0)
                 H_undist = _ensure_3x3(H_undist)
 
                 frame_undist = cv2.undistort(frame_bgr_raw, K_existing, dist_existing)
@@ -1491,7 +1489,7 @@ def _interactive_calibrate(
                     H_initial=H_undist,
                     frame_bgr=frame_undist,
                     rects=rects,
-                    anchor_img_pts=undist_anchor,
+                    anchor_img_pts=img_pts,
                     anchor_mat_pts=mat_pts,
                     camera_matrix=None,
                     dist_coefficients=None,
@@ -2121,7 +2119,7 @@ def _interactive_calibrate_overlay_rect_fixed(
             img_pts2 = np.asarray(state["img_pts"], dtype=float)
             import cv2  # noqa
 
-            # H₀ from anchor on raw frame (always)
+            # H₀ from anchor on display frame (undistorted if K+dist exist, raw otherwise)
             H_raw, _ = cv2.findHomography(np.asarray(mat_pts, dtype=float), np.asarray(img_pts2, dtype=float), method=0)
             H_raw = _ensure_3x3(H_raw)
             image_wh = (img_w, img_h)
@@ -2130,14 +2128,12 @@ def _interactive_calibrate_overlay_rect_fixed(
             K_existing, dist_existing = _load_lens_calibration(out_path)
 
             if K_existing is not None:
-                # === MODE B: K+dist exist — undistort + refine H ===
+                # === MODE B: K+dist exist — refine H on undistorted frame ===
+                # User dragged corners on already-undistorted display frame (undistorted at startup).
+                # img_pts2 are already in undistorted pixel space — use directly.
                 print("[CP19] Mode B: K+dist found, running mat-line H refinement...")
 
-                undist_anchor = cv2.undistortPoints(
-                    img_pts2.reshape(-1, 1, 2).astype(np.float64),
-                    K_existing, dist_existing, P=K_existing,
-                ).reshape(-1, 2)
-                H_undist, _ = cv2.findHomography(np.asarray(mat_pts, dtype=float), undist_anchor, method=0)
+                H_undist, _ = cv2.findHomography(np.asarray(mat_pts, dtype=float), np.asarray(img_pts2, dtype=float), method=0)
                 H_undist = _ensure_3x3(H_undist)
 
                 frame_undist = cv2.undistort(frame_bgr_raw, K_existing, dist_existing)
@@ -2146,7 +2142,7 @@ def _interactive_calibrate_overlay_rect_fixed(
                     H_initial=H_undist,
                     frame_bgr=frame_undist,
                     rects=rects,
-                    anchor_img_pts=undist_anchor,
+                    anchor_img_pts=np.asarray(img_pts2, dtype=float),
                     anchor_mat_pts=np.asarray(mat_pts, dtype=float),
                     camera_matrix=None,
                     dist_coefficients=None,
