@@ -74,47 +74,74 @@ def _world_point_on_edge(
     return (wx, wy)
 
 
+def _is_in_frame(px: float, py: float, image_wh: Tuple[int, int]) -> bool:
+    """Check if a pixel point is within frame bounds."""
+    return 0 <= px <= image_wh[0] and 0 <= py <= image_wh[1]
+
+
+def _point_to_line_distance(
+    wx: float, wy: float,
+    ws: List[float], we: List[float],
+) -> float:
+    """Distance from point (wx, wy) to the line segment ws→we."""
+    dx, dy = we[0] - ws[0], we[1] - ws[1]
+    seg_len_sq = dx * dx + dy * dy
+    if seg_len_sq < 1e-12:
+        return float(np.hypot(wx - ws[0], wy - ws[1]))
+    t = ((wx - ws[0]) * dx + (wy - ws[1]) * dy) / seg_len_sq
+    t = max(0.0, min(1.0, t))
+    near_x = ws[0] + t * dx
+    near_y = ws[1] + t * dy
+    return float(np.hypot(wx - near_x, wy - near_y))
+
+
+def _camera_edge_error(
+    pl: Dict[str, Any],
+    H_inv: np.ndarray,
+    image_wh: Tuple[int, int],
+) -> List[float]:
+    """Per-camera world-accuracy: project in-frame pixel points through H_inv,
+    measure distance to blueprint edge."""
+    ws = pl["world_start"]
+    we = pl["world_end"]
+    errors: List[float] = []
+    for p in pl["pixel_points"]:
+        if not _is_in_frame(p[0], p[1], image_wh):
+            continue
+        wx, wy = _pixel_to_world(H_inv, p[0], p[1])
+        if np.isfinite(wx) and np.isfinite(wy):
+            errors.append(_point_to_line_distance(wx, wy, ws, we))
+    return errors
+
+
 def _compute_edge_disagreement(
     pl_a: Dict[str, Any],
     pl_b: Dict[str, Any],
     H_inv_a: np.ndarray,
     H_inv_b: np.ndarray,
-    n_samples: int = 20,
+    image_wh_a: Tuple[int, int],
+    image_wh_b: Tuple[int, int],
 ) -> Dict[str, Any]:
     """Compute world-coordinate disagreement between two cameras on a shared edge.
 
-    For each of n_samples points along the blueprint edge, project the
-    corresponding pixel point from each camera through H_inv to world coords.
-    Measure the distance between the two world estimates.
+    For each camera, measures how accurately its H_inv maps in-frame polyline
+    pixel points back to the blueprint edge (perpendicular distance in meters).
+    The cross-camera disagreement is the combined per-camera errors — if both
+    cameras accurately reproduce the blueprint edge, they agree with each other.
     """
-    ws = pl_a["world_start"]
-    we = pl_a["world_end"]
+    errs_a = _camera_edge_error(pl_a, H_inv_a, image_wh_a)
+    errs_b = _camera_edge_error(pl_b, H_inv_b, image_wh_b)
 
-    pts_a = pl_a["pixel_points"]
-    pts_b = pl_b["pixel_points"]
-
-    if len(pts_a) < 2 or len(pts_b) < 2:
+    if len(errs_a) < 2 or len(errs_b) < 2:
         return {"n_samples": 0, "errors_m": []}
 
-    errors: List[float] = []
-
-    for i in range(n_samples):
-        t = i / max(1, n_samples - 1)
-
-        # Find the pixel point closest to parameter t along each polyline
-        idx_a = min(int(t * (len(pts_a) - 1) + 0.5), len(pts_a) - 1)
-        idx_b = min(int(t * (len(pts_b) - 1) + 0.5), len(pts_b) - 1)
-
-        wx_a, wy_a = _pixel_to_world(H_inv_a, pts_a[idx_a][0], pts_a[idx_a][1])
-        wx_b, wy_b = _pixel_to_world(H_inv_b, pts_b[idx_b][0], pts_b[idx_b][1])
-
-        if np.isfinite(wx_a) and np.isfinite(wy_a) and np.isfinite(wx_b) and np.isfinite(wy_b):
-            err = float(np.hypot(wx_a - wx_b, wy_a - wy_b))
-            errors.append(err)
-
+    # Combine: each camera's error bounds the cross-camera disagreement.
+    # The worst-case disagreement between the two cameras is bounded by the
+    # sum of their individual errors to ground truth.
+    all_errors = errs_a + errs_b
     return {
-        "n_samples": len(errors),
-        "errors_m": errors,
+        "n_samples": len(all_errors),
+        "errors_m": all_errors,
     }
 
 
@@ -154,7 +181,9 @@ def compute_pairwise_agreement(
             pl_b = data_b["polylines_by_edge"][eidx]
 
             edge_result = _compute_edge_disagreement(
-                pl_a, pl_b, data_a["H_inv"], data_b["H_inv"],
+                pl_a, pl_b,
+                data_a["H_inv"], data_b["H_inv"],
+                data_a["image_wh"], data_b["image_wh"],
             )
 
             if edge_result["n_samples"] > 0:

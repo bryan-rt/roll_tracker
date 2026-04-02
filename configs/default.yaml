@@ -356,3 +356,10 @@ cross_camera:
   # CP17: two-pass re-solve with cross-camera tag corroboration
   pass2_enabled: true
   corroboration_miss_multiplier: 10.0
+  # CP17 Tier 2: coordinate evidence from world-space proximity
+  coordinate_evidence:
+    enabled: false                # disabled until validated on real sessions
+    temporal_window_s: 2.5        # rolling window for proximity computation
+    temporal_tolerance_s: 2.0     # max clock offset tolerance for frame matching
+    proximity_threshold_m: 0.5    # max distance to count as "same position"
+    agreement_ratio_threshold: 0.6  # min fraction of windows with proximity

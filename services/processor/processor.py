@@ -627,6 +627,7 @@ def _run_session_phase2(
             try:
                 from bjj_pipeline.stages.stitch.cross_camera_evidence import (
                     build_cross_camera_tag_evidence,
+                    build_cross_camera_coordinate_evidence,
                 )
                 cc_evidence = build_cross_camera_tag_evidence(
                     cam_ids=list(adapters.keys()),
@@ -636,6 +637,47 @@ def _run_session_phase2(
                 _log("cp17_pass2_evidence", session_id=session_id,
                      n_corroborated_tags=n_corr,
                      n_total_tags=cc_evidence.get("n_total_tags_observed", 0))
+
+                # CP17 Tier 2: coordinate evidence from world-space proximity
+                coord_cfg = cc_cfg.get("coordinate_evidence", {})
+                if coord_cfg.get("enabled", False):
+                    # Extract authoritative fps from first available session manifest
+                    _session_fps = next(
+                        (m.fps for m in manifests.values() if hasattr(m, "fps") and m.fps > 0),
+                        30.0,
+                    )
+                    coord_evidence = build_cross_camera_coordinate_evidence(
+                        cam_ids=list(adapters.keys()),
+                        adapter_map=adapters,
+                        config=cfg,
+                        fps=_session_fps,
+                    )
+                    # Merge coordinate-corroborated tags into tag evidence
+                    for tag_key, coord_info in coord_evidence.get(
+                        "coordinate_corroborated_tags", {}
+                    ).items():
+                        if tag_key not in cc_evidence["corroborated_tags"]:
+                            cc_evidence["corroborated_tags"][tag_key] = coord_info
+                        else:
+                            cc_evidence["corroborated_tags"][tag_key][
+                                "coordinate_evidence"
+                            ] = coord_info.get("coordinate_evidence")
+                    cc_evidence["n_corroborated_tags"] = len(
+                        cc_evidence["corroborated_tags"]
+                    )
+                    n_corr = cc_evidence["n_corroborated_tags"]
+                    # Log conflicts to session audit
+                    for conflict in coord_evidence.get("coordinate_conflicts", []):
+                        _log("coordinate_conflict",
+                             session_id=session_id, **conflict)
+                    _log("cp17_coordinate_evidence",
+                         session_id=session_id,
+                         fps=_session_fps,
+                         n_coordinate_corroborated=coord_evidence.get(
+                             "n_coordinate_corroborated_tags", 0),
+                         n_coordinate_conflicts=coord_evidence.get(
+                             "n_coordinate_conflicts", 0),
+                         n_corroborated_tags_after_merge=n_corr)
 
                 if n_corr > 0:
                     corr_mult = float(cc_cfg.get("corroboration_miss_multiplier", 10.0))
