@@ -1318,6 +1318,11 @@ def _interactive_calibrate(
     # CP19: Work on RAW frame — no startup undistortion.
     frame_bgr_raw = frame_bgr
 
+    _K_startup, _dist_startup = _load_lens_calibration(out_path)
+    if _K_startup is not None and _dist_startup is not None:
+        frame_bgr = cv2.undistort(frame_bgr_raw, _K_startup, _dist_startup)
+        print(f"[D7] Applied lens undistortion for display (f={_K_startup[0,0]:.1f})")
+
     frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
 
     blueprint = _try_load_mat_blueprint(mat_blueprint_path)
@@ -1690,6 +1695,11 @@ def _interactive_calibrate_overlay_rect_fixed(
     # CP19: Work on RAW frame — no startup undistortion.
     # Phase A computes K+dist from scratch; no dependency on prior calibration.
     frame_bgr_raw = frame_bgr  # raw frame for Phase A + Phase B
+
+    _K_startup, _dist_startup = _load_lens_calibration(out_path)
+    if _K_startup is not None and _dist_startup is not None:
+        frame_bgr = cv2.undistort(frame_bgr_raw, _K_startup, _dist_startup)
+        print(f"[D7] Applied lens undistortion for display (f={_K_startup[0,0]:.1f})")
 
     frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
     img_h, img_w = frame_rgb.shape[:2]
