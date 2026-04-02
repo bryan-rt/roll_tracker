@@ -91,6 +91,10 @@ configs/                  # default.yaml, per-camera overrides, homography.json
     using existing anchor correspondences + calibration_test videos.
   - **H direction:** On disk = mat→img (unchanged). Projected polylines regenerated from
     refined H at save time.
+  - **Calibration wizard** (`calibrate_camera.py`): Unified 3-step CLI
+    (initial H → lens cal → final H refinement). Auto-resumes from any interruption.
+    `--skip-lens` for H-only recal, `--force` to redo all steps.
+    See `docs/calibration_guide.md` for workflow instructions.
 - **Open issue:** PPDmUg-202751 — NAType in frame_index at D2. Needs null-safe fix.
 - **Apps:** Flutter tested on Pixel 7 Pro. Web app has mat editor + admin pricing.
 - **Supabase:** 23 migrations applied locally and remotely.

@@ -11,6 +11,21 @@ pip install -U pip setuptools wheel && pip install -r requirements.txt
 pip install --no-deps ultralytics boxmot && pip install -e .
 ```
 
+## Camera Calibration (wizard)
+```bash
+# Full 3-step calibration (initial H → lens cal → final H refinement)
+python -m bjj_pipeline.tools.calibrate_camera --camera J_EDEw \
+  --video data/raw/nest/calibration_test/J_EDEw/<mp4>
+
+# H-only recalibration (skip lens cal)
+python -m bjj_pipeline.tools.calibrate_camera --camera J_EDEw \
+  --video ... --skip-lens
+
+# All cameras in one go
+python -m bjj_pipeline.tools.calibrate_camera \
+  --camera FP7oJQ J_EDEw PPDmUg --video <fp7.mp4> <jed.mp4> <ppd.mp4>
+```
+
 ## Pipeline
 ```bash
 # Full run
