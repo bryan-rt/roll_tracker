@@ -25,6 +25,26 @@ def _iso_utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# CP19: Candidate focal lengths per output resolution.
+# f is a hardware constant per camera model + digital processing pipeline.
+# These ranges cover known Nest camera models with margin for digital
+# crop/stabilization variations. Keyed by (width, height).
+_F_CANDIDATES_BY_RESOLUTION = {
+    (1920, 1080): [450, 550, 650, 735, 850, 950],
+    (1280, 720):  [350, 450, 550, 650, 750],
+    (2560, 1440): [500, 650, 800, 950, 1100],
+}
+
+
+def _get_f_candidates(image_wh: Tuple[int, int]) -> List[int]:
+    """Return candidate focal lengths for the given resolution."""
+    candidates = _F_CANDIDATES_BY_RESOLUTION.get(image_wh)
+    if candidates:
+        return list(candidates)
+    max_dim = max(image_wh)
+    return [int(max_dim * r) for r in [0.3, 0.4, 0.5, 0.6, 0.7, 0.8]]
+
+
 def _ensure_3x3(H: np.ndarray) -> np.ndarray:
     H = np.asarray(H, dtype=float)
     if H.shape != (3, 3):
@@ -577,7 +597,6 @@ def _polyline_lens_calibration_v2(
     canny_high: int = 120,
     min_edge_pixels: int = 20,
     min_edges_with_pixels: int = 4,
-    f_bounds: Optional[Tuple[float, float]] = None,
     k_bounds: Tuple[float, float] = (-1.0, 1.0),
     core_max_dist_px: float = 2.0,
 ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Dict[str, Any]]:
@@ -691,15 +710,13 @@ def _polyline_lens_calibration_v2(
 
     cx = img_w / 2.0
     cy = img_h / 2.0
+    pts_flat = all_pts.reshape(-1, 1, 2).astype(np.float64)
 
-    def _collinearity_cost(params: np.ndarray) -> float:
-        f, k1, k2 = float(params[0]), float(params[1]), float(params[2])
-        K_trial = np.array([[f, 0, cx], [0, f, cy], [0, 0, 1]], dtype=np.float64)
+    def _collinearity_cost_fixed_f(params: np.ndarray, f_fixed: float) -> float:
+        k1, k2 = float(params[0]), float(params[1])
+        K_trial = np.array([[f_fixed, 0, cx], [0, f_fixed, cy], [0, 0, 1]], dtype=np.float64)
         dist_trial = np.array([k1, k2, 0.0, 0.0], dtype=np.float64)
-
-        pts = all_pts.reshape(-1, 1, 2).astype(np.float64)
-        undist = _cv2.undistortPoints(pts, K_trial, dist_trial, P=K_trial).reshape(-1, 2)
-
+        undist = _cv2.undistortPoints(pts_flat, K_trial, dist_trial, P=K_trial).reshape(-1, 2)
         total = 0.0
         for idxs in group_indices.values():
             if len(idxs) < 2:
@@ -712,75 +729,171 @@ def _polyline_lens_calibration_v2(
             total += float(np.sum(resid ** 2))
         return total
 
-    # --- Powell optimization ---
-    # Compute f bounds from image dimensions if not provided.
-    # Range 0.4x-1.0x of max(w,h) covers wide-angle to moderate FOV consumer cameras
-    # and prevents f/k degeneracy where high-f + weak-k mimics the correct solution.
-    max_dim = float(max(img_w, img_h))
-    if f_bounds is None:
-        f_bounds = (0.4 * max_dim, 1.0 * max_dim)
-    f0 = max(f_bounds[0], min(0.7 * max_dim, f_bounds[1]))
-    result = sp_minimize(
-        _collinearity_cost,
-        x0=np.array([f0, 0.0, 0.0]),
-        method="Powell",
-        bounds=[f_bounds, k_bounds, k_bounds],
-        options={"maxiter": 5000, "ftol": 1e-6},
-    )
+    # --- Fixed-f candidate optimization ---
+    # f is a hardware constant; collinearity cost is degenerate when f is free.
+    # Fix f to each candidate value, optimize only k1/k2.
+    f_candidates = _get_f_candidates(image_wh)
+    candidates: List[Dict[str, Any]] = []
 
-    f_opt, k1_opt, k2_opt = float(result.x[0]), float(result.x[1]), float(result.x[2])
+    for f_cand in f_candidates:
+        f_val = float(f_cand)
+        result = sp_minimize(
+            _collinearity_cost_fixed_f,
+            x0=np.array([0.0, 0.0]),
+            args=(f_val,),
+            method="Powell",
+            bounds=[k_bounds, k_bounds],
+            options={"maxiter": 3000, "ftol": 1e-6},
+        )
+        k1_opt, k2_opt = float(result.x[0]), float(result.x[1])
+        cost = float(result.fun)
 
-    # --- Validation: reject if any param hits its bound ---
-    tol = 1e-3
-    if (abs(f_opt - f_bounds[0]) < tol or abs(f_opt - f_bounds[1]) < tol
-            or abs(k1_opt - k_bounds[0]) < tol or abs(k1_opt - k_bounds[1]) < tol
-            or abs(k2_opt - k_bounds[0]) < tol or abs(k2_opt - k_bounds[1]) < tol):
-        return None, None, {
-            "reason": "parameter hit bound",
-            "f": round(f_opt, 1),
+        # Skip if k hit bound
+        tol = 1e-3
+        k_hit = (abs(k1_opt - k_bounds[0]) < tol or abs(k1_opt - k_bounds[1]) < tol
+                 or abs(k2_opt - k_bounds[0]) < tol or abs(k2_opt - k_bounds[1]) < tol)
+
+        candidates.append({
+            "f": round(f_val, 1),
             "k1": round(k1_opt, 6),
             "k2": round(k2_opt, 6),
-            "f_bounds": list(f_bounds),
-            "k_bounds": list(k_bounds),
-            "collinearity_cost": round(float(result.fun), 1),
+            "cost": round(cost, 1),
+            "converged": bool(result.success),
+            "k_hit_bound": k_hit,
+        })
+
+    # Filter out candidates where k hit bound, rank by cost
+    valid = [c for c in candidates if not c["k_hit_bound"]]
+    if not valid:
+        return None, None, {
+            "reason": "all candidates hit k bounds",
+            "candidates": candidates,
             "n_edge_groups": n_groups,
             "n_total_pixels": total_pixels,
-            "method": "canny_pixel_collinearity",
+            "method": "fixed_f_candidate_selection",
         }
 
-    # --- Per-edge RMS after optimization ---
-    K = np.array([[f_opt, 0, cx], [0, f_opt, cy], [0, 0, 1]], dtype=np.float64)
-    dist_4 = np.array([k1_opt, k2_opt, 0.0, 0.0], dtype=np.float64)
-    pts_undist = _cv2.undistortPoints(
-        all_pts.reshape(-1, 1, 2).astype(np.float64), K, dist_4, P=K,
-    ).reshape(-1, 2)
+    valid.sort(key=lambda c: c["cost"])
+    for rank, c in enumerate(valid, 1):
+        c["rank"] = rank
 
+    best = valid[0]
+    f_best = best["f"]
+    k1_best = best["k1"]
+    k2_best = best["k2"]
+
+    K_best = np.array([[f_best, 0, cx], [0, f_best, cy], [0, 0, 1]], dtype=np.float64)
+    dist_best = np.array([k1_best, k2_best, 0.0, 0.0], dtype=np.float64)
+
+    # Per-edge RMS for best candidate
+    pts_undist = _cv2.undistortPoints(pts_flat, K_best, dist_best, P=K_best).reshape(-1, 2)
     per_edge_rms: Dict[int, float] = {}
     for eidx, idxs in group_indices.items():
         edge_pts = pts_undist[idxs]
         resid = _line_fit_residuals(edge_pts)
         per_edge_rms[eidx] = float(np.sqrt(np.mean(resid ** 2)))
 
-    mean_cost_per_pt = float(result.fun) / max(1, total_pixels)
-
     metrics: Dict[str, Any] = {
-        "method": "canny_pixel_collinearity",
-        "f": round(f_opt, 1),
-        "k1": round(k1_opt, 6),
-        "k2": round(k2_opt, 6),
+        "method": "fixed_f_candidate_selection",
+        "f": best["f"],
+        "k1": best["k1"],
+        "k2": best["k2"],
         "cx": round(cx, 1),
         "cy": round(cy, 1),
-        "collinearity_cost": round(float(result.fun), 1),
-        "mean_cost_per_pixel": round(mean_cost_per_pt, 4),
+        "collinearity_cost": best["cost"],
+        "mean_cost_per_pixel": round(best["cost"] / max(1, total_pixels), 4),
         "n_edge_groups": n_groups,
         "n_total_pixels": total_pixels,
         "per_edge_rms": {str(k): round(v, 3) for k, v in per_edge_rms.items()},
-        "converged": bool(result.success),
-        "optimizer_iterations": int(result.nit),
+        "candidates": valid,
+        "all_candidates": candidates,
         "image_size": [img_w, img_h],
     }
 
-    return K, dist_4, metrics
+    return K_best, dist_best, metrics
+
+
+def _lens_cal_carousel(
+    frame_bgr_raw: np.ndarray,
+    candidates: List[Dict[str, Any]],
+    image_wh: Tuple[int, int],
+    camera_id: str,
+) -> Optional[Dict[str, Any]]:
+    """Show carousel of undistorted frames for each f candidate.
+
+    User navigates with left/right arrows and selects the frame where mat
+    edges look straightest. Returns the selected candidate dict, or None
+    if cancelled.
+    """
+    import cv2 as _cv2
+    import matplotlib.pyplot as plt
+
+    if not candidates:
+        return None
+
+    img_w, img_h = image_wh
+    cx, cy = img_w / 2.0, img_h / 2.0
+
+    # Sort by cost (best first) — already sorted but ensure
+    sorted_cands = sorted(candidates, key=lambda c: c["cost"])
+
+    state = {"idx": 0, "selected": None, "cancelled": False}
+
+    fig = plt.figure(figsize=(12, 7))
+    ax = fig.add_subplot(1, 1, 1)
+    ax.set_axis_off()
+
+    def _show_candidate(idx: int) -> None:
+        c = sorted_cands[idx]
+        f_val, k1_val, k2_val = c["f"], c["k1"], c["k2"]
+        K = np.array([[f_val, 0, cx], [0, f_val, cy], [0, 0, 1]], dtype=np.float64)
+        dist = np.array([k1_val, k2_val, 0.0, 0.0], dtype=np.float64)
+        frame_undist = _cv2.undistort(frame_bgr_raw, K, dist)
+        frame_rgb = _cv2.cvtColor(frame_undist, _cv2.COLOR_BGR2RGB)
+
+        ax.clear()
+        ax.imshow(frame_rgb)
+        ax.set_axis_off()
+        ax.set_xlim(0, img_w)
+        ax.set_ylim(img_h, 0)
+        rank = c.get("rank", idx + 1)
+        ax.set_title(
+            f"{camera_id} — candidate {idx + 1}/{len(sorted_cands)}  "
+            f"(rank {rank})\n"
+            f"f={f_val:.0f}  k1={k1_val:.4f}  k2={k2_val:.4f}  "
+            f"cost={c['cost']:.1f}",
+            fontsize=10,
+        )
+        ax.text(
+            0.5, 0.01,
+            "\u2190 prev [left]  |  [right] next \u2192  |  [a] accept  |  [q] cancel",
+            transform=ax.transAxes, fontsize=9, ha="center", va="bottom",
+            bbox=dict(boxstyle="round", facecolor="white", alpha=0.8),
+        )
+        fig.canvas.draw_idle()
+
+    def on_key(event):
+        k = (event.key or "").lower()
+        if k in {"right", "l"}:
+            state["idx"] = (state["idx"] + 1) % len(sorted_cands)
+            _show_candidate(state["idx"])
+        elif k in {"left", "h"}:
+            state["idx"] = (state["idx"] - 1) % len(sorted_cands)
+            _show_candidate(state["idx"])
+        elif k == "a":
+            state["selected"] = sorted_cands[state["idx"]]
+            plt.close(fig)
+        elif k == "q":
+            state["cancelled"] = True
+            plt.close(fig)
+
+    fig.canvas.mpl_connect("key_press_event", on_key)
+    _show_candidate(0)
+    plt.show()
+
+    if state["cancelled"] or state["selected"] is None:
+        return None
+    return state["selected"]
 
 
 def _extract_correspondences_from_matches(
@@ -1388,8 +1501,8 @@ def _interactive_calibrate(
                     "calibration_mode": "unified_v2",
                 }
             else:
-                # === MODE A: No K+dist — try automated lens cal ===
-                print("[CP19] Mode A: No lens calibration found. Attempting automated lens cal...")
+                # === MODE A: No K+dist — try fixed-f candidate lens cal ===
+                print("[CP19] Mode A: No lens calibration found. Running fixed-f optimization...")
 
                 polyline_data_raw = _generate_projected_polylines(
                     H_mat_to_img=H_raw, rects=rects, image_wh=image_wh, frame_margin=0.0,
@@ -1400,51 +1513,78 @@ def _interactive_calibrate(
                     image_wh=image_wh,
                 )
 
-                if K_auto is not None:
-                    print(f"[CP19] Auto lens cal: f={lens_metrics['f']:.1f} "
-                          f"k1={lens_metrics['k1']:.4f} k2={lens_metrics['k2']:.4f} "
-                          f"cost={lens_metrics['collinearity_cost']:.1f}")
+                if K_auto is not None and "candidates" in lens_metrics:
+                    n_cands = len(lens_metrics["candidates"])
+                    print(f"[CP19] {n_cands} candidates evaluated. "
+                          f"Best: f={lens_metrics['f']:.0f} k1={lens_metrics['k1']:.4f} "
+                          f"k2={lens_metrics['k2']:.4f} cost={lens_metrics['collinearity_cost']:.1f}")
 
-                    # Transition to Mode B flow with auto-calibrated K+dist
-                    K_existing, dist_existing = K_auto, dist_auto
-
-                    undist_anchor = cv2.undistortPoints(
-                        img_pts.reshape(-1, 1, 2).astype(np.float64),
-                        K_existing, dist_existing, P=K_existing,
-                    ).reshape(-1, 2)
-                    H_undist, _ = cv2.findHomography(mat_pts, undist_anchor, method=0)
-                    H_undist = _ensure_3x3(H_undist)
-
-                    frame_undist = cv2.undistort(frame_bgr_raw, K_existing, dist_existing)
-
-                    H_refined, h_metrics = _refine_h_from_mat_lines(
-                        H_initial=H_undist,
-                        frame_bgr=frame_undist,
-                        rects=rects,
-                        anchor_img_pts=undist_anchor,
-                        anchor_mat_pts=mat_pts,
-                        camera_matrix=None,
-                        dist_coefficients=None,
+                    # Show carousel for user to confirm/select
+                    state["qa_active"] = True
+                    selected = _lens_cal_carousel(
+                        frame_bgr_raw=frame_bgr_raw,
+                        candidates=lens_metrics["candidates"],
+                        image_wh=image_wh,
+                        camera_id=camera_id,
                     )
-                    print(f"[CP19] H refinement: reproj={h_metrics['mean_reproj_error_px']:.1f}px, "
-                          f"{h_metrics['n_matched_lines']} lines matched")
+                    state["qa_active"] = False
 
-                    H_final = H_refined
-                    frame_display = cv2.cvtColor(frame_undist, cv2.COLOR_BGR2RGB)
-                    quality_metrics = {
-                        "h_refinement_metrics": h_metrics,
-                        "lens_metrics": lens_metrics,
-                        "calibration_mode": "unified_v2",
-                    }
+                    if selected is not None:
+                        f_sel = selected["f"]
+                        k1_sel = selected["k1"]
+                        k2_sel = selected["k2"]
+                        lens_metrics["selected_f"] = f_sel
+                        lens_metrics["selected_k1"] = k1_sel
+                        lens_metrics["selected_k2"] = k2_sel
+                        print(f"[CP19] Selected: f={f_sel:.0f} k1={k1_sel:.4f} k2={k2_sel:.4f}")
+
+                        K_existing = np.array([[f_sel, 0, image_wh[0] / 2.0],
+                                               [0, f_sel, image_wh[1] / 2.0],
+                                               [0, 0, 1]], dtype=np.float64)
+                        dist_existing = np.array([k1_sel, k2_sel, 0.0, 0.0], dtype=np.float64)
+
+                        undist_anchor = cv2.undistortPoints(
+                            img_pts.reshape(-1, 1, 2).astype(np.float64),
+                            K_existing, dist_existing, P=K_existing,
+                        ).reshape(-1, 2)
+                        H_undist, _ = cv2.findHomography(mat_pts, undist_anchor, method=0)
+                        H_undist = _ensure_3x3(H_undist)
+
+                        frame_undist = cv2.undistort(frame_bgr_raw, K_existing, dist_existing)
+
+                        H_refined, h_metrics = _refine_h_from_mat_lines(
+                            H_initial=H_undist,
+                            frame_bgr=frame_undist,
+                            rects=rects,
+                            anchor_img_pts=undist_anchor,
+                            anchor_mat_pts=mat_pts,
+                            camera_matrix=None,
+                            dist_coefficients=None,
+                        )
+                        print(f"[CP19] H refinement: reproj={h_metrics['mean_reproj_error_px']:.1f}px, "
+                              f"{h_metrics['n_matched_lines']} lines matched")
+
+                        H_final = H_refined
+                        frame_display = cv2.cvtColor(frame_undist, cv2.COLOR_BGR2RGB)
+                        quality_metrics = {
+                            "h_refinement_metrics": h_metrics,
+                            "lens_metrics": lens_metrics,
+                            "calibration_mode": "unified_v2",
+                        }
+                    else:
+                        print("[CP19] Carousel cancelled. Saving 4-point H only.")
+                        K_existing = None
+                        H_final = H_raw
+                        frame_display = cv2.cvtColor(frame_bgr_raw, cv2.COLOR_BGR2RGB)
+                        quality_metrics = {"calibration_mode": "initial_4point"}
                 else:
-                    print(f"[CP19] Auto lens cal failed: {lens_metrics.get('reason', 'unknown')}")
+                    reason = lens_metrics.get("reason", "unknown") if lens_metrics else "unknown"
+                    print(f"[CP19] Auto lens cal failed: {reason}")
                     print("[CP19] Saving 4-point H. Run lens_calibration.py manually for better results.")
 
                     H_final = H_raw
                     frame_display = cv2.cvtColor(frame_bgr_raw, cv2.COLOR_BGR2RGB)
-                    quality_metrics = {
-                        "calibration_mode": "initial_4point",
-                    }
+                    quality_metrics = {"calibration_mode": "initial_4point"}
 
             # QA overlay
             qa_polylines = _generate_projected_polylines(
@@ -2011,8 +2151,8 @@ def _interactive_calibrate_overlay_rect_fixed(
                     "calibration_mode": "unified_v2",
                 }
             else:
-                # === MODE A: No K+dist — try automated lens cal ===
-                print("[CP19] Mode A: No lens calibration found. Attempting automated lens cal...")
+                # === MODE A: No K+dist — try fixed-f candidate lens cal ===
+                print("[CP19] Mode A: No lens calibration found. Running fixed-f optimization...")
 
                 polyline_data_raw = _generate_projected_polylines(
                     H_mat_to_img=H_raw, rects=rects, image_wh=image_wh, frame_margin=0.0,
@@ -2023,51 +2163,78 @@ def _interactive_calibrate_overlay_rect_fixed(
                     image_wh=image_wh,
                 )
 
-                if K_auto is not None:
-                    print(f"[CP19] Auto lens cal: f={lens_metrics['f']:.1f} "
-                          f"k1={lens_metrics['k1']:.4f} k2={lens_metrics['k2']:.4f} "
-                          f"cost={lens_metrics['collinearity_cost']:.1f}")
+                if K_auto is not None and "candidates" in lens_metrics:
+                    n_cands = len(lens_metrics["candidates"])
+                    print(f"[CP19] {n_cands} candidates evaluated. "
+                          f"Best: f={lens_metrics['f']:.0f} k1={lens_metrics['k1']:.4f} "
+                          f"k2={lens_metrics['k2']:.4f} cost={lens_metrics['collinearity_cost']:.1f}")
 
-                    # Transition to Mode B flow with auto-calibrated K+dist
-                    K_existing, dist_existing = K_auto, dist_auto
-
-                    undist_anchor = cv2.undistortPoints(
-                        img_pts2.reshape(-1, 1, 2).astype(np.float64),
-                        K_existing, dist_existing, P=K_existing,
-                    ).reshape(-1, 2)
-                    H_undist, _ = cv2.findHomography(np.asarray(mat_pts, dtype=float), undist_anchor, method=0)
-                    H_undist = _ensure_3x3(H_undist)
-
-                    frame_undist = cv2.undistort(frame_bgr_raw, K_existing, dist_existing)
-
-                    H_refined, h_metrics = _refine_h_from_mat_lines(
-                        H_initial=H_undist,
-                        frame_bgr=frame_undist,
-                        rects=rects,
-                        anchor_img_pts=undist_anchor,
-                        anchor_mat_pts=np.asarray(mat_pts, dtype=float),
-                        camera_matrix=None,
-                        dist_coefficients=None,
+                    # Show carousel for user to confirm/select
+                    state["qa_active"] = True
+                    selected = _lens_cal_carousel(
+                        frame_bgr_raw=frame_bgr_raw,
+                        candidates=lens_metrics["candidates"],
+                        image_wh=image_wh,
+                        camera_id=camera_id,
                     )
-                    print(f"[CP19] H refinement: reproj={h_metrics['mean_reproj_error_px']:.1f}px, "
-                          f"{h_metrics['n_matched_lines']} lines matched")
+                    state["qa_active"] = False
 
-                    H_final = H_refined
-                    frame_display = cv2.cvtColor(frame_undist, cv2.COLOR_BGR2RGB)
-                    quality_metrics = {
-                        "h_refinement_metrics": h_metrics,
-                        "lens_metrics": lens_metrics,
-                        "calibration_mode": "unified_v2",
-                    }
+                    if selected is not None:
+                        f_sel = selected["f"]
+                        k1_sel = selected["k1"]
+                        k2_sel = selected["k2"]
+                        lens_metrics["selected_f"] = f_sel
+                        lens_metrics["selected_k1"] = k1_sel
+                        lens_metrics["selected_k2"] = k2_sel
+                        print(f"[CP19] Selected: f={f_sel:.0f} k1={k1_sel:.4f} k2={k2_sel:.4f}")
+
+                        K_existing = np.array([[f_sel, 0, image_wh[0] / 2.0],
+                                               [0, f_sel, image_wh[1] / 2.0],
+                                               [0, 0, 1]], dtype=np.float64)
+                        dist_existing = np.array([k1_sel, k2_sel, 0.0, 0.0], dtype=np.float64)
+
+                        undist_anchor = cv2.undistortPoints(
+                            img_pts2.reshape(-1, 1, 2).astype(np.float64),
+                            K_existing, dist_existing, P=K_existing,
+                        ).reshape(-1, 2)
+                        H_undist, _ = cv2.findHomography(np.asarray(mat_pts, dtype=float), undist_anchor, method=0)
+                        H_undist = _ensure_3x3(H_undist)
+
+                        frame_undist = cv2.undistort(frame_bgr_raw, K_existing, dist_existing)
+
+                        H_refined, h_metrics = _refine_h_from_mat_lines(
+                            H_initial=H_undist,
+                            frame_bgr=frame_undist,
+                            rects=rects,
+                            anchor_img_pts=undist_anchor,
+                            anchor_mat_pts=np.asarray(mat_pts, dtype=float),
+                            camera_matrix=None,
+                            dist_coefficients=None,
+                        )
+                        print(f"[CP19] H refinement: reproj={h_metrics['mean_reproj_error_px']:.1f}px, "
+                              f"{h_metrics['n_matched_lines']} lines matched")
+
+                        H_final = H_refined
+                        frame_display = cv2.cvtColor(frame_undist, cv2.COLOR_BGR2RGB)
+                        quality_metrics = {
+                            "h_refinement_metrics": h_metrics,
+                            "lens_metrics": lens_metrics,
+                            "calibration_mode": "unified_v2",
+                        }
+                    else:
+                        print("[CP19] Carousel cancelled. Saving 4-point H only.")
+                        K_existing = None
+                        H_final = H_raw
+                        frame_display = cv2.cvtColor(frame_bgr_raw, cv2.COLOR_BGR2RGB)
+                        quality_metrics = {"calibration_mode": "initial_4point"}
                 else:
-                    print(f"[CP19] Auto lens cal failed: {lens_metrics.get('reason', 'unknown')}")
+                    reason = lens_metrics.get("reason", "unknown") if lens_metrics else "unknown"
+                    print(f"[CP19] Auto lens cal failed: {reason}")
                     print("[CP19] Saving 4-point H. Run lens_calibration.py manually for better results.")
 
                     H_final = H_raw
                     frame_display = cv2.cvtColor(frame_bgr_raw, cv2.COLOR_BGR2RGB)
-                    quality_metrics = {
-                        "calibration_mode": "initial_4point",
-                    }
+                    quality_metrics = {"calibration_mode": "initial_4point"}
 
             # QA overlay
             qa_polylines = _generate_projected_polylines(
