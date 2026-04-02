@@ -17,6 +17,9 @@ paths:
 - Polls `data/raw/nest/` for new MP4s, invokes bjj_pipeline A→F.
 - Wall-clock filter: `MAX_CLIP_AGE_HOURS` (default 6) skips stale clips.
 - Empty-video failures log as `clip_skipped` (not `clip_error`).
+- **CP17 between-pass flow:** After Pass 1 D+E, builds tag evidence + coordinate evidence
+  (if `cross_camera.coordinate_evidence.enabled`, default false), merges into overlay,
+  re-solves each camera's ILP. Coordinate conflicts logged as `coordinate_conflict` events.
 - Session state machine: `SCHEDULE_JSON` groups clips by gym schedule window. Writes
   `.phase1_complete_{cam_id}` / `.session_ready` / `.tag_required` sentinels.
   `.session_completed` prevents Phase 2 re-triggering.
