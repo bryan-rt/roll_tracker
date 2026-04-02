@@ -198,6 +198,8 @@ data/
 calibration_artifacts/
 calibration_results/
 calibration_test/output/
+*.bak
+*.bak_full
 
 services/uploader/.env
 services/processor/.env
