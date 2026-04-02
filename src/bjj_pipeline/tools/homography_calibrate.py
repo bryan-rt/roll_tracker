@@ -577,7 +577,7 @@ def _polyline_lens_calibration_v2(
     canny_high: int = 120,
     min_edge_pixels: int = 20,
     min_edges_with_pixels: int = 4,
-    f_bounds: Tuple[float, float] = (200.0, 5000.0),
+    f_bounds: Optional[Tuple[float, float]] = None,
     k_bounds: Tuple[float, float] = (-1.0, 1.0),
     core_max_dist_px: float = 2.0,
 ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Dict[str, Any]]:
@@ -713,7 +713,13 @@ def _polyline_lens_calibration_v2(
         return total
 
     # --- Powell optimization ---
-    f0 = float(max(img_w, img_h))
+    # Compute f bounds from image dimensions if not provided.
+    # Range 0.4x-1.0x of max(w,h) covers wide-angle to moderate FOV consumer cameras
+    # and prevents f/k degeneracy where high-f + weak-k mimics the correct solution.
+    max_dim = float(max(img_w, img_h))
+    if f_bounds is None:
+        f_bounds = (0.4 * max_dim, 1.0 * max_dim)
+    f0 = max(f_bounds[0], min(0.7 * max_dim, f_bounds[1]))
     result = sp_minimize(
         _collinearity_cost,
         x0=np.array([f0, 0.0, 0.0]),
