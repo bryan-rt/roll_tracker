@@ -14,6 +14,7 @@ class ProcessorSettings(BaseSettings):
     POLL_INTERVAL_SECONDS: int = 30
     GYM_ID: Optional[str] = None
     MAX_CLIP_AGE_HOURS: int = 6  # clips older than this are ignored; 0 = no limit
+    CONFIG_OVERLAY: Optional[str] = None  # path to YAML/JSON config overlay
     SUPABASE_URL: str = ""
     SUPABASE_SERVICE_ROLE_KEY: str = ""
 

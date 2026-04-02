@@ -1,0 +1,12 @@
+# Validation overlay: enables CP17 Tier 2 coordinate evidence.
+# Usage: CONFIG_OVERLAY=configs/validation_cross_camera.yaml
+# or:   --config configs/validation_cross_camera.yaml
+
+cross_camera:
+  pass2_enabled: true
+  coordinate_evidence:
+    enabled: true
+    temporal_window_s: 2.5
+    temporal_tolerance_s: 2.0
+    proximity_threshold_m: 0.5
+    agreement_ratio_threshold: 0.6

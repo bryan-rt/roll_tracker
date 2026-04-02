@@ -181,9 +181,11 @@ def _discover_clips(settings: ProcessorSettings) -> list[Path]:
     return [c for c in clips if "/diag/" not in str(c) and "\\diag\\" not in str(c)]
 
 
-def _build_config(cam_id: str, mp4_path: Path, device_override: str | None = None):
+def _build_config(cam_id: str, mp4_path: Path, device_override: str | None = None,
+                  config_overlay: str | None = None):
     """Load config and apply gym_id + device overlays."""
-    cfg, cfg_hash, cfg_sources = _load_config(cam_id, None)
+    overlay_path = Path(config_overlay) if config_overlay else None
+    cfg, cfg_hash, cfg_sources = _load_config(cam_id, overlay_path)
     try:
         info = validate_ingest_path(mp4_path, cam_id)
         if info.gym_id:
@@ -207,7 +209,7 @@ def _process_clip_phase1(mp4_path_str: str, cam_id: str, settings_dict: dict) ->
     """Run Stages A+C on a single clip. Runs in a subprocess via ProcessPoolExecutor."""
     mp4_path = Path(mp4_path_str)
     settings = ProcessorSettings(**settings_dict)
-    cfg, cfg_hash, cfg_sources = _build_config(cam_id, mp4_path, settings.PARALLEL_DEVICE)
+    cfg, cfg_hash, cfg_sources = _build_config(cam_id, mp4_path, settings.PARALLEL_DEVICE, settings.CONFIG_OVERLAY)
     try:
         run_pipeline(
             ingest_path=mp4_path,
@@ -233,7 +235,7 @@ def _process_clip_phase1(mp4_path_str: str, cam_id: str, settings_dict: dict) ->
 
 def _process_clip_phase2(mp4_path: Path, cam_id: str, settings: ProcessorSettings) -> None:
     """Run Stages D+E+F sequentially on a single clip."""
-    cfg, cfg_hash, cfg_sources = _build_config(cam_id, mp4_path, settings.SEQUENTIAL_DEVICE)
+    cfg, cfg_hash, cfg_sources = _build_config(cam_id, mp4_path, settings.SEQUENTIAL_DEVICE, settings.CONFIG_OVERLAY)
     run_pipeline(
         ingest_path=mp4_path,
         camera_id=cam_id,
@@ -513,9 +515,10 @@ def _run_session_phase2(
         first_cam = cam_ids[0] if cam_ids else "unknown"
         first_mp4 = next((mp4 for mp4, cid in session_clips if cid == first_cam), None)
         if first_mp4:
-            cfg, _, _ = _build_config(first_cam, first_mp4, settings.SEQUENTIAL_DEVICE)
+            cfg, _, _ = _build_config(first_cam, first_mp4, settings.SEQUENTIAL_DEVICE, settings.CONFIG_OVERLAY)
         else:
-            cfg, _, _ = _load_config(first_cam, None)
+            overlay_path = Path(settings.CONFIG_OVERLAY) if settings.CONFIG_OVERLAY else None
+            cfg, _, _ = _load_config(first_cam, overlay_path)
 
         # --- Loop 1: all cameras → D + E ---
         adapters: dict[str, SessionStageLayoutAdapter] = {}
