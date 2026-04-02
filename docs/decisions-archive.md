@@ -50,13 +50,15 @@ bug fix history. It is NOT auto-loaded by Claude Code. Access it manually when n
 | CP16a: F0 projection utility | ✅ Completed | project_to_world() in f0_projection.py. Debug artifact projection_debug.jsonl. |
 | CP16b: Calibration pipeline skeleton | ✅ Completed | Functional lens calibration + 3 stubs. Two-step chain. |
 | CP17 Tier 1: Two-pass cross-camera ILP | ✅ Implemented | Tag corroboration. corroboration_miss_multiplier 10x. Must-link bug fixed. |
-| Gym setup calibration tool | 🔧 In Progress | lens_calibration functional. mat_walk + mat_line_detection implemented. drift_detection stub. CP19 adds unified calibration flow (auto Phase A+B after anchor placement). |
-| CP17 Tier 2/3: Coordinate evidence | 📋 Planned | ILP injection still stubbed. CP18 corrections flow through Stage A x_m/y_m but ILP coordinate channel not yet activated. |
+| Gym setup calibration tool | ✅ Implemented | lens_calibration functional. mat_walk + mat_line_detection implemented. drift_detection stub. CP19 unified calibration wizard (3-step: initial H → lens cal → H refinement). |
+| CP17 Tier 2: Coordinate evidence | ✅ Implemented | `build_cross_camera_coordinate_evidence()` compares D4 person tracks across cameras via rolling-window spatial proximity. Merges into `corroborated_tags` for same 10x ILP boost. Conflicts logged as Signal C (audit-only). Config: `cross_camera.coordinate_evidence` (disabled by default until validated on real sessions). |
 | CP18: Calibration pipeline | ✅ Completed | Layer 1 (footpath + mat line) + Layer 2 (fingerprint). Affine correction approach abandoned due to J_EDEw regression. Superseded by CP19 direct H refinement. |
 | H on disk is mat→img | ✅ Decided | multiplex_runner auto-detects and inverts to img→mat. projected_polylines use mat→img (the on-disk direction). |
 | Footpath primary over edge touches | ✅ Decided | Mat line detection guarded — falls back to footpath-only when combined signal conflicts. |
 | Projected polylines saved at calibration time | ✅ Decided | Dense-sampled mat edge points in homography.json. Used by mat_line_detection for line matching. |
 | CP19: Unified calibration pipeline | ✅ Implemented | Replaces CP18 affine correction. Phase A (polyline lens cal) + Phase B (mat-line H refinement via RANSAC). Integrated into save handlers + batch recalibration script. Empty-frame selection via temporal median. Results: 1.0-1.3px reproj, 61-82% inliers across 3 cameras. |
+| Cross-camera calibration verification | ✅ Complete | `calibration_verify.py` pairwise world-coordinate agreement. 9mm worst-case deviation across 3 cameras. |
+| Undistortion pipeline audit | ✅ Complete | All 9 code paths verified correct (2026-04-02). Convention: u_px/v_px = raw pixel, x_m/y_m = world via project_to_world(). See `docs/undistortion_audit.md`. |
 | Processor service dockerization | 📋 MVP task | Pipeline runs natively now. Docker for Linux deployment. |
 | Notification channel for drift alerts | 📋 TBD | Supabase Realtime likely. |
 | Gym owner web app stack | 📋 TBD | Blueprint + homography calibration UI. |
