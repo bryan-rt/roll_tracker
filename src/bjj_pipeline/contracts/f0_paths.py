@@ -55,6 +55,18 @@ class ClipOutputLayout:
         """
         return self.stage_dir("A") / "contact_points.parquet"
 
+    def keypoints_parquet(self) -> Path:
+        """CP20: Per-frame COCO keypoints from pose model."""
+        return self.stage_dir("A") / "keypoints.parquet"
+
+    def color_histograms_parquet(self) -> Path:
+        """CP20: Per-frame HSV color histograms."""
+        return self.stage_dir("A") / "color_histograms.parquet"
+
+    def tracklet_histogram_summaries_parquet(self) -> Path:
+        """CP20: Per-tracklet averaged HSV histograms."""
+        return self.stage_dir("A") / "tracklet_histogram_summaries.parquet"
+
     def stage_A_masks_dir(self) -> Path:
         """Directory for Stage A lightweight masks (e.g., YOLO-seg).
 

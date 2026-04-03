@@ -38,6 +38,9 @@ class Detection:
     mask_source: Optional[MaskSource] = None
     mask_quality: Optional[float] = None
 
+    # COCO keypoints from pose model. Shape (17, 3): x, y, conf per keypoint. Optional.
+    keypoints: Optional[np.ndarray] = None
+
 
 @dataclass
 class TrackedDetection:

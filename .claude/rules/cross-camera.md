@@ -3,7 +3,7 @@ paths:
   - "src/bjj_pipeline/stages/stitch/**"
 ---
 
-# Cross-Camera Identity (CP17 + CP14f)
+# Cross-Camera Identity (CP17 + CP14f + CP20)
 
 ## Two-Pass Architecture (CP17)
 - **Pass 1:** Each camera solves its ILP independently (existing D3).
@@ -49,8 +49,37 @@ agreement_ratio_threshold: 0.6  # min fraction of proximate windows
 - `cross_camera_evidence.py` builds both tag and coordinate evidence from Pass 1 outputs.
 - Tag evidence: `build_cross_camera_tag_evidence()` — identity_assignments JSONL.
 - Coordinate evidence: `build_cross_camera_coordinate_evidence()` — person_tracks parquet.
-- Processor calls tag evidence first, then coordinate evidence (if enabled), merges
-  coordinate-corroborated tags into the tag evidence dict before injecting into overlay.
+- Processor calls tag evidence first, then coordinate evidence (if enabled), then
+  histogram evidence (if enabled), merges all into the tag evidence dict before
+  injecting into overlay.
+
+### Histogram Channel (Tier 3 — CP20, enabled by default)
+`build_cross_camera_histogram_evidence()` in `cross_camera_evidence.py`. Compares
+per-person average HSV color histograms across cameras via Bhattacharyya distance.
+
+**Data flow (Option 2):** Evidence builder re-reads per-clip Stage A
+`tracklet_histogram_summaries.parquet` directly, maps tracklet_ids → person_ids
+via D4 assignments. D0 pipeline untouched.
+
+**Algorithm:**
+1. Load D4 person_tracks to get person_id → [tracklet_ids] per camera.
+2. Load tracklet_histogram_summaries from each clip's stage_A/.
+3. Weighted-average tracklet histograms per person (by n_isolated_frames).
+4. Pairwise Bhattacharyya distance for all cross-camera person pairs.
+5. Tag propagation: similarity ≥ threshold + one side tagged → propagate tag.
+6. Store `cost_modifiers` in overlay for future ILP integration.
+
+**Config** (`cross_camera.histogram_evidence`):
+```yaml
+enabled: true
+alpha: 3.0                    # Bhattacharyya → cost sharpness
+min_isolated_frames: 10       # skip person if fewer isolated frames
+similarity_threshold: 0.7     # for tag propagation
+tier_weights:
+  tag_match: 1.0
+  tag_recent: 2.0
+  no_tag: 3.0
+```
 
 ## CP14f Post-Hoc Merge (fallback)
 - `cross_camera_merge.py` — union-find on shared tags after per-camera ILP.
@@ -61,7 +90,7 @@ agreement_ratio_threshold: 0.6  # min fraction of proximate windows
 - Remains as baseline. CP17 is the primary path.
 
 ## Graceful Degradation
-Tag-only → tag+coordinate evidence (CP17 Tier 1+2).
+Tag-only → tag+coordinate+histogram evidence (CP17 Tier 1+2 + CP20 Tier 3).
 Each tier adds signal; lower tiers never break.
 
 ## Temporal Sync Tiers (planned)
@@ -75,6 +104,7 @@ All 9 pipeline code paths verified correct. Convention: u_px/v_px = raw pixel sp
 x_m/y_m = world via `project_to_world()`. See `docs/undistortion_audit.md`.
 
 ## Processor Flow
-Loop 1 (D+E per camera) → cross-camera merge → CP17 Pass 2 (tag evidence + coordinate
-evidence → merged overlay → re-solve per camera) → re-merge → Loop 2 (F per camera).
+Loop 1 (D+E per camera) → cross-camera merge → CP17/CP20 Pass 2 (tag evidence +
+coordinate evidence + histogram evidence → merged overlay with cost_modifiers →
+re-solve per camera) → re-merge → Loop 2 (F per camera).
 Merge failure logs error and passes empty map — never blocks Stage F.

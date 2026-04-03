@@ -6,11 +6,14 @@ paths:
 # CV Pipeline Stages
 
 ## Phase 1 — Online (parallel, per-clip via multiplex_AC)
-- **Stage A** `detect_track`: YOLO detection + BoT-SORT on raw frames. Projects contact
-  points to world coordinates via `project_to_world()` (undistortion applied internally
-  when K+dist present). Optionally loads `calibration_correction.json` (CP18 affine,
-  superseded by CP19). Outputs: detections, tracklet_frames, tracklet_summaries,
-  contact_points (all .parquet), audit.jsonl.
+- **Stage A** `detect_track`: YOLOv8n-pose detection + BoT-SORT on raw frames. Projects
+  contact points to world coordinates via `project_to_world()` (undistortion applied
+  internally when K+dist present). Optionally loads `calibration_correction.json` (CP18
+  affine, superseded by CP19). CP20 additions: keypoints extraction (17 COCO keypoints),
+  isolation gate (per-detection is_isolated flag), HSV color histogram extraction
+  (torso-crop with center-bbox fallback). Outputs: detections, tracklet_frames,
+  tracklet_summaries, contact_points (all .parquet), keypoints.parquet,
+  color_histograms.parquet, tracklet_histogram_summaries.parquet, audit.jsonl.
 - **Stage B** `masks`: SAM — deferred for POC. Falls back to YOLO bbox.
 - **Stage C** `tags`: AprilTag identity. C0 scheduling/cadence, C1 ROI scan, C2 voting.
   Outputs: tag_observations.jsonl, identity_hints.jsonl.

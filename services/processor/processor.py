@@ -631,6 +631,7 @@ def _run_session_phase2(
                 from bjj_pipeline.stages.stitch.cross_camera_evidence import (
                     build_cross_camera_tag_evidence,
                     build_cross_camera_coordinate_evidence,
+                    build_cross_camera_histogram_evidence,
                 )
                 cc_evidence = build_cross_camera_tag_evidence(
                     cam_ids=list(adapters.keys()),
@@ -682,12 +683,54 @@ def _run_session_phase2(
                              "n_coordinate_conflicts", 0),
                          n_corroborated_tags_after_merge=n_corr)
 
+                # CP20 Tier 3: histogram appearance evidence
+                hist_cfg = cc_cfg.get("histogram_evidence", {})
+                hist_cost_modifiers = {}
+                if hist_cfg.get("enabled", True):
+                    try:
+                        hist_evidence = build_cross_camera_histogram_evidence(
+                            cam_ids=list(adapters.keys()),
+                            adapter_map=adapters,
+                            config=cfg,
+                            session_clips=session_clips,
+                            output_root=settings.OUTPUT_ROOT,
+                        )
+                        # Propagate tag discoveries into corroborated_tags
+                        for tag_key, prop in hist_evidence.get("tag_propagations", {}).items():
+                            if tag_key not in cc_evidence["corroborated_tags"]:
+                                cc_evidence["corroborated_tags"][tag_key] = {
+                                    "histogram_evidence": prop,
+                                }
+                            else:
+                                cc_evidence["corroborated_tags"][tag_key][
+                                    "histogram_evidence"
+                                ] = prop
+                        cc_evidence["n_corroborated_tags"] = len(
+                            cc_evidence["corroborated_tags"]
+                        )
+                        n_corr = cc_evidence["n_corroborated_tags"]
+                        hist_cost_modifiers = hist_evidence.get("cost_modifiers", {})
+                        hist_stats = hist_evidence.get("stats", {})
+                        _log("cp20_histogram_evidence",
+                             session_id=session_id,
+                             n_pairs=hist_stats.get("n_pairs_compared", 0),
+                             n_high_sim=hist_stats.get("n_high_similarity", 0),
+                             n_tag_propagations=hist_stats.get("n_tag_propagations", 0),
+                             mean_similarity=hist_stats.get("mean_similarity", 0),
+                             n_corroborated_tags_after_merge=n_corr)
+                    except Exception as e:
+                        _log("cp20_histogram_evidence_error",
+                             session_id=session_id,
+                             error=str(e), traceback=traceback.format_exc())
+
                 if n_corr > 0:
                     corr_mult = float(cc_cfg.get("corroboration_miss_multiplier", 10.0))
                     overlay = {
                         "cross_camera_evidence": cc_evidence,
                         "corroboration_miss_multiplier": corr_mult,
                     }
+                    if hist_cost_modifiers:
+                        overlay["cost_modifiers"] = hist_cost_modifiers
                     for cam_id in cam_ids:
                         if cam_id not in manifests:
                             continue

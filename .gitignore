@@ -194,6 +194,7 @@ archive/
 outputs/
 outputs_corrected_h/
 outputs_corrected_blueprint/
+outputs_cross_camera/
 data/
 calibration_artifacts/
 calibration_results/

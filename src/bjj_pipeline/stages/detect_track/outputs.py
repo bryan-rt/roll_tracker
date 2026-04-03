@@ -85,6 +85,22 @@ def _homography_id_for_camera(camera_id: str) -> Optional[str]:
 	return f"{path.as_posix()}@sha256:{digest}"
 
 
+COCO_KEYPOINT_NAMES = [
+	"nose", "left_eye", "right_eye", "left_ear", "right_ear",
+	"left_shoulder", "right_shoulder", "left_elbow", "right_elbow",
+	"left_wrist", "right_wrist", "left_hip", "right_hip",
+	"left_knee", "right_knee", "left_ankle", "right_ankle",
+]
+
+
+def _kp_column_names() -> List[str]:
+	"""Generate keypoint column names: kp_{name}_x, kp_{name}_y, kp_{name}_conf."""
+	cols: List[str] = []
+	for name in COCO_KEYPOINT_NAMES:
+		cols.extend([f"kp_{name}_x", f"kp_{name}_y", f"kp_{name}_conf"])
+	return cols
+
+
 @dataclass
 class StageAWriteResult:
 	detections_ref: str
@@ -92,6 +108,9 @@ class StageAWriteResult:
 	tracklet_summaries_ref: str
 	contact_points_ref: str
 	audit_ref: str
+	keypoints_ref: Optional[str] = None
+	color_histograms_ref: Optional[str] = None
+	tracklet_histogram_summaries_ref: Optional[str] = None
 
 
 class StageAWriter:
@@ -108,6 +127,8 @@ class StageAWriter:
 
 		self._det_rows: List[Dict[str, Any]] = []
 		self._tf_rows: List[Dict[str, Any]] = []
+		self._kp_rows: List[Dict[str, Any]] = []
+		self._hist_rows: List[Dict[str, Any]] = []
 		self._audit_events: List[Dict[str, Any]] = []
 
 	# -------------------------
@@ -235,6 +256,60 @@ class StageAWriter:
 				"debug_json": debug_json,
 			}
 		)
+
+	# -------------------------
+	# CP20: Keypoints + Histograms
+	# -------------------------
+	def append_keypoint_row(
+		self,
+		*,
+		frame_index: int,
+		track_id: str,
+		keypoints: Optional[np.ndarray] = None,
+		is_isolated: Optional[bool] = None,
+	) -> None:
+		"""Append a keypoint row for one detection. keypoints shape (17, 3) or None."""
+		row: Dict[str, Any] = {
+			"frame_index": frame_index,
+			"track_id": track_id,
+			"is_isolated": is_isolated,
+		}
+		kp_cols = _kp_column_names()
+		if keypoints is not None and keypoints.shape[0] >= 17:
+			for i, name in enumerate(COCO_KEYPOINT_NAMES):
+				row[f"kp_{name}_x"] = float(keypoints[i, 0])
+				row[f"kp_{name}_y"] = float(keypoints[i, 1])
+				row[f"kp_{name}_conf"] = float(keypoints[i, 2])
+		else:
+			for col in kp_cols:
+				row[col] = np.nan
+		self._kp_rows.append(row)
+
+	def append_histogram_row(
+		self,
+		*,
+		frame_index: int,
+		track_id: str,
+		is_isolated: bool,
+		histogram: Optional[np.ndarray] = None,
+		crop_method: str = "not_isolated",
+	) -> None:
+		"""Append a histogram row for one detection. histogram is 144-element float32 or None."""
+		from .histogram import HIST_SIZE
+
+		row: Dict[str, Any] = {
+			"frame_index": frame_index,
+			"track_id": track_id,
+			"is_isolated": is_isolated,
+			"crop_method": crop_method,
+		}
+		if histogram is not None:
+			for i in range(HIST_SIZE):
+				row[f"hist_{i}"] = float(histogram[i])
+		else:
+			for i in range(HIST_SIZE):
+				row[f"hist_{i}"] = np.nan
+		self._hist_rows.append(row)
 
 	# -------------------------
 	# Finalize
@@ -441,10 +516,83 @@ class StageAWriter:
 		cp_df.to_parquet(cp_path, index=False)
 		_write_jsonl(audit_path, self._audit_events)
 
+		# CP20: Write keypoints sidecar
+		keypoints_ref = None
+		if self._kp_rows:
+			kp_df = pd.DataFrame(self._kp_rows)
+			if not kp_df.empty:
+				kp_df = kp_df.sort_values(["frame_index", "track_id"], kind="mergesort")
+			kp_path = self.layout.keypoints_parquet()
+			kp_df.to_parquet(kp_path, index=False)
+			keypoints_ref = self.layout.rel_to_clip_root(kp_path)
+
+		# CP20: Write histogram sidecars
+		color_histograms_ref = None
+		tracklet_histogram_summaries_ref = None
+		if self._hist_rows:
+			hist_df = pd.DataFrame(self._hist_rows)
+			if not hist_df.empty:
+				hist_df = hist_df.sort_values(["frame_index", "track_id"], kind="mergesort")
+			hist_path = self.layout.color_histograms_parquet()
+			hist_df.to_parquet(hist_path, index=False)
+			color_histograms_ref = self.layout.rel_to_clip_root(hist_path)
+
+			# Per-tracklet summary: average isolated-frame histograms
+			tracklet_histogram_summaries_ref = self._write_tracklet_histogram_summaries(hist_df)
+
 		return StageAWriteResult(
 			detections_ref=self.layout.rel_to_clip_root(det_path),
 			tracklet_frames_ref=self.layout.rel_to_clip_root(tf_path),
 			tracklet_summaries_ref=self.layout.rel_to_clip_root(ts_path),
 			contact_points_ref=self.layout.rel_to_clip_root(cp_path),
 			audit_ref=self.layout.rel_to_clip_root(audit_path),
+			keypoints_ref=keypoints_ref,
+			color_histograms_ref=color_histograms_ref,
+			tracklet_histogram_summaries_ref=tracklet_histogram_summaries_ref,
 		)
+
+	def _write_tracklet_histogram_summaries(self, hist_df: pd.DataFrame) -> Optional[str]:
+		"""Compute per-tracklet average histograms from isolated frames and write sidecar."""
+		from .histogram import HIST_SIZE
+
+		hist_cols = [f"hist_{i}" for i in range(HIST_SIZE)]
+
+		# Filter to isolated frames with valid histograms
+		isolated = hist_df[hist_df["is_isolated"] == True].copy()  # noqa: E712
+		if isolated.empty:
+			return None
+
+		# Drop rows where histogram is all NaN
+		has_hist = isolated[hist_cols].notna().any(axis=1)
+		isolated = isolated[has_hist]
+		if isolated.empty:
+			return None
+
+		rows: List[Dict[str, Any]] = []
+		for tid, grp in isolated.groupby("track_id", sort=True):
+			hist_vals = grp[hist_cols].values.astype(np.float32)
+			avg = hist_vals.mean(axis=0)
+			total = avg.sum()
+			if total > 0:
+				avg /= total
+
+			method_counts = grp["crop_method"].value_counts().to_dict()
+
+			row: Dict[str, Any] = {
+				"tracklet_id": tid,
+				"camera_id": self.camera_id,
+				"clip_id": self.clip_id,
+				"n_isolated_frames": int(len(grp)),
+				"crop_method_distribution_json": json.dumps(method_counts, sort_keys=True),
+			}
+			for i in range(HIST_SIZE):
+				row[f"hist_{i}"] = float(avg[i])
+			rows.append(row)
+
+		if not rows:
+			return None
+
+		summary_df = pd.DataFrame(rows)
+		summary_path = self.layout.tracklet_histogram_summaries_parquet()
+		summary_df.to_parquet(summary_path, index=False)
+		return self.layout.rel_to_clip_root(summary_path)

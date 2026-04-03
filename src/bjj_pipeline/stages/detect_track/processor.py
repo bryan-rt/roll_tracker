@@ -22,6 +22,8 @@ from bjj_pipeline.stages.detect_track.quality import (
     is_physics_warning,
 )
 from bjj_pipeline.stages.detect_track.outputs import StageAWriter
+from bjj_pipeline.stages.detect_track.isolation import compute_isolation_flags
+from bjj_pipeline.stages.detect_track.histogram import extract_histogram
 
 
 def _cfg_get(cfg: Any, path: str, default: Any = None) -> Any:
@@ -327,12 +329,39 @@ class StageAProcessor:
 
         overlays: list[OverlayItem] = []
 
-        # 5) For each tracked detection → geometry + write
+        # CP20: Compute isolation flags for all tracked detections in this frame
+        isolation_cfg = _cfg_get(self.cfg, "stages.stage_A.detection.isolation_gate", {})
+        if not isinstance(isolation_cfg, dict):
+            isolation_cfg = isolation_cfg.model_dump() if hasattr(isolation_cfg, "model_dump") else dict(isolation_cfg)
+        isolation_enabled = bool(isolation_cfg.get("enabled", True))
+
+        # Build parallel lists for isolation gate
+        tracked_dets: list[Detection] = []
+        tracked_bboxes: list[tuple] = []
+        tracked_kps: list = []
         for td in tracked:
             det = det_by_id.get(td.detection_id)
             if det is None:
-                # Should not happen; tracker should only return known det ids
                 self.writer.audit("tracker_unknown_detection_id", {"detection_id": td.detection_id, "frame_index": frame_index})
+                continue
+            tracked_dets.append(det)
+            tracked_bboxes.append((det.x1, det.y1, det.x2, det.y2))
+            tracked_kps.append(det.keypoints)
+
+        # Compute isolation flags
+        if isolation_enabled and tracked_dets:
+            iso_flags = compute_isolation_flags(
+                bboxes=tracked_bboxes,
+                keypoints_list=tracked_kps,
+                config=isolation_cfg,
+            )
+        else:
+            iso_flags = [False] * len(tracked_dets)
+
+        # 5) For each tracked detection → geometry + keypoints + histogram + write
+        for idx_td, td in enumerate(tracked):
+            det = det_by_id.get(td.detection_id)
+            if det is None:
                 continue
 
             bbox = (det.x1, det.y1, det.x2, det.y2)
@@ -454,6 +483,30 @@ class StageAProcessor:
                 on_mat=bool(on_mat) if on_mat is not None else None,
                 contact_conf=float(contact_conf) if contact_conf is not None else None,
                 contact_method=str(method) if method is not None else None,
+            )
+
+            # CP20: Keypoints sidecar (always written — is_isolated included)
+            is_iso = iso_flags[idx_td] if idx_td < len(iso_flags) else False
+            self.writer.append_keypoint_row(
+                frame_index=frame_index,
+                track_id=td.tracklet_id,
+                keypoints=det.keypoints,
+                is_isolated=is_iso,
+            )
+
+            # CP20: Color histogram (only extracted on isolated frames)
+            hist, crop_method = extract_histogram(
+                frame_bgr=frame_for_detector,
+                bbox=bbox,
+                keypoints=det.keypoints,
+                is_isolated=is_iso,
+            )
+            self.writer.append_histogram_row(
+                frame_index=frame_index,
+                track_id=td.tracklet_id,
+                is_isolated=is_iso,
+                histogram=hist,
+                crop_method=crop_method,
             )
 
             overlays.append(

@@ -258,7 +258,14 @@ class UltralyticsYoloDetector(DetectorBackend):
 				masks_full = m.data.cpu().numpy()
 				masks_full = masks_full[keep] if masks_full.shape[0] == keep.shape[0] else masks_full
 
-		dets: list[Tuple[float, float, float, float, float, Optional[np.ndarray]]] = []
+		# CP20: extract keypoints from pose model (shape: N, 17, 3)
+		kps_full: Optional[np.ndarray] = None
+		kps_obj = getattr(r0, "keypoints", None)
+		if kps_obj is not None and hasattr(kps_obj, "data") and kps_obj.data is not None:
+			kps_full = kps_obj.data.cpu().numpy()
+			kps_full = kps_full[keep] if kps_full.shape[0] == keep.shape[0] else kps_full
+
+		dets: list[Tuple[float, float, float, float, float, Optional[np.ndarray], Optional[np.ndarray]]] = []
 		for i in range(xyxy.shape[0]):
 			x1, y1, x2, y2 = (float(x) for x in xyxy[i].tolist())
 			c = float(confs[i])
@@ -266,13 +273,16 @@ class UltralyticsYoloDetector(DetectorBackend):
 			if masks_full is not None and i < masks_full.shape[0]:
 				mask = _as_uint8_mask(masks_full[i])
 				mask = _resize_mask_to_frame(mask, frame_h, frame_w)
-			dets.append((x1, y1, x2, y2, c, mask))
+			kps = None
+			if kps_full is not None and i < kps_full.shape[0]:
+				kps = kps_full[i]  # shape (17, 3)
+			dets.append((x1, y1, x2, y2, c, mask, kps))
 
 		# deterministic ordering before assigning IDs
 		dets.sort(key=lambda t: _sorted_det_key(t[0], t[1], t[2], t[3], t[4]))
 
 		out: list[Detection] = []
-		for k, (x1, y1, x2, y2, c, mask) in enumerate(dets):
+		for k, (x1, y1, x2, y2, c, mask, kps) in enumerate(dets):
 			detection_id = f"d{frame_index:06d}_{k}"
 			if mask is not None:
 				ms: Optional[MaskSource] = "yolo_seg"
@@ -294,6 +304,7 @@ class UltralyticsYoloDetector(DetectorBackend):
 					mask=mask,
 					mask_source=ms,
 					mask_quality=None,
+					keypoints=kps,
 				)
 			)
 		return out
@@ -346,6 +357,12 @@ class UltralyticsYoloDetector(DetectorBackend):
 				continue
 
 			masks_obj = getattr(r0, "masks", None) if using_seg_model else None
+			# CP20: extract keypoints from pose model
+			kps_obj = getattr(r0, "keypoints", None)
+			kps_data = None
+			if kps_obj is not None and hasattr(kps_obj, "data") and kps_obj.data is not None:
+				kps_data = kps_obj.data.cpu().numpy()  # (N, 17, 3)
+
 			out: list[Detection] = []
 			for j in range(len(boxes)):
 				cls_id = int(boxes.cls[j].item()) if hasattr(boxes.cls[j], "item") else int(boxes.cls[j])
@@ -366,12 +383,16 @@ class UltralyticsYoloDetector(DetectorBackend):
 					except Exception:
 						mask = None
 						ms = "seg_error"
+				kps = None
+				if kps_data is not None and j < kps_data.shape[0]:
+					kps = kps_data[j]  # (17, 3)
 				out.append(Detection(
 					clip_id=clip_id, camera_id=camera_id,
 					frame_index=frame_index, timestamp_ms=timestamp_ms,
 					detection_id=detection_id, class_name="person",
 					confidence=c, x1=x1, y1=y1, x2=x2, y2=y2,
 					mask=mask, mask_source=ms, mask_quality=None,
+					keypoints=kps,
 				))
 			all_dets.append(out)
 		return all_dets
