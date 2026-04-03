@@ -14,6 +14,12 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 cd "$REPO_ROOT" || exit 1
 
+# Save caller-provided overrides BEFORE .env clobbers them
+_CALLER_OUTPUT_ROOT="${OUTPUT_ROOT:-}"
+_CALLER_GYM_ID="${GYM_ID:-}"
+_CALLER_CONFIG_OVERLAY="${CONFIG_OVERLAY:-}"
+_CALLER_MAX_CLIP_AGE_HOURS="${MAX_CLIP_AGE_HOURS:-}"
+
 # Clean stale workers (same as run_local.sh)
 echo "[run_validation] Cleaning up stale workers..."
 pkill -f "bjj_pipeline.stages" 2>/dev/null || true
@@ -27,16 +33,16 @@ _cleanup() {
 }
 trap _cleanup EXIT INT TERM
 
-# Source .env first (baseline values)
+# Source .env first (baseline values for SCAN_ROOT, etc.)
 set -a
 source "$REPO_ROOT/.env"
 set +a
 
-# Override AFTER .env so our values win; respect pre-set env vars
-export OUTPUT_ROOT="${OUTPUT_ROOT:-outputs_cross_camera}"
-export GYM_ID="${GYM_ID:-c8a592a4-2bca-400a-80e1-fec0e5cbea77}"
-export CONFIG_OVERLAY="${CONFIG_OVERLAY:-$REPO_ROOT/configs/validation_cross_camera.yaml}"
-export MAX_CLIP_AGE_HOURS="${MAX_CLIP_AGE_HOURS:-0}"
+# Apply caller overrides > defaults > .env for validation-specific vars
+export OUTPUT_ROOT="${_CALLER_OUTPUT_ROOT:-outputs_cross_camera}"
+export GYM_ID="${_CALLER_GYM_ID:-c8a592a4-2bca-400a-80e1-fec0e5cbea77}"
+export CONFIG_OVERLAY="${_CALLER_CONFIG_OVERLAY:-$REPO_ROOT/configs/validation_cross_camera.yaml}"
+export MAX_CLIP_AGE_HOURS="${_CALLER_MAX_CLIP_AGE_HOURS:-0}"
 
 source "$REPO_ROOT/.venv/bin/activate"
 
