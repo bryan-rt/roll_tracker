@@ -1,0 +1,19 @@
+# Validation overlay: CP20 full stack (yolov8s-pose + isolation + histograms).
+# Usage: CONFIG_OVERLAY=configs/validation_color_hist_pose.yaml
+
+stages:
+  stage_A:
+    detector:
+      model_path: models/yolov8s-pose.pt
+    detection:
+      isolation_gate:
+        enabled: true
+cross_camera:
+  pass2_enabled: true
+  coordinate_evidence:
+    enabled: false
+  histogram_evidence:
+    enabled: true
+    alpha: 3.0
+    min_isolated_frames: 10
+    similarity_threshold: 0.7

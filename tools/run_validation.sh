@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
-# Run the processor with CP17 Tier 2 coordinate evidence enabled,
-# outputting to outputs_cross_camera for comparison against baseline.
+# Run the processor for validation, outputting to a separate directory
+# for comparison against the baseline.
 #
-# Usage: caffeinate -is bash tools/run_validation.sh
+# All key env vars default to the CP17 cross-camera run but can be
+# overridden from the caller:
+#
+#   OUTPUT_ROOT=outputs_color_hist_pose \
+#   CONFIG_OVERLAY=configs/validation_color_hist_pose.yaml \
+#   caffeinate -is bash tools/run_validation.sh
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -27,11 +32,11 @@ set -a
 source "$REPO_ROOT/.env"
 set +a
 
-# Override AFTER .env so our values win
-export OUTPUT_ROOT=outputs_cross_camera
-export GYM_ID=c8a592a4-2bca-400a-80e1-fec0e5cbea77
-export CONFIG_OVERLAY="$REPO_ROOT/configs/validation_cross_camera.yaml"
-export MAX_CLIP_AGE_HOURS=0
+# Override AFTER .env so our values win; respect pre-set env vars
+export OUTPUT_ROOT="${OUTPUT_ROOT:-outputs_cross_camera}"
+export GYM_ID="${GYM_ID:-c8a592a4-2bca-400a-80e1-fec0e5cbea77}"
+export CONFIG_OVERLAY="${CONFIG_OVERLAY:-$REPO_ROOT/configs/validation_cross_camera.yaml}"
+export MAX_CLIP_AGE_HOURS="${MAX_CLIP_AGE_HOURS:-0}"
 
 source "$REPO_ROOT/.venv/bin/activate"
 
