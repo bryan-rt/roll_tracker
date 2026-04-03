@@ -1478,6 +1478,13 @@ def _solve_identity_ilp2_identity_only(
 		(constraints or {}).get("corroboration_miss_multiplier", 10.0)
 	)
 
+	# CP20: read histogram cost_modifiers (logged for audit; direct ILP integration
+	# deferred to CP21 when both histogram + spatial signals are available)
+	cost_modifiers = (constraints or {}).get("cost_modifiers", {})
+	if cost_modifiers:
+		n_pairs = len(cost_modifiers.get("cross_camera_pairs", []))
+		logger.info("CP20: cost_modifiers present with {} cross-camera pairs", n_pairs)
+
 	# These are created later (after model exists) in the MCF-2a block.
 	visit_vars: Dict[str, Any] = {}
 	miss_vars: Dict[str, Any] = {}

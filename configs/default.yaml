@@ -40,7 +40,7 @@ stages:
 
     detector:
       # YOLO detection weights (required)
-      model_path: models/yolov8n.pt
+      model_path: models/yolov8n-pose.pt
       # Optional YOLO segmentation weights. If missing at runtime, Stage A will
       # fall back to deterministic bbox masks and emit an audit event.
       seg_model_path: models/yolov8s-seg.pt
@@ -57,6 +57,17 @@ stages:
         mask_quality_min: 0.40
         min_area_frac: 0.10
         max_area_frac: 1.10
+
+    # CP20: Isolation gate — per-detection flag for clean localization
+    detection:
+      isolation_gate:
+        enabled: true
+        min_aspect_ratio: 0.8
+        max_iou_overlap: 0.3
+        min_bbox_area: null       # auto per-camera from p5 if null
+        max_bbox_area: null       # auto per-camera from p95 if null
+        min_torso_keypoints: 4    # out of 4 (L/R shoulder + L/R hip)
+        min_keypoint_conf: 0.3
 
     tracker:
       mode: botsort
@@ -363,3 +374,13 @@ cross_camera:
     temporal_tolerance_s: 2.0     # max clock offset tolerance for frame matching
     proximity_threshold_m: 0.5    # max distance to count as "same position"
     agreement_ratio_threshold: 0.6  # min fraction of windows with proximity
+  # CP20 Tier 3: histogram appearance evidence from color histograms
+  histogram_evidence:
+    enabled: true
+    alpha: 3.0                    # Bhattacharyya → cost sharpness
+    min_isolated_frames: 10       # skip person if fewer isolated frames
+    similarity_threshold: 0.7     # for tag propagation
+    tier_weights:
+      tag_match: 1.0
+      tag_recent: 2.0
+      no_tag: 3.0

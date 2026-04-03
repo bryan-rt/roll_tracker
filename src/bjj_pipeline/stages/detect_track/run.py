@@ -282,13 +282,20 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 	validate_tracklet_tables(pd.read_parquet(tf_path), pd.read_parquet(ts_path))
 	validate_stage_A_contact_points_df(pd.read_parquet(cp_path))
 
-	return {
+	result = {
 		"detections_parquet": res.detections_ref,
 		"tracklet_frames_parquet": res.tracklet_frames_ref,
 		"tracklet_summaries_parquet": res.tracklet_summaries_ref,
 		"contact_points_parquet": res.contact_points_ref,
 		"audit_jsonl": res.audit_ref,
 	}
+	if res.keypoints_ref:
+		result["keypoints_parquet"] = res.keypoints_ref
+	if res.color_histograms_ref:
+		result["color_histograms_parquet"] = res.color_histograms_ref
+	if res.tracklet_histogram_summaries_ref:
+		result["tracklet_histogram_summaries_parquet"] = res.tracklet_histogram_summaries_ref
+	return result
 
 
 def main() -> None:

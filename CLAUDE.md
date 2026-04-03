@@ -61,6 +61,9 @@ docs/                     # Calibration guide, decisions archive, audits
 ## Current Status
 
 Pipeline A→F verified E2E. Session pipeline validated (3-camera, 35/36 clips).
+**CP20:** YOLOv8n-pose model, isolation gate, HSV color histograms, Tier 3 histogram
+cross-camera evidence. Stage A outputs 3 new sidecars: keypoints.parquet,
+color_histograms.parquet, tracklet_histogram_summaries.parquet.
 **Open issue:** PPDmUg-202751 — NAType in frame_index at D2. Needs null-safe fix.
 
 See `.claude/rules/` for domain-specific documentation (auto-loaded by path).
