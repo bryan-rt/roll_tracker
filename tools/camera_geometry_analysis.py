@@ -9,10 +9,13 @@ Usage:
         --gym-id c8a592a4-2bca-400a-80e1-fec0e5cbea77
     python tools/camera_geometry_analysis.py phase1 --outputs outputs --gym-id <uuid>
 
-Projection notes (verified empirically):
-    H on disk is mat→distorted pixels.  Foot projection uses H directly.
-    Head projection uses Phase 1 height surface + vertical image offset
-    (YOLO axis-aligned bboxes → foot-to-head is ~(0, -1) in image space).
+Affine offset model (v3):
+    H_mat2img maps the ground plane to distorted pixels (foot positions, trusted).
+    An affine offset (2x3, 6 DOF) maps world (X,Y) to the pixel displacement
+    from foot to head: offset(X,Y) = [a1*X + a2*Y + a3, b1*X + b2*Y + b3].
+    Pixel height at any mat position is ||offset(X,Y)||.
+    Anchored to H_foot so it cannot go degenerate (unlike a free H_head
+    homography which collapses when training data is spatially concentrated).
 """
 
 from __future__ import annotations
@@ -48,10 +51,12 @@ console = Console()
 DEFAULT_PERSON_HEIGHT_M = 1.83
 DEFAULT_DETECTION_FLOOR_PX = 45.0
 DEFAULT_OVERLAP_BUFFER_M = 1.0
-SAFETY_MARGIN_FRAC = 0.20
+KNEELING_FRACTION = 0.45  # kneeling height as fraction of standing
+ROI_HEAD_BUFFER_FRAC = 0.10  # 10% buffer above head for ROI mask
 PERIMETER_SAMPLE_SPACING_M = 0.1
 MAT_GRID_SPACING_M = 0.25
 MIN_DATA_POINTS_WARN = 50
+MIN_DATA_POINTS_H_HEAD = 20  # cv2.findHomography needs ≥4, we want margin
 
 DETECTABILITY_CONFIGS: List[Dict[str, Any]] = [
     {"name": "640_full", "imgsz": 640, "roi_crop": False, "sahi": None},
@@ -108,7 +113,7 @@ def load_camera_geometry(
 ) -> Dict[str, Any]:
     """Load camera geometry from homography.json.
 
-    Returns dict with H_mat2img (mat→distorted pixel), K, D, image dimensions.
+    Returns dict with H_mat2img (mat->distorted pixel), K, D, image dimensions.
     """
     h_path = configs_root / "cameras" / cam_id / "homography.json"
     if not h_path.exists():
@@ -211,8 +216,8 @@ def project_world_to_pixel(
 ) -> np.ndarray:
     """Project Nx2 world coords to distorted pixel coords via H.
 
-    H on disk is mat→distorted pixel (verified empirically: mean error
-    2.7–5.8 px across all cameras using stored correspondences).
+    H on disk is mat->distorted pixel (verified empirically: mean error
+    2.7-5.8 px across all cameras using stored correspondences).
     """
     n = points.shape[0]
     pts_h = np.hstack([points, np.ones((n, 1))])  # Nx3
@@ -223,11 +228,7 @@ def project_world_to_pixel(
 
 
 def verify_h_projection(geom: Dict[str, Any]) -> Dict[str, Any]:
-    """Verify H projection accuracy against stored correspondences.
-
-    Reports reprojection error so the user can confirm foot projections
-    will land correctly on mat edges in raw camera frame visualizations.
-    """
+    """Verify H projection accuracy against stored correspondences."""
     payload = geom["payload"]
     corr = payload.get("correspondences", {})
     ip = corr.get("image_points_px", [])
@@ -248,147 +249,183 @@ def verify_h_projection(geom: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-# ── Polynomial Surface Fitting ─────────────────────────────────────────────────
+# ── Quadratic Offset Height Model ──────────────────────────────────────────────
 
 
-def _poly2d_features(x: np.ndarray, y: np.ndarray, degree: int = 2) -> np.ndarray:
-    """Build 2D polynomial feature matrix.
+def _offset_features(xy: np.ndarray) -> np.ndarray:
+    """Build degree-2 feature matrix: [x, y, x², xy, y², 1].
 
-    Degree 2: [1, x, y, x², xy, y²]  (6 features).
+    The 1/distance perspective falloff is nonlinear — quadratic terms
+    capture the curvature that a linear affine misses.  Returns Nx6.
     """
-    features = [np.ones_like(x)]
-    for d in range(1, degree + 1):
-        for i in range(d + 1):
-            features.append((x ** (d - i)) * (y ** i))
-    return np.column_stack(features)
+    x, y = xy[:, 0], xy[:, 1]
+    return np.column_stack([x, y, x ** 2, x * y, y ** 2, np.ones(len(x))])
 
 
-def fit_height_surface(
-    x_m: np.ndarray,
-    y_m: np.ndarray,
-    heights_px: np.ndarray,
-) -> Dict[str, Any]:
-    """Fit 2D polynomial height surface with RANSAC for outlier robustness.
+_MIN_PIXEL_HEIGHT = 20.0  # physical floor — no person bbox is shorter than this
 
-    Stores the convex hull of observed data and polynomial-predicted heights
-    at inlier positions for nearest-neighbor fallback outside the hull.
+
+def fit_offset_affine(
+    H_foot: np.ndarray,
+    foot_world_xy: np.ndarray,
+    head_pixel_xy: np.ndarray,
+    mat_poly: Polygon,
+) -> Tuple[Optional[np.ndarray], Dict[str, Any]]:
+    """Fit quadratic offset model: head_px = foot_px(H_foot) + offset(world_xy).
+
+    Instead of fitting a free 8-DOF homography for the head plane (which
+    degenerates when training data is spatially concentrated), we fit the
+    OFFSET between the trusted H_foot projection and the observed head
+    pixel position as a degree-2 polynomial (2x6, 12 DOF).
+
+    Features: [x, y, x², xy, y², 1] — captures 1/distance perspective.
+
+    Returns (offset_coefs_2x6, fit_metrics).  None if fitting fails.
     """
-    from scipy.spatial import ConvexHull
+    n = len(foot_world_xy)
+    if n < MIN_DATA_POINTS_H_HEAD:
+        return None, {"error": "insufficient_points", "n_data_points": n}
 
-    X = _poly2d_features(x_m, y_m, degree=2)
+    # Diagnostic: spatial coverage of training data
+    mb = mat_poly.bounds  # (xmin, ymin, xmax, ymax)
+    x_m, y_m = foot_world_xy[:, 0], foot_world_xy[:, 1]
+    mat_span_x = mb[2] - mb[0]
+    mat_span_y = mb[3] - mb[1]
+    x_cov = (x_m.max() - x_m.min()) / mat_span_x if mat_span_x > 0 else 0
+    y_cov = (y_m.max() - y_m.min()) / mat_span_y if mat_span_y > 0 else 0
+    console.print(f"  Spatial coverage: x={x_cov:.0%}, y={y_cov:.0%}")
 
-    ransac = RANSACRegressor(
+    # Compute offsets: observed head position minus H_foot-projected foot position
+    foot_px_from_H = project_world_to_pixel(H_foot, foot_world_xy)
+    offset_observed = head_pixel_xy - foot_px_from_H  # Nx2 (dx, dy)
+
+    # Feature matrix: [x, y, x², xy, y², 1]
+    A_feat = _offset_features(foot_world_xy)
+
+    # Fit dx and dy with RANSAC
+    ransac_dx = RANSACRegressor(
         estimator=LinearRegression(fit_intercept=False),
-        min_samples=max(10, int(0.3 * len(x_m))),
-        residual_threshold=None,  # auto (MAD-based)
-        max_trials=500,
-        random_state=42,
+        residual_threshold=None, random_state=42,
     )
-    ransac.fit(X, heights_px)
+    ransac_dy = RANSACRegressor(
+        estimator=LinearRegression(fit_intercept=False),
+        residual_threshold=None, random_state=42,
+    )
+    ransac_dx.fit(A_feat, offset_observed[:, 0])
+    ransac_dy.fit(A_feat, offset_observed[:, 1])
 
-    inlier_mask = ransac.inlier_mask_
-    pred = ransac.predict(X)
-    residuals = np.abs(heights_px - pred)
+    offset_affine = np.vstack([
+        ransac_dx.estimator_.coef_,  # [a1, a2, a3] for dx
+        ransac_dy.estimator_.coef_,  # [b1, b2, b3] for dy
+    ])
 
-    # Build convex hull of observed (inlier) data
-    inlier_pts = np.column_stack([x_m[inlier_mask], y_m[inlier_mask]])
-    inlier_pred = pred[inlier_mask]  # polynomial-predicted (smooth) at inlier positions
-    try:
-        hull = ConvexHull(inlier_pts)
-        hull_vertices = inlier_pts[hull.vertices].tolist()
-    except Exception:
-        hull_vertices = inlier_pts.tolist()
+    # Residual stats per component
+    dx_inliers = ransac_dx.inlier_mask_
+    dy_inliers = ransac_dy.inlier_mask_
+    dx_pred = ransac_dx.predict(A_feat)
+    dy_pred = ransac_dy.predict(A_feat)
+    dx_res = np.abs(offset_observed[dx_inliers, 0] - dx_pred[dx_inliers])
+    dy_res = np.abs(offset_observed[dy_inliers, 1] - dy_pred[dy_inliers])
 
-    # Subsample NN observations for JSON size (max 5000 points)
-    n_inliers = int(inlier_mask.sum())
-    max_nn = 5000
-    if n_inliers > max_nn:
-        idx = np.random.default_rng(42).choice(n_inliers, max_nn, replace=False)
+    console.print(
+        f"  Affine dx: inliers={dx_inliers.sum()}/{n}, "
+        f"residual mean={dx_res.mean():.1f}px, p95={np.percentile(dx_res, 95):.1f}px"
+    )
+    console.print(
+        f"  Affine dy: inliers={dy_inliers.sum()}/{n}, "
+        f"residual mean={dy_res.mean():.1f}px, p95={np.percentile(dy_res, 95):.1f}px"
+    )
+    if np.percentile(dx_res, 95) > 30 or np.percentile(dy_res, 95) > 30:
+        console.print("  [yellow]Warning: p95 residual > 30px — affine may be too simple[/yellow]")
+
+    # Diagnostic: compare H_head (degenerate) vs affine at mat corners
+    mat_corners = np.array([
+        [mb[0], mb[1]], [mb[2], mb[1]], [mb[2], mb[3]], [mb[0], mb[3]],
+        [(mb[0] + mb[2]) / 2, (mb[1] + mb[3]) / 2],
+    ])
+    corner_labels = ["BL", "BR", "TR", "TL", "Center"]
+
+    # H_head for comparison (fit but don't use)
+    src = foot_world_xy.reshape(-1, 1, 2).astype(np.float64)
+    dst = head_pixel_xy.reshape(-1, 1, 2).astype(np.float64)
+    H_head_cmp, _ = cv2.findHomography(src, dst, cv2.RANSAC, 5.0)
+
+    foot_corner_px = project_world_to_pixel(H_foot, mat_corners)
+    corner_feat = _offset_features(mat_corners)
+    affine_offset = corner_feat @ offset_affine.T
+    affine_head_px = foot_corner_px + affine_offset
+    affine_heights = np.sqrt(np.sum(affine_offset ** 2, axis=1))
+
+    console.print("  Corner/center diagnostics (affine vs H_head):")
+    if H_head_cmp is not None:
+        h_head_cond = np.linalg.cond(H_head_cmp)
+        console.print(f"    H_head cond={h_head_cond:.1e}")
+        hhead_corner_px = project_world_to_pixel(H_head_cmp, mat_corners)
+        hhead_heights = np.sqrt(np.sum((foot_corner_px - hhead_corner_px) ** 2, axis=1))
     else:
-        idx = np.arange(n_inliers)
+        hhead_heights = np.full(5, np.nan)
 
-    # Physical height clip: p95 × 1.5 upper bound, 20px lower bound
-    height_clip_max = round(float(np.percentile(heights_px, 95)) * 1.5, 1)
+    for i, lb in enumerate(corner_labels):
+        ah = affine_heights[i]
+        hh = hhead_heights[i]
+        hh_flag = " DEGEN" if (not np.isnan(hh) and (hh > 500 or hh < 20)) else ""
+        console.print(f"    {lb}: affine={ah:.0f}px, H_head={hh:.0f}px{hh_flag}")
 
-    # R² on inliers
-    inlier_h = heights_px[inlier_mask]
-    inlier_p = pred[inlier_mask]
-    ss_res = np.sum((inlier_h - inlier_p) ** 2)
-    ss_tot = np.sum((inlier_h - inlier_h.mean()) ** 2)
-    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
+    # Combined reprojection error (Euclidean on training data)
+    pred_offset = A_feat @ offset_affine.T
+    pred_head = foot_px_from_H + pred_offset
+    combined_inliers = dx_inliers & dy_inliers
+    errs = np.sqrt(np.sum((pred_head[combined_inliers] - head_pixel_xy[combined_inliers]) ** 2, axis=1))
 
-    inlier_res = residuals[inlier_mask]
-    return {
-        "coefficients": ransac.estimator_.coef_.tolist(),
-        "degree": 2,
-        "r2": round(r2, 4),
-        "n_data_points": int(len(x_m)),
-        "n_inliers": n_inliers,
-        "residual_mean": round(float(inlier_res.mean()), 2),
-        "residual_p50": round(float(np.percentile(inlier_res, 50)), 2),
-        "residual_p95": round(float(np.percentile(inlier_res, 95)), 2),
-        "hull_vertices": hull_vertices,
-        "height_clip_max": height_clip_max,
-        "nn_observations": {
-            "x_m": inlier_pts[idx, 0].tolist(),
-            "y_m": inlier_pts[idx, 1].tolist(),
-            "height_px": inlier_pred[idx].tolist(),
-        },
+    metrics: Dict[str, Any] = {
+        "n_data_points": n,
+        "n_inliers_dx": int(dx_inliers.sum()),
+        "n_inliers_dy": int(dy_inliers.sum()),
+        "dx_residual_mean_px": round(float(dx_res.mean()), 2),
+        "dx_residual_p95_px": round(float(np.percentile(dx_res, 95)), 2),
+        "dy_residual_mean_px": round(float(dy_res.mean()), 2),
+        "dy_residual_p95_px": round(float(np.percentile(dy_res, 95)), 2),
+        "reproj_error_mean_px": round(float(errs.mean()), 2) if len(errs) > 0 else 0.0,
+        "reproj_error_p95_px": round(float(np.percentile(errs, 95)), 2) if len(errs) > 0 else 0.0,
+        "spatial_coverage_x": round(x_cov, 3),
+        "spatial_coverage_y": round(y_cov, 3),
     }
+    return offset_affine, metrics
 
 
-_HEIGHT_CLIP_MIN = 20.0  # px — no person bbox is shorter than this
+def compute_pixel_height(
+    H_foot: np.ndarray,
+    offset_coefs: np.ndarray,
+    world_xy: np.ndarray,
+    img_w: int,
+    img_h: int,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Compute pixel height of a standing person at each mat position.
 
-
-def predict_height(
-    fit: Dict[str, Any], x_m: np.ndarray, y_m: np.ndarray
-) -> Tuple[np.ndarray, np.ndarray]:
-    """Predict bbox height in pixels at world positions.
-
-    Points inside the observation convex hull use the polynomial surface.
-    Points outside use nearest-neighbor fallback (polynomial-predicted height
-    at the nearest inlier observation — smooth, consistent with the surface).
+    Uses H_foot (trusted ground-plane homography) + quadratic offset model.
+    pixel_height(X,Y) = ||offset_coefs @ features(X,Y)||
 
     Returns:
-        (heights, is_extrapolated) — both arrays of length N.
-        is_extrapolated is True for points that used NN fallback.
+        (pixel_heights, in_frame, foot_px, head_px).
+        in_frame checks foot projection only — head can be above frame.
     """
-    from scipy.interpolate import NearestNDInterpolator
+    foot_px = project_world_to_pixel(H_foot, world_xy)
+    feat = _offset_features(world_xy)
+    offset = feat @ offset_coefs.T  # Nx2 (dx, dy)
+    head_px = foot_px + offset
 
-    X = _poly2d_features(x_m, y_m, degree=fit["degree"])
-    coefs = np.array(fit["coefficients"])
-    clip_max = fit.get("height_clip_max", 500.0)
-    pred = np.clip(X @ coefs, _HEIGHT_CLIP_MIN, clip_max)
+    pixel_heights = np.clip(
+        np.sqrt(np.sum(offset ** 2, axis=1)),
+        _MIN_PIXEL_HEIGHT, None,
+    )
 
-    n = len(x_m)
-    is_extrapolated = np.zeros(n, dtype=bool)
+    # in_frame: foot must be in frame (head can extend above — still detectable)
+    in_frame = (
+        (foot_px[:, 0] >= 0) & (foot_px[:, 0] < img_w)
+        & (foot_px[:, 1] >= 0) & (foot_px[:, 1] < img_h)
+    )
 
-    hull_verts = fit.get("hull_vertices")
-    nn_obs = fit.get("nn_observations")
-
-    if hull_verts and len(hull_verts) >= 3:
-        import shapely
-
-        hull_poly = Polygon(hull_verts)
-        pts = shapely.points(x_m, y_m)
-        inside = shapely.contains(hull_poly, pts)
-        outside = ~inside
-        is_extrapolated = outside
-
-        # NN fallback for points outside the hull
-        if outside.any() and nn_obs:
-            nn_x = np.array(nn_obs["x_m"])
-            nn_y = np.array(nn_obs["y_m"])
-            nn_h = np.array(nn_obs["height_px"])
-            interp = NearestNDInterpolator(
-                np.column_stack([nn_x, nn_y]), nn_h
-            )
-            pred[outside] = np.clip(
-                interp(x_m[outside], y_m[outside]),
-                _HEIGHT_CLIP_MIN, clip_max,
-            )
-
-    return pred, is_extrapolated
+    return pixel_heights, in_frame, foot_px, head_px
 
 
 # ── Mat Perimeter ──────────────────────────────────────────────────────────────
@@ -441,8 +478,20 @@ def _draw_mat_rects(ax: plt.Axes, configs_root: Path, alpha: float = 0.3) -> Non
         ax.add_patch(rect)
 
 
+def _load_offset_affine(cam_id: str, configs_root: Path) -> Optional[np.ndarray]:
+    """Load offset_affine (2x3) from Phase 1 output (height_surface.json)."""
+    surface_path = configs_root / "cameras" / cam_id / "height_surface.json"
+    if not surface_path.exists():
+        return None
+    data = json.loads(surface_path.read_text())
+    raw = data.get("offset_affine")
+    if raw is None:
+        return None
+    return np.asarray(raw, dtype=np.float64).reshape(2, 3)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
-# Phase 1: Height Projection Surface
+# Phase 1: Head Homography Fitting
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
@@ -453,8 +502,8 @@ def run_phase1(
     reference_height_m: Optional[float],
     configs_root: Path,
 ) -> Dict[str, Dict[str, Any]]:
-    """Phase 1: Fit empirical height projection surface per camera."""
-    console.print("\n[bold cyan]═══ Phase 1: Height Projection Surface ═══[/bold cyan]")
+    """Phase 1: Fit affine offset model per camera from standing detections."""
+    console.print("\n[bold cyan]═══ Phase 1: Affine Offset Model Fitting ═══[/bold cyan]")
 
     analysis_dir = outputs_root / "_analysis"
     analysis_dir.mkdir(parents=True, exist_ok=True)
@@ -467,6 +516,8 @@ def run_phase1(
         if df.empty:
             console.print("  [yellow]No data, skipping[/yellow]")
             continue
+
+        geom = load_camera_geometry(cam_id, configs_root)
 
         # Filter to high-quality upright detections
         df = df.dropna(subset=["x1", "y1", "x2", "y2", "x_m", "y_m", "confidence"])
@@ -505,38 +556,57 @@ def run_phase1(
         n_data = len(filtered)
         console.print(f"  Qualifying detections: {n_data}")
 
-        if n_data < 10:
-            console.print("  [red]Insufficient data (<10), skipping[/red]")
+        if n_data < MIN_DATA_POINTS_H_HEAD:
+            console.print(f"  [red]Insufficient data (<{MIN_DATA_POINTS_H_HEAD}), skipping[/red]")
             continue
         if n_data < MIN_DATA_POINTS_WARN:
             console.print(
-                f"  [yellow]Warning: <{MIN_DATA_POINTS_WARN} points, surface is low-confidence[/yellow]"
+                f"  [yellow]Warning: <{MIN_DATA_POINTS_WARN} points, model may be low-confidence[/yellow]"
             )
 
-        x_m_arr = filtered["x_m"].values.astype(np.float64)
-        y_m_arr = filtered["y_m"].values.astype(np.float64)
+        # Extract world foot positions and head pixel positions
+        foot_world = np.column_stack([
+            filtered["x_m"].values.astype(np.float64),
+            filtered["y_m"].values.astype(np.float64),
+        ])
+        head_pixel = np.column_stack([
+            ((filtered["x1"] + filtered["x2"]) / 2).values.astype(np.float64),
+            filtered["y1"].values.astype(np.float64),
+        ])
         heights = filtered["bbox_h"].values.astype(np.float64)
 
-        fit = fit_height_surface(x_m_arr, y_m_arr, heights)
+        mat_poly = load_mat_blueprint(configs_root)
+
+        # Fit affine offset model
+        offset_affine, metrics = fit_offset_affine(
+            geom["H_mat2img"], foot_world, head_pixel, mat_poly,
+        )
+
+        if offset_affine is None:
+            console.print(f"  [red]Affine fitting failed: {metrics.get('error')}[/red]")
+            continue
 
         console.print(
-            f"  R² = {fit['r2']:.3f}, inliers = {fit['n_inliers']}/{fit['n_data_points']}"
-        )
-        console.print(
-            f"  Residuals: mean={fit['residual_mean']:.1f}px, "
-            f"p50={fit['residual_p50']:.1f}px, p95={fit['residual_p95']:.1f}px"
+            f"  Affine reproj: mean={metrics['reproj_error_mean_px']:.1f}px, "
+            f"p95={metrics['reproj_error_p95_px']:.1f}px"
         )
 
         # Optional reference height scaling
         ref_cal = None
         if reference_height_m is not None:
-            pred_median = float(np.median(predict_height(fit, x_m_arr, y_m_arr)[0]))
-            ppm = pred_median / reference_height_m
-            ref_cal = {
-                "reference_height_m": reference_height_m,
-                "pixels_per_meter_at_median": round(ppm, 2),
-            }
-            console.print(f"  Reference calibration: {ppm:.1f} px/m at median position")
+            px_heights, in_frame, _, _ = compute_pixel_height(
+                geom["H_mat2img"], offset_affine, foot_world,
+                geom["img_w"], geom["img_h"],
+            )
+            valid = in_frame & (px_heights > 0)
+            if valid.any():
+                pred_median = float(np.median(px_heights[valid]))
+                ppm = pred_median / reference_height_m
+                ref_cal = {
+                    "reference_height_m": reference_height_m,
+                    "pixels_per_meter_at_median": round(ppm, 2),
+                }
+                console.print(f"  Reference calibration: {ppm:.1f} px/m at median position")
 
         # Scatter data (subsample for JSON size)
         max_scatter = 2000
@@ -545,16 +615,18 @@ def run_phase1(
         else:
             idx = np.arange(n_data)
         scatter = [
-            {"x_m": round(float(x_m_arr[i]), 3), "y_m": round(float(y_m_arr[i]), 3), "bbox_height_px": round(float(heights[i]), 1)}
+            {
+                "x_m": round(float(foot_world[i, 0]), 3),
+                "y_m": round(float(foot_world[i, 1]), 3),
+                "bbox_height_px": round(float(heights[i]), 1),
+            }
             for i in idx
         ]
 
-        # Compute x/y range of data for reference
         surface_data: Dict[str, Any] = {
             "camera_id": cam_id,
-            "fit": fit,
-            "x_range": [round(float(x_m_arr.min()), 2), round(float(x_m_arr.max()), 2)],
-            "y_range": [round(float(y_m_arr.min()), 2), round(float(y_m_arr.max()), 2)],
+            "offset_affine": offset_affine.tolist(),
+            "fit_metrics": metrics,
             "scatter_data": scatter,
             "reference_calibration": ref_cal,
         }
@@ -565,7 +637,10 @@ def run_phase1(
         surface_path.write_text(json.dumps(surface_data, indent=2))
         console.print(f"  Saved: {surface_path}")
 
-        _plot_phase1(cam_id, x_m_arr, y_m_arr, heights, fit, configs_root, analysis_dir)
+        _plot_phase1(
+            cam_id, geom, offset_affine, foot_world, heights,
+            metrics, configs_root, analysis_dir,
+        )
         results[cam_id] = surface_data
 
     return results
@@ -573,10 +648,11 @@ def run_phase1(
 
 def _plot_phase1(
     cam_id: str,
-    x_m: np.ndarray,
-    y_m: np.ndarray,
+    geom: Dict,
+    offset_affine: np.ndarray,
+    foot_world: np.ndarray,
     heights: np.ndarray,
-    fit: Dict[str, Any],
+    metrics: Dict,
     configs_root: Path,
     analysis_dir: Path,
 ) -> None:
@@ -586,28 +662,38 @@ def _plot_phase1(
     _draw_mat_rects(ax, configs_root, alpha=0.5)
 
     vmin, vmax = np.percentile(heights, 5), np.percentile(heights, 95)
-    sc = ax.scatter(x_m, y_m, c=heights, cmap="viridis", s=3, alpha=0.5, vmin=vmin, vmax=vmax)
+    sc = ax.scatter(
+        foot_world[:, 0], foot_world[:, 1],
+        c=heights, cmap="viridis", s=3, alpha=0.5, vmin=vmin, vmax=vmax,
+    )
     plt.colorbar(sc, ax=ax, label="BBox Height (px)")
 
-    # Contour from fitted surface
+    # Contour from affine offset model
     bounds = mat_poly.bounds
     gx = np.linspace(bounds[0] - 1, bounds[2] + 1, 100)
     gy = np.linspace(bounds[1] - 1, bounds[3] + 1, 100)
     GX, GY = np.meshgrid(gx, gy)
-    GZ, _ = predict_height(fit, GX.ravel(), GY.ravel())
+    grid_flat = np.column_stack([GX.ravel(), GY.ravel()])
+
+    GZ, _, _, _ = compute_pixel_height(
+        geom["H_mat2img"], offset_affine, grid_flat,
+        geom["img_w"], geom["img_h"],
+    )
     GZ = GZ.reshape(GX.shape)
 
     import shapely
 
-    mask = shapely.contains(mat_poly, shapely.points(GX.ravel(), GY.ravel())).reshape(GX.shape)
-    GZ_masked = np.where(mask, GZ, np.nan)
+    mat_mask = shapely.contains(mat_poly, shapely.points(GX.ravel(), GY.ravel())).reshape(GX.shape)
+    GZ_masked = np.where(mat_mask, GZ, np.nan)
 
     cs = ax.contour(GX, GY, GZ_masked, levels=10, colors="black", linewidths=0.8, alpha=0.7)
     ax.clabel(cs, inline=True, fontsize=8, fmt="%.0f")
 
+    reproj = metrics["reproj_error_mean_px"]
+    n_pts = metrics["n_data_points"]
     ax.set_xlabel("X (meters)")
     ax.set_ylabel("Y (meters)")
-    ax.set_title(f"{cam_id} — Height Projection Surface (R²={fit['r2']:.3f}, n={fit['n_data_points']})")
+    ax.set_title(f"{cam_id} — Affine Offset Height Surface (reproj={reproj:.1f}px, n={n_pts})")
     ax.set_aspect("equal")
     ax.grid(True, alpha=0.3)
 
@@ -630,7 +716,7 @@ def run_phase2(
     reference_height_m: Optional[float],
     configs_root: Path,
 ) -> Dict[str, Dict[str, Any]]:
-    """Phase 2: Build perspective-aware ROI mask per camera."""
+    """Phase 2: Build perspective-aware ROI mask per camera using two homographies."""
     console.print("\n[bold cyan]═══ Phase 2: ROI Mask Construction ═══[/bold cyan]")
 
     analysis_dir = outputs_root / "_analysis"
@@ -655,34 +741,35 @@ def run_phase2(
                 f"  H projection error: mean={verif['mean_error_px']:.1f}px, "
                 f"max={verif['max_error_px']:.1f}px"
             )
-            if verif["max_error_px"] > 15:
-                console.print("  [yellow]Warning: high projection error, ROI may be inaccurate[/yellow]")
 
-        # Load height surface (from Phase 1)
-        surface_path = configs_root / "cameras" / cam_id / "height_surface.json"
-        if not surface_path.exists():
-            console.print("  [red]No height surface — run Phase 1 first[/red]")
+        # Load affine offset model from Phase 1
+        offset_affine = _load_offset_affine(cam_id, configs_root)
+        if offset_affine is None:
+            console.print("  [red]No offset model — run Phase 1 first[/red]")
             continue
-        surface = json.loads(surface_path.read_text())
 
-        # Foot projection: H @ [X, Y, 1] → distorted pixel (confirmed correct)
+        # Project feet via H, heads via affine offset
         foot_px = project_world_to_pixel(H, perimeter_pts)
+        feat = np.column_stack([perimeter_pts, np.ones(len(perimeter_pts))])
+        head_px = foot_px + feat @ offset_affine.T
 
-        # Head projection: foot + predicted height upward in image
-        # YOLO axis-aligned bboxes → foot-to-head direction is ~(0, -1)
-        # Phase 1 surface captures perspective-dependent bbox height
-        pred_heights, _ = predict_height(surface["fit"], perimeter_pts[:, 0], perimeter_pts[:, 1])
-        # NN fallback now provides physically reasonable heights everywhere,
-        # but clip any remaining sub-20px values to a conservative fallback
-        # so the ROI mask doesn't undersize at mat edges.
-        fallback_h = float(np.median(pred_heights)) if len(pred_heights) > 0 else 100.0
-        pred_heights[pred_heights < _HEIGHT_CLIP_MIN] = fallback_h
-        head_px = foot_px.copy()
-        head_px[:, 1] -= pred_heights  # head above foot (decreasing v)
+        # Filter to points where the foot projects inside (or near) the frame
+        in_frame = (
+            (foot_px[:, 0] >= -50) & (foot_px[:, 0] < img_w + 50)
+            & (foot_px[:, 1] >= -50) & (foot_px[:, 1] < img_h + 50)
+        )
+        foot_px = foot_px[in_frame]
+        head_px = head_px[in_frame]
+        peri_pts_vis = perimeter_pts[in_frame]
+        console.print(f"  Perimeter points in frame: {in_frame.sum()}/{len(in_frame)}")
 
-        # Safety margin: extend 20% beyond predicted head position
-        head_margin_px = foot_px.copy()
-        head_margin_px[:, 1] -= pred_heights * (1.0 + SAFETY_MARGIN_FRAC)
+        if len(foot_px) < 4:
+            console.print("  [red]Too few in-frame perimeter points, skipping[/red]")
+            continue
+
+        # Safety margin: extend 10% beyond head in foot->head direction
+        direction = head_px - foot_px
+        head_margin_px = head_px + direction * ROI_HEAD_BUFFER_FRAC
 
         # Clip to frame bounds
         head_margin_clipped = head_margin_px.copy()
@@ -692,16 +779,11 @@ def run_phase2(
         foot_clipped[:, 0] = np.clip(foot_clipped[:, 0], 0, img_w - 1)
         foot_clipped[:, 1] = np.clip(foot_clipped[:, 1], 0, img_h - 1)
 
-        # Build ROI polygon: union of head-margin polygon and foot polygon
-        # Head-margin points follow perimeter order → form an ordered polygon
-        head_poly = Polygon(head_margin_clipped.tolist())
-        if not head_poly.is_valid:
-            head_poly = head_poly.buffer(0)
-        foot_poly = Polygon(foot_clipped.tolist())
-        if not foot_poly.is_valid:
-            foot_poly = foot_poly.buffer(0)
-
-        roi_poly = head_poly.union(foot_poly)
+        # Build ROI polygon: band from foot perimeter forward to head+margin, reversed to close
+        roi_boundary = np.vstack([foot_clipped, head_margin_clipped[::-1]])
+        roi_poly = Polygon(roi_boundary.tolist())
+        if not roi_poly.is_valid:
+            roi_poly = roi_poly.buffer(0)
         frame_bounds = box(0, 0, img_w, img_h)
         roi_poly = roi_poly.intersection(frame_bounds)
 
@@ -713,8 +795,6 @@ def run_phase2(
             roi_poly = max(roi_poly.geoms, key=lambda g: g.area)
 
         outer_coords = np.array(roi_poly.exterior.coords)
-        foot_hull = foot_poly.convex_hull
-        foot_coords = np.array(foot_hull.exterior.coords) if hasattr(foot_hull, "exterior") else foot_clipped
 
         # Rasterize binary mask
         mask = np.zeros((img_h, img_w), dtype=np.uint8)
@@ -737,11 +817,10 @@ def run_phase2(
             "camera_id": cam_id,
             "image_size": [img_w, img_h],
             "outer_boundary_px": outer_coords.tolist(),
-            "inner_boundary_px": foot_coords.tolist(),
+            "inner_boundary_px": foot_clipped.tolist(),
             "bounding_rect": [x_min, y_min, x_max - x_min, y_max - y_min],
-            "safety_margin_frac": SAFETY_MARGIN_FRAC,
-            "person_height_m": reference_height_m or DEFAULT_PERSON_HEIGHT_M,
-            "method": "B_empirical_surface",
+            "head_buffer_frac": ROI_HEAD_BUFFER_FRAC,
+            "method": "two_homography",
             "h_projection_error": verif,
         }
 
@@ -752,8 +831,8 @@ def run_phase2(
         console.print(f"  ROI bounding rect: {roi_data['bounding_rect']}")
 
         _plot_phase2(
-            cam_id, geom, foot_px, head_px, head_margin_px,
-            outer_coords, foot_coords, mask,
+            cam_id, geom, foot_px, head_px, head_margin_clipped,
+            outer_coords, foot_clipped, mask,
             outputs_root, gym_id, analysis_dir,
         )
         results[cam_id] = roi_data
@@ -768,7 +847,7 @@ def _plot_phase2(
     head_px: np.ndarray,
     head_margin_px: np.ndarray,
     outer_coords: np.ndarray,
-    foot_coords: np.ndarray,
+    foot_clipped: np.ndarray,
     mask: np.ndarray,
     outputs_root: Path,
     gym_id: str,
@@ -792,11 +871,12 @@ def _plot_phase2(
     mask_overlay[mask > 0] = [0, 1, 0, 0.2]
     ax.imshow(mask_overlay)
 
-    # Mat edge (blue) and head boundary (red)
-    ax.plot(foot_coords[:, 0], foot_coords[:, 1], "b-", linewidth=2, label="Mat edge (foot)")
+    # Mat edge: foot_clipped traces the L-shape perimeter (ordered, no convex hull)
+    ax.plot(foot_clipped[:, 0], foot_clipped[:, 1], "b-", linewidth=2, label="Mat edge (foot)")
+    # Head boundary with margin
     ax.plot(outer_coords[:, 0], outer_coords[:, 1], "r-", linewidth=2, label="Head boundary + margin")
 
-    # Height vectors (yellow arrows) at every ~40th perimeter point
+    # Height vectors (yellow arrows) foot -> head
     step = max(1, len(foot_px) // 40)
     for i in range(0, len(foot_px), step):
         fx, fy = foot_px[i]
@@ -809,7 +889,7 @@ def _plot_phase2(
                 arrowprops=dict(arrowstyle="->", color="yellow", lw=1.5),
             )
 
-    # Verify correspondences (cyan dots = expected, magenta = projected)
+    # Verify correspondences (cyan = actual, magenta = H projection)
     payload = geom["payload"]
     corr = payload.get("correspondences", {})
     ip = corr.get("image_points_px", [])
@@ -822,7 +902,7 @@ def _plot_phase2(
 
     ax.set_xlim(0, img_w)
     ax.set_ylim(img_h, 0)
-    ax.set_title(f"{cam_id} — ROI Mask ({img_w}×{img_h}{title_suffix})")
+    ax.set_title(f"{cam_id} — ROI Mask ({img_w}x{img_h}{title_suffix})")
     ax.legend(loc="upper right", fontsize=8)
 
     fig.tight_layout()
@@ -840,10 +920,7 @@ def _plot_phase2(
 def _compute_sahi_tile_scale(
     eff_w: int, eff_h: int, grid: List[int], overlap: float, imgsz: int
 ) -> Tuple[float, int]:
-    """Compute effective scale for a SAHI tile configuration.
-
-    Returns (scale_per_tile, n_tiles).
-    """
+    """Compute effective scale for a SAHI tile configuration."""
     cols, rows = grid
     tile_w = eff_w / (1 + (cols - 1) * (1 - overlap)) if cols > 1 else eff_w
     tile_h = eff_h / (1 + (rows - 1) * (1 - overlap)) if rows > 1 else eff_h
@@ -857,7 +934,7 @@ def run_phase3(
     configs_root: Path,
     outputs_root: Path,
 ) -> Dict[str, Dict[str, Any]]:
-    """Phase 3: Detectability analysis for candidate YOLO configurations."""
+    """Phase 3: Detectability analysis using two-homography model + kneeling scalar."""
     console.print("\n[bold cyan]═══ Phase 3: Detectability Analysis ═══[/bold cyan]")
 
     analysis_dir = outputs_root / "_analysis"
@@ -867,6 +944,7 @@ def run_phase3(
     grid_pts_mat, _ = _mat_grid(mat_poly)
     gx_mat, gy_mat = grid_pts_mat[:, 0], grid_pts_mat[:, 1]
     console.print(f"  Mat grid: {len(grid_pts_mat)} points")
+    console.print(f"  Kneeling fraction: {KNEELING_FRACTION} (scores use kneeling height)")
 
     all_results: Dict[str, Dict[str, Any]] = {}
 
@@ -876,19 +954,21 @@ def run_phase3(
         geom = load_camera_geometry(cam_id, configs_root)
         img_w, img_h = geom["img_w"], geom["img_h"]
 
-        surface_path = configs_root / "cameras" / cam_id / "height_surface.json"
-        if not surface_path.exists():
-            console.print("  [red]No height surface — run Phase 1 first[/red]")
+        offset_affine = _load_offset_affine(cam_id, configs_root)
+        if offset_affine is None:
+            console.print("  [red]No offset model — run Phase 1 first[/red]")
             continue
-        surface = json.loads(surface_path.read_text())
 
         roi_path = configs_root / "cameras" / cam_id / "roi_mask.json"
         roi_data = json.loads(roi_path.read_text()) if roi_path.exists() else None
 
-        # Predicted original pixel heights at each mat grid point
-        pred_heights, is_extrapolated = predict_height(surface["fit"], gx_mat, gy_mat)
-        visible_mask = ~is_extrapolated  # points with direct observation data
-        n_visible = int(visible_mask.sum())
+        # Compute standing pixel heights and in-frame mask
+        standing_heights, in_frame, _, _ = compute_pixel_height(
+            geom["H_mat2img"], offset_affine, grid_pts_mat, img_w, img_h,
+        )
+        kneeling_heights = standing_heights * KNEELING_FRACTION
+        n_in_frame = int(in_frame.sum())
+        console.print(f"  In-frame grid points: {n_in_frame}/{len(grid_pts_mat)}")
 
         config_results: List[Dict[str, Any]] = []
 
@@ -898,14 +978,12 @@ def run_phase3(
             roi_crop = cfg["roi_crop"]
             sahi = cfg["sahi"]
 
-            # Effective region dimensions
             if roi_crop and roi_data:
                 br = roi_data["bounding_rect"]
                 eff_w, eff_h = br[2], br[3]
             else:
                 eff_w, eff_h = img_w, img_h
 
-            # Compute scale and speed
             if sahi is not None:
                 scale, n_tiles = _compute_sahi_tile_scale(
                     eff_w, eff_h, sahi["grid"], sahi["overlap"], imgsz
@@ -915,21 +993,27 @@ def run_phase3(
                 scale = imgsz / max(eff_w, eff_h)
                 speed_mult = (imgsz / 640) ** 2
 
-            effective_heights = pred_heights * scale
-            scores = effective_heights / detection_floor_px
+            # Score based on kneeling height (conservative: if kneeling is detectable,
+            # standing is definitely detectable)
+            effective_kneeling = kneeling_heights * scale
+            scores = effective_kneeling / detection_floor_px
+            # Zero out off-screen points
+            scores[~in_frame] = 0.0
 
-            # Padding waste
             aspect = eff_w / eff_h if eff_h > 0 else 1.0
             padding_waste = 1.0 - min(aspect, 1.0 / aspect) if aspect > 0 else 0.0
 
-            # visible_coverage: coverage only over points the camera actually observes
+            # visible_coverage: fraction of in-frame points with score > 1.0
             vis_cov = (
-                round(float(np.mean(scores[visible_mask] > 1.0)) * 100, 1)
-                if n_visible > 0
+                round(float(np.mean(scores[in_frame] > 1.0)) * 100, 1)
+                if n_in_frame > 0
                 else 0.0
             )
-            # min/mean over visible points only (extrapolated NN values are less trustworthy)
-            vis_eff = effective_heights[visible_mask] if n_visible > 0 else effective_heights
+            vis_scores = scores[in_frame] if n_in_frame > 0 else scores
+            # min/mean over standing effective heights for in-frame points
+            eff_standing = standing_heights * scale
+            vis_standing = eff_standing[in_frame] if n_in_frame > 0 else eff_standing
+
             result: Dict[str, Any] = {
                 "name": name,
                 "imgsz": imgsz,
@@ -937,17 +1021,18 @@ def run_phase3(
                 "sahi": sahi,
                 "mat_coverage_pct": round(float(np.mean(scores > 1.0)) * 100, 1),
                 "visible_coverage_pct": vis_cov,
-                "n_visible_points": n_visible,
-                "min_effective_px": round(float(vis_eff.min()), 1) if len(vis_eff) > 0 else 0,
-                "mean_effective_px": round(float(vis_eff.mean()), 1) if len(vis_eff) > 0 else 0,
+                "n_in_frame": n_in_frame,
+                "kneeling_fraction": KNEELING_FRACTION,
+                "min_effective_px": round(float(vis_standing.min()), 1) if len(vis_standing) > 0 else 0,
+                "mean_effective_px": round(float(vis_standing.mean()), 1) if len(vis_standing) > 0 else 0,
                 "padding_waste_pct": round(padding_waste * 100, 1),
                 "speed_relative": round(speed_mult, 2),
                 "scores": scores.tolist(),
             }
             config_results.append(result)
 
-        # Print table — show visible_coverage (camera's actual view) as primary metric
-        table = Table(title=f"Camera: {cam_id} ({img_w}×{img_h}, {n_visible}/{len(gx_mat)} visible)")
+        # Print table
+        table = Table(title=f"Camera: {cam_id} ({img_w}x{img_h}, {n_in_frame}/{len(gx_mat)} in-frame)")
         table.add_column("Configuration", style="cyan")
         table.add_column("Vis cov%", justify="right")
         table.add_column("Min px_h", justify="right")
@@ -962,19 +1047,20 @@ def run_phase3(
                 f"{r['min_effective_px']:.0f}px",
                 f"{r['mean_effective_px']:.0f}px",
                 f"{r['padding_waste_pct']:.0f}%",
-                f"{r['speed_relative']:.1f}×",
+                f"{r['speed_relative']:.1f}x",
             )
         console.print(table)
 
-        _plot_phase3(cam_id, gx_mat, gy_mat, config_results, is_extrapolated, configs_root, analysis_dir)
+        _plot_phase3(cam_id, gx_mat, gy_mat, config_results, in_frame, configs_root, analysis_dir)
 
-        # Save report
         report: Dict[str, Any] = {
             "camera_id": cam_id,
             "image_size": [img_w, img_h],
             "detection_floor_px": detection_floor_px,
+            "kneeling_fraction": KNEELING_FRACTION,
             "grid_spacing_m": MAT_GRID_SPACING_M,
             "n_grid_points": len(gx_mat),
+            "n_in_frame": n_in_frame,
             "configurations": [
                 {k: v for k, v in r.items() if k != "scores"}
                 for r in config_results
@@ -999,7 +1085,7 @@ def _plot_phase3(
     gx: np.ndarray,
     gy: np.ndarray,
     config_results: List[Dict],
-    is_extrapolated: np.ndarray,
+    in_frame: np.ndarray,
     configs_root: Path,
     analysis_dir: Path,
 ) -> None:
@@ -1014,7 +1100,7 @@ def _plot_phase3(
     boundaries = [0, 0.5, 0.7, 1.0, 1.5, 3.0]
     norm = BoundaryNorm(boundaries, cmap.N)
 
-    interp = ~is_extrapolated  # high-confidence (inside observation hull)
+    out_of_frame = ~in_frame
 
     for idx, result in enumerate(config_results):
         row, col = divmod(idx, ncols)
@@ -1022,30 +1108,27 @@ def _plot_phase3(
 
         scores = np.array(result["scores"])
         _draw_mat_rects(ax, configs_root, alpha=0.2)
-        # Interpolated points: full opacity
-        ax.scatter(gx[interp], gy[interp], c=scores[interp], cmap=cmap, norm=norm, s=8, marker="s")
-        # Extrapolated points: reduced opacity (NN fallback, lower confidence)
-        if is_extrapolated.any():
-            ax.scatter(gx[is_extrapolated], gy[is_extrapolated], c=scores[is_extrapolated],
-                       cmap=cmap, norm=norm, s=8, marker="s", alpha=0.3)
+        # In-frame points: full opacity
+        ax.scatter(gx[in_frame], gy[in_frame], c=scores[in_frame], cmap=cmap, norm=norm, s=8, marker="s")
+        # Out-of-frame points: reduced opacity (camera cannot see these)
+        if out_of_frame.any():
+            ax.scatter(gx[out_of_frame], gy[out_of_frame], c="lightgray", s=4, marker="s", alpha=0.3)
 
         cov = result["visible_coverage_pct"]
         spd = result["speed_relative"]
-        ax.set_title(f"{result['name']}\nvis_cov={cov:.0f}% spd={spd:.1f}×", fontsize=9)
+        ax.set_title(f"{result['name']}\nvis_cov={cov:.0f}% spd={spd:.1f}x", fontsize=9)
         ax.set_aspect("equal")
         ax.tick_params(labelsize=7)
 
-    # Hide unused axes
     for idx in range(n_configs, nrows * ncols):
         row, col = divmod(idx, ncols)
         axes[row, col].set_visible(False)
 
-    # Colorbar
     fig.subplots_adjust(right=0.92)
     cbar_ax = fig.add_axes([0.94, 0.15, 0.02, 0.7])
     sm = ScalarMappable(cmap=cmap, norm=norm)
     sm.set_array([])
-    fig.colorbar(sm, cax=cbar_ax, label="Detectability Score")
+    fig.colorbar(sm, cax=cbar_ax, label="Detectability Score (kneeling)")
 
     fig.suptitle(f"{cam_id} — Detectability by Configuration", fontsize=14, y=1.01)
     out_path = analysis_dir / f"{cam_id}_detectability_grid.png"
@@ -1082,15 +1165,14 @@ def run_phase4(
 
     console.print(f"  Mat grid: {n_pts} points, {len(cameras)} cameras")
 
-    # Single camera: no zone optimization possible
     if len(cameras) < 2:
         console.print("  [yellow]Single camera — no zone restriction possible[/yellow]")
         report_path = analysis_dir / f"{cameras[0]}_detectability_report.json"
         if report_path.exists():
             report = json.loads(report_path.read_text())
             for cfg in report.get("configurations", []):
-                if cfg.get("mat_coverage_pct", 0) >= 95:
-                    console.print(f"  Recommended: {cfg['name']} ({cfg['mat_coverage_pct']:.0f}% coverage)")
+                if cfg.get("visible_coverage_pct", 0) >= 95:
+                    console.print(f"  Recommended: {cfg['name']} ({cfg['visible_coverage_pct']:.0f}% coverage)")
                     break
         return {"single_camera": True, "cameras": cameras}
 
@@ -1116,7 +1198,6 @@ def run_phase4(
     cam_list = list(coverage_matrix.keys())
     det_threshold = 0.7
 
-    # Coverage count per point
     coverage_count = np.zeros(n_pts)
     for scores in coverage_matrix.values():
         coverage_count += (scores > det_threshold).astype(float)
@@ -1134,18 +1215,15 @@ def run_phase4(
     if zero_cov > 0:
         console.print(f"  [red]Warning: {zero_cov} points have 0 coverage![/red]")
 
-    # Assign primary camera per point (highest score)
     score_matrix = np.column_stack([coverage_matrix[c] for c in cam_list])
     primary_cam_idx = np.argmax(score_matrix, axis=1)
 
-    # Compute restricted zones per camera: rules (a) primary, (b) coverage, (c) overlap
     restricted_zones: Dict[str, np.ndarray] = {}
 
     for c_idx, cam_id in enumerate(cam_list):
         cam_scores = coverage_matrix[cam_id]
-        include = (primary_cam_idx == c_idx).copy()  # Rule (a)
+        include = (primary_cam_idx == c_idx).copy()
 
-        # Rule (b): needed to maintain min_coverage
         for i in range(n_pts):
             if include[i] or cam_scores[i] <= det_threshold:
                 continue
@@ -1155,7 +1233,6 @@ def run_phase4(
             if other_covering < min_coverage:
                 include[i] = True
 
-        # Rule (c): overlap buffer for tracklet handoff
         included_pts = grid_pts_mat[include]
         if len(included_pts) > 0:
             for i in range(n_pts):
@@ -1210,23 +1287,21 @@ def run_phase4(
         if len(zone_pts) == 0:
             continue
 
-        # Load height surface
-        surface_path = configs_root / "cameras" / cam_id / "height_surface.json"
-        surface = json.loads(surface_path.read_text()) if surface_path.exists() else None
+        offset_affine = _load_offset_affine(cam_id, configs_root)
 
-        # Project zone points to pixel space
-        zone_px = project_world_to_pixel(H, zone_pts)
-
-        # Add head-height buffer
-        if surface:
-            zone_heights, _ = predict_height(surface["fit"], zone_pts[:, 0], zone_pts[:, 1])
+        # Project zone to pixel space for bounding rect
+        zone_foot_px = project_world_to_pixel(H, zone_pts)
+        if offset_affine is not None:
+            zone_feat = np.column_stack([zone_pts, np.ones(len(zone_pts))])
+            zone_offset = zone_feat @ offset_affine.T
+            zone_head_px = zone_foot_px + zone_offset
+            direction = zone_head_px - zone_foot_px
+            zone_head_margin = zone_head_px + direction * ROI_HEAD_BUFFER_FRAC
         else:
-            zone_heights = np.full(len(zone_pts), 100.0)
+            zone_head_margin = zone_foot_px.copy()
+            zone_head_margin[:, 1] -= 100
 
-        head_px = zone_px.copy()
-        head_px[:, 1] -= zone_heights * (1.0 + SAFETY_MARGIN_FRAC)
-
-        all_pts = np.vstack([zone_px, head_px])
+        all_pts = np.vstack([zone_foot_px, zone_head_margin])
         all_pts[:, 0] = np.clip(all_pts[:, 0], 0, img_w - 1)
         all_pts[:, 1] = np.clip(all_pts[:, 1], 0, img_h - 1)
 
@@ -1237,44 +1312,47 @@ def run_phase4(
         restricted_w = x_max - x_min
         restricted_h = y_max - y_min
 
-        # Find optimal imgsz for 95% coverage in restricted zone
-        if surface:
-            zone_pred, zone_extrap = predict_height(surface["fit"], zone_pts[:, 0], zone_pts[:, 1])
-            zone_visible = ~zone_extrap
+        # Compute heights for zone points via affine offset model
+        if offset_affine is not None:
+            zone_standing, zone_in_frame, _, _ = compute_pixel_height(
+                H, offset_affine, zone_pts, img_w, img_h,
+            )
         else:
-            zone_pred = np.full(len(zone_pts), 50.0)
-            zone_visible = np.ones(len(zone_pts), dtype=bool)
+            zone_standing = np.full(len(zone_pts), 50.0)
+            zone_in_frame = np.ones(len(zone_pts), dtype=bool)
 
-        # Coverage computed over visible points only (camera's actual observed region)
+        zone_kneeling = zone_standing * KNEELING_FRACTION
+
+        # Optimal imgsz: 95% of in-frame zone points have kneeling score > 1.0
         optimal_imgsz = 1536
         optimal_coverage = 0.0
         for test_imgsz in [640, 800, 960, 1280, 1536]:
             scale = test_imgsz / max(restricted_w, restricted_h)
-            eff_h = zone_pred * scale
-            if zone_visible.any():
-                cov = float(np.mean(eff_h[zone_visible] / detection_floor_px > 1.0)) * 100
+            eff_k = zone_kneeling * scale
+            if zone_in_frame.any():
+                cov = float(np.mean(eff_k[zone_in_frame] / detection_floor_px > 1.0)) * 100
             else:
-                cov = float(np.mean(eff_h / detection_floor_px > 1.0)) * 100
+                cov = float(np.mean(eff_k / detection_floor_px > 1.0)) * 100
             if cov >= 95 and optimal_imgsz == 1536:
                 optimal_imgsz = test_imgsz
                 optimal_coverage = cov
         if optimal_coverage == 0:
             scale = optimal_imgsz / max(restricted_w, restricted_h)
-            eff_h = zone_pred * scale
-            if zone_visible.any():
-                optimal_coverage = float(np.mean(eff_h[zone_visible] / detection_floor_px > 1.0)) * 100
+            eff_k = zone_kneeling * scale
+            if zone_in_frame.any():
+                optimal_coverage = float(np.mean(eff_k[zone_in_frame] / detection_floor_px > 1.0)) * 100
             else:
-                optimal_coverage = float(np.mean(eff_h / detection_floor_px > 1.0)) * 100
+                optimal_coverage = float(np.mean(eff_k / detection_floor_px > 1.0)) * 100
 
-        # Full-frame reference: imgsz needed for 95% over camera's visible zone at full-frame scale
+        # Full-frame reference imgsz
         full_roi_imgsz = 1536
         for test_imgsz in [640, 800, 960, 1280, 1536]:
             scale = test_imgsz / max(img_w, img_h)
-            eff_h = zone_pred * scale
-            if zone_visible.any():
-                cov = float(np.mean(eff_h[zone_visible] / detection_floor_px > 1.0)) * 100
+            eff_k = zone_kneeling * scale
+            if zone_in_frame.any():
+                cov = float(np.mean(eff_k[zone_in_frame] / detection_floor_px > 1.0)) * 100
             else:
-                cov = float(np.mean(eff_h / detection_floor_px > 1.0)) * 100
+                cov = float(np.mean(eff_k / detection_floor_px > 1.0)) * 100
             if cov >= 95:
                 full_roi_imgsz = test_imgsz
                 break
@@ -1285,7 +1363,8 @@ def run_phase4(
         aspect = restricted_w / restricted_h if restricted_h > 0 else 1.0
         padding_waste = 1.0 - min(aspect, 1.0 / aspect) if aspect > 0 else 0.0
 
-        min_eff_px = float((zone_pred * (optimal_imgsz / max(restricted_w, restricted_h))).min())
+        vis_standing = zone_standing[zone_in_frame] if zone_in_frame.any() else zone_standing
+        min_eff_px = float(vis_standing.min() * (optimal_imgsz / max(restricted_w, restricted_h))) if len(vis_standing) > 0 else 0
 
         # Save restricted ROI mask
         cam_config_dir = configs_root / "cameras" / cam_id
@@ -1301,7 +1380,6 @@ def run_phase4(
                     cv2.fillPoly(restricted_mask, [hull_coords], 255)
                     cv2.imwrite(str(cam_config_dir / "roi_mask_restricted.png"), restricted_mask)
 
-        # Save detection_config.json
         det_config: Dict[str, Any] = {
             "camera_id": cam_id,
             "roi_mask": "roi_mask_restricted.png",
@@ -1315,13 +1393,13 @@ def run_phase4(
             "padding_waste_pct": round(padding_waste * 100, 1),
             "generated_at": pd.Timestamp.now().isoformat(),
             "coverage_constraint": f"min_{min_coverage}_cameras",
-            "phase4_version": "1.0",
+            "phase4_version": "2.0",
         }
         (cam_config_dir / "detection_config.json").write_text(json.dumps(det_config, indent=2))
 
         per_camera_results[cam_id] = {
             "full_roi_imgsz": full_roi_imgsz,
-            "restricted_shape": f"{restricted_w}×{restricted_h}",
+            "restricted_shape": f"{restricted_w}x{restricted_h}",
             "optimal_imgsz": optimal_imgsz,
             "coverage_pct": round(optimal_coverage, 1),
             "speed_full": round(speed_full, 1),
@@ -1362,20 +1440,19 @@ def run_phase4(
         total_restricted += r["speed_restricted"]
         table.add_row(
             cam_id,
-            f"{r['full_roi_imgsz']} ({r['speed_full']:.1f}×)",
+            f"{r['full_roi_imgsz']} ({r['speed_full']:.1f}x)",
             r["restricted_shape"],
             str(r["optimal_imgsz"]),
             f"{r['coverage_pct']:.0f}%",
-            f"{r['speed_restricted']:.1f}×",
+            f"{r['speed_restricted']:.1f}x",
         )
 
     table.add_section()
     speedup = total_full / total_restricted if total_restricted > 0 else 1
-    table.add_row("TOTAL", f"{total_full:.1f}×", "", "", "", f"{total_restricted:.1f}×")
+    table.add_row("TOTAL", f"{total_full:.1f}x", "", "", "", f"{total_restricted:.1f}x")
     console.print(table)
-    console.print(f"  System speedup from zone restriction: {speedup:.1f}× faster")
+    console.print(f"  System speedup from zone restriction: {speedup:.1f}x faster")
 
-    # Save report
     report_out: Dict[str, Any] = {
         "cameras": cam_list,
         "n_grid_points": n_pts,
@@ -1423,7 +1500,6 @@ def _plot_phase4_coverage(
         color = colors[c_idx % len(colors)]
         n_zone = int(zone.sum())
         if n_zone < 3:
-            # Still show in legend as redundant
             ax.plot(
                 [], [], color=color, linewidth=2, linestyle="--",
                 label=f"{cam_id} (0 pts — redundant)",
@@ -1474,14 +1550,12 @@ def _plot_phase4_camera(
     fig, ax = plt.subplots(1, 1, figsize=(14, 8))
     ax.imshow(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), alpha=0.7)
 
-    # Full ROI (dashed)
     roi_path = configs_root / "cameras" / cam_id / "roi_mask.json"
     if roi_path.exists():
         roi_data = json.loads(roi_path.read_text())
         outer = np.array(roi_data["outer_boundary_px"])
         ax.plot(outer[:, 0], outer[:, 1], "w--", linewidth=1.5, alpha=0.7, label="Full ROI")
 
-    # Restricted ROI (solid fill)
     restricted_mask = results.get("restricted_mask")
     if restricted_mask is not None:
         overlay = np.zeros((img_h, img_w, 4), dtype=np.float32)
@@ -1528,7 +1602,7 @@ def cmd_phase1(
     reference_height_m: Optional[float] = typer.Option(None, help="Known person height for calibration"),
     configs_root: Path = typer.Option(Path("configs"), help="Configs root"),
 ) -> None:
-    """Phase 1: Fit empirical height projection surface per camera."""
+    """Phase 1: Fit head-plane homography per camera from standing detections."""
     outputs, gym_id, cameras, configs_root = _common(outputs, gym_id, configs_root)
     run_phase1(outputs, gym_id, cameras, reference_height_m, configs_root)
 
