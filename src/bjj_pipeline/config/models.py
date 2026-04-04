@@ -159,6 +159,24 @@ class StageAConfig(BaseModel):
 
         enabled: bool = Field(default=True, description="Apply CP18 calibration correction if available")
 
+    class IsolationGateConfig(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+        enabled: bool = Field(default=True, description="Enable per-detection isolation flagging")
+        min_aspect_ratio: float = Field(default=0.8, ge=0.0)
+        max_iou_overlap: float = Field(default=0.3, ge=0.0, le=1.0)
+        min_bbox_area: Optional[float] = Field(default=None, description="Auto per-camera from p5 if null")
+        max_bbox_area: Optional[float] = Field(default=None, description="Auto per-camera from p95 if null")
+        min_torso_keypoints: int = Field(default=4, ge=0, le=4)
+        min_keypoint_conf: float = Field(default=0.3, ge=0.0, le=1.0)
+
+    class DetectionConfig(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+        isolation_gate: "StageAConfig.IsolationGateConfig" = Field(
+            default_factory=lambda: StageAConfig.IsolationGateConfig()
+        )
+
     # Optional stride for POC perf (0/None means no skipping)
     frame_stride: Optional[int] = Field(default=None, ge=0, description="Frame stride; 0/None means no skipping")
 
@@ -168,6 +186,7 @@ class StageAConfig(BaseModel):
     calibration_correction: CalibrationCorrectionConfig = Field(
         default_factory=lambda: StageAConfig.CalibrationCorrectionConfig()
     )
+    detection: DetectionConfig = Field(default_factory=lambda: StageAConfig.DetectionConfig())
 
 
 class StageBConfig(BaseModel):
