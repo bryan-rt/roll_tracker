@@ -418,6 +418,26 @@ def _load_person_tracklet_map(adapter: Any) -> Dict[str, List[str]]:
 	return result
 
 
+def _get_clip_layout_for_histogram(
+	mp4_path: Path,
+	cam_id: str,
+	output_root: Path,
+) -> Optional[Any]:
+	"""Derive ClipOutputLayout for a clip, using gym-scoped path resolution."""
+	from bjj_pipeline.contracts.f0_paths import ClipOutputLayout
+	try:
+		from bjj_pipeline.stages.orchestration.pipeline import (
+			validate_ingest_path,
+			compute_output_root,
+		)
+		info = validate_ingest_path(mp4_path, cam_id)
+		scoped_root = compute_output_root(info, base_root=output_root)
+		return ClipOutputLayout(clip_id=mp4_path.stem, root=scoped_root)
+	except Exception:
+		# Fallback to flat layout (non-gym-scoped)
+		return ClipOutputLayout(clip_id=mp4_path.stem, root=output_root)
+
+
 def _load_tracklet_histograms_for_clips(
 	session_clips: List[Tuple],
 	cam_id: str,
@@ -428,9 +448,9 @@ def _load_tracklet_histograms_for_clips(
 	Returns: {"{clip_id}:{tracklet_id}" → (histogram_144, n_isolated_frames)}
 	Maps use the namespaced tracklet ID format from D0 aggregation.
 	"""
-	from bjj_pipeline.contracts.f0_paths import ClipOutputLayout
-
 	result: Dict[str, Tuple[np.ndarray, int]] = {}
+	n_clips_checked = 0
+	n_clips_found = 0
 
 	for entry in session_clips:
 		# session_clips entries are (mp4_path, cam_id) tuples
@@ -439,14 +459,21 @@ def _load_tracklet_histograms_for_clips(
 		if clip_cam_id is not None and clip_cam_id != cam_id:
 			continue
 
-		# Derive clip_id from mp4 filename (same logic as processor)
 		mp4_path = Path(mp4_path)
 		clip_id = mp4_path.stem
+		n_clips_checked += 1
 
-		layout = ClipOutputLayout(clip_id=clip_id, root=output_root)
+		layout = _get_clip_layout_for_histogram(mp4_path, cam_id, output_root)
+		if layout is None:
+			continue
 		summary_path = layout.tracklet_histogram_summaries_parquet()
 		if not summary_path.exists():
+			logger.debug(
+				"Histogram summary not found for clip={} cam={}: {}",
+				clip_id, cam_id, summary_path,
+			)
 			continue
+		n_clips_found += 1
 
 		try:
 			df = pd.read_parquet(summary_path)
@@ -472,6 +499,10 @@ def _load_tracklet_histograms_for_clips(
 			namespaced_tid = f"{clip_id}:{tid}"
 			result[namespaced_tid] = (hist, n_iso)
 
+	logger.info(
+		"Histogram summaries for cam={}: {}/{} clips found, {} tracklets loaded",
+		cam_id, n_clips_found, n_clips_checked, len(result),
+	)
 	return result
 
 

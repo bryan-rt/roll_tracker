@@ -1,13 +1,24 @@
 #!/usr/bin/env bash
-# Run the processor with CP17 Tier 2 coordinate evidence enabled,
-# outputting to outputs_cross_camera for comparison against baseline.
+# Run the processor for validation, outputting to a separate directory
+# for comparison against the baseline.
 #
-# Usage: caffeinate -is bash tools/run_validation.sh
+# All key env vars default to the CP17 cross-camera run but can be
+# overridden from the caller:
+#
+#   OUTPUT_ROOT=outputs_color_hist_pose \
+#   CONFIG_OVERLAY=configs/validation_color_hist_pose.yaml \
+#   caffeinate -is bash tools/run_validation.sh
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 cd "$REPO_ROOT" || exit 1
+
+# Save caller-provided overrides BEFORE .env clobbers them
+_CALLER_OUTPUT_ROOT="${OUTPUT_ROOT:-}"
+_CALLER_GYM_ID="${GYM_ID:-}"
+_CALLER_CONFIG_OVERLAY="${CONFIG_OVERLAY:-}"
+_CALLER_MAX_CLIP_AGE_HOURS="${MAX_CLIP_AGE_HOURS:-}"
 
 # Clean stale workers (same as run_local.sh)
 echo "[run_validation] Cleaning up stale workers..."
@@ -22,16 +33,16 @@ _cleanup() {
 }
 trap _cleanup EXIT INT TERM
 
-# Source .env first (baseline values)
+# Source .env first (baseline values for SCAN_ROOT, etc.)
 set -a
 source "$REPO_ROOT/.env"
 set +a
 
-# Override AFTER .env so our values win
-export OUTPUT_ROOT=outputs_cross_camera
-export GYM_ID=c8a592a4-2bca-400a-80e1-fec0e5cbea77
-export CONFIG_OVERLAY="$REPO_ROOT/configs/validation_cross_camera.yaml"
-export MAX_CLIP_AGE_HOURS=0
+# Apply caller overrides > defaults > .env for validation-specific vars
+export OUTPUT_ROOT="${_CALLER_OUTPUT_ROOT:-outputs_cross_camera}"
+export GYM_ID="${_CALLER_GYM_ID:-c8a592a4-2bca-400a-80e1-fec0e5cbea77}"
+export CONFIG_OVERLAY="${_CALLER_CONFIG_OVERLAY:-$REPO_ROOT/configs/validation_cross_camera.yaml}"
+export MAX_CLIP_AGE_HOURS="${_CALLER_MAX_CLIP_AGE_HOURS:-0}"
 
 source "$REPO_ROOT/.venv/bin/activate"
 

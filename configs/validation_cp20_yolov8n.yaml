@@ -1,0 +1,20 @@
+# Validation overlay: CP20 full stack with yolov8n.pt (non-pose baseline).
+# Usage: CONFIG_OVERLAY=configs/validation_cp20_yolov8n.yaml
+
+stages:
+  stage_A:
+    detector:
+      model_path: models/yolov8n.pt
+    detection:
+      isolation_gate:
+        enabled: true
+        require_keypoints: false
+cross_camera:
+  pass2_enabled: true
+  coordinate_evidence:
+    enabled: false
+  histogram_evidence:
+    enabled: true
+    alpha: 3.0
+    min_isolated_frames: 10
+    similarity_threshold: 0.7

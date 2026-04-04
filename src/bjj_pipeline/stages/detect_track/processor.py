@@ -348,18 +348,20 @@ class StageAProcessor:
             tracked_bboxes.append((det.x1, det.y1, det.x2, det.y2))
             tracked_kps.append(det.keypoints)
 
-        # Compute isolation flags
+        # Compute isolation flags → dict keyed by detection_id
+        iso_flag_map: Dict[str, bool] = {}
         if isolation_enabled and tracked_dets:
             iso_flags = compute_isolation_flags(
                 bboxes=tracked_bboxes,
                 keypoints_list=tracked_kps,
                 config=isolation_cfg,
             )
-        else:
-            iso_flags = [False] * len(tracked_dets)
+            for i, det in enumerate(tracked_dets):
+                iso_flag_map[det.detection_id] = iso_flags[i]
+        # else: iso_flag_map stays empty → all lookups default to False
 
         # 5) For each tracked detection → geometry + keypoints + histogram + write
-        for idx_td, td in enumerate(tracked):
+        for td in tracked:
             det = det_by_id.get(td.detection_id)
             if det is None:
                 continue
@@ -486,7 +488,7 @@ class StageAProcessor:
             )
 
             # CP20: Keypoints sidecar (always written — is_isolated included)
-            is_iso = iso_flags[idx_td] if idx_td < len(iso_flags) else False
+            is_iso = iso_flag_map.get(det.detection_id, False)
             self.writer.append_keypoint_row(
                 frame_index=frame_index,
                 track_id=td.tracklet_id,
