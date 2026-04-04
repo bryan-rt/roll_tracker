@@ -72,6 +72,23 @@ cd services/uploader && docker compose up
 caffeinate -is bash -c 'time bash services/processor/run_local.sh'
 ```
 
+## Camera Geometry Analysis
+```bash
+# All 4 phases: height surface → ROI mask → detectability → coverage optimization
+python tools/camera_geometry_analysis.py all \
+  --outputs outputs --gym-id <uuid>
+
+# Individual phases
+python tools/camera_geometry_analysis.py phase1 --outputs outputs --gym-id <uuid>
+python tools/camera_geometry_analysis.py phase2 --outputs outputs --gym-id <uuid>
+python tools/camera_geometry_analysis.py phase3 --outputs outputs --gym-id <uuid>
+python tools/camera_geometry_analysis.py phase4 --outputs outputs --gym-id <uuid>
+
+# With known height reference
+python tools/camera_geometry_analysis.py all \
+  --outputs outputs --gym-id <uuid> --reference-height-m 1.80
+```
+
 ## Audio Survey
 ```bash
 python tools/detect_buzzer.py --input <mp4_or_dir> --survey
