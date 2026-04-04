@@ -9,11 +9,11 @@ Usage:
         --gym-id c8a592a4-2bca-400a-80e1-fec0e5cbea77
     python tools/camera_geometry_analysis.py phase1 --outputs outputs --gym-id <uuid>
 
-Affine offset model (v3):
+Quadratic offset model (v4):
     H_mat2img maps the ground plane to distorted pixels (foot positions, trusted).
-    An affine offset (2x3, 6 DOF) maps world (X,Y) to the pixel displacement
-    from foot to head: offset(X,Y) = [a1*X + a2*Y + a3, b1*X + b2*Y + b3].
-    Pixel height at any mat position is ||offset(X,Y)||.
+    A degree-2 offset (2x6, 12 DOF) maps world (X,Y) to the pixel displacement
+    from foot to head using features [x, y, x^2, xy, y^2, 1].  The quadratic
+    terms capture the 1/distance perspective falloff that a linear affine misses.
     Anchored to H_foot so it cannot go degenerate (unlike a free H_head
     homography which collapses when training data is spatially concentrated).
 """
@@ -479,7 +479,7 @@ def _draw_mat_rects(ax: plt.Axes, configs_root: Path, alpha: float = 0.3) -> Non
 
 
 def _load_offset_affine(cam_id: str, configs_root: Path) -> Optional[np.ndarray]:
-    """Load offset_affine (2x3) from Phase 1 output (height_surface.json)."""
+    """Load offset coefficients (2xN) from Phase 1 output (height_surface.json)."""
     surface_path = configs_root / "cameras" / cam_id / "height_surface.json"
     if not surface_path.exists():
         return None
@@ -487,7 +487,7 @@ def _load_offset_affine(cam_id: str, configs_root: Path) -> Optional[np.ndarray]
     raw = data.get("offset_affine")
     if raw is None:
         return None
-    return np.asarray(raw, dtype=np.float64).reshape(2, 3)
+    return np.asarray(raw, dtype=np.float64)  # 2xN (N=6 for degree-2)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -748,10 +748,9 @@ def run_phase2(
             console.print("  [red]No offset model — run Phase 1 first[/red]")
             continue
 
-        # Project feet via H, heads via affine offset
+        # Project feet via H, heads via quadratic offset
         foot_px = project_world_to_pixel(H, perimeter_pts)
-        feat = np.column_stack([perimeter_pts, np.ones(len(perimeter_pts))])
-        head_px = foot_px + feat @ offset_affine.T
+        head_px = foot_px + _offset_features(perimeter_pts) @ offset_affine.T
 
         # Filter to points where the foot projects inside (or near) the frame
         in_frame = (
@@ -1292,8 +1291,7 @@ def run_phase4(
         # Project zone to pixel space for bounding rect
         zone_foot_px = project_world_to_pixel(H, zone_pts)
         if offset_affine is not None:
-            zone_feat = np.column_stack([zone_pts, np.ones(len(zone_pts))])
-            zone_offset = zone_feat @ offset_affine.T
+            zone_offset = _offset_features(zone_pts) @ offset_affine.T
             zone_head_px = zone_foot_px + zone_offset
             direction = zone_head_px - zone_foot_px
             zone_head_margin = zone_head_px + direction * ROI_HEAD_BUFFER_FRAC
