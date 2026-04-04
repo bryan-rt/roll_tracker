@@ -9,13 +9,13 @@ Usage:
         --gym-id c8a592a4-2bca-400a-80e1-fec0e5cbea77
     python tools/camera_geometry_analysis.py phase1 --outputs outputs --gym-id <uuid>
 
-Quadratic offset model (v4):
+dy-only quadratic offset model (v5):
     H_mat2img maps the ground plane to distorted pixels (foot positions, trusted).
-    A degree-2 offset (2x6, 12 DOF) maps world (X,Y) to the pixel displacement
-    from foot to head using features [x, y, x^2, xy, y^2, 1].  The quadratic
-    terms capture the 1/distance perspective falloff that a linear affine misses.
-    Anchored to H_foot so it cannot go degenerate (unlike a free H_head
-    homography which collapses when training data is spatially concentrated).
+    A degree-2 dy offset (1x6, 6 DOF) maps world (X,Y) to the vertical pixel
+    displacement from foot to head: dy(X,Y) = coefs @ [x, y, x^2, xy, y^2, 1].
+    pixel_height = abs(dy).  dx is dropped (bbox center-x is pose noise, not
+    camera geometry).  Quadratic terms capture 1/distance perspective falloff.
+    Anchored to H_foot so it cannot go degenerate.
 """
 
 from __future__ import annotations
@@ -271,16 +271,17 @@ def fit_offset_affine(
     head_pixel_xy: np.ndarray,
     mat_poly: Polygon,
 ) -> Tuple[Optional[np.ndarray], Dict[str, Any]]:
-    """Fit quadratic offset model: head_px = foot_px(H_foot) + offset(world_xy).
+    """Fit dy-only quadratic offset: head_y = foot_y(H_foot) + dy(world_xy).
 
-    Instead of fitting a free 8-DOF homography for the head plane (which
-    degenerates when training data is spatially concentrated), we fit the
-    OFFSET between the trusted H_foot projection and the observed head
-    pixel position as a degree-2 polynomial (2x6, 12 DOF).
+    The dx component (bbox center-x offset) is pure noise from body pose
+    variation — YOLO bbox center-x depends on arm position, not camera
+    geometry.  We fit only the vertical (dy) offset as a degree-2 polynomial
+    anchored to H_foot.
 
-    Features: [x, y, x², xy, y², 1] — captures 1/distance perspective.
+    Features: [x, y, x^2, xy, y^2, 1] — captures 1/distance perspective.
+    Model: 1x6 coefficients (dy only).
 
-    Returns (offset_coefs_2x6, fit_metrics).  None if fitting fails.
+    Returns (dy_coefs_1x6, fit_metrics).  None if fitting fails.
     """
     n = len(foot_world_xy)
     if n < MIN_DATA_POINTS_H_HEAD:
@@ -295,50 +296,35 @@ def fit_offset_affine(
     y_cov = (y_m.max() - y_m.min()) / mat_span_y if mat_span_y > 0 else 0
     console.print(f"  Spatial coverage: x={x_cov:.0%}, y={y_cov:.0%}")
 
-    # Compute offsets: observed head position minus H_foot-projected foot position
+    # Compute dy offset: observed head_y minus H_foot-projected foot_y
     foot_px_from_H = project_world_to_pixel(H_foot, foot_world_xy)
-    offset_observed = head_pixel_xy - foot_px_from_H  # Nx2 (dx, dy)
+    dy_observed = head_pixel_xy[:, 1] - foot_px_from_H[:, 1]  # N (negative = head above foot)
 
     # Feature matrix: [x, y, x², xy, y², 1]
     A_feat = _offset_features(foot_world_xy)
 
-    # Fit dx and dy with RANSAC
-    ransac_dx = RANSACRegressor(
-        estimator=LinearRegression(fit_intercept=False),
-        residual_threshold=None, random_state=42,
-    )
+    # Fit dy with RANSAC
     ransac_dy = RANSACRegressor(
         estimator=LinearRegression(fit_intercept=False),
         residual_threshold=None, random_state=42,
     )
-    ransac_dx.fit(A_feat, offset_observed[:, 0])
-    ransac_dy.fit(A_feat, offset_observed[:, 1])
+    ransac_dy.fit(A_feat, dy_observed)
 
-    offset_affine = np.vstack([
-        ransac_dx.estimator_.coef_,  # [a1, a2, a3] for dx
-        ransac_dy.estimator_.coef_,  # [b1, b2, b3] for dy
-    ])
+    dy_coefs = ransac_dy.estimator_.coef_.reshape(1, -1)  # 1x6
 
-    # Residual stats per component
-    dx_inliers = ransac_dx.inlier_mask_
+    # Residual stats
     dy_inliers = ransac_dy.inlier_mask_
-    dx_pred = ransac_dx.predict(A_feat)
     dy_pred = ransac_dy.predict(A_feat)
-    dx_res = np.abs(offset_observed[dx_inliers, 0] - dx_pred[dx_inliers])
-    dy_res = np.abs(offset_observed[dy_inliers, 1] - dy_pred[dy_inliers])
+    dy_res = np.abs(dy_observed[dy_inliers] - dy_pred[dy_inliers])
 
     console.print(
-        f"  Affine dx: inliers={dx_inliers.sum()}/{n}, "
-        f"residual mean={dx_res.mean():.1f}px, p95={np.percentile(dx_res, 95):.1f}px"
-    )
-    console.print(
-        f"  Affine dy: inliers={dy_inliers.sum()}/{n}, "
+        f"  dy offset: inliers={dy_inliers.sum()}/{n}, "
         f"residual mean={dy_res.mean():.1f}px, p95={np.percentile(dy_res, 95):.1f}px"
     )
-    if np.percentile(dx_res, 95) > 30 or np.percentile(dy_res, 95) > 30:
-        console.print("  [yellow]Warning: p95 residual > 30px — affine may be too simple[/yellow]")
+    if np.percentile(dy_res, 95) > 30:
+        console.print("  [yellow]Warning: dy p95 residual > 30px[/yellow]")
 
-    # Diagnostic: compare H_head (degenerate) vs affine at mat corners
+    # Diagnostic: corner heights (dy model vs H_head for comparison)
     mat_corners = np.array([
         [mb[0], mb[1]], [mb[2], mb[1]], [mb[2], mb[3]], [mb[0], mb[3]],
         [(mb[0] + mb[2]) / 2, (mb[1] + mb[3]) / 2],
@@ -352,11 +338,10 @@ def fit_offset_affine(
 
     foot_corner_px = project_world_to_pixel(H_foot, mat_corners)
     corner_feat = _offset_features(mat_corners)
-    affine_offset = corner_feat @ offset_affine.T
-    affine_head_px = foot_corner_px + affine_offset
-    affine_heights = np.sqrt(np.sum(affine_offset ** 2, axis=1))
+    corner_dy = (corner_feat @ dy_coefs.T).ravel()
+    corner_heights = np.abs(corner_dy)
 
-    console.print("  Corner/center diagnostics (affine vs H_head):")
+    console.print("  Corner/center diagnostics (dy-model vs H_head):")
     if H_head_cmp is not None:
         h_head_cond = np.linalg.cond(H_head_cmp)
         console.print(f"    H_head cond={h_head_cond:.1e}")
@@ -366,44 +351,37 @@ def fit_offset_affine(
         hhead_heights = np.full(5, np.nan)
 
     for i, lb in enumerate(corner_labels):
-        ah = affine_heights[i]
+        ah = corner_heights[i]
         hh = hhead_heights[i]
         hh_flag = " DEGEN" if (not np.isnan(hh) and (hh > 500 or hh < 20)) else ""
-        console.print(f"    {lb}: affine={ah:.0f}px, H_head={hh:.0f}px{hh_flag}")
+        console.print(f"    {lb}: dy_model={ah:.0f}px, H_head={hh:.0f}px{hh_flag}")
 
-    # Combined reprojection error (Euclidean on training data)
-    pred_offset = A_feat @ offset_affine.T
-    pred_head = foot_px_from_H + pred_offset
-    combined_inliers = dx_inliers & dy_inliers
-    errs = np.sqrt(np.sum((pred_head[combined_inliers] - head_pixel_xy[combined_inliers]) ** 2, axis=1))
-
+    # Reprojection error on dy (1D, on inliers)
     metrics: Dict[str, Any] = {
         "n_data_points": n,
-        "n_inliers_dx": int(dx_inliers.sum()),
         "n_inliers_dy": int(dy_inliers.sum()),
-        "dx_residual_mean_px": round(float(dx_res.mean()), 2),
-        "dx_residual_p95_px": round(float(np.percentile(dx_res, 95)), 2),
         "dy_residual_mean_px": round(float(dy_res.mean()), 2),
         "dy_residual_p95_px": round(float(np.percentile(dy_res, 95)), 2),
-        "reproj_error_mean_px": round(float(errs.mean()), 2) if len(errs) > 0 else 0.0,
-        "reproj_error_p95_px": round(float(np.percentile(errs, 95)), 2) if len(errs) > 0 else 0.0,
+        "reproj_error_mean_px": round(float(dy_res.mean()), 2),
+        "reproj_error_p95_px": round(float(np.percentile(dy_res, 95)), 2),
         "spatial_coverage_x": round(x_cov, 3),
         "spatial_coverage_y": round(y_cov, 3),
     }
-    return offset_affine, metrics
+    return dy_coefs, metrics
 
 
 def compute_pixel_height(
     H_foot: np.ndarray,
-    offset_coefs: np.ndarray,
+    dy_coefs: np.ndarray,
     world_xy: np.ndarray,
     img_w: int,
     img_h: int,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Compute pixel height of a standing person at each mat position.
 
-    Uses H_foot (trusted ground-plane homography) + quadratic offset model.
-    pixel_height(X,Y) = ||offset_coefs @ features(X,Y)||
+    Uses H_foot (trusted ground-plane homography) + dy-only quadratic offset.
+    pixel_height(X,Y) = abs(dy_coefs @ features(X,Y))
+    head_px = foot_px + [0, dy]  (head directly above foot)
 
     Returns:
         (pixel_heights, in_frame, foot_px, head_px).
@@ -411,13 +389,12 @@ def compute_pixel_height(
     """
     foot_px = project_world_to_pixel(H_foot, world_xy)
     feat = _offset_features(world_xy)
-    offset = feat @ offset_coefs.T  # Nx2 (dx, dy)
-    head_px = foot_px + offset
+    dy = (feat @ dy_coefs.T).ravel()  # N
 
-    pixel_heights = np.clip(
-        np.sqrt(np.sum(offset ** 2, axis=1)),
-        _MIN_PIXEL_HEIGHT, None,
-    )
+    head_px = foot_px.copy()
+    head_px[:, 1] += dy  # dy is negative (head above foot)
+
+    pixel_heights = np.clip(np.abs(dy), _MIN_PIXEL_HEIGHT, None)
 
     # in_frame: foot must be in frame (head can extend above — still detectable)
     in_frame = (
@@ -748,9 +725,11 @@ def run_phase2(
             console.print("  [red]No offset model — run Phase 1 first[/red]")
             continue
 
-        # Project feet via H, heads via quadratic offset
+        # Project feet via H, heads via dy-only offset (head directly above foot)
         foot_px = project_world_to_pixel(H, perimeter_pts)
-        head_px = foot_px + _offset_features(perimeter_pts) @ offset_affine.T
+        dy = (_offset_features(perimeter_pts) @ offset_affine.T).ravel()
+        head_px = foot_px.copy()
+        head_px[:, 1] += dy  # dy is negative (head above foot)
 
         # Filter to points where the foot projects inside (or near) the frame
         in_frame = (
@@ -1291,8 +1270,9 @@ def run_phase4(
         # Project zone to pixel space for bounding rect
         zone_foot_px = project_world_to_pixel(H, zone_pts)
         if offset_affine is not None:
-            zone_offset = _offset_features(zone_pts) @ offset_affine.T
-            zone_head_px = zone_foot_px + zone_offset
+            zone_dy = (_offset_features(zone_pts) @ offset_affine.T).ravel()
+            zone_head_px = zone_foot_px.copy()
+            zone_head_px[:, 1] += zone_dy
             direction = zone_head_px - zone_foot_px
             zone_head_margin = zone_head_px + direction * ROI_HEAD_BUFFER_FRAC
         else:
