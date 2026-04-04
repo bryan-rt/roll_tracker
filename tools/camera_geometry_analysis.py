@@ -249,7 +249,20 @@ def verify_h_projection(geom: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-# ── Affine Offset Height Model ─────────────────────────────────────────────────
+# ── Quadratic Offset Height Model ──────────────────────────────────────────────
+
+
+def _offset_features(xy: np.ndarray) -> np.ndarray:
+    """Build degree-2 feature matrix: [x, y, x², xy, y², 1].
+
+    The 1/distance perspective falloff is nonlinear — quadratic terms
+    capture the curvature that a linear affine misses.  Returns Nx6.
+    """
+    x, y = xy[:, 0], xy[:, 1]
+    return np.column_stack([x, y, x ** 2, x * y, y ** 2, np.ones(len(x))])
+
+
+_MIN_PIXEL_HEIGHT = 20.0  # physical floor — no person bbox is shorter than this
 
 
 def fit_offset_affine(
@@ -258,16 +271,16 @@ def fit_offset_affine(
     head_pixel_xy: np.ndarray,
     mat_poly: Polygon,
 ) -> Tuple[Optional[np.ndarray], Dict[str, Any]]:
-    """Fit affine offset model: head_px = foot_px(H_foot) + affine(world_xy).
+    """Fit quadratic offset model: head_px = foot_px(H_foot) + offset(world_xy).
 
     Instead of fitting a free 8-DOF homography for the head plane (which
     degenerates when training data is spatially concentrated), we fit the
     OFFSET between the trusted H_foot projection and the observed head
-    pixel position as a 2x3 affine (6 DOF).
+    pixel position as a degree-2 polynomial (2x6, 12 DOF).
 
-    offset(X,Y) = [a1*X + a2*Y + a3,  b1*X + b2*Y + b3]
+    Features: [x, y, x², xy, y², 1] — captures 1/distance perspective.
 
-    Returns (offset_affine_2x3, fit_metrics).  None if fitting fails.
+    Returns (offset_coefs_2x6, fit_metrics).  None if fitting fails.
     """
     n = len(foot_world_xy)
     if n < MIN_DATA_POINTS_H_HEAD:
@@ -286,8 +299,8 @@ def fit_offset_affine(
     foot_px_from_H = project_world_to_pixel(H_foot, foot_world_xy)
     offset_observed = head_pixel_xy - foot_px_from_H  # Nx2 (dx, dy)
 
-    # Feature matrix: [X, Y, 1]
-    A_feat = np.column_stack([foot_world_xy, np.ones(n)])
+    # Feature matrix: [x, y, x², xy, y², 1]
+    A_feat = _offset_features(foot_world_xy)
 
     # Fit dx and dy with RANSAC
     ransac_dx = RANSACRegressor(
@@ -338,7 +351,7 @@ def fit_offset_affine(
     H_head_cmp, _ = cv2.findHomography(src, dst, cv2.RANSAC, 5.0)
 
     foot_corner_px = project_world_to_pixel(H_foot, mat_corners)
-    corner_feat = np.column_stack([mat_corners, np.ones(5)])
+    corner_feat = _offset_features(mat_corners)
     affine_offset = corner_feat @ offset_affine.T
     affine_head_px = foot_corner_px + affine_offset
     affine_heights = np.sqrt(np.sum(affine_offset ** 2, axis=1))
@@ -382,26 +395,29 @@ def fit_offset_affine(
 
 def compute_pixel_height(
     H_foot: np.ndarray,
-    offset_affine: np.ndarray,
+    offset_coefs: np.ndarray,
     world_xy: np.ndarray,
     img_w: int,
     img_h: int,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Compute pixel height of a standing person at each mat position.
 
-    Uses H_foot (trusted ground-plane homography) + affine offset model.
-    pixel_height(X,Y) = ||offset_affine @ [X, Y, 1]||
+    Uses H_foot (trusted ground-plane homography) + quadratic offset model.
+    pixel_height(X,Y) = ||offset_coefs @ features(X,Y)||
 
     Returns:
         (pixel_heights, in_frame, foot_px, head_px).
         in_frame checks foot projection only — head can be above frame.
     """
     foot_px = project_world_to_pixel(H_foot, world_xy)
-    feat = np.column_stack([world_xy, np.ones(len(world_xy))])
-    offset = feat @ offset_affine.T  # Nx2 (dx, dy)
+    feat = _offset_features(world_xy)
+    offset = feat @ offset_coefs.T  # Nx2 (dx, dy)
     head_px = foot_px + offset
 
-    pixel_heights = np.sqrt(np.sum(offset ** 2, axis=1))
+    pixel_heights = np.clip(
+        np.sqrt(np.sum(offset ** 2, axis=1)),
+        _MIN_PIXEL_HEIGHT, None,
+    )
 
     # in_frame: foot must be in frame (head can extend above — still detectable)
     in_frame = (
