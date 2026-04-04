@@ -9,12 +9,13 @@ Usage:
         --gym-id c8a592a4-2bca-400a-80e1-fec0e5cbea77
     python tools/camera_geometry_analysis.py phase1 --outputs outputs --gym-id <uuid>
 
-Two-homography model (v2):
-    H_mat2img maps the ground plane (Z=0) to distorted pixels (foot positions).
-    H_head maps the head plane (Z~1.83m) to distorted pixels (bbox top-center).
-    Both are fitted from real detection data.  Pixel height at any mat position
-    is ||H_mat2img @ [X,Y,1] - H_head @ [X,Y,1]|| — exact geometry, no
-    polynomial extrapolation.
+Affine offset model (v3):
+    H_mat2img maps the ground plane to distorted pixels (foot positions, trusted).
+    An affine offset (2x3, 6 DOF) maps world (X,Y) to the pixel displacement
+    from foot to head: offset(X,Y) = [a1*X + a2*Y + a3, b1*X + b2*Y + b3].
+    Pixel height at any mat position is ||offset(X,Y)||.
+    Anchored to H_foot so it cannot go degenerate (unlike a free H_head
+    homography which collapses when training data is spatially concentrated).
 """
 
 from __future__ import annotations
@@ -38,6 +39,7 @@ from rich.console import Console
 from rich.table import Table
 from shapely.geometry import MultiPoint, MultiPolygon, Polygon, box
 from shapely.ops import unary_union
+from sklearn.linear_model import LinearRegression, RANSACRegressor
 import typer
 
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -247,84 +249,167 @@ def verify_h_projection(geom: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-# ── Two-Homography Height Model ───────────────────────────────────────────────
+# ── Affine Offset Height Model ─────────────────────────────────────────────────
 
 
-def fit_head_homography(
+def fit_offset_affine(
+    H_foot: np.ndarray,
     foot_world_xy: np.ndarray,
     head_pixel_xy: np.ndarray,
+    mat_poly: Polygon,
 ) -> Tuple[Optional[np.ndarray], Dict[str, Any]]:
-    """Fit homography for the head plane from standing detections.
+    """Fit affine offset model: head_px = foot_px(H_foot) + affine(world_xy).
 
-    Maps world (x_m, y_m) on the ground plane to the head pixel position
-    (bbox top-center) in the camera image.  Uses cv2.findHomography with
-    RANSAC for outlier rejection.
+    Instead of fitting a free 8-DOF homography for the head plane (which
+    degenerates when training data is spatially concentrated), we fit the
+    OFFSET between the trusted H_foot projection and the observed head
+    pixel position as a 2x3 affine (6 DOF).
 
-    Returns (H_head_3x3, fit_metrics).  H_head is None if fitting fails.
+    offset(X,Y) = [a1*X + a2*Y + a3,  b1*X + b2*Y + b3]
+
+    Returns (offset_affine_2x3, fit_metrics).  None if fitting fails.
     """
     n = len(foot_world_xy)
-    if n < 4:
+    if n < MIN_DATA_POINTS_H_HEAD:
         return None, {"error": "insufficient_points", "n_data_points": n}
 
+    # Diagnostic: spatial coverage of training data
+    mb = mat_poly.bounds  # (xmin, ymin, xmax, ymax)
+    x_m, y_m = foot_world_xy[:, 0], foot_world_xy[:, 1]
+    mat_span_x = mb[2] - mb[0]
+    mat_span_y = mb[3] - mb[1]
+    x_cov = (x_m.max() - x_m.min()) / mat_span_x if mat_span_x > 0 else 0
+    y_cov = (y_m.max() - y_m.min()) / mat_span_y if mat_span_y > 0 else 0
+    console.print(f"  Spatial coverage: x={x_cov:.0%}, y={y_cov:.0%}")
+
+    # Compute offsets: observed head position minus H_foot-projected foot position
+    foot_px_from_H = project_world_to_pixel(H_foot, foot_world_xy)
+    offset_observed = head_pixel_xy - foot_px_from_H  # Nx2 (dx, dy)
+
+    # Feature matrix: [X, Y, 1]
+    A_feat = np.column_stack([foot_world_xy, np.ones(n)])
+
+    # Fit dx and dy with RANSAC
+    ransac_dx = RANSACRegressor(
+        estimator=LinearRegression(fit_intercept=False),
+        residual_threshold=None, random_state=42,
+    )
+    ransac_dy = RANSACRegressor(
+        estimator=LinearRegression(fit_intercept=False),
+        residual_threshold=None, random_state=42,
+    )
+    ransac_dx.fit(A_feat, offset_observed[:, 0])
+    ransac_dy.fit(A_feat, offset_observed[:, 1])
+
+    offset_affine = np.vstack([
+        ransac_dx.estimator_.coef_,  # [a1, a2, a3] for dx
+        ransac_dy.estimator_.coef_,  # [b1, b2, b3] for dy
+    ])
+
+    # Residual stats per component
+    dx_inliers = ransac_dx.inlier_mask_
+    dy_inliers = ransac_dy.inlier_mask_
+    dx_pred = ransac_dx.predict(A_feat)
+    dy_pred = ransac_dy.predict(A_feat)
+    dx_res = np.abs(offset_observed[dx_inliers, 0] - dx_pred[dx_inliers])
+    dy_res = np.abs(offset_observed[dy_inliers, 1] - dy_pred[dy_inliers])
+
+    console.print(
+        f"  Affine dx: inliers={dx_inliers.sum()}/{n}, "
+        f"residual mean={dx_res.mean():.1f}px, p95={np.percentile(dx_res, 95):.1f}px"
+    )
+    console.print(
+        f"  Affine dy: inliers={dy_inliers.sum()}/{n}, "
+        f"residual mean={dy_res.mean():.1f}px, p95={np.percentile(dy_res, 95):.1f}px"
+    )
+    if np.percentile(dx_res, 95) > 30 or np.percentile(dy_res, 95) > 30:
+        console.print("  [yellow]Warning: p95 residual > 30px — affine may be too simple[/yellow]")
+
+    # Diagnostic: compare H_head (degenerate) vs affine at mat corners
+    mat_corners = np.array([
+        [mb[0], mb[1]], [mb[2], mb[1]], [mb[2], mb[3]], [mb[0], mb[3]],
+        [(mb[0] + mb[2]) / 2, (mb[1] + mb[3]) / 2],
+    ])
+    corner_labels = ["BL", "BR", "TR", "TL", "Center"]
+
+    # H_head for comparison (fit but don't use)
     src = foot_world_xy.reshape(-1, 1, 2).astype(np.float64)
     dst = head_pixel_xy.reshape(-1, 1, 2).astype(np.float64)
+    H_head_cmp, _ = cv2.findHomography(src, dst, cv2.RANSAC, 5.0)
 
-    H_head, mask = cv2.findHomography(src, dst, cv2.RANSAC, 5.0)
+    foot_corner_px = project_world_to_pixel(H_foot, mat_corners)
+    corner_feat = np.column_stack([mat_corners, np.ones(5)])
+    affine_offset = corner_feat @ offset_affine.T
+    affine_head_px = foot_corner_px + affine_offset
+    affine_heights = np.sqrt(np.sum(affine_offset ** 2, axis=1))
 
-    if H_head is None:
-        return None, {"error": "findHomography_failed", "n_data_points": n}
+    console.print("  Corner/center diagnostics (affine vs H_head):")
+    if H_head_cmp is not None:
+        h_head_cond = np.linalg.cond(H_head_cmp)
+        console.print(f"    H_head cond={h_head_cond:.1e}")
+        hhead_corner_px = project_world_to_pixel(H_head_cmp, mat_corners)
+        hhead_heights = np.sqrt(np.sum((foot_corner_px - hhead_corner_px) ** 2, axis=1))
+    else:
+        hhead_heights = np.full(5, np.nan)
 
-    n_inliers = int(mask.sum()) if mask is not None else 0
+    for i, lb in enumerate(corner_labels):
+        ah = affine_heights[i]
+        hh = hhead_heights[i]
+        hh_flag = " DEGEN" if (not np.isnan(hh) and (hh > 500 or hh < 20)) else ""
+        console.print(f"    {lb}: affine={ah:.0f}px, H_head={hh:.0f}px{hh_flag}")
 
-    # Reprojection error on inliers
-    inlier_idx = mask.ravel().astype(bool) if mask is not None else np.ones(n, dtype=bool)
-    proj = project_world_to_pixel(H_head, foot_world_xy[inlier_idx])
-    errors = np.sqrt(np.sum((proj - head_pixel_xy[inlier_idx]) ** 2, axis=1))
+    # Combined reprojection error (Euclidean on training data)
+    pred_offset = A_feat @ offset_affine.T
+    pred_head = foot_px_from_H + pred_offset
+    combined_inliers = dx_inliers & dy_inliers
+    errs = np.sqrt(np.sum((pred_head[combined_inliers] - head_pixel_xy[combined_inliers]) ** 2, axis=1))
 
-    metrics = {
+    metrics: Dict[str, Any] = {
         "n_data_points": n,
-        "n_inliers": n_inliers,
-        "reproj_error_mean_px": round(float(errors.mean()), 2) if len(errors) > 0 else 0.0,
-        "reproj_error_p95_px": round(float(np.percentile(errors, 95)), 2) if len(errors) > 0 else 0.0,
-        "reproj_error_max_px": round(float(errors.max()), 2) if len(errors) > 0 else 0.0,
+        "n_inliers_dx": int(dx_inliers.sum()),
+        "n_inliers_dy": int(dy_inliers.sum()),
+        "dx_residual_mean_px": round(float(dx_res.mean()), 2),
+        "dx_residual_p95_px": round(float(np.percentile(dx_res, 95)), 2),
+        "dy_residual_mean_px": round(float(dy_res.mean()), 2),
+        "dy_residual_p95_px": round(float(np.percentile(dy_res, 95)), 2),
+        "reproj_error_mean_px": round(float(errs.mean()), 2) if len(errs) > 0 else 0.0,
+        "reproj_error_p95_px": round(float(np.percentile(errs, 95)), 2) if len(errs) > 0 else 0.0,
+        "spatial_coverage_x": round(x_cov, 3),
+        "spatial_coverage_y": round(y_cov, 3),
     }
-    return H_head, metrics
+    return offset_affine, metrics
 
 
 def compute_pixel_height(
-    H_mat2img: np.ndarray,
-    H_head: np.ndarray,
+    H_foot: np.ndarray,
+    offset_affine: np.ndarray,
     world_xy: np.ndarray,
     img_w: int,
     img_h: int,
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Compute pixel height of a standing person at each mat position.
 
-    Uses two homographies: H_mat2img (ground/foot plane) and H_head (head plane).
-    pixel_height(X,Y) = ||foot_px - head_px|| at each world position.
+    Uses H_foot (trusted ground-plane homography) + affine offset model.
+    pixel_height(X,Y) = ||offset_affine @ [X, Y, 1]||
 
     Returns:
-        (pixel_heights, in_frame) — pixel_heights is N-length, in_frame is
-        boolean mask for points where both foot AND head project inside the
-        camera frame.
+        (pixel_heights, in_frame, foot_px, head_px).
+        in_frame checks foot projection only — head can be above frame.
     """
-    foot_px = project_world_to_pixel(H_mat2img, world_xy)
-    head_px = project_world_to_pixel(H_head, world_xy)
+    foot_px = project_world_to_pixel(H_foot, world_xy)
+    feat = np.column_stack([world_xy, np.ones(len(world_xy))])
+    offset = feat @ offset_affine.T  # Nx2 (dx, dy)
+    head_px = foot_px + offset
 
-    pixel_heights = np.sqrt(
-        (foot_px[:, 0] - head_px[:, 0]) ** 2
-        + (foot_px[:, 1] - head_px[:, 1]) ** 2
-    )
+    pixel_heights = np.sqrt(np.sum(offset ** 2, axis=1))
 
-    margin = 20  # small margin for points near frame edge
+    # in_frame: foot must be in frame (head can extend above — still detectable)
     in_frame = (
-        (foot_px[:, 0] >= -margin) & (foot_px[:, 0] < img_w + margin)
-        & (foot_px[:, 1] >= -margin) & (foot_px[:, 1] < img_h + margin)
-        & (head_px[:, 0] >= -margin) & (head_px[:, 0] < img_w + margin)
-        & (head_px[:, 1] >= -margin) & (head_px[:, 1] < img_h + margin)
+        (foot_px[:, 0] >= 0) & (foot_px[:, 0] < img_w)
+        & (foot_px[:, 1] >= 0) & (foot_px[:, 1] < img_h)
     )
 
-    return pixel_heights, in_frame
+    return pixel_heights, in_frame, foot_px, head_px
 
 
 # ── Mat Perimeter ──────────────────────────────────────────────────────────────
@@ -377,16 +462,16 @@ def _draw_mat_rects(ax: plt.Axes, configs_root: Path, alpha: float = 0.3) -> Non
         ax.add_patch(rect)
 
 
-def _load_H_head(cam_id: str, configs_root: Path) -> Optional[np.ndarray]:
-    """Load H_head from Phase 1 output (height_surface.json)."""
+def _load_offset_affine(cam_id: str, configs_root: Path) -> Optional[np.ndarray]:
+    """Load offset_affine (2x3) from Phase 1 output (height_surface.json)."""
     surface_path = configs_root / "cameras" / cam_id / "height_surface.json"
     if not surface_path.exists():
         return None
     data = json.loads(surface_path.read_text())
-    h_raw = data.get("H_head")
-    if h_raw is None:
+    raw = data.get("offset_affine")
+    if raw is None:
         return None
-    return np.asarray(h_raw, dtype=np.float64).reshape(3, 3)
+    return np.asarray(raw, dtype=np.float64).reshape(2, 3)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -401,8 +486,8 @@ def run_phase1(
     reference_height_m: Optional[float],
     configs_root: Path,
 ) -> Dict[str, Dict[str, Any]]:
-    """Phase 1: Fit H_head (head-plane homography) per camera from standing detections."""
-    console.print("\n[bold cyan]═══ Phase 1: Head Homography Fitting ═══[/bold cyan]")
+    """Phase 1: Fit affine offset model per camera from standing detections."""
+    console.print("\n[bold cyan]═══ Phase 1: Affine Offset Model Fitting ═══[/bold cyan]")
 
     analysis_dir = outputs_root / "_analysis"
     analysis_dir.mkdir(parents=True, exist_ok=True)
@@ -460,7 +545,7 @@ def run_phase1(
             continue
         if n_data < MIN_DATA_POINTS_WARN:
             console.print(
-                f"  [yellow]Warning: <{MIN_DATA_POINTS_WARN} points, H_head may be low-confidence[/yellow]"
+                f"  [yellow]Warning: <{MIN_DATA_POINTS_WARN} points, model may be low-confidence[/yellow]"
             )
 
         # Extract world foot positions and head pixel positions
@@ -469,29 +554,33 @@ def run_phase1(
             filtered["y_m"].values.astype(np.float64),
         ])
         head_pixel = np.column_stack([
-            ((filtered["x1"] + filtered["x2"]) / 2).values.astype(np.float64),  # bbox center x
-            filtered["y1"].values.astype(np.float64),  # bbox TOP
+            ((filtered["x1"] + filtered["x2"]) / 2).values.astype(np.float64),
+            filtered["y1"].values.astype(np.float64),
         ])
         heights = filtered["bbox_h"].values.astype(np.float64)
 
-        # Fit H_head
-        H_head, metrics = fit_head_homography(foot_world, head_pixel)
+        mat_poly = load_mat_blueprint(configs_root)
 
-        if H_head is None:
-            console.print(f"  [red]H_head fitting failed: {metrics.get('error')}[/red]")
+        # Fit affine offset model
+        offset_affine, metrics = fit_offset_affine(
+            geom["H_mat2img"], foot_world, head_pixel, mat_poly,
+        )
+
+        if offset_affine is None:
+            console.print(f"  [red]Affine fitting failed: {metrics.get('error')}[/red]")
             continue
 
         console.print(
-            f"  H_head: inliers={metrics['n_inliers']}/{metrics['n_data_points']}, "
-            f"reproj_err: mean={metrics['reproj_error_mean_px']:.1f}px, "
+            f"  Affine reproj: mean={metrics['reproj_error_mean_px']:.1f}px, "
             f"p95={metrics['reproj_error_p95_px']:.1f}px"
         )
 
         # Optional reference height scaling
         ref_cal = None
         if reference_height_m is not None:
-            px_heights, in_frame = compute_pixel_height(
-                geom["H_mat2img"], H_head, foot_world, geom["img_w"], geom["img_h"]
+            px_heights, in_frame, _, _ = compute_pixel_height(
+                geom["H_mat2img"], offset_affine, foot_world,
+                geom["img_w"], geom["img_h"],
             )
             valid = in_frame & (px_heights > 0)
             if valid.any():
@@ -520,7 +609,7 @@ def run_phase1(
 
         surface_data: Dict[str, Any] = {
             "camera_id": cam_id,
-            "H_head": H_head.tolist(),
+            "offset_affine": offset_affine.tolist(),
             "fit_metrics": metrics,
             "scatter_data": scatter,
             "reference_calibration": ref_cal,
@@ -533,7 +622,7 @@ def run_phase1(
         console.print(f"  Saved: {surface_path}")
 
         _plot_phase1(
-            cam_id, geom, H_head, foot_world, heights,
+            cam_id, geom, offset_affine, foot_world, heights,
             metrics, configs_root, analysis_dir,
         )
         results[cam_id] = surface_data
@@ -544,7 +633,7 @@ def run_phase1(
 def _plot_phase1(
     cam_id: str,
     geom: Dict,
-    H_head: np.ndarray,
+    offset_affine: np.ndarray,
     foot_world: np.ndarray,
     heights: np.ndarray,
     metrics: Dict,
@@ -563,15 +652,15 @@ def _plot_phase1(
     )
     plt.colorbar(sc, ax=ax, label="BBox Height (px)")
 
-    # Contour from two-homography model
+    # Contour from affine offset model
     bounds = mat_poly.bounds
     gx = np.linspace(bounds[0] - 1, bounds[2] + 1, 100)
     gy = np.linspace(bounds[1] - 1, bounds[3] + 1, 100)
     GX, GY = np.meshgrid(gx, gy)
     grid_flat = np.column_stack([GX.ravel(), GY.ravel()])
 
-    GZ, _ = compute_pixel_height(
-        geom["H_mat2img"], H_head, grid_flat,
+    GZ, _, _, _ = compute_pixel_height(
+        geom["H_mat2img"], offset_affine, grid_flat,
         geom["img_w"], geom["img_h"],
     )
     GZ = GZ.reshape(GX.shape)
@@ -588,7 +677,7 @@ def _plot_phase1(
     n_pts = metrics["n_data_points"]
     ax.set_xlabel("X (meters)")
     ax.set_ylabel("Y (meters)")
-    ax.set_title(f"{cam_id} — Two-Homography Height Surface (reproj={reproj:.1f}px, n={n_pts})")
+    ax.set_title(f"{cam_id} — Affine Offset Height Surface (reproj={reproj:.1f}px, n={n_pts})")
     ax.set_aspect("equal")
     ax.grid(True, alpha=0.3)
 
@@ -637,15 +726,16 @@ def run_phase2(
                 f"max={verif['max_error_px']:.1f}px"
             )
 
-        # Load H_head from Phase 1
-        H_head = _load_H_head(cam_id, configs_root)
-        if H_head is None:
-            console.print("  [red]No H_head — run Phase 1 first[/red]")
+        # Load affine offset model from Phase 1
+        offset_affine = _load_offset_affine(cam_id, configs_root)
+        if offset_affine is None:
+            console.print("  [red]No offset model — run Phase 1 first[/red]")
             continue
 
-        # Project feet and heads via their respective homographies
+        # Project feet via H, heads via affine offset
         foot_px = project_world_to_pixel(H, perimeter_pts)
-        head_px = project_world_to_pixel(H_head, perimeter_pts)
+        feat = np.column_stack([perimeter_pts, np.ones(len(perimeter_pts))])
+        head_px = foot_px + feat @ offset_affine.T
 
         # Filter to points where the foot projects inside (or near) the frame
         in_frame = (
@@ -848,17 +938,17 @@ def run_phase3(
         geom = load_camera_geometry(cam_id, configs_root)
         img_w, img_h = geom["img_w"], geom["img_h"]
 
-        H_head = _load_H_head(cam_id, configs_root)
-        if H_head is None:
-            console.print("  [red]No H_head — run Phase 1 first[/red]")
+        offset_affine = _load_offset_affine(cam_id, configs_root)
+        if offset_affine is None:
+            console.print("  [red]No offset model — run Phase 1 first[/red]")
             continue
 
         roi_path = configs_root / "cameras" / cam_id / "roi_mask.json"
         roi_data = json.loads(roi_path.read_text()) if roi_path.exists() else None
 
         # Compute standing pixel heights and in-frame mask
-        standing_heights, in_frame = compute_pixel_height(
-            geom["H_mat2img"], H_head, grid_pts_mat, img_w, img_h,
+        standing_heights, in_frame, _, _ = compute_pixel_height(
+            geom["H_mat2img"], offset_affine, grid_pts_mat, img_w, img_h,
         )
         kneeling_heights = standing_heights * KNEELING_FRACTION
         n_in_frame = int(in_frame.sum())
@@ -1181,13 +1271,16 @@ def run_phase4(
         if len(zone_pts) == 0:
             continue
 
-        H_head = _load_H_head(cam_id, configs_root)
+        offset_affine = _load_offset_affine(cam_id, configs_root)
 
         # Project zone to pixel space for bounding rect
         zone_foot_px = project_world_to_pixel(H, zone_pts)
-        if H_head is not None:
-            zone_head_px = project_world_to_pixel(H_head, zone_pts)
-            zone_head_margin = zone_head_px + (zone_head_px - zone_foot_px) * ROI_HEAD_BUFFER_FRAC
+        if offset_affine is not None:
+            zone_feat = np.column_stack([zone_pts, np.ones(len(zone_pts))])
+            zone_offset = zone_feat @ offset_affine.T
+            zone_head_px = zone_foot_px + zone_offset
+            direction = zone_head_px - zone_foot_px
+            zone_head_margin = zone_head_px + direction * ROI_HEAD_BUFFER_FRAC
         else:
             zone_head_margin = zone_foot_px.copy()
             zone_head_margin[:, 1] -= 100
@@ -1203,10 +1296,10 @@ def run_phase4(
         restricted_w = x_max - x_min
         restricted_h = y_max - y_min
 
-        # Compute heights for zone points via two-homography model
-        if H_head is not None:
-            zone_standing, zone_in_frame = compute_pixel_height(
-                H, H_head, zone_pts, img_w, img_h,
+        # Compute heights for zone points via affine offset model
+        if offset_affine is not None:
+            zone_standing, zone_in_frame, _, _ = compute_pixel_height(
+                H, offset_affine, zone_pts, img_w, img_h,
             )
         else:
             zone_standing = np.full(len(zone_pts), 50.0)
