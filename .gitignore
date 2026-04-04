@@ -192,9 +192,7 @@ archive/
 
 # Generated outputs and local data (do not commit)
 outputs/
-outputs_corrected_h/
-outputs_corrected_blueprint/
-outputs_cross_camera/
+outputs_cp20_baseline/
 data/
 calibration_artifacts/
 calibration_results/
