@@ -62,6 +62,7 @@ stages:
     detection:
       isolation_gate:
         enabled: true
+        require_keypoints: true    # false → skip H4, use H1+H2+H3 only
         min_aspect_ratio: 0.8
         max_iou_overlap: 0.3
         min_bbox_area: null       # auto per-camera from p5 if null

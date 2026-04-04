@@ -10,7 +10,9 @@ paths:
   contact points to world coordinates via `project_to_world()` (undistortion applied
   internally when K+dist present). Optionally loads `calibration_correction.json` (CP18
   affine, superseded by CP19). CP20 additions: keypoints extraction (17 COCO keypoints),
-  isolation gate (per-detection is_isolated flag), HSV color histogram extraction
+  isolation gate (per-detection is_isolated flag, `require_keypoints` config controls
+  whether H4 torso keypoint check is applied — set false for detect-only models),
+  HSV color histogram extraction
   (torso-crop with center-bbox fallback). Outputs: detections, tracklet_frames,
   tracklet_summaries, contact_points (all .parquet), keypoints.parquet,
   color_histograms.parquet, tracklet_histogram_summaries.parquet, audit.jsonl.

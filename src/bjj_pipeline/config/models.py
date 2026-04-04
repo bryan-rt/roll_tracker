@@ -163,6 +163,7 @@ class StageAConfig(BaseModel):
         model_config = ConfigDict(extra="forbid")
 
         enabled: bool = Field(default=True, description="Enable per-detection isolation flagging")
+        require_keypoints: bool = Field(default=True, description="If false, skip H4 torso keypoint check (for detect-only models)")
         min_aspect_ratio: float = Field(default=0.8, ge=0.0)
         max_iou_overlap: float = Field(default=0.3, ge=0.0, le=1.0)
         min_bbox_area: Optional[float] = Field(default=None, description="Auto per-camera from p5 if null")

@@ -55,6 +55,7 @@ def compute_isolation_flags(
     max_area = config.get("max_bbox_area", None)
     min_torso_kp = int(config.get("min_torso_keypoints", 4))
     min_kp_conf = float(config.get("min_keypoint_conf", 0.3))
+    require_kps = bool(config.get("require_keypoints", True))
 
     n = len(bboxes)
     flags = [True] * n
@@ -88,17 +89,18 @@ def compute_isolation_flags(
             if max_area is not None and area > float(max_area):
                 flags[i] = False
 
-    # H4: Torso keypoint plausibility
-    for i, kps in enumerate(keypoints_list):
-        if kps is None:
-            flags[i] = False
-            continue
-        n_good = sum(
-            1 for idx in TORSO_KP_INDICES
-            if idx < kps.shape[0] and float(kps[idx, 2]) > min_kp_conf
-        )
-        if n_good < min_torso_kp:
-            flags[i] = False
+    # H4: Torso keypoint plausibility (skip when require_keypoints=false)
+    if require_kps:
+        for i, kps in enumerate(keypoints_list):
+            if kps is None:
+                flags[i] = False
+                continue
+            n_good = sum(
+                1 for idx in TORSO_KP_INDICES
+                if idx < kps.shape[0] and float(kps[idx, 2]) > min_kp_conf
+            )
+            if n_good < min_torso_kp:
+                flags[i] = False
 
     return flags
 
