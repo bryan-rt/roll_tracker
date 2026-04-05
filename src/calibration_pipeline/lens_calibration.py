@@ -431,7 +431,10 @@ def _run_interactive(
 
     def _redraw_all_points() -> None:
         for a in edge_artists:
-            a.remove()
+            try:
+                a.remove()
+            except NotImplementedError:
+                pass  # some base artists can't be removed
         edge_artists.clear()
         # Draw auto-detected points (cyan, smaller)
         for ex, ey in auto_img:

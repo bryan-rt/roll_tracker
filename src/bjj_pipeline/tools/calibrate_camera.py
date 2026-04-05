@@ -37,6 +37,7 @@ import sys
 from pathlib import Path
 from typing import Optional, Tuple
 
+import matplotlib.pyplot as plt
 import numpy as np
 
 
@@ -150,6 +151,7 @@ def run_wizard(
             video_path=video_path,
             mat_blueprint_path=mat_blueprint_path,
         )
+        plt.close("all")  # ensure clean teardown before next step
         # Re-check state after Step 1
         has_h, has_lens = _load_state(homography_json)
         if not has_h:
@@ -174,6 +176,7 @@ def run_wizard(
             homography_json_path=homography_json,
             video_path=video_path,
         )
+        plt.close("all")  # ensure clean teardown before next step
         # Re-check state after Step 2
         has_h, has_lens = _load_state(homography_json)
         if not has_lens:
@@ -200,6 +203,7 @@ def run_wizard(
         video_path=video_path,
         mat_blueprint_path=mat_blueprint_path,
     )
+    plt.close("all")
 
     # Final summary
     _print_summary(camera_id, homography_json)
