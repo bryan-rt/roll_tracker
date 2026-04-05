@@ -2,6 +2,16 @@
 layout: default
 ---
 
+> **⚠️ HISTORICAL DOCUMENT (January 2026)**
+> These worker thread specs were written during the initial POC phase. The architecture
+> has evolved significantly since then. For current documentation, see:
+> - `.claude/rules/` — domain-scoped context (auto-loaded by Claude Code)
+> - `CLAUDE.md` — CLI persistent memory (tactical reference)
+> - `docs/decisions-archive.md` — full decision history
+> - `docs/calibration_guide.md` — current calibration workflow
+>
+> These planning docs are preserved as historical context for why early decisions were made.
+
 # roll_tracker planning pack (expanded)
 
 Each file in `planning/worker_threads/` is meant to be pasted as the **first message** in a dedicated worker chat.

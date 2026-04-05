@@ -60,11 +60,19 @@ docs/                     # Calibration guide, decisions archive, audits
 
 ## Current Status
 
+*Last updated 2026-04-05.*
+
 Pipeline A→F verified E2E. Session pipeline validated (3-camera, 35/36 clips).
 **CP20:** YOLOv8n-pose model, isolation gate, HSV color histograms, Tier 3 histogram
 cross-camera evidence. Stage A outputs 3 new sidecars: keypoints.parquet,
 color_histograms.parquet, tracklet_histogram_summaries.parquet.
-**Open issue:** PPDmUg-202751 — NAType in frame_index at D2. Needs null-safe fix.
+- Camera geometry analysis tool complete (v6 pose decomposition, 4-phase)
+- Lens calibration bounds fix applied (fixed-f candidate sweep)
+- H coordinate space verified as undistorted pixel space
+- Calibration wizard re-run for all 3 cameras with updated lens cal
+- Cross-camera agreement verified (sub-cm, 9mm worst-case)
+- ROI mask union fix: brief written, not yet applied (pending)
+- **Open issue:** PPDmUg-202751 — NAType in frame_index at D2. Needs null-safe fix.
 
 See `.claude/rules/` for domain-specific documentation (auto-loaded by path).
 See `docs/decisions-archive.md` for full checkpoint history.

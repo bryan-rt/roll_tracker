@@ -59,6 +59,11 @@ bug fix history. It is NOT auto-loaded by Claude Code. Access it manually when n
 | CP19: Unified calibration pipeline | ✅ Implemented | Replaces CP18 affine correction. Phase A (polyline lens cal) + Phase B (mat-line H refinement via RANSAC). Integrated into save handlers + batch recalibration script. Empty-frame selection via temporal median. Results: 1.0-1.3px reproj, 61-82% inliers across 3 cameras. |
 | Cross-camera calibration verification | ✅ Complete | `calibration_verify.py` pairwise world-coordinate agreement. 9mm worst-case deviation across 3 cameras. |
 | Undistortion pipeline audit | ✅ Complete | All 9 code paths verified correct (2026-04-02). Convention: u_px/v_px = raw pixel, x_m/y_m = world via project_to_world(). See `docs/undistortion_audit.md`. |
+| Pose decomposition (v6) as canonical height model | ✅ Decided | Replaces polynomial/affine fitting (v1–v5). Uses K⁻¹@H decomposition → SVD-orthogonalized 3×4 P matrix. Zero training data. |
+| H in undistorted pixel space | ✅ Decided | Verified by tracing wizard Step 3 code path. Comments saying "raw" are stale. |
+| Lens calibration fixed-f candidate sweep | ✅ Decided | Replaces loose-bounds single optimizer. `_get_f_candidates` from `homography_calibrate.py`. k bounds ±1.0. |
+| Camera geometry analysis tool (4-phase) | ✅ Implemented | height surface → ROI mask → detectability → coverage optimization. `tools/camera_geometry_analysis.py`. |
+| ROI mask union fix | 🔲 Pending | Replace band polygon with `foot_poly.union(head_poly)` in `run_phase2`. |
 | Processor service dockerization | 📋 MVP task | Pipeline runs natively now. Docker for Linux deployment. |
 | Notification channel for drift alerts | 📋 TBD | Supabase Realtime likely. |
 | Gym owner web app stack | 📋 TBD | Blueprint + homography calibration UI. |

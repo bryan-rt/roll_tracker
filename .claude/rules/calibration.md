@@ -65,6 +65,44 @@ Pairwise world-coordinate agreement diagnostic. Compares where cameras place sha
 blueprint edges. Thresholds: <5cm excellent, 5-15cm acceptable, >15cm investigate.
 **Result: 9mm worst-case pairwise deviation.**
 
+### Camera Geometry Analysis (`tools/camera_geometry_analysis.py`)
+
+4-phase tool for camera placement analysis and optimization:
+- **Phase 1:** Height surface estimation via pose decomposition
+- **Phase 2:** ROI mask generation (foot + head perimeter polygon union)
+- **Phase 3:** Detectability scoring (kneeling-based, 0.45× standing height)
+- **Phase 4:** Coverage optimization (imgsz recommendations per camera)
+
+**Pose decomposition model (v6)** — canonical height prediction method:
+- Uses only H (from calibration wizard) and K (from lens calibration), both in `homography.json`
+- Decomposition: `M = K⁻¹ @ H`, extract r1, r2, t, then `r3 = cross(r1, r2)`,
+  SVD-orthogonalize, build 3×4 P matrix
+- Uses raw r1/r2/t for Z=0 plane (exact match to H) and SVD-corrected r3 for Z≠0
+  (person height projection)
+- `cv2.decomposeHomographyMat()` is the **wrong** function — that's for inter-image
+  homographies, not world-to-image. Do not use it.
+- Zero training data needed. Replaces polynomial surface (v1), NN fallback (v2),
+  two-homography (v3), affine offset (v4), and dy-only quadratic (v5) — all failed
+- Output: `configs/cameras/{cam_id}/height_surface.json` — 3×4 P matrix +
+  decomposition diagnostics (scale, r-norms, orthogonality, reproj error)
+
+### Lens Calibration Bounds Fix
+
+`lens_calibration.py` `_solve()` was rewritten to use a fixed-f candidate sweep
+imported from `homography_calibrate.py` (`_get_f_candidates`):
+- Loops over focal length candidates, optimizes only k1/k2 with bounds ±1.0
+- Skips candidates where k hits bound
+- Picks lowest cost across all candidates
+- Replaces the old single `sp_minimize(f, k1, k2)` with loose bounds that produced
+  degenerate solutions
+
+### H Coordinate Space Confirmation
+
+H stored in `homography.json` is in **undistorted** pixel space. Verified by tracing the
+wizard Step 3 code path: frame is undistorted for display, user clicks on undistorted
+frame, `findHomography` computed in undistorted space. Any code comments saying "raw pixel
+space" for stored correspondences are stale.
+
 ### Batch Recalibration (`cp19_recalibrate.py`)
 
 Re-runs Phase A+B on all cameras using existing anchor correspondences + calibration_test
