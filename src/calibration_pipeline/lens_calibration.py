@@ -674,18 +674,47 @@ def _run_interactive(
 
         cx = img_w / 2.0
         cy = img_h / 2.0
-        f0 = float(max(img_w, img_h))
 
-        result = sp_minimize(
-            _collinearity_cost,
-            x0=np.array([f0, 0.0, 0.0]),
-            args=(all_img_arr, edge_groups, cx, cy),
-            method="Powell",
-            bounds=[(200.0, 3000.0), (-10.0, 10.0), (-10.0, 10.0)],
-            options={"maxiter": 5000, "ftol": 1e-6},
-        )
+        # Fixed-f candidate sweep: same algorithm as _polyline_lens_calibration_v2.
+        # f is a hardware constant — optimizing it jointly with k1/k2 is degenerate.
+        # Fix f to each candidate, optimize only k1/k2 with tight bounds.
+        from bjj_pipeline.tools.homography_calibrate import _get_f_candidates
 
-        f_opt, k1_opt, k2_opt = float(result.x[0]), float(result.x[1]), float(result.x[2])
+        k_bounds = (-1.0, 1.0)
+        f_candidates = _get_f_candidates((img_w, img_h))
+        best_cost = float("inf")
+        f_opt, k1_opt, k2_opt = float(f_candidates[0]), 0.0, 0.0
+
+        for f_cand in f_candidates:
+            f_val = float(f_cand)
+
+            def _cost_fixed_f(params: np.ndarray) -> float:
+                return _collinearity_cost(
+                    np.array([f_val, params[0], params[1]]),
+                    all_img_arr, edge_groups, cx, cy,
+                )
+
+            result = sp_minimize(
+                _cost_fixed_f,
+                x0=np.array([0.0, 0.0]),
+                method="Powell",
+                bounds=[k_bounds, k_bounds],
+                options={"maxiter": 3000, "ftol": 1e-6},
+            )
+            cost = float(result.fun)
+            k1_c, k2_c = float(result.x[0]), float(result.x[1])
+
+            # Skip if k hit bound
+            tol = 1e-3
+            if (abs(k1_c - k_bounds[0]) < tol or abs(k1_c - k_bounds[1]) < tol
+                    or abs(k2_c - k_bounds[0]) < tol or abs(k2_c - k_bounds[1]) < tol):
+                continue
+
+            if cost < best_cost:
+                best_cost = cost
+                f_opt, k1_opt, k2_opt = f_val, k1_c, k2_c
+
+        result_fun = best_cost
         K = np.array([[f_opt, 0, cx], [0, f_opt, cy], [0, 0, 1]], dtype=np.float64)
         dist_4 = np.array([k1_opt, k2_opt, 0.0, 0.0], dtype=np.float64)
         dist_full = np.array([[k1_opt, k2_opt, 0.0, 0.0, 0.0]], dtype=np.float64)
@@ -702,7 +731,7 @@ def _run_interactive(
             resid = _line_fit_residuals(undist[idxs])
             per_edge_rms[_EDGE_NAMES[ei]] = float(np.sqrt(np.mean(resid ** 2)))
 
-        total_cost = float(result.fun)
+        total_cost = float(result_fun)
 
         state["K"] = K
         state["dist"] = dist_full
@@ -723,7 +752,7 @@ def _run_interactive(
             f"{name}={per_edge_rms[name]:.2f}px" for name in _EDGE_NAMES
         )
         print(f"  Per-edge RMS: {per_edge_str}")
-        print(f"  Converged: {result.success}, iterations: {result.nit}")
+        print(f"  Candidates evaluated: {len(f_candidates)}")
 
         # Show undistorted frame
         undistorted_bgr = cv2.undistort(frame_bgr, K, dist_full)
