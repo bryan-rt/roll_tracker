@@ -1,4 +1,4 @@
-"""CP20: Side-by-side model detection comparison video.
+"""CP20/CP22: Side-by-side model detection comparison video.
 
 Produces one MP4 per camera with a 2x2 grid showing detections from 4 models
 on the exact same frames. Used to visually verify that detection count changes
@@ -7,7 +7,7 @@ on the exact same frames. Used to visually verify that detection count changes
 Layout:
     yolov8n (baseline) | yolov8n-pose
     -------------------|-------------
-    yolov8s-pose       | yolo11n-pose
+    yolov8s-pose       | yolo26n-pose
 
 Usage:
     python tools/compare_model_detections.py
@@ -28,14 +28,14 @@ MODELS = [
     "models/yolov8n.pt",
     "models/yolov8n-pose.pt",
     "models/yolov8s-pose.pt",
-    "models/yolo11n-pose.pt",
+    "models/yolo26n-pose.pt",
 ]
 
 MODEL_LABELS = [
     "yolov8n (baseline)",
     "yolov8n-pose",
     "yolov8s-pose",
-    "yolo11n-pose",
+    "yolo26n-pose",
 ]
 
 TEST_CLIPS = {

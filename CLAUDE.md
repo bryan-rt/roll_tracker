@@ -72,6 +72,11 @@ color_histograms.parquet, tracklet_histogram_summaries.parquet.
 - Calibration wizard re-run for all 3 cameras with updated lens cal
 - Cross-camera agreement verified (sub-cm, 9mm worst-case)
 - ROI mask union fix: brief written, not yet applied (pending)
+**CP22:** Default detection model updated to yolo26n-pose (STAL loss, better small-object
+detection). CoreML export validated for both yolov8n-pose and yolo26n-pose — ~2x speedup
+over MPS (14.4ms vs 27.4ms per frame). CoreML is a viable future `device` option but
+needs a config knob designed before changing the default.
+- ultralytics upgraded 8.3.252 → 8.4.33 (`--no-deps`)
 - **Open issue:** PPDmUg-202751 — NAType in frame_index at D2. Needs null-safe fix.
 
 See `.claude/rules/` for domain-specific documentation (auto-loaded by path).

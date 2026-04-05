@@ -183,7 +183,7 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 		_cfg_get(
 			config,
 			"stages.stage_A.detector.model_path",
-			_cfg_get(config, "detector.model_path", _cfg_get(config, "models.yolo_det", "models/yolov8n.pt")),
+			_cfg_get(config, "detector.model_path", _cfg_get(config, "models.yolo_det", "models/yolo26n-pose.pt")),
 		)
 	)
 	seg_model_path = _cfg_get(

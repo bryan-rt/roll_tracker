@@ -468,7 +468,7 @@ def run_multiplex_AC(*,
                         _cfg_get(
                             resolved_config,
                             "stages.stage_A.detector.model_path",
-                            _cfg_get(resolved_config, "detector.model_path", "models/yolov8n.pt"),
+                            _cfg_get(resolved_config, "detector.model_path", "models/yolo26n-pose.pt"),
                         )
                     )
                     seg_model_path = _cfg_get(
