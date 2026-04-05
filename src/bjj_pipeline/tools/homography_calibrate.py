@@ -839,6 +839,7 @@ def _lens_cal_carousel(
 
     state = {"idx": 0, "selected": None, "cancelled": False}
 
+    plt.rcParams["toolbar"] = "None"
     fig = plt.figure(figsize=(12, 7))
     ax = fig.add_subplot(1, 1, 1)
     ax.set_axis_off()
@@ -1196,6 +1197,7 @@ def _qa_overlay_dialog(
     x_idxs = [int(np.argmin(np.abs(xs - gx))) for gx in grid_xs]
     y_idxs = [int(np.argmin(np.abs(ys - gy))) for gy in grid_ys]
 
+    plt.rcParams["toolbar"] = "None"
     fig = plt.figure(figsize=(10, 6))
     ax = fig.add_subplot(1, 1, 1)
     ax.imshow(frame_rgb)
@@ -1333,38 +1335,112 @@ def _interactive_calibrate(
 
     pairs = ClickPairs(image_points_px=[], mat_points=[])
 
-    fig, (ax_img, ax_mat) = plt.subplots(1, 2, figsize=(12, 6))
-    fig.suptitle(f"Homography Calibrator — {camera_id}")
+    plt.rcParams["toolbar"] = "None"  # disable toolbar (save/zoom buttons)
+    fig, ax = plt.subplots(1, 1, figsize=(14, 9))
+    fig.subplots_adjust(left=0.05, right=0.95, top=0.93, bottom=0.05)
 
-    ax_img.imshow(frame_rgb)
-    ax_img.set_title("Image (px) — click points here")
-    ax_img.set_axis_off()
+    # ── Tab-toggle view: IMAGE vs MAT blueprint ──
+    # Both are drawn on the same axes; we toggle visibility with Tab.
+    # This gives the full window to each view instead of splitting 50/50.
 
-    ax_mat.set_title("Mat blueprint — click corresponding points here")
-    ax_mat.set_xlabel("mat_x")
-    ax_mat.set_ylabel("mat_y")
-    ax_mat.grid(True)
+    # Image view artists
+    img_h_px, img_w_px = frame_rgb.shape[:2]
+    _img_artist = ax.imshow(frame_rgb)
 
-    # Evidence-based rendering for your rectangle-list blueprint schema
+    # Blueprint view artists (hidden initially)
     rects: List[Tuple[float, float, float, float, str]] = []
+    _mat_patches: List[Any] = []
+    _mat_texts: List[Any] = []
     if blueprint is not None:
-        rects = _render_mat_blueprint_rects(ax_mat, blueprint)
+        rects = _parse_rects_from_blueprint(blueprint)
+        import matplotlib.patches as _mp
+        for (x0, y0, w, h, label) in rects:
+            rect_patch = _mp.Rectangle(
+                (x0, y0), w, h,
+                linewidth=1.5, edgecolor="blue", facecolor="lightblue", alpha=0.3,
+            )
+            ax.add_patch(rect_patch)
+            rect_patch.set_visible(False)
+            _mat_patches.append(rect_patch)
+            cx, cy = x0 + w / 2, y0 + h / 2
+            t = ax.text(cx, cy, label, ha="center", va="center", fontsize=8, color="blue")
+            t.set_visible(False)
+            _mat_texts.append(t)
 
-    state = {"expect": "img", "qa_active": False}  # img then mat alternating
-    # --- Persistent point/label artists (avoid ax.lines.clear(), which breaks on newer mpl) ---
+    _mat_grid_lines: List[Any] = []
+    # Grid lines for blueprint (will be shown on mat tab)
+    if rects:
+        all_xs = [r[0] for r in rects] + [r[0] + r[2] for r in rects]
+        all_ys = [r[1] for r in rects] + [r[1] + r[3] for r in rects]
+        gx_min, gx_max = min(all_xs) - 1, max(all_xs) + 1
+        gy_min, gy_max = min(all_ys) - 1, max(all_ys) + 1
+        for gx in range(int(gx_min), int(gx_max) + 1):
+            ln = ax.axvline(gx, color="gray", linewidth=0.3, alpha=0.5)
+            ln.set_visible(False)
+            _mat_grid_lines.append(ln)
+        for gy in range(int(gy_min), int(gy_max) + 1):
+            ln = ax.axhline(gy, color="gray", linewidth=0.3, alpha=0.5)
+            ln.set_visible(False)
+            _mat_grid_lines.append(ln)
+
+    state = {"expect": "img", "qa_active": False, "tab": "img"}
+
+    def _switch_tab(tab: str) -> None:
+        """Toggle between 'img' and 'mat' views."""
+        state["tab"] = tab
+        is_img = (tab == "img")
+
+        # Image artist
+        _img_artist.set_visible(is_img)
+
+        # Mat patches/labels/grid
+        for p in _mat_patches:
+            p.set_visible(not is_img)
+        for t in _mat_texts:
+            t.set_visible(not is_img)
+        for ln in _mat_grid_lines:
+            ln.set_visible(not is_img)
+
+        # Point markers — show all on both tabs, but img markers are in
+        # pixel coords and mat markers are in world coords. We need to
+        # switch the axes limits and hide the wrong set.
+        for a in img_point_artists + img_text_artists:
+            a.set_visible(is_img)
+        for a in mat_point_artists + mat_text_artists:
+            a.set_visible(not is_img)
+
+        if is_img:
+            ax.set_xlim(0, img_w_px)
+            ax.set_ylim(img_h_px, 0)
+            ax.set_title(
+                f"IMAGE — {camera_id}  |  "
+                f"{len(pairs.image_points_px)} img pts, {len(pairs.mat_points)} mat pts  |  "
+                f"[tab]=switch  [s]=solve  [u]=undo  [c]=clear  [q]=quit"
+            )
+        else:
+            if rects:
+                ax.set_xlim(gx_min, gx_max)
+                ax.set_ylim(gy_min, gy_max)
+            ax.set_title(
+                f"MAT BLUEPRINT — {camera_id}  |  "
+                f"{len(pairs.image_points_px)} img pts, {len(pairs.mat_points)} mat pts  |  "
+                f"[tab]=switch  [s]=solve  [u]=undo  [c]=clear  [q]=quit"
+            )
+
+        fig.canvas.draw_idle()
+
+    # --- Persistent point/label artists ---
     img_point_artists: List[Any] = []
     img_text_artists: List[Any] = []
     mat_point_artists: List[Any] = []
     mat_text_artists: List[Any] = []
 
-    def _add_point(ax, x: float, y: float, *, color: str, label: str):
-        # plot() returns a Line2D; keep references so we can remove on undo/clear
-        pt = ax.plot([x], [y], marker="o", linestyle="none", color=color)[0]
-        txt = ax.text(x, y, label, color=color, fontsize=10, ha="left", va="bottom")
+    def _add_point(x: float, y: float, *, color: str, label: str):
+        pt = ax.plot([x], [y], marker="o", linestyle="none", color=color, markersize=8)[0]
+        txt = ax.text(x, y, f" {label}", color=color, fontsize=10, ha="left", va="bottom")
         return pt, txt
 
     def _undo_last():
-        # If we have an unmatched image point (img > mat), remove that image point.
         if len(pairs.image_points_px) > len(pairs.mat_points):
             pairs.image_points_px.pop()
             if img_point_artists:
@@ -1373,7 +1449,6 @@ def _interactive_calibrate(
                 img_text_artists.pop().remove()
             state["expect"] = "img"
             return
-        # Otherwise remove the last complete pair.
         if pairs.image_points_px and pairs.mat_points:
             pairs.image_points_px.pop()
             pairs.mat_points.pop()
@@ -1405,38 +1480,41 @@ def _interactive_calibrate(
         state["expect"] = "img"
 
     def on_click(event):
-        if event.inaxes not in (ax_img, ax_mat):
+        if event.inaxes is not ax:
             return
-        # Ignore clicks with no data coords (can happen on some backends)
         if event.xdata is None or event.ydata is None:
             return
 
         if state["expect"] == "img":
-            if event.inaxes is not ax_img:
-                print("Click on IMAGE (left) first.")
+            if state["tab"] != "img":
+                print("Switch to IMAGE tab first (press Tab).")
                 return
             x = float(event.xdata); y = float(event.ydata)
             pairs.image_points_px.append((x, y))
             n = len(pairs.image_points_px)
             label = f"r{n}"
-            pt, txt = _add_point(ax_img, x, y, color="red", label=label)
+            pt, txt = _add_point(x, y, color="red", label=label)
             img_point_artists.append(pt)
             img_text_artists.append(txt)
             state["expect"] = "mat"
             print(f"Image point #{n} = ({x:.1f}, {y:.1f}) [{label}]")
+            # Auto-switch to mat tab
+            _switch_tab("mat")
         else:
-            if event.inaxes is not ax_mat:
-                print("Click on MAT (right) next.")
+            if state["tab"] != "mat":
+                print("Switch to MAT tab first (press Tab).")
                 return
             x = float(event.xdata); y = float(event.ydata)
             pairs.mat_points.append((x, y))
             n = len(pairs.mat_points)
             label = f"b{n}"
-            pt, txt = _add_point(ax_mat, x, y, color="blue", label=label)
+            pt, txt = _add_point(x, y, color="blue", label=label)
             mat_point_artists.append(pt)
             mat_text_artists.append(txt)
             state["expect"] = "img"
             print(f"Mat point   #{n} = ({x:.3f}, {y:.3f}) [{label}]")
+            # Auto-switch to image tab
+            _switch_tab("img")
 
         fig.canvas.draw_idle()
 
@@ -1445,13 +1523,19 @@ def _interactive_calibrate(
             return
         k = (event.key or "").lower()
 
-        if k == "u":
+        if k == "tab":
+            new_tab = "mat" if state["tab"] == "img" else "img"
+            _switch_tab(new_tab)
+
+        elif k == "u":
             _undo_last()
+            _switch_tab(state["tab"])  # refresh title counts
             print("Undo.")
             fig.canvas.draw_idle()
 
         elif k == "c":
             _clear_all()
+            _switch_tab(state["tab"])  # refresh title counts
             print("Cleared.")
             fig.canvas.draw_idle()
 
@@ -1662,8 +1746,16 @@ def _interactive_calibrate(
     fig.canvas.mpl_connect("button_press_event", on_click)
     fig.canvas.mpl_connect("key_press_event", on_key)
 
-    print("Controls: click IMAGE then MAT (repeat). Keys: [u]=undo [c]=clear [s]=solve+save [q]=quit")
+    # Initialize on image tab
+    _switch_tab("img")
+    print("Click on IMAGE first. After each click the view auto-switches.")
+    print("Keys: [tab]=toggle view [u]=undo [c]=clear [s]=solve+save [q]=quit")
+    state["done"] = False
     plt.show()
+    # Belt-and-suspenders: if plt.show() returns but done wasn't set
+    # (e.g. user closed window via X button), ensure cleanup
+    state["done"] = True
+    plt.close("all")
 
 
 def _interactive_calibrate_overlay_rect_fixed(
