@@ -85,12 +85,16 @@ class UltralyticsYoloDetector(DetectorBackend):
 		conf: float,
 		imgsz: Optional[int],
 		device: Optional[str],
+		prefer_coreml: bool = True,
 	) -> None:
 		self.model_path = model_path
 		self.seg_model_path = seg_model_path
 		self.use_seg = use_seg
 		self.conf = float(conf)
 		self.imgsz = imgsz
+		self.prefer_coreml = prefer_coreml
+		self._using_coreml = False
+		self._coreml_batch_warned = False
 
 		# Auto-detect device: MPS (Apple Silicon) > CUDA > CPU
 		if device in (None, "null", "auto"):
@@ -126,6 +130,16 @@ class UltralyticsYoloDetector(DetectorBackend):
 				raise RuntimeError(
 					"Ultralytics is not installed. Install 'ultralytics' to use the YOLO detector backend."
 				) from e
+
+			# CP22d: prefer CoreML .mlpackage when available (ANE acceleration)
+			if self.prefer_coreml:
+				mlpackage_path = Path(self.model_path).with_suffix(".mlpackage")
+				if mlpackage_path.exists():
+					self._model = YOLO(str(mlpackage_path))
+					self._using_coreml = True
+					print(f"[Stage A] Loaded CoreML model: {mlpackage_path}", flush=True)
+					return  # CoreML pose model handles detection+keypoints; skip seg model
+
 			self._model = YOLO(self.model_path)
 
 		if self.use_seg and self._seg_model is None:
@@ -324,6 +338,20 @@ class UltralyticsYoloDetector(DetectorBackend):
 			return []
 
 		self._lazy_load_models()
+
+		# CoreML batch predict crashes in ultralytics (IndexError in stream_inference).
+		# Fall back to sequential single-frame inference.
+		if self._using_coreml:
+			if not self._coreml_batch_warned:
+				logger.info("CoreML model does not support batch predict; falling back to sequential infer()")
+				self._coreml_batch_warned = True
+			return [
+				self.infer(
+					clip_id=clip_id, camera_id=camera_id,
+					frame_index=fi, timestamp_ms=ts, frame_bgr=fb,
+				)
+				for fb, fi, ts in frames
+			]
 
 		using_seg_model = bool(self.use_seg and self._seg_model is not None)
 		model = self._seg_model if (self.use_seg and self._seg_model is not None) else self._model

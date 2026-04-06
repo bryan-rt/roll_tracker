@@ -73,10 +73,13 @@ color_histograms.parquet, tracklet_histogram_summaries.parquet.
 - Cross-camera agreement verified (sub-cm, 9mm worst-case)
 - ROI mask union fix: brief written, not yet applied (pending)
 **CP22:** Default detection model updated to yolo26n-pose (STAL loss, better small-object
-detection). CoreML export validated for both yolov8n-pose and yolo26n-pose — ~2x speedup
-over MPS (14.4ms vs 27.4ms per frame). CoreML is a viable future `device` option but
-needs a config knob designed before changing the default.
-- ultralytics upgraded 8.3.252 → 8.4.33 (`--no-deps`)
+detection). ultralytics upgraded 8.3.252 → 8.4.33 (`--no-deps`).
+**CP22d:** CoreML is now the default inference path (`prefer_coreml: true`). Detector
+auto-loads `.mlpackage` sibling when available (78.9 fps CoreML vs 32.5 fps MPS on M1 Air).
+One-time export: `from ultralytics import YOLO; YOLO("models/yolo26n-pose.pt").export(format="coreml")`.
+Batch predict unsupported with CoreML (ultralytics bug); `infer_batch()` falls back to
+sequential. Threading hurts (ANE saturated by single stream — 2 workers = 0.54x, 4 = 0.34x).
+Keep `yolo_batch_size: 4` for MPS fallback; irrelevant when CoreML active.
 - **Open issue:** PPDmUg-202751 — NAType in frame_index at D2. Needs null-safe fix.
 
 See `.claude/rules/` for domain-specific documentation (auto-loaded by path).

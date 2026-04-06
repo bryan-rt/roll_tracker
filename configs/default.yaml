@@ -48,6 +48,7 @@ stages:
       conf: 0.25
       imgsz: null
       device: "auto"
+      prefer_coreml: true
       yolo_batch_size: 4
 
     masks:
