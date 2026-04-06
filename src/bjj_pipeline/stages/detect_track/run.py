@@ -183,7 +183,7 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 		_cfg_get(
 			config,
 			"stages.stage_A.detector.model_path",
-			_cfg_get(config, "detector.model_path", _cfg_get(config, "models.yolo_det", "models/yolov8n.pt")),
+			_cfg_get(config, "detector.model_path", _cfg_get(config, "models.yolo_det", "models/yolo26n-pose.pt")),
 		)
 	)
 	seg_model_path = _cfg_get(
@@ -195,6 +195,7 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 	conf = float(_cfg_get(config, "stages.stage_A.detector.conf", _cfg_get(config, "detector.conf", 0.25)))
 	imgsz = _cfg_get(config, "stages.stage_A.detector.imgsz", _cfg_get(config, "detector.imgsz", None))
 	device = _cfg_get(config, "stages.stage_A.detector.device", _cfg_get(config, "detector.device", None))
+	prefer_coreml = bool(_cfg_get(config, "stages.stage_A.detector.prefer_coreml", True))
 
 	detector = UltralyticsYoloDetector(
 		model_path=model_path,
@@ -203,6 +204,7 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 		conf=conf,
 		imgsz=int(imgsz) if imgsz is not None else None,
 		device=str(device) if device is not None else None,
+		prefer_coreml=prefer_coreml,
 	)
 
 	# Tracker config

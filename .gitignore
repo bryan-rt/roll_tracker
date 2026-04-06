@@ -207,6 +207,9 @@ calibration_test/output/
 *.bak
 *.bak_full
 
+# CoreML exports (large derived artifacts, reproducible via ultralytics export)
+models/*.mlpackage
+
 services/uploader/.env
 services/processor/.env
 services/nest_recorder/.env

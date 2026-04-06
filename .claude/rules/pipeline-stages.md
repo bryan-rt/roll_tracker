@@ -6,7 +6,7 @@ paths:
 # CV Pipeline Stages
 
 ## Phase 1 — Online (parallel, per-clip via multiplex_AC)
-- **Stage A** `detect_track`: YOLOv8n-pose detection + BoT-SORT on raw frames. Projects
+- **Stage A** `detect_track`: YOLO26n-pose detection (CP22, STAL loss) + BoT-SORT on raw frames. Projects
   contact points to world coordinates via `project_to_world()` (undistortion applied
   internally when K+dist present). Optionally loads `calibration_correction.json` (CP18
   affine, superseded by CP19). CP20 additions: keypoints extraction (17 COCO keypoints),

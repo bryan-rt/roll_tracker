@@ -60,11 +60,27 @@ docs/                     # Calibration guide, decisions archive, audits
 
 ## Current Status
 
+*Last updated 2026-04-05.*
+
 Pipeline A→F verified E2E. Session pipeline validated (3-camera, 35/36 clips).
 **CP20:** YOLOv8n-pose model, isolation gate, HSV color histograms, Tier 3 histogram
 cross-camera evidence. Stage A outputs 3 new sidecars: keypoints.parquet,
 color_histograms.parquet, tracklet_histogram_summaries.parquet.
-**Open issue:** PPDmUg-202751 — NAType in frame_index at D2. Needs null-safe fix.
+- Camera geometry analysis tool complete (v6 pose decomposition, 4-phase)
+- Lens calibration bounds fix applied (fixed-f candidate sweep)
+- H coordinate space verified as undistorted pixel space
+- Calibration wizard re-run for all 3 cameras with updated lens cal
+- Cross-camera agreement verified (sub-cm, 9mm worst-case)
+- ROI mask union fix: brief written, not yet applied (pending)
+**CP22:** Default detection model updated to yolo26n-pose (STAL loss, better small-object
+detection). ultralytics upgraded 8.3.252 → 8.4.33 (`--no-deps`).
+**CP22d:** CoreML is now the default inference path (`prefer_coreml: true`). Detector
+auto-loads `.mlpackage` sibling when available (78.9 fps CoreML vs 32.5 fps MPS on M1 Air).
+One-time export: `from ultralytics import YOLO; YOLO("models/yolo26n-pose.pt").export(format="coreml")`.
+Batch predict unsupported with CoreML (ultralytics bug); `infer_batch()` falls back to
+sequential. Threading hurts (ANE saturated by single stream — 2 workers = 0.54x, 4 = 0.34x).
+Keep `yolo_batch_size: 4` for MPS fallback; irrelevant when CoreML active.
+- **Open issue:** PPDmUg-202751 — NAType in frame_index at D2. Needs null-safe fix.
 
 See `.claude/rules/` for domain-specific documentation (auto-loaded by path).
 See `docs/decisions-archive.md` for full checkpoint history.

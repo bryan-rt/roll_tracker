@@ -468,7 +468,7 @@ def run_multiplex_AC(*,
                         _cfg_get(
                             resolved_config,
                             "stages.stage_A.detector.model_path",
-                            _cfg_get(resolved_config, "detector.model_path", "models/yolov8n.pt"),
+                            _cfg_get(resolved_config, "detector.model_path", "models/yolo26n-pose.pt"),
                         )
                     )
                     seg_model_path = _cfg_get(
@@ -488,6 +488,7 @@ def run_multiplex_AC(*,
                     conf = float(_cfg_get(resolved_config, "stages.stage_A.detector.conf", _cfg_get(resolved_config, "detector.conf", 0.25)))
                     imgsz = _cfg_get(resolved_config, "stages.stage_A.detector.imgsz", _cfg_get(resolved_config, "detector.imgsz", None))
                     device = _cfg_get(resolved_config, "stages.stage_A.detector.device", _cfg_get(resolved_config, "detector.device", None))
+                    prefer_coreml = bool(_cfg_get(resolved_config, "stages.stage_A.detector.prefer_coreml", True))
 
                     detector = UltralyticsYoloDetector(
                         model_path=model_path,
@@ -496,6 +497,7 @@ def run_multiplex_AC(*,
                         conf=conf,
                         imgsz=int(imgsz) if imgsz is not None else None,
                         device=str(device) if device is not None else None,
+                        prefer_coreml=prefer_coreml,
                     )
 
                     with_reid = bool(

@@ -40,7 +40,7 @@ stages:
 
     detector:
       # YOLO detection weights (required)
-      model_path: models/yolov8n-pose.pt
+      model_path: models/yolo26n-pose.pt
       # Optional YOLO segmentation weights. If missing at runtime, Stage A will
       # fall back to deterministic bbox masks and emit an audit event.
       seg_model_path: models/yolov8s-seg.pt
@@ -48,6 +48,7 @@ stages:
       conf: 0.25
       imgsz: null
       device: "auto"
+      prefer_coreml: true
       yolo_batch_size: 4
 
     masks:

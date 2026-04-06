@@ -562,11 +562,13 @@ def run_phase2(
         head_margin_clipped = np.clip(head_margin_px, [0, 0], [img_w - 1, img_h - 1])
         foot_clipped = np.clip(foot_px, [0, 0], [img_w - 1, img_h - 1])
 
-        roi_boundary = np.vstack([foot_clipped, head_margin_clipped[::-1]])
-        roi_poly = Polygon(roi_boundary.tolist())
-        if not roi_poly.is_valid:
-            roi_poly = roi_poly.buffer(0)
-        roi_poly = roi_poly.intersection(box(0, 0, img_w, img_h))
+        foot_poly = Polygon(foot_clipped.tolist())
+        if not foot_poly.is_valid:
+            foot_poly = foot_poly.buffer(0)
+        head_poly = Polygon(head_margin_clipped.tolist())
+        if not head_poly.is_valid:
+            head_poly = head_poly.buffer(0)
+        roi_poly = foot_poly.union(head_poly).intersection(box(0, 0, img_w, img_h))
         if roi_poly.is_empty:
             console.print("  [red]ROI polygon is empty, skipping[/red]")
             continue
