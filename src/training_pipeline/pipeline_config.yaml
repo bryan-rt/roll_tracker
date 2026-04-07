@@ -1,0 +1,17 @@
+cvat_url: https://app.cvat.ai
+cvat_username: b9800
+cvat_password: KbGvWvgvEvs3iq@
+cvat_project_name: BJJ Training Data
+training_data_dir: data/training_data
+background_models_dir: data/background_models
+cvat_tasks_dir: data/cvat_tasks
+training_runs_dir: models/training_runs
+frame_sample_rate: 3
+bg_subtraction_threshold: 30
+bg_min_contour_area: 500
+cross_camera_iou_threshold: 0.3
+keyframe_interval: 30
+base_model: models/yolo26n-pose.pt
+imgsz: 640
+device: mps
+batch_size: 8

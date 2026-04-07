@@ -37,6 +37,7 @@ class CvatTaskInfo(BaseModel):
     status: str = "created"  # created | in_progress | completed
     session_id: str = ""
     cam_id: str = ""
+    video_path: str = ""  # source video path for frame extraction at download time
 
 
 class PipelineState(BaseModel):
