@@ -5,12 +5,13 @@ Entry point: python -m src.training_pipeline.run
 
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import shutil
 import sys
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from loguru import logger
 from rich.console import Console
@@ -64,6 +65,161 @@ def _prompt_text(prompt: str, default: str = "") -> str:
 
 
 # ---------------------------------------------------------------------------
+# Batch rotation helpers
+# ---------------------------------------------------------------------------
+
+def _load_completed_manifest(cfg: TrainingPipelineConfig) -> Dict:
+    """Load the completed clips manifest."""
+    path = cfg.completed_clips_dir / "completed.json"
+    if path.exists():
+        return json.loads(path.read_text())
+    return {"clips": []}
+
+
+def _save_completed_manifest(cfg: TrainingPipelineConfig, manifest: Dict) -> None:
+    """Save the completed clips manifest."""
+    cfg.completed_clips_dir.mkdir(parents=True, exist_ok=True)
+    path = cfg.completed_clips_dir / "completed.json"
+    path.write_text(json.dumps(manifest, indent=2))
+
+
+def _scan_raw_footage(cfg: TrainingPipelineConfig) -> Dict[str, List[Path]]:
+    """Scan raw footage dir for clips, grouped by camera ID."""
+    _exclude = {"_debug", "exports", "stage_A", "stage_B", "stage_C",
+                "stage_D", "stage_E", "stage_F"}
+    all_clips = sorted(
+        p for p in cfg.raw_footage_dir.rglob("*.mp4")
+        if not _exclude.intersection(p.parts)
+    )
+    cam_clips: Dict[str, List[Path]] = {}
+    for clip in all_clips:
+        cam_id = clip.stem.split("-")[0] if "-" in clip.stem else clip.parent.name
+        cam_clips.setdefault(cam_id, []).append(clip)
+    return cam_clips
+
+
+def _auto_select_batch(
+    cfg: TrainingPipelineConfig,
+    state: PipelineState,
+) -> Optional[Path]:
+    """Auto-select next batch of clips, symlink into current_batch_dir.
+
+    Returns current_batch_dir path if batch was prepared, None if no clips available.
+    """
+    if not cfg.raw_footage_dir.exists():
+        console.print(f"[red]Raw footage dir not found: {cfg.raw_footage_dir}[/]")
+        return None
+
+    # Check for leftover previous batch
+    if cfg.current_batch_dir.exists() and any(cfg.current_batch_dir.iterdir()):
+        if _prompt_confirm("Previous batch still in current_round/. Clear and prepare new batch?"):
+            shutil.rmtree(cfg.current_batch_dir)
+        else:
+            console.print("Using existing batch.")
+            return cfg.current_batch_dir
+
+    # Scan all available clips
+    all_cam_clips = _scan_raw_footage(cfg)
+    if not all_cam_clips:
+        console.print("[red]No clips found in raw footage directory.[/]")
+        return None
+
+    # Load completed manifest
+    manifest = _load_completed_manifest(cfg)
+    completed_filenames = {c["filename"] for c in manifest["clips"]}
+
+    # Select next batch per camera
+    batch_clips: Dict[str, List[Path]] = {}
+    total_remaining = 0
+    n = cfg.clips_per_camera_per_round
+
+    for cam_id, clips in sorted(all_cam_clips.items()):
+        available = [c for c in clips if c.name not in completed_filenames]
+        total_remaining += len(available)
+
+        if not available:
+            console.print(f"  [yellow]{cam_id}: no remaining clips[/]")
+            continue
+
+        selected = available[:n]
+        batch_clips[cam_id] = selected
+
+        if len(selected) < n:
+            console.print(
+                f"  [yellow]{cam_id}: only {len(selected)}/{n} clips available[/]"
+            )
+
+    if not batch_clips:
+        console.print("[green]All clips have been processed! No remaining clips in raw footage directory.[/]")
+        return None
+
+    # Symlink selected clips into current_batch_dir
+    batch_count = 0
+    for cam_id, clips in batch_clips.items():
+        cam_dir = cfg.current_batch_dir / cam_id
+        cam_dir.mkdir(parents=True, exist_ok=True)
+        for clip in clips:
+            link = cam_dir / clip.name
+            link.symlink_to(clip.resolve())
+            batch_count += 1
+
+    # Summary
+    parts = [f"{len(clips)} {cam_id}" for cam_id, clips in sorted(batch_clips.items())]
+    total_all = sum(len(clips) for clips in all_cam_clips.values())
+    remaining = total_all - len(completed_filenames) - batch_count
+    console.print(
+        f"\n[green]Batch prepared: {', '.join(parts)} "
+        f"({batch_count} total, {remaining} remaining)[/]"
+    )
+
+    return cfg.current_batch_dir
+
+
+def _mark_batch_completed(
+    cfg: TrainingPipelineConfig,
+    state: PipelineState,
+) -> None:
+    """Mark current batch clips as completed and clean up."""
+    if not cfg.current_batch_dir.exists():
+        console.print("[yellow]No current batch to mark.[/]")
+        return
+
+    manifest = _load_completed_manifest(cfg)
+    round_num = state.current_round
+    today = str(datetime.date.today())
+    count = 0
+
+    for cam_dir in sorted(cfg.current_batch_dir.iterdir()):
+        if not cam_dir.is_dir():
+            continue
+        cam_id = cam_dir.name
+        for clip_link in sorted(cam_dir.glob("*.mp4")):
+            manifest["clips"].append({
+                "filename": clip_link.name,
+                "cam_id": cam_id,
+                "round": round_num,
+                "completed_date": today,
+            })
+            count += 1
+
+    _save_completed_manifest(cfg, manifest)
+
+    # Clean up current batch (remove symlinks)
+    shutil.rmtree(cfg.current_batch_dir)
+
+    # Count remaining
+    all_cam_clips = _scan_raw_footage(cfg)
+    completed_filenames = {c["filename"] for c in manifest["clips"]}
+    total = sum(len(clips) for clips in all_cam_clips.values())
+    remaining = total - len(completed_filenames)
+
+    console.print(
+        f"[green]{count} clips marked completed. "
+        f"{remaining} clips remaining across {len(all_cam_clips)} cameras.[/]"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Menu actions
 # ---------------------------------------------------------------------------
 
@@ -77,14 +233,36 @@ def _action_process_footage(cfg: TrainingPipelineConfig, state: PipelineState) -
     from training_pipeline.export_to_cvat import export_video_task
     from training_pipeline.pseudo_labels import generate_pseudo_labels
 
-    # Prompt for input
-    clip_dir = _prompt_text("Path to clip(s) or session directory")
-    if not clip_dir:
-        console.print("[red]No path provided.[/]")
-        return
+    # Step 0: Select clips — auto-batch or manual path
+    console.print("\n[bold]Step 0:[/] Select clips")
+    has_raw_dir = cfg.raw_footage_dir.exists()
+    if has_raw_dir:
+        console.print("  1. Auto-select next batch "
+                       f"({cfg.clips_per_camera_per_round} per camera from raw footage)")
+        console.print("  2. Manual path input")
+        select_mode = _prompt_choice("Choice", {"1", "2"})
+    else:
+        console.print(
+            "  [dim]Configure raw_footage_dir in Option 8 to enable auto-batch selection[/]"
+        )
+        select_mode = "2"
 
-    clip_dir = Path(clip_dir)
-    session_id = _prompt_text("Session ID", default=clip_dir.stem)
+    if select_mode == "1":
+        batch_dir = _auto_select_batch(cfg, state)
+        if batch_dir is None:
+            return
+        clip_dir = batch_dir
+        session_id = _prompt_text(
+            "Session ID",
+            default=f"round_{state.current_round + 1}",
+        )
+    else:
+        clip_dir_str = _prompt_text("Path to clip(s) or session directory")
+        if not clip_dir_str:
+            console.print("[red]No path provided.[/]")
+            return
+        clip_dir = Path(clip_dir_str)
+        session_id = _prompt_text("Session ID", default=clip_dir.stem)
 
     # Find clips
     if clip_dir.is_file():
@@ -652,6 +830,12 @@ def _action_train(cfg: TrainingPipelineConfig, state: PipelineState) -> None:
         sign = "+" if delta >= 0 else ""
         console.print(f"  vs Round {prev.round}: {sign}{delta:.4f} mAP50")
 
+    # Offer to mark current batch as completed
+    if cfg.current_batch_dir.exists() and any(cfg.current_batch_dir.iterdir()):
+        if _prompt_confirm("\nMark current batch as completed?"):
+            _mark_batch_completed(cfg, state)
+            save_state(state)
+
 
 def _action_evaluate(cfg: TrainingPipelineConfig, state: PipelineState) -> None:
     """Option 6: Evaluate model with diff video and metrics."""
@@ -788,9 +972,11 @@ def _action_configure(cfg: TrainingPipelineConfig) -> TrainingPipelineConfig:
     console.print("  3. CVAT password")
     console.print("  4. Device")
     console.print("  5. Base model")
+    console.print("  6. Raw footage directory")
+    console.print("  7. Clips per camera per round")
     console.print("  0. Back")
 
-    choice = _prompt_choice("Setting to change", {"0", "1", "2", "3", "4", "5"})
+    choice = _prompt_choice("Setting to change", {"0", "1", "2", "3", "4", "5", "6", "7"})
 
     if choice == "1":
         cfg.cvat_url = _prompt_text("CVAT URL", cfg.cvat_url)
@@ -802,6 +988,12 @@ def _action_configure(cfg: TrainingPipelineConfig) -> TrainingPipelineConfig:
         cfg.device = _prompt_text("Device (mps/cuda/cpu)", cfg.device)
     elif choice == "5":
         cfg.base_model = _prompt_text("Base model path", cfg.base_model)
+    elif choice == "6":
+        cfg.raw_footage_dir = Path(_prompt_text("Raw footage directory", str(cfg.raw_footage_dir)))
+    elif choice == "7":
+        cfg.clips_per_camera_per_round = int(
+            _prompt_text("Clips per camera per round", str(cfg.clips_per_camera_per_round))
+        )
 
     if choice != "0":
         save_config(cfg)

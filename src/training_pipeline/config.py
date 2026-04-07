@@ -37,6 +37,12 @@ class TrainingPipelineConfig(BaseModel):
     # Video annotation
     keyframe_interval: int = 30  # frames between keyframe annotations
 
+    # Batch rotation
+    raw_footage_dir: Path = Path("data/raw/nest")
+    clips_per_camera_per_round: int = 2
+    completed_clips_dir: Path = Path("data/training_batches/completed")
+    current_batch_dir: Path = Path("data/training_batches/current_round")
+
     # Training defaults (overridable per round)
     base_model: str = "models/yolo26n-pose.pt"
     imgsz: int = 640
