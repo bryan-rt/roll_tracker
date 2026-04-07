@@ -28,6 +28,7 @@ questions in Pass 1. Do not resolve silently or guess.
 ```
 src/bjj_pipeline/        # CV pipeline package (stages A→F, contracts, config, core)
 src/calibration_pipeline/ # Gym setup: lens cal, H refinement, mat line detection
+src/training_pipeline/    # Active learning: CVAT integration, fine-tuning, evaluation
 services/                 # Docker: nest_recorder, processor, uploader
 backend/supabase/         # Migrations, config.toml
 app_mobile/               # Flutter athlete app
@@ -81,6 +82,12 @@ Batch predict unsupported with CoreML (ultralytics bug); `infer_batch()` falls b
 sequential. Threading hurts (ANE saturated by single stream — 2 workers = 0.54x, 4 = 0.34x).
 Keep `yolo_batch_size: 4` for MPS fallback; irrelevant when CoreML active.
 - **Open issue:** PPDmUg-202751 — NAType in frame_index at D2. Needs null-safe fix.
+**CP23b:** Training pipeline infrastructure (`src/training_pipeline/`). Active learning
+loop: Stage A inference → background subtraction → cross-camera pseudo-labeling →
+CVAT export/upload → human correction → dataset accumulation → YOLO fine-tuning with
+progressive unfreezing → diff video evaluation → model promotion. Interactive CLI
+orchestrator: `python -m training_pipeline`. Dependencies: `cvat-sdk`, `cvat-cli`.
+Config: `src/training_pipeline/pipeline_config.yaml`. State: `data/training_data/pipeline_state.json`.
 
 See `.claude/rules/` for domain-specific documentation (auto-loaded by path).
 See `docs/decisions-archive.md` for full checkpoint history.

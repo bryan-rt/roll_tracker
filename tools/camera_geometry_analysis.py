@@ -258,14 +258,19 @@ def decompose_camera_pose(
     return P, diag
 
 
-def project_3d(P: np.ndarray, points_3d: np.ndarray) -> np.ndarray:
-    """Project Nx3 world points to pixel coords via P (3x4)."""
+def project_3d(P: np.ndarray, points_3d: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """Project Nx3 world points to pixel coords via P (3x4).
+
+    Returns (pixel_coords Nx2, w_values N) — w sign indicates whether
+    the point is in front of (w>0) or behind (w<=0) the camera plane.
+    """
     n = points_3d.shape[0]
     pts_h = np.hstack([points_3d, np.ones((n, 1))])  # Nx4
     proj = (P @ pts_h.T).T  # Nx3
-    w = proj[:, 2:3].copy()
-    w[w == 0] = 1e-10
-    return proj[:, :2] / w
+    w_raw = proj[:, 2:3].copy()
+    w_div = w_raw.copy()
+    w_div[w_div == 0] = 1e-10
+    return proj[:, :2] / w_div, w_raw.ravel()
 
 
 def compute_pixel_height(
@@ -274,17 +279,18 @@ def compute_pixel_height(
     person_height_m: float,
     img_w: int,
     img_h: int,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Compute pixel height of a person at each mat position.
 
-    Returns (pixel_heights, in_frame, foot_px, head_px).
+    Returns (pixel_heights, in_frame, foot_px, head_px, head_w).
     in_frame: True if foot projects inside the camera frame.
+    head_w: homogeneous w for head projections (w <= 0 means behind camera).
     """
     foot_3d = np.column_stack([world_xy, np.zeros(len(world_xy))])
     head_3d = np.column_stack([world_xy, np.full(len(world_xy), person_height_m)])
 
-    foot_px = project_3d(P, foot_3d)
-    head_px = project_3d(P, head_3d)
+    foot_px, _foot_w = project_3d(P, foot_3d)
+    head_px, head_w = project_3d(P, head_3d)
 
     pixel_heights = np.linalg.norm(foot_px - head_px, axis=1)
 
@@ -293,7 +299,7 @@ def compute_pixel_height(
         & (foot_px[:, 1] >= 0) & (foot_px[:, 1] < img_h)
     )
 
-    return pixel_heights, in_frame, foot_px, head_px
+    return pixel_heights, in_frame, foot_px, head_px, head_w
 
 
 # ── Mat Helpers ────────────────────────────────────────────────────────────────
@@ -391,7 +397,7 @@ def run_phase1(
 
         # Validate heights at correspondence positions
         if len(mp) > 0:
-            heights, _, foot_px, head_px = compute_pixel_height(
+            heights, _, foot_px, head_px, _ = compute_pixel_height(
                 P, mp, person_h, geom["img_w"], geom["img_h"],
             )
             console.print(f"  Height predictions (Z={person_h}m) at correspondences:")
@@ -421,7 +427,7 @@ def run_phase1(
                     upright["y_m"].values.astype(np.float64),
                 ])
                 obs_h = upright["bbox_h"].values.astype(np.float64)
-                pred_h, _, _, _ = compute_pixel_height(P, obs_xy, person_h, geom["img_w"], geom["img_h"])
+                pred_h, _, _, _, _ = compute_pixel_height(P, obs_xy, person_h, geom["img_w"], geom["img_h"])
                 ratio = pred_h / obs_h.clip(min=1)
                 console.print(
                     f"  Predicted/observed bbox_h ratio: "
@@ -479,7 +485,7 @@ def _plot_phase1(
     gy = np.linspace(bounds[1] - 1, bounds[3] + 1, 100)
     GX, GY = np.meshgrid(gx, gy)
     grid_xy = np.column_stack([GX.ravel(), GY.ravel()])
-    GZ, _, _, _ = compute_pixel_height(P, grid_xy, person_h, geom["img_w"], geom["img_h"])
+    GZ, _, _, _, _ = compute_pixel_height(P, grid_xy, person_h, geom["img_w"], geom["img_h"])
     GZ = GZ.reshape(GX.shape)
 
     import shapely
@@ -537,37 +543,65 @@ def run_phase2(
             continue
 
         # Project foot and head for each perimeter point
-        _, _, foot_px, head_px = compute_pixel_height(
+        _, _, foot_px, head_px, head_w = compute_pixel_height(
             P, perimeter_pts, person_h, img_w, img_h,
         )
 
-        # Filter to in-frame perimeter points (foot inside or near frame)
-        in_frame = (
-            (foot_px[:, 0] >= -50) & (foot_px[:, 0] < img_w + 50)
-            & (foot_px[:, 1] >= -50) & (foot_px[:, 1] < img_h + 50)
+        # Strict in-frame filter for foot (no buffer)
+        foot_in_frame = (
+            (foot_px[:, 0] >= 0) & (foot_px[:, 0] < img_w)
+            & (foot_px[:, 1] >= 0) & (foot_px[:, 1] < img_h)
         )
-        foot_px = foot_px[in_frame]
-        head_px = head_px[in_frame]
-        console.print(f"  Perimeter points in frame: {in_frame.sum()}/{len(in_frame)}")
+        foot_px = foot_px[foot_in_frame]
+        head_px = head_px[foot_in_frame]
+        head_w_filtered = head_w[foot_in_frame]
+        perimeter_filtered = perimeter_pts[foot_in_frame]
+        console.print(f"  Perimeter points in frame: {foot_in_frame.sum()}/{len(foot_in_frame)}")
 
         if len(foot_px) < 4:
             console.print("  [red]Too few in-frame perimeter points, skipping[/red]")
             continue
 
-        # Safety margin: extend 10% beyond head in foot->head direction
+        # Fix behind-camera heads (w <= 0): project at safe intermediate Z,
+        # then extend foot→safe direction ray to nearest frame boundary.
+        bad_head = head_w_filtered <= 0
+        n_bad = int(bad_head.sum())
+        if n_bad > 0:
+            console.print(f"  Fixing {n_bad} behind-camera head projections")
+            safe_z = min(person_h * 0.3, 0.5)
+            safe_3d = np.column_stack([
+                perimeter_filtered[bad_head],
+                np.full(n_bad, safe_z),
+            ])
+            safe_px, _safe_w = project_3d(P, safe_3d)
+
+            bad_indices = np.where(bad_head)[0]
+            for local_idx, global_idx in enumerate(bad_indices):
+                fp = foot_px[global_idx]
+                direction = safe_px[local_idx] - fp
+                # Ray-cast to frame edges: find smallest positive t
+                t_candidates = []
+                if abs(direction[0]) > 1e-6:
+                    t_candidates.append((0 - fp[0]) / direction[0])
+                    t_candidates.append((img_w - 1 - fp[0]) / direction[0])
+                if abs(direction[1]) > 1e-6:
+                    t_candidates.append((0 - fp[1]) / direction[1])
+                    t_candidates.append((img_h - 1 - fp[1]) / direction[1])
+                t_pos = [t for t in t_candidates if t > 0]
+                if t_pos:
+                    t = min(t_pos)
+                    head_px[global_idx] = fp + direction * t
+
+        # Apply head buffer AFTER validity fix
         direction = head_px - foot_px
         head_margin_px = head_px + direction * ROI_HEAD_BUFFER_FRAC
 
-        # Clip and build ROI band polygon
+        # Clip and build ROI polygons
         head_margin_clipped = np.clip(head_margin_px, [0, 0], [img_w - 1, img_h - 1])
         foot_clipped = np.clip(foot_px, [0, 0], [img_w - 1, img_h - 1])
 
-        foot_poly = Polygon(foot_clipped.tolist())
-        if not foot_poly.is_valid:
-            foot_poly = foot_poly.buffer(0)
-        head_poly = Polygon(head_margin_clipped.tolist())
-        if not head_poly.is_valid:
-            head_poly = head_poly.buffer(0)
+        foot_poly = Polygon(foot_clipped.tolist()).buffer(0)
+        head_poly = Polygon(head_margin_clipped.tolist()).buffer(0)
         roi_poly = foot_poly.union(head_poly).intersection(box(0, 0, img_w, img_h))
         if roi_poly.is_empty:
             console.print("  [red]ROI polygon is empty, skipping[/red]")
@@ -701,11 +735,11 @@ def run_phase3(
         roi_data = json.loads(roi_path.read_text()) if roi_path.exists() else None
 
         # Standing heights for min/mean display
-        standing_h, in_frame, _, _ = compute_pixel_height(
+        standing_h, in_frame, _, _, _ = compute_pixel_height(
             P, grid_pts_mat, DEFAULT_PERSON_HEIGHT_M, img_w, img_h,
         )
         # Kneeling heights for scoring (project at Z=KNEELING_HEIGHT_M)
-        kneeling_h, _, _, _ = compute_pixel_height(
+        kneeling_h, _, _, _, _ = compute_pixel_height(
             P, grid_pts_mat, KNEELING_HEIGHT_M, img_w, img_h,
         )
         n_in_frame = int(in_frame.sum())
@@ -938,7 +972,7 @@ def run_phase4(
             continue
 
         # Zone bounding rect (foot + head)
-        _, _, z_foot, z_head = compute_pixel_height(P, zone_pts, person_h, img_w, img_h_px)
+        _, _, z_foot, z_head, _ = compute_pixel_height(P, zone_pts, person_h, img_w, img_h_px)
         z_margin = z_head + (z_head - z_foot) * ROI_HEAD_BUFFER_FRAC
         all_pts = np.vstack([z_foot, z_margin])
         all_pts = np.clip(all_pts, [0, 0], [img_w - 1, img_h_px - 1])
@@ -949,7 +983,7 @@ def run_phase4(
         rw, rh = x_max - x_min, y_max - y_min
 
         # Kneeling heights for coverage scoring
-        kneel_h, z_in_frame, _, _ = compute_pixel_height(P, zone_pts, KNEELING_HEIGHT_M, img_w, img_h_px)
+        kneel_h, z_in_frame, _, _, _ = compute_pixel_height(P, zone_pts, KNEELING_HEIGHT_M, img_w, img_h_px)
 
         optimal_imgsz, optimal_cov = 1536, 0.0
         for test in [640, 800, 960, 1280, 1536]:
