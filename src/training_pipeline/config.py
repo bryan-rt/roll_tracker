@@ -34,6 +34,9 @@ class TrainingPipelineConfig(BaseModel):
     bg_min_contour_area: int = 500
     cross_camera_iou_threshold: float = 0.3
 
+    # Video annotation
+    keyframe_interval: int = 30  # frames between keyframe annotations
+
     # Training defaults (overridable per round)
     base_model: str = "models/yolo26n-pose.pt"
     imgsz: int = 640

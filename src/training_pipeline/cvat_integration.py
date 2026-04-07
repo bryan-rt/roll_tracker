@@ -246,3 +246,91 @@ def download_annotations(
 
     logger.info(f"Downloaded annotations for task {task_id} -> {output_path}")
     return output_path
+
+
+def upload_video_task(
+    client,
+    task_name: str,
+    video_path: str | Path,
+    annotations_xml: str | Path,
+    project_id: Optional[int] = None,
+) -> int:
+    """Create a CVAT video task with track-mode annotations.
+
+    Uploads the video directly (not images) and imports CVAT for Video 1.1
+    XML annotations with skeleton tracks and keyframe interpolation.
+
+    Returns the task ID.
+    """
+    from cvat_sdk.api_client.models import TaskWriteRequest
+
+    video_path = Path(video_path)
+    annotations_xml = Path(annotations_xml)
+
+    if not video_path.exists():
+        raise FileNotFoundError(f"Video not found: {video_path}")
+    if not annotations_xml.exists():
+        raise FileNotFoundError(f"Annotations XML not found: {annotations_xml}")
+
+    # Create task
+    task_spec = TaskWriteRequest(name=task_name)
+    if project_id is not None:
+        task_spec.project_id = project_id
+
+    task = client.tasks.create(task_spec)
+    task_id = task.id
+    logger.info(f"Created CVAT video task: {task_name} (id={task_id})")
+
+    # Upload video
+    task.upload_data(
+        resources=[str(video_path)],
+        image_quality=95,
+    )
+    logger.info(f"Uploaded video to task {task_id}: {video_path.name}")
+
+    # Import track annotations
+    task.import_annotations(
+        format_name="CVAT for Video 1.1",
+        filename=str(annotations_xml),
+    )
+    logger.info(f"Imported track annotations to task {task_id}")
+
+    return task_id
+
+
+def download_video_annotations(
+    client,
+    task_id: int,
+    output_path: str | Path,
+) -> Path:
+    """Export corrected annotations from a video task in CVAT for Video format.
+
+    Returns path to the downloaded XML file.
+    """
+    import shutil
+    import zipfile
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    task = client.tasks.retrieve(task_id)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        export_zip = Path(tmpdir) / "export.zip"
+        task.export_dataset(
+            format_name="CVAT for Video 1.1",
+            filename=str(export_zip),
+        )
+
+        with zipfile.ZipFile(export_zip) as zf:
+            xml_files = [f for f in zf.namelist() if f.endswith(".xml")]
+            if not xml_files:
+                raise ValueError(f"No XML found in CVAT export for task {task_id}")
+
+            xml_name = xml_files[0]
+            zf.extract(xml_name, tmpdir)
+            extracted = Path(tmpdir) / xml_name
+            shutil.copy2(extracted, output_path)
+
+    logger.info(f"Downloaded video annotations for task {task_id} -> {output_path}")
+    return output_path

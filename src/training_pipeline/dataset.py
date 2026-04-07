@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import shutil
+import subprocess
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
@@ -377,3 +379,187 @@ def validate_annotations(coco_json: str | Path) -> ValidationReport:
             ))
 
     return report
+
+
+# ---------------------------------------------------------------------------
+# CVAT for Video XML → COCO conversion
+# ---------------------------------------------------------------------------
+
+def cvat_video_xml_to_coco(
+    xml_path: str | Path,
+    video_path: str | Path,
+) -> Dict:
+    """Convert CVAT for Video 1.1 XML annotations to COCO Keypoints format.
+
+    Parses all frames (keyframes + interpolated) from the CVAT XML export
+    and produces a COCO-format dict suitable for ingestion.
+
+    Parameters
+    ----------
+    xml_path : Path to CVAT XML export file.
+    video_path : Path to source video (for frame dimensions).
+
+    Returns
+    -------
+    COCO-format dict with images, annotations, and categories.
+    """
+    import cv2
+
+    xml_path = Path(xml_path)
+    video_path = Path(video_path)
+
+    tree = ET.parse(xml_path)
+    root = tree.getroot()
+
+    # Get video dimensions
+    cap = cv2.VideoCapture(str(video_path))
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    cap.release()
+
+    # Parse tracks
+    images_by_frame: Dict[int, Dict] = {}
+    annotations: List[Dict] = []
+    ann_id = 1
+
+    for track_el in root.findall("track"):
+        track_id = int(track_el.get("id", "0"))
+
+        for skel_el in track_el.findall("skeleton"):
+            frame = int(skel_el.get("frame", "0"))
+            outside = skel_el.get("outside", "0")
+            if outside == "1":
+                continue
+
+            # Ensure we have an image entry for this frame
+            if frame not in images_by_frame:
+                images_by_frame[frame] = {
+                    "id": frame,
+                    "file_name": f"frame_{frame:06d}.jpg",
+                    "width": width,
+                    "height": height,
+                }
+
+            # Parse keypoints
+            keypoints_flat = [0.0] * (17 * 3)
+            num_keypoints = 0
+
+            # Compute bbox from visible keypoints
+            xs, ys = [], []
+
+            for pt_el in skel_el.findall("points"):
+                label = pt_el.get("label", "")
+                pt_outside = pt_el.get("outside", "0")
+                pt_occluded = pt_el.get("occluded", "0")
+                points_str = pt_el.get("points", "0,0")
+
+                if label not in COCO_KEYPOINT_NAMES:
+                    continue
+                idx = COCO_KEYPOINT_NAMES.index(label)
+
+                coords = points_str.split(",")
+                kx = float(coords[0])
+                ky = float(coords[1]) if len(coords) > 1 else 0.0
+
+                if pt_outside == "1":
+                    # Not visible
+                    keypoints_flat[idx * 3] = 0.0
+                    keypoints_flat[idx * 3 + 1] = 0.0
+                    keypoints_flat[idx * 3 + 2] = 0
+                else:
+                    # v=1 occluded, v=2 visible
+                    vis = 1 if pt_occluded == "1" else 2
+                    keypoints_flat[idx * 3] = kx
+                    keypoints_flat[idx * 3 + 1] = ky
+                    keypoints_flat[idx * 3 + 2] = vis
+                    num_keypoints += 1
+                    xs.append(kx)
+                    ys.append(ky)
+
+            # Compute bbox from keypoints (with margin)
+            if xs and ys:
+                x_min, x_max = min(xs), max(xs)
+                y_min, y_max = min(ys), max(ys)
+                margin = 20
+                bx = max(0, x_min - margin)
+                by = max(0, y_min - margin)
+                bw = min(width, x_max + margin) - bx
+                bh = min(height, y_max + margin) - by
+            else:
+                bx, by, bw, bh = 0, 0, 0, 0
+
+            annotations.append({
+                "id": ann_id,
+                "image_id": frame,
+                "category_id": 1,
+                "bbox": [bx, by, bw, bh],
+                "area": bw * bh,
+                "iscrowd": 0,
+                "keypoints": keypoints_flat,
+                "num_keypoints": num_keypoints,
+            })
+            ann_id += 1
+
+    images = [images_by_frame[f] for f in sorted(images_by_frame.keys())]
+
+    logger.info(
+        f"Converted CVAT XML: {len(images)} frames, {len(annotations)} annotations"
+    )
+
+    return {
+        "images": images,
+        "annotations": annotations,
+        "categories": [{
+            "id": 1,
+            "name": "person",
+            "supercategory": "person",
+            "keypoints": COCO_KEYPOINT_NAMES,
+        }],
+    }
+
+
+def extract_frames_from_video(
+    video_path: str | Path,
+    frame_indices: List[int],
+    output_dir: str | Path,
+) -> Dict[int, Path]:
+    """Extract specific frames from a video via ffmpeg.
+
+    Parameters
+    ----------
+    video_path : Path to source video.
+    frame_indices : Frame numbers to extract.
+    output_dir : Directory to write extracted JPEGs.
+
+    Returns
+    -------
+    Dict mapping frame_index -> path to extracted JPEG.
+    """
+    import cv2
+
+    video_path = Path(video_path)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        raise ValueError(f"Cannot open video: {video_path}")
+
+    target_set = set(frame_indices)
+    result: Dict[int, Path] = {}
+    frame_idx = 0
+
+    while target_set:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        if frame_idx in target_set:
+            out_path = output_dir / f"frame_{frame_idx:06d}.jpg"
+            cv2.imwrite(str(out_path), frame)
+            result[frame_idx] = out_path
+            target_set.discard(frame_idx)
+        frame_idx += 1
+
+    cap.release()
+    logger.info(f"Extracted {len(result)} frames from {video_path.name}")
+    return result

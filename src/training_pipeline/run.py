@@ -5,11 +5,12 @@ Entry point: python -m src.training_pipeline.run
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 from loguru import logger
 from rich.console import Console
@@ -73,7 +74,7 @@ def _action_process_footage(cfg: TrainingPipelineConfig, state: PipelineState) -
         detect_foreground,
         load_background_model,
     )
-    from training_pipeline.export_to_cvat import export_task
+    from training_pipeline.export_to_cvat import export_video_task
     from training_pipeline.pseudo_labels import generate_pseudo_labels
 
     # Prompt for input
@@ -161,9 +162,10 @@ def _action_process_footage(cfg: TrainingPipelineConfig, state: PipelineState) -
     else:
         console.print("\n[bold]Step 3:[/] Single camera — skipping pseudo-labeling")
 
-    # Step 4: Export CVAT tasks
-    console.print("\n[bold]Step 4:[/] Exporting CVAT tasks")
+    # Step 4: Export CVAT tasks (video mode with track interpolation)
+    console.print(f"\n[bold]Step 4:[/] Exporting CVAT video tasks (keyframe interval={cfg.keyframe_interval})")
     task_count = 0
+    exported_tasks: dict[str, Tuple[Path, Path, Path]] = {}  # name -> (video, xml, clip)
     for cam_id, cam_clip_list in cam_clips.items():
         for clip in cam_clip_list:
             stage_a_path = stage_a_outputs.get(cam_id)
@@ -173,22 +175,24 @@ def _action_process_footage(cfg: TrainingPipelineConfig, state: PipelineState) -
             pl = pseudo_labels.get(cam_id, [])
             bg = bg_detections.get(cam_id, {})
 
-            zip_path = export_task(
+            video_path, xml_path = export_video_task(
                 clip_path=clip,
                 cam_id=cam_id,
                 session_id=session_id,
                 stage_a_path=stage_a_path,
                 pseudo_labels=pl if pl else None,
                 bg_detections=bg if bg else None,
-                sample_rate=cfg.frame_sample_rate,
+                keyframe_interval=cfg.keyframe_interval,
             )
-            console.print(f"  Created: {zip_path}")
+            task_name = f"{session_id}_{cam_id}"
+            exported_tasks[task_name] = (video_path, xml_path, clip)
+            console.print(f"  Created: {xml_path.parent.name}/")
             task_count += 1
 
     # Step 5: Upload to CVAT (if configured)
     if cfg.cvat_username and cfg.cvat_password:
         if _prompt_confirm("Upload tasks to CVAT?"):
-            _upload_to_cvat(cfg, state, session_id, cam_clips)
+            _upload_video_to_cvat(cfg, state, session_id, exported_tasks)
     else:
         console.print(
             "\n[yellow]CVAT credentials not configured. "
@@ -317,6 +321,46 @@ def _upload_to_cvat(
     save_state(state)
 
 
+def _upload_video_to_cvat(
+    cfg: TrainingPipelineConfig,
+    state: PipelineState,
+    session_id: str,
+    exported_tasks: dict[str, Tuple[Path, Path, Path]],
+) -> None:
+    """Upload video tasks with track annotations to CVAT."""
+    from training_pipeline.cvat_integration import (
+        connect,
+        create_project_if_needed,
+        upload_video_task,
+    )
+
+    try:
+        client = connect(cfg.cvat_url, cfg.cvat_username, cfg.cvat_password)
+    except Exception as e:
+        console.print(f"[red]CVAT connection failed: {e}[/]")
+        return
+
+    project_id = create_project_if_needed(client, cfg.cvat_project_name)
+
+    for task_name, (video_path, xml_path, clip_path) in exported_tasks.items():
+        # Parse cam_id from task name
+        parts = task_name.rsplit("_", 1)
+        cam_id = parts[1] if len(parts) > 1 else ""
+
+        try:
+            task_id = upload_video_task(client, task_name, video_path, xml_path, project_id)
+            state.cvat_tasks[task_name] = CvatTaskInfo(
+                task_id=task_id, status="created",
+                session_id=session_id, cam_id=cam_id,
+                video_path=str(clip_path),
+            )
+            console.print(f"  Uploaded: {task_name} (task_id={task_id})")
+        except Exception as e:
+            console.print(f"  [red]Upload failed for {task_name}: {e}[/]")
+
+    save_state(state)
+
+
 def _action_check_progress(cfg: TrainingPipelineConfig, state: PipelineState) -> None:
     """Option 2: Check CVAT annotation progress."""
     if not state.cvat_tasks:
@@ -366,9 +410,22 @@ def _action_check_progress(cfg: TrainingPipelineConfig, state: PipelineState) ->
 
 
 def _action_pull_annotations(cfg: TrainingPipelineConfig, state: PipelineState) -> None:
-    """Option 3: Pull completed annotations from CVAT."""
-    from training_pipeline.cvat_integration import connect, download_annotations
-    from training_pipeline.dataset import ingest_annotations, validate_annotations
+    """Option 3: Pull completed annotations from CVAT.
+
+    Handles both video tasks (CVAT XML + frame extraction) and legacy
+    image tasks (COCO JSON).
+    """
+    from training_pipeline.cvat_integration import (
+        connect,
+        download_annotations,
+        download_video_annotations,
+    )
+    from training_pipeline.dataset import (
+        cvat_video_xml_to_coco,
+        extract_frames_from_video,
+        ingest_annotations,
+        validate_annotations,
+    )
 
     if not cfg.cvat_username:
         console.print("[red]CVAT credentials not configured. Run option 8.[/]")
@@ -397,12 +454,47 @@ def _action_pull_annotations(cfg: TrainingPipelineConfig, state: PipelineState) 
         session_id = info.session_id or name.rsplit("_", 1)[0]
         cam_id = info.cam_id or (name.rsplit("_", 1)[1] if "_" in name else "unknown")
 
-        output_json = cfg.training_data_dir / "annotations" / f"{name}_corrected.json"
-        try:
-            download_annotations(client, info.task_id, output_json)
-        except Exception as e:
-            console.print(f"  [red]Download failed: {e}[/]")
-            continue
+        is_video_task = bool(info.video_path)
+
+        if is_video_task:
+            # Video task: download CVAT XML, convert to COCO, extract frames
+            output_xml = cfg.training_data_dir / "annotations" / f"{name}_corrected.xml"
+            try:
+                download_video_annotations(client, info.task_id, output_xml)
+            except Exception as e:
+                console.print(f"  [red]Download failed: {e}[/]")
+                continue
+
+            video_path = Path(info.video_path)
+            if not video_path.exists():
+                console.print(f"  [red]Source video not found: {video_path}[/]")
+                continue
+
+            # Convert CVAT XML to COCO JSON
+            console.print("  Converting CVAT XML to COCO format...")
+            coco_data = cvat_video_xml_to_coco(output_xml, video_path)
+            output_json = cfg.training_data_dir / "annotations" / f"{name}_corrected.json"
+            output_json.parent.mkdir(parents=True, exist_ok=True)
+            output_json.write_text(json.dumps(coco_data, indent=2))
+            console.print(
+                f"  Converted: {len(coco_data['images'])} frames, "
+                f"{len(coco_data['annotations'])} annotations"
+            )
+
+            # Extract frames from video
+            frame_indices = [img["id"] for img in coco_data["images"]]
+            images_dir = cfg.cvat_tasks_dir / name / "images"
+            console.print(f"  Extracting {len(frame_indices)} frames from video...")
+            extract_frames_from_video(video_path, frame_indices, images_dir)
+        else:
+            # Legacy image task: download COCO JSON directly
+            output_json = cfg.training_data_dir / "annotations" / f"{name}_corrected.json"
+            try:
+                download_annotations(client, info.task_id, output_json)
+            except Exception as e:
+                console.print(f"  [red]Download failed: {e}[/]")
+                continue
+            images_dir = cfg.cvat_tasks_dir / name / "images"
 
         # Validate
         report = validate_annotations(output_json)
@@ -422,7 +514,6 @@ def _action_pull_annotations(cfg: TrainingPipelineConfig, state: PipelineState) 
             console.print("  [green]Validation: clean[/]")
 
         # Ingest into dataset
-        images_dir = cfg.cvat_tasks_dir / name / "images"
         stats = ingest_annotations(
             output_json, session_id, cam_id, images_dir,
             data_dir=cfg.training_data_dir,
