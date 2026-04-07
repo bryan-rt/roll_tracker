@@ -46,6 +46,7 @@ class ValidationIssue:
     image_id: int
     annotation_id: int
     issue_type: str  # skeleton_crossing | keypoint_outside_bbox | missing_keypoints
+    severity: str = "error"  # error | warning
     details: str = ""
 
 
@@ -100,9 +101,9 @@ def _coco_to_yolo_keypoints(
 
     kps = annotation.get("keypoints", [0.0] * 51)
     for i in range(17):
-        kx = kps[i * 3] / img_width if kps[i * 3] > 0 else 0.0
-        ky = kps[i * 3 + 1] / img_height if kps[i * 3 + 1] > 0 else 0.0
         kv = int(kps[i * 3 + 2])
+        kx = kps[i * 3] / img_width if kv > 0 else 0.0
+        ky = kps[i * 3 + 1] / img_height if kv > 0 else 0.0
         parts.append(f"{kx:.6f} {ky:.6f} {kv}")
 
     return " ".join(parts)
@@ -349,11 +350,14 @@ def validate_annotations(coco_json: str | Path) -> ValidationReport:
             lx, lv = kps[li * 3], kps[li * 3 + 2]
             rx, rv = kps[ri * 3], kps[ri * 3 + 2]
             if lv > 0 and rv > 0 and lx > rx:
-                # Left keypoint is to the right of the right keypoint — possible swap
+                # Left keypoint is to the right of the right keypoint — possible swap.
+                # Downgraded to warning: grappling means people face all directions,
+                # so left/right crossings are common and not necessarily errors.
                 report.issues.append(ValidationIssue(
                     image_id=img_id,
                     annotation_id=ann_id,
                     issue_type="skeleton_crossing",
+                    severity="warning",
                     details=f"{COCO_KEYPOINT_NAMES[li]} (x={lx:.0f}) is right of "
                             f"{COCO_KEYPOINT_NAMES[ri]} (x={rx:.0f})",
                 ))

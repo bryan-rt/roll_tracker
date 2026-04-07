@@ -217,17 +217,18 @@ def download_annotations(
 
     task = client.tasks.retrieve(task_id)
 
-    # Export annotations in COCO Keypoints format
+    # Export annotations in COCO Keypoints format.
+    # export_dataset() writes the zip to the filename path and returns it.
     with tempfile.TemporaryDirectory() as tmpdir:
-        dataset = task.export_dataset(
-            format_name="COCO Keypoints 1.0",
-            filename=str(Path(tmpdir) / "export.zip"),
-        )
-
-        # The export is a zip containing annotations/instances_default.json
         import zipfile
 
         export_zip = Path(tmpdir) / "export.zip"
+        task.export_dataset(
+            format_name="COCO Keypoints 1.0",
+            filename=str(export_zip),
+        )
+
+        # The export is a zip containing annotations/instances_default.json
         with zipfile.ZipFile(export_zip) as zf:
             # Find the annotations JSON inside
             json_files = [f for f in zf.namelist() if f.endswith(".json")]

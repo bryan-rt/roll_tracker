@@ -161,7 +161,7 @@ def train_model(
         exist_ok=True,
         save=True,
         plots=True,
-        pose=12.0,  # pose loss gain
+        pose=12.0,  # explicit default — placeholder for future tuning
     )
 
     elapsed = time.time() - t0

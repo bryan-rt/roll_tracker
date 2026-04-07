@@ -230,6 +230,10 @@ def _run_stage_a_inference(
             for k in range(len(xyxy)):
                 if int(clses[k]) != 0:
                     continue
+                # tracklet_id here is a per-frame detection index, NOT a real
+                # tracker-assigned tracklet ID. This is consistent within the
+                # training pipeline's parquet files (detections + keypoints use
+                # the same per-frame index) but does NOT match Stage A pipeline output.
                 det_rows.append({
                     "frame_index": frame_idx,
                     "tracklet_id": k,
@@ -292,7 +296,10 @@ def _upload_to_cvat(
         task_name = f"{session_id}_{cam_id}"
         try:
             task_id = upload_task(client, task_name, zip_path, project_id)
-            state.cvat_tasks[task_name] = CvatTaskInfo(task_id=task_id, status="created")
+            state.cvat_tasks[task_name] = CvatTaskInfo(
+                task_id=task_id, status="created",
+                session_id=session_id, cam_id=cam_id,
+            )
             console.print(f"  Uploaded: {task_name} (task_id={task_id})")
         except Exception as e:
             console.print(f"  [red]Upload failed for {task_name}: {e}[/]")
@@ -376,10 +383,9 @@ def _action_pull_annotations(cfg: TrainingPipelineConfig, state: PipelineState) 
     for name, info in completed.items():
         console.print(f"\nPulling annotations for: {name}")
 
-        # Parse session_id and cam_id from task name
-        parts = name.rsplit("_", 1)
-        session_id = parts[0] if len(parts) > 1 else name
-        cam_id = parts[1] if len(parts) > 1 else "unknown"
+        # Use stored session_id/cam_id; fall back to name parsing for legacy state
+        session_id = info.session_id or name.rsplit("_", 1)[0]
+        cam_id = info.cam_id or (name.rsplit("_", 1)[1] if "_" in name else "unknown")
 
         output_json = cfg.training_data_dir / "annotations" / f"{name}_corrected.json"
         try:
@@ -390,13 +396,17 @@ def _action_pull_annotations(cfg: TrainingPipelineConfig, state: PipelineState) 
 
         # Validate
         report = validate_annotations(output_json)
-        if report.issues:
-            console.print(f"  [yellow]Validation: {len(report.issues)} issues found[/]")
-            for issue in report.issues[:5]:
+        errors = [i for i in report.issues if i.severity == "error"]
+        warnings = [i for i in report.issues if i.severity == "warning"]
+        if warnings:
+            console.print(f"  [dim]Validation: {len(warnings)} warnings (non-blocking)[/]")
+        if errors:
+            console.print(f"  [yellow]Validation: {len(errors)} errors found[/]")
+            for issue in errors[:5]:
                 console.print(f"    - {issue.issue_type}: {issue.details}")
-            if len(report.issues) > 5:
-                console.print(f"    ... and {len(report.issues) - 5} more")
-            if not _prompt_confirm("Proceed with ingestion despite issues?"):
+            if len(errors) > 5:
+                console.print(f"    ... and {len(errors) - 5} more")
+            if not _prompt_confirm("Proceed with ingestion despite errors?"):
                 continue
         else:
             console.print("  [green]Validation: clean[/]")
