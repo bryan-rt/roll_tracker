@@ -60,3 +60,7 @@ pytest==8.0.2
 
 # CLI / UX
 typer==0.21.1
+
+# Training pipeline — CVAT integration
+cvat-sdk>=2.7.0
+cvat-cli>=2.7.0
