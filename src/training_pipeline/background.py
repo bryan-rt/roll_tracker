@@ -71,6 +71,12 @@ def build_background_model(
     if not frames:
         raise ValueError(f"No frames collected for camera {cam_id}")
 
+    if len(frames) > 500:
+        logger.warning(
+            f"Large frame stack ({len(frames)} frames) — consider increasing "
+            f"sample_rate to reduce memory usage"
+        )
+
     # Stack and compute per-pixel median
     stack = np.stack(frames, axis=0)
     bg_model = np.median(stack, axis=0).astype(np.uint8)

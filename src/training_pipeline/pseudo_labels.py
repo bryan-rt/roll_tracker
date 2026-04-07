@@ -41,16 +41,18 @@ class PseudoLabel:
 
 def _project_to_pixel(
     world_xy: Tuple[float, float],
-    H: np.ndarray,
+    H_mat_to_img: np.ndarray,
 ) -> Tuple[float, float]:
-    """Project world coordinates back to pixel coordinates via inverse homography.
+    """Project world/mat coordinates to pixel coordinates.
+
+    H on disk (homography.json) is mat→img (world→pixel), so world→pixel
+    is simply H @ p with no inversion needed.
 
     Note: Re-distortion is intentionally skipped since these annotations will be
     human-corrected in CVAT. The undistorted-to-pixel approximation is sufficient.
     """
-    H_inv = np.linalg.inv(H)
     p = np.array([world_xy[0], world_xy[1], 1.0], dtype=np.float64)
-    q = H_inv @ p
+    q = H_mat_to_img @ p
     w = float(q[2])
     if w == 0.0:
         return (float("nan"), float("nan"))
@@ -117,9 +119,12 @@ def generate_pseudo_labels(
     -------
     Dict mapping camera_id -> list of PseudoLabel for that camera's missed detections.
     """
-    # Load camera configs and detections for all cameras
+    # Load camera configs and detections for all cameras.
+    # H on disk (homography.json) is mat→img (world→pixel).
+    # project_to_world() expects img→mat, so we store the inverse too.
     cam_configs: Dict[str, Dict[str, Any]] = {}
-    cam_H: Dict[str, np.ndarray] = {}
+    cam_H_raw: Dict[str, np.ndarray] = {}      # mat→img (for _project_to_pixel)
+    cam_H_img2mat: Dict[str, np.ndarray] = {}   # img→mat (for project_to_world)
     cam_K: Dict[str, Optional[np.ndarray]] = {}
     cam_D: Dict[str, Optional[np.ndarray]] = {}
     cam_dets: Dict[str, pd.DataFrame] = {}
@@ -128,7 +133,9 @@ def generate_pseudo_labels(
     for cam_id, stage_a_path in session_detections.items():
         cfg = _load_camera_config(cam_id)
         cam_configs[cam_id] = cfg
-        cam_H[cam_id] = np.array(cfg["H"], dtype=np.float64)
+        H_raw = np.array(cfg["H"], dtype=np.float64)
+        cam_H_raw[cam_id] = H_raw
+        cam_H_img2mat[cam_id] = np.linalg.inv(H_raw)
         K, D = load_calibration_from_payload(cfg)
         cam_K[cam_id] = K
         cam_D[cam_id] = D
@@ -175,7 +182,7 @@ def generate_pseudo_labels(
 
                 world_xy = project_to_world(
                     (cx, cy),
-                    cam_H[src_cam],
+                    cam_H_img2mat[src_cam],
                     cam_K[src_cam],
                     cam_D[src_cam],
                 )
@@ -186,7 +193,10 @@ def generate_pseudo_labels(
                 src_kp_world: Optional[List[Tuple[float, float, float]]] = None
                 track_id = det_row.get("tracklet_id")
                 if not frame_kps.empty and track_id is not None:
-                    kp_match = frame_kps[frame_kps["track_id"] == track_id]
+                    # Handle both column names: Stage A pipeline uses "track_id",
+                    # training pipeline's _run_stage_a_inference also uses "track_id"
+                    kp_track_col = "tracklet_id" if "tracklet_id" in frame_kps.columns else "track_id"
+                    kp_match = frame_kps[frame_kps[kp_track_col] == track_id]
                     if not kp_match.empty:
                         kp_arr = _extract_keypoints_array(kp_match.iloc[0])
                         if kp_arr is not None:
@@ -195,7 +205,7 @@ def generate_pseudo_labels(
                                 if kp_arr[i, 2] > 0.1:  # minimum confidence
                                     wx, wy = project_to_world(
                                         (kp_arr[i, 0], kp_arr[i, 1]),
-                                        cam_H[src_cam],
+                                        cam_H_img2mat[src_cam],
                                         cam_K[src_cam],
                                         cam_D[src_cam],
                                     )
@@ -209,7 +219,7 @@ def generate_pseudo_labels(
                         continue
 
                     # Project world center into target pixel space
-                    tgt_px = _project_to_pixel(world_xy, cam_H[tgt_cam])
+                    tgt_px = _project_to_pixel(world_xy, cam_H_raw[tgt_cam])
                     if np.isnan(tgt_px[0]):
                         continue
 
@@ -244,7 +254,7 @@ def generate_pseudo_labels(
                         tgt_kps = np.zeros((17, 3), dtype=np.float64)
                         for i, (wx, wy, conf) in enumerate(src_kp_world):
                             if conf > 0:
-                                px, py = _project_to_pixel((wx, wy), cam_H[tgt_cam])
+                                px, py = _project_to_pixel((wx, wy), cam_H_raw[tgt_cam])
                                 if not np.isnan(px):
                                     # v=1 means "estimated" in COCO visibility
                                     tgt_kps[i] = [px, py, 1.0]

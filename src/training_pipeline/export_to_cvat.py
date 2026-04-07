@@ -103,8 +103,11 @@ def _load_stage_a_detections(stage_a_path: Path, sampled_frames: set) -> List[Di
         num_keypoints = 0
 
         track_id = row.get("tracklet_id")
-        if not kps.empty and track_id is not None and "track_id" in kps.columns:
-            kp_match = kps[(kps["frame_index"] == fi) & (kps["track_id"] == track_id)]
+        if not kps.empty and track_id is not None:
+            # Handle both column names: Stage A pipeline uses "track_id",
+            # training pipeline's _run_stage_a_inference also uses "track_id"
+            track_col = "tracklet_id" if "tracklet_id" in kps.columns else "track_id"
+            kp_match = kps[(kps["frame_index"] == fi) & (kps[track_col] == track_id)]
             if not kp_match.empty:
                 kp_row = kp_match.iloc[0]
                 for i, name in enumerate(COCO_KEYPOINT_NAMES):

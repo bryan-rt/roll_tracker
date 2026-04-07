@@ -35,6 +35,8 @@ class CvatTaskInfo(BaseModel):
 
     task_id: int
     status: str = "created"  # created | in_progress | completed
+    session_id: str = ""
+    cam_id: str = ""
 
 
 class PipelineState(BaseModel):

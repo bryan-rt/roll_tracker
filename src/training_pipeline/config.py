@@ -57,9 +57,6 @@ def save_config(cfg: TrainingPipelineConfig, path: Optional[Path] = None) -> Non
     """Persist config to YAML."""
     path = path or _DEFAULT_CONFIG_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
+    # mode="json" converts Path objects to strings automatically
     data = cfg.model_dump(mode="json")
-    # Convert Path objects to strings for clean YAML
-    for k, v in data.items():
-        if isinstance(v, Path):
-            data[k] = str(v)
     path.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False))
