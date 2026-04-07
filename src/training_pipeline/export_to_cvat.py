@@ -499,10 +499,18 @@ def export_video_task(
 
     total_frames, width, height = _get_video_info(clip_path)
 
-    # Step 2: Build keyframe set and full frame set for annotation loading
+    # Step 2: Build keyframe set
     keyframe_frames = set(range(0, total_frames, keyframe_interval))
-    # Load ALL frames that have detections (not just keyframes)
-    all_frame_indices = set(range(total_frames))
+
+    # Load only frames that have detections in the parquet (not all video frames).
+    # _load_stage_a_detections filters by this set, so passing all detection frames
+    # avoids iterating over empty frames.
+    det_path = stage_a_path / "detections.parquet"
+    if det_path.exists():
+        det_df = pd.read_parquet(det_path, columns=["frame_index"])
+        all_frame_indices = set(det_df["frame_index"].unique())
+    else:
+        all_frame_indices = keyframe_frames
 
     # Step 3: Merge annotations from all sources for all frames
     all_annotations = _merge_annotations(

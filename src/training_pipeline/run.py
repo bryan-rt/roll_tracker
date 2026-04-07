@@ -313,14 +313,37 @@ def _action_process_footage(cfg: TrainingPipelineConfig, state: PipelineState) -
             stage_a_outputs[cam_id] = out_dir
 
     # Step 2: Background subtraction (if models exist)
+    import cv2 as _cv2
+
     console.print("\n[bold]Step 2:[/] Background subtraction")
     bg_detections: dict[str, dict] = {}
     for cam_id in cam_clips:
         try:
             bg_model = load_background_model(cam_id, cfg.background_models_dir)
-            console.print(f"  {cam_id}: background model loaded")
-            # We'd process frames here — simplified for initial build
-            bg_detections[cam_id] = {}
+            console.print(f"  {cam_id}: background model loaded, detecting foreground...")
+            cam_bg_dets: dict[int, list] = {}
+            for clip in cam_clips[cam_id]:
+                cap = _cv2.VideoCapture(str(clip))
+                frame_idx = 0
+                while True:
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
+                    bboxes = detect_foreground(
+                        bg_model, frame,
+                        threshold=cfg.bg_subtraction_threshold,
+                        min_area=cfg.bg_min_contour_area,
+                    )
+                    if bboxes:
+                        cam_bg_dets[frame_idx] = bboxes
+                    frame_idx += 1
+                cap.release()
+            bg_detections[cam_id] = cam_bg_dets
+            det_count = sum(len(v) for v in cam_bg_dets.values())
+            console.print(
+                f"  {cam_id}: {det_count} foreground detections "
+                f"across {len(cam_bg_dets)} frames"
+            )
         except FileNotFoundError:
             console.print(f"  {cam_id}: no background model (skipping)")
 
