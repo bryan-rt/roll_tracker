@@ -90,6 +90,16 @@ def _action_process_footage(cfg: TrainingPipelineConfig, state: PipelineState) -
         clips = [clip_dir]
     else:
         clips = sorted(clip_dir.glob("*.mp4"))
+        if not clips:
+            # Recursive search for nested camera directories
+            # (e.g., data/raw/nest/{gym}/{cam}/{date}/{hour}/*.mp4).
+            # Exclude pipeline output artifacts (_debug, exports, stage_*).
+            _exclude = {"_debug", "exports", "stage_A", "stage_B", "stage_C",
+                        "stage_D", "stage_E", "stage_F"}
+            clips = sorted(
+                p for p in clip_dir.rglob("*.mp4")
+                if not _exclude.intersection(p.parts)
+            )
 
     if not clips:
         console.print(f"[red]No MP4 clips found in {clip_dir}[/]")
