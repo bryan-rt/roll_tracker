@@ -244,3 +244,4 @@ app_mobile/android/app/release
 # Web app
 app_web/node_modules/
 app_web/dist/
+models/training_runs/
