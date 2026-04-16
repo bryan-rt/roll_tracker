@@ -24,6 +24,35 @@ from loguru import logger
 from training_pipeline.background import BBox
 from training_pipeline.pseudo_labels import COCO_KEYPOINT_NAMES, PseudoLabel
 
+# CVAT project keypoint order (matches skeleton label definition in CVAT project)
+CVAT_KEYPOINT_ORDER = [
+    "nose", "right_eye", "left_eye", "left_ear", "right_ear",
+    "right_shoulder", "left_shoulder", "right_elbow", "right_wrist",
+    "left_elbow", "left_wrist", "left_hip", "right_hip",
+    "right_knee", "right_ankle", "left_ankle", "left_knee",
+]
+
+# COCO index → CVAT index (model output order → CVAT project order)
+COCO_TO_CVAT = {
+    0: 0,    # nose → nose
+    1: 2,    # left_eye → cvat index 2
+    2: 1,    # right_eye → cvat index 1
+    3: 3,    # left_ear → cvat index 3
+    4: 4,    # right_ear → cvat index 4
+    5: 6,    # left_shoulder → cvat index 6
+    6: 5,    # right_shoulder → cvat index 5
+    7: 9,    # left_elbow → cvat index 9
+    8: 7,    # right_elbow → cvat index 7
+    9: 10,   # left_wrist → cvat index 10
+    10: 8,   # right_wrist → cvat index 8
+    11: 11,  # left_hip → cvat index 11
+    12: 12,  # right_hip → cvat index 12
+    13: 16,  # left_knee → cvat index 16
+    14: 13,  # right_knee → cvat index 13
+    15: 15,  # left_ankle → cvat index 15
+    16: 14,  # right_ankle → cvat index 14
+}
+
 # COCO skeleton connectivity (joint index pairs)
 COCO_SKELETON = [
     [16, 14], [14, 12], [17, 15], [15, 13], [12, 13],
@@ -309,6 +338,22 @@ def _merge_annotations(
 # CVAT for Video XML writer
 # ---------------------------------------------------------------------------
 
+def _remap_coco_to_cvat(coco_kps: list) -> list:
+    """Remap keypoints from COCO order (model output) to CVAT project order.
+
+    Input: flat list [x0, y0, v0, x1, y1, v1, ...] in COCO order (17*3 = 51 values).
+    Output: list of (name, x, y, v) tuples in CVAT project order (17 tuples).
+    """
+    cvat_kps = [(0.0, 0.0, 0)] * 17
+    for coco_idx in range(17):
+        cvat_idx = COCO_TO_CVAT[coco_idx]
+        kx = coco_kps[coco_idx * 3]
+        ky = coco_kps[coco_idx * 3 + 1]
+        kv = coco_kps[coco_idx * 3 + 2]
+        cvat_kps[cvat_idx] = (kx, ky, kv)
+    return [(CVAT_KEYPOINT_ORDER[i], *cvat_kps[i]) for i in range(17)]
+
+
 def _build_cvat_video_xml(
     annotations: List[Dict],
     total_frames: int,
@@ -319,14 +364,13 @@ def _build_cvat_video_xml(
     Annotations are grouped by tracklet_id into tracks. Frames in
     keyframe_frames are marked keyframe="1"; others are keyframe="0"
     (CVAT interpolates between keyframes).
+
+    Keypoints are remapped from COCO order (model output) to CVAT project
+    definition order before writing. Label is "Skeleton" matching the
+    CVAT project.
     """
     root = Element("annotations")
     SubElement(root, "version").text = "1.1"
-
-    meta = SubElement(root, "meta")
-    task_el = SubElement(meta, "task")
-    SubElement(task_el, "size").text = str(total_frames)
-    SubElement(task_el, "mode").text = "interpolation"
 
     # Group annotations by track (tracklet_id or assigned id for non-tracked)
     tracks: Dict[int, List[Dict]] = {}
@@ -341,8 +385,9 @@ def _build_cvat_video_xml(
     for track_id, track_anns in sorted(tracks.items()):
         track_el = SubElement(root, "track", {
             "id": str(track_id),
-            "label": "person",
+            "label": "Skeleton",
             "source": "manual",
+            "group_id": str(track_id + 1),
         })
 
         # Sort by frame
@@ -355,25 +400,26 @@ def _build_cvat_video_xml(
             skel = SubElement(track_el, "skeleton", {
                 "frame": str(frame),
                 "keyframe": is_kf,
-                "outside": "0",
-                "occluded": "0",
+                "z_order": "0",
             })
 
-            kps = ann.get("keypoints", [0.0] * 51)
-            for i, name in enumerate(COCO_KEYPOINT_NAMES):
-                kx = kps[i * 3]
-                ky = kps[i * 3 + 1]
-                kv = kps[i * 3 + 2]
-                occluded = "1" if kv == 1 else "0"  # v=1 estimated, v=2 visible
+            # Remap keypoints from COCO to CVAT order
+            coco_kps = ann.get("keypoints", [0.0] * 51)
+            cvat_kps = _remap_coco_to_cvat(coco_kps)
+
+            for name, kx, ky, kv in cvat_kps:
+                occluded = "1" if kv == 1 else "0"
                 outside = "1" if kv == 0 else "0"
 
-                SubElement(skel, "points", {
+                pt = SubElement(skel, "points", {
                     "label": name,
+                    "keyframe": is_kf,
                     "outside": outside,
                     "occluded": occluded,
-                    "keyframe": is_kf,
-                    "points": f"{kx:.1f},{ky:.1f}",
+                    "points": f"{kx:.2f},{ky:.2f}",
                 })
+                # Non-self-closing tag — add empty text to force </points>
+                pt.text = "\n"
 
     # Pretty-print XML
     raw_xml = tostring(root, encoding="unicode")
