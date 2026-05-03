@@ -72,7 +72,7 @@ def main():
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
         for img_abs_path in all_sampled:
             img_path = Path(img_abs_path)
-            img_name = img_path.stem  # e.g. "01_00001"
+            img_name = img_path.stem  # e.g. "0000001"
 
             if not img_path.exists():
                 skipped += 1

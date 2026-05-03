@@ -2,7 +2,7 @@
 
 Reads the custom ViCoS annotations.json and produces:
   - YOLO pose label files in data/vicos_bjj/yolo_labels/
-  - Train/val split by video sequence (01-05 train, 06 val)
+  - Train/val split by image number range (last 2 segments → val)
   - dataset.yaml with flip_idx
   - Position labels JSON for future classifier work
   - Verification images in outputs/_benchmarks/
@@ -31,9 +31,11 @@ import yaml
 
 VICOS_DIR = Path("data/vicos_bjj")
 ANNOTATIONS_PATH = VICOS_DIR / "annotations.json"
-IMAGES_DIR = VICOS_DIR / "images"
 LABELS_DIR = VICOS_DIR / "yolo_labels"
 VERIFY_DIR = Path("outputs/_benchmarks")
+
+# Images are flat in VICOS_DIR (not in a subdirectory)
+# Filenames: 0000001.jpg, 0000002.jpg, etc.
 
 # COCO skeleton for visualization
 COCO_SKELETON = [
@@ -50,6 +52,10 @@ COCO_KEYPOINT_NAMES = [
     "left_knee", "right_knee", "left_ankle", "right_ankle",
 ]
 
+# Val split threshold — images with number >= this go to val (~10%)
+# Based on 16 segments, last 2 segments start around image 1400294
+VAL_IMAGE_THRESHOLD = 1400294
+
 
 # ---------------------------------------------------------------------------
 # Conversion
@@ -57,24 +63,13 @@ COCO_KEYPOINT_NAMES = [
 
 
 def find_image_path(image_name: str) -> Path | None:
-    """Find an image file by its ViCoS name (e.g. '01_00001').
-
-    Images may be in subdirectories or flat. Try common patterns.
-    """
-    for ext in [".jpg", ".png", ".jpeg"]:
-        # Flat
-        p = IMAGES_DIR / f"{image_name}{ext}"
-        if p.exists():
-            return p
-        # Subdirectory by sequence
-        seq = image_name.split("_")[0]
-        p = IMAGES_DIR / seq / f"{image_name}{ext}"
-        if p.exists():
-            return p
-        # Just the frame part in a subdirectory
-        p = IMAGES_DIR / seq / f"{image_name.split('_', 1)[1]}{ext}"
-        if p.exists():
-            return p
+    """Find an image file by its ViCoS name (e.g. '0000001')."""
+    p = VICOS_DIR / f"{image_name}.jpg"
+    if p.exists():
+        return p
+    p = VICOS_DIR / f"{image_name}.png"
+    if p.exists():
+        return p
     return None
 
 
@@ -89,8 +84,10 @@ def get_image_dimensions(image_path: Path) -> tuple[int, int]:
 def convert_entry(entry: dict, img_w: int, img_h: int) -> list[str]:
     """Convert one ViCoS annotation entry to YOLO pose format lines."""
     lines = []
-    for pose_key in ["Pose1", "Pose2"]:
-        pose = entry[pose_key]  # [[x,y,c], ...] 17 joints
+    for pose_key in ["pose1", "pose2"]:
+        pose = entry.get(pose_key)
+        if pose is None:
+            continue
 
         # Skip if fewer than 3 valid keypoints
         valid_kps = [(x, y, c) for x, y, c in pose if c > 0]
@@ -201,14 +198,13 @@ def main():
     # Discover image structure
     print("\nDiscovering image file structure...")
     sample = annotations[0]
-    sample_path = find_image_path(sample["Image"])
+    sample_path = find_image_path(sample["image"])
     if sample_path is None:
-        # Try listing what's actually in the images dir
-        contents = list(IMAGES_DIR.iterdir())[:10]
-        print(f"  Could not find image for '{sample['Image']}'")
-        print(f"  Images dir contains: {[c.name for c in contents]}")
+        contents = list(VICOS_DIR.iterdir())[:10]
+        print(f"  Could not find image for '{sample['image']}'")
+        print(f"  Directory contains: {[c.name for c in contents]}")
         raise FileNotFoundError(
-            f"Cannot locate image files. Check data/vicos_bjj/images/ structure."
+            f"Cannot locate image files. Check data/vicos_bjj/ structure."
         )
     print(f"  Sample image found: {sample_path}")
 
@@ -219,7 +215,7 @@ def main():
     missing = 0
 
     for i, entry in enumerate(annotations):
-        img_name = entry["Image"]
+        img_name = entry["image"]
         if img_name in image_paths:
             continue
         img_path = find_image_path(img_name)
@@ -228,7 +224,6 @@ def main():
             continue
         image_paths[img_name] = img_path
         if i < 5 or i % 20000 == 0:
-            # Read dimensions for first few and periodically
             dim_cache[img_name] = get_image_dimensions(img_path)
 
         if (i + 1) % 20000 == 0:
@@ -236,8 +231,7 @@ def main():
 
     print(f"  Unique images found: {len(image_paths)}, missing: {missing}")
 
-    # If we don't have all dims cached, read a representative sample to check
-    # if all images are the same size
+    # Check if all sampled images have the same dimensions
     if len(dim_cache) > 0:
         dims = list(dim_cache.values())
         all_same = all(d == dims[0] for d in dims)
@@ -261,7 +255,7 @@ def main():
     position_counts = Counter()
 
     for i, entry in enumerate(annotations):
-        img_name = entry["Image"]
+        img_name = entry["image"]
         if img_name not in image_paths:
             continue
 
@@ -282,12 +276,15 @@ def main():
         total_images += 1
 
         # Position labels
-        position_labels[img_name] = entry.get("Position", "unknown")
-        position_counts[entry.get("Position", "unknown")] += 1
+        position_labels[img_name] = entry.get("position", "unknown")
+        position_counts[entry.get("position", "unknown")] += 1
 
         # Keypoint visibility stats
-        for pose_key in ["Pose1", "Pose2"]:
-            for j, (x, y, c) in enumerate(entry[pose_key]):
+        for pose_key in ["pose1", "pose2"]:
+            pose = entry.get(pose_key)
+            if pose is None:
+                continue
+            for j, (x, y, c) in enumerate(pose):
                 if c > 0:
                     kp_visibility[COCO_KEYPOINT_NAMES[j]] += 1
 
@@ -302,18 +299,22 @@ def main():
     pos_path.write_text(json.dumps(position_labels, indent=2))
     print(f"\nPosition labels saved: {pos_path}")
 
-    # Train/val split by sequence
-    print("\nCreating train/val split by video sequence...")
+    # Train/val split by image number range
+    # 16 segments identified; last 2 (images >= 1400294) → val
+    print("\nCreating train/val split by segment...")
     train_images = []
     val_images = []
 
     for img_name, img_path in sorted(image_paths.items()):
-        seq = img_name.split("_")[0]
         label_path = LABELS_DIR / f"{img_name}.txt"
         if not label_path.exists():
             continue
         abs_path = str(img_path.resolve())
-        if seq == "06":
+        try:
+            img_num = int(img_name)
+        except ValueError:
+            img_num = 0
+        if img_num >= VAL_IMAGE_THRESHOLD:
             val_images.append(abs_path)
         else:
             train_images.append(abs_path)
@@ -322,8 +323,8 @@ def main():
     val_txt = VICOS_DIR / "val.txt"
     train_txt.write_text("\n".join(train_images) + "\n")
     val_txt.write_text("\n".join(val_images) + "\n")
-    print(f"  Train: {len(train_images)} images (sequences 01-05)")
-    print(f"  Val: {len(val_images)} images (sequence 06)")
+    print(f"  Train: {len(train_images)} images (segments 1-14)")
+    print(f"  Val: {len(val_images)} images (segments 15-16)")
 
     # dataset.yaml
     dataset_config = {
