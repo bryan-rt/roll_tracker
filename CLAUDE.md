@@ -118,11 +118,19 @@ All train from stock yolo26n-pose.pt, freeze=10, 100 epochs on T4 GPU.
 
 | Model | Dataset | Status |
 |-------|---------|--------|
-| bjj-detect-all-cameras | 902 frames, 3 cameras, bbox only (from CVAT tracking exports) | Dataset prepared, training queued |
+| bjj-detect-all-cameras | 902 frames, 3 cameras, bbox only (from CVAT tracking exports) | Dataset rebuilt (v2), needs retraining |
 
 Base model: stock yolo26n.pt (detection, not pose). freeze=10, 100 epochs.
 Dataset: 10789 annotations across 902 frames (FP7oJQ 301 + J_EDEw 301 + PPDmUg 300).
 Train/val: 749/153 (83/17%), per-camera stratified temporal split.
+
+*Dataset v2 fix (2026-05-06):* FP7oJQ frame extraction was misaligned — used
+`range(0, 3001, 10)` (every 10th frame across 3000) when annotations covered
+frames 0–300 consecutively. Fixed to `range(0, 301, 1)`. Correct source videos:
+FP7oJQ `data/cvat_tasks/round1_20260497_FP7oJQ/FP7oJQ-20260318-200014.mp4`,
+J_EDEw `data/cvat_tasks/round1_20260497_J_EDEw/J_EDEw-20260318-200015.mp4`,
+PPDmUg `data/raw/nest/training_samples/training_PPDmUg_3000.mp4`.
+First trained model had FP7oJQ false positives from background memorization.
 
 *Key findings:*
 - Bbox-only training preserves stock pose quality while improving detection
@@ -152,6 +160,8 @@ Train/val: 749/153 (83/17%), per-camera stratified temporal split.
 | `tools/download_vicos.py` | Download ViCoS BJJ dataset (120K frames) |
 | `tools/camera_geometry_analysis.py` | 4-phase camera diagnostic (ROI, detectability) |
 | `tools/coreml_benchmark.py` | CoreML vs MPS speed comparison |
+| `tools/investigate_fp7_annotations.py` | FP7oJQ false positive root cause analysis |
+| `tools/visualize_bbox_tiers.py` | Color-coded bbox size tier overlays on training frames |
 
 ## Training Data Locations
 

@@ -1,6 +1,6 @@
 """Prepare combined 3-camera detection dataset for yolo26n.pt retraining.
 
-Extracts every 10th frame from CVAT tracking detection exports across all three
+Extracts selected frames from CVAT tracking detection exports across all three
 gym cameras, strips track IDs, remaps class 1→0, extracts video frames, builds
 train/val split, and packages for Kaggle/Colab upload.
 
@@ -26,10 +26,13 @@ OUTPUT_DIR = BASE / "detection_all_cameras"
 ZIP_OUTPUT = BASE / "training_data_detection_all_cameras.zip"
 
 CAMERAS = {
+    # FP7oJQ: range(0, 301, 1) — all 301 frames, no stride.
+    # Previously incorrectly used range(0, 3001, 10) which misaligned
+    # annotations with frames beyond the annotated clip window.
     "FP7oJQ": {
         "zip": BASE / "training_YOLO_track_detections_FP7oJQ_clip1_0-3000.zip",
         "video": Path("data/cvat_tasks/round1_20260497_FP7oJQ/FP7oJQ-20260318-200014.mp4"),
-        "frames": list(range(0, 3001, 10)),  # 301 frames
+        "frames": list(range(0, 301, 1)),  # 301 frames, every frame
         "prefix": "fp7",
     },
     "J_EDEw": {
@@ -55,8 +58,8 @@ VAL_COUNT_PER_CAMERA = 51
 # ---------------------------------------------------------------------------
 
 def step1_extract_labels():
-    """Unzip each tracking export and copy labels for every-10th frames."""
-    print("=== Step 1: Extract labels for every-10th frames ===")
+    """Unzip each tracking export and copy labels for selected frames."""
+    print("=== Step 1: Extract labels for selected frames ===")
 
     labels_out = OUTPUT_DIR / "labels"
     labels_out.mkdir(parents=True, exist_ok=True)
@@ -151,7 +154,7 @@ def step2_fix_labels():
 # ---------------------------------------------------------------------------
 
 def step3_extract_frames():
-    """Extract every-10th frames from source videos for all cameras."""
+    """Extract selected frames from source videos for all cameras."""
     print("\n=== Step 3: Extract frames from source videos ===")
 
     images_out = OUTPUT_DIR / "images"
