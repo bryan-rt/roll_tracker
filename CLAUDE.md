@@ -114,6 +114,16 @@ too little data overwrote general COCO pose knowledge.
 
 All train from stock yolo26n-pose.pt, freeze=10, 100 epochs on T4 GPU.
 
+*Detection-only training (in progress):*
+
+| Model | Dataset | Status |
+|-------|---------|--------|
+| bjj-detect-all-cameras | 902 frames, 3 cameras, bbox only (from CVAT tracking exports) | Dataset prepared, training queued |
+
+Base model: stock yolo26n.pt (detection, not pose). freeze=10, 100 epochs.
+Dataset: 10789 annotations across 902 frames (FP7oJQ 301 + J_EDEw 301 + PPDmUg 300).
+Train/val: 749/153 (83/17%), per-camera stratified temporal split.
+
 *Key findings:*
 - Bbox-only training preserves stock pose quality while improving detection
 - Hybrid approach: gym bbox trains detection head, ViCoS trains pose head
@@ -136,7 +146,9 @@ All train from stock yolo26n-pose.pt, freeze=10, 100 epochs on T4 GPU.
 | `tools/package_for_colab.py` | Package training data + model for Colab upload |
 | `tools/three_way_diff.py` | 2- or 3-panel side-by-side model comparison video |
 | `tools/freeze_probe.py` | A/B freeze level comparison (20 epochs each) |
-| `tools/colab_training.ipynb` | Jupyter notebook for Colab/Kaggle GPU training |
+| `tools/colab_training.ipynb` | Jupyter notebook for Colab/Kaggle GPU pose training |
+| `tools/colab_detection_training.ipynb` | Jupyter notebook for Colab/Kaggle GPU detection training |
+| `tools/prepare_detection_dataset.py` | 3-camera detection dataset prep (track export → YOLO) |
 | `tools/download_vicos.py` | Download ViCoS BJJ dataset (120K frames) |
 | `tools/camera_geometry_analysis.py` | 4-phase camera diagnostic (ROI, detectability) |
 | `tools/coreml_benchmark.py` | CoreML vs MPS speed comparison |
@@ -153,6 +165,7 @@ All train from stock yolo26n-pose.pt, freeze=10, 100 epochs on T4 GPU.
 | ViCoS full | `data/vicos_bjj/` | 120K frames, YOLO labels + position labels |
 | ViCoS 12K | `data/colab_package/vicos_12k.zip` | Subsampled for cloud training |
 | Background models | `data/background_models/` | Per-camera .npy median frames |
+| Detection all cameras | `data/training_data/detection_all_cameras/` | 902 frames, 3 cameras, detection only |
 | CVAT exports | `data/training_data/training_*.zip` | Raw CVAT export zips |
 
 ## Cloud Training Setup
