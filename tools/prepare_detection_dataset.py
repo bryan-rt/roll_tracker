@@ -40,7 +40,7 @@ CAMERAS = {
     },
     "PPDmUg": {
         "zip": BASE / "training_YOLO_track_detections_PPDmUg_clip1_0-2990.zip",
-        "video": Path("data/cvat_tasks/round1_20260497_PPDmUg/PPDmUg-20260318-200019.mp4"),
+        "video": Path("data/raw/nest/training_samples/training_PPDmUg_3000.mp4"),
         "frames": list(range(0, 2991, 10)),  # 300 frames
         "prefix": "ppd",
     },
