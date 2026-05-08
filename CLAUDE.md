@@ -62,7 +62,7 @@ docs/                     # Calibration guide, decisions archive, audits
 
 ## Current Status
 
-*Last updated 2026-05-05.*
+*Last updated 2026-05-08.*
 
 Pipeline A→F verified E2E. Session pipeline validated (3-camera, 35/36 clips).
 
@@ -88,7 +88,7 @@ sequential. ANE saturated by single stream — threading hurts (2 workers = 0.54
 showed model CAN detect grappling pairs at low conf (orange boxes appear) but also misses
 some entirely. Conclusion: both confidence AND resolution/classification issues exist.
 
-**CP23b (active — training pipeline + model fine-tuning):**
+**CP23b (completed — training pipeline + model fine-tuning):**
 
 Training pipeline infrastructure at `src/training_pipeline/` (10 modules, ~3000 lines).
 Interactive CLI: `PYTHONPATH=src python -m training_pipeline`. CVAT integration via
@@ -104,25 +104,27 @@ cvat-sdk 2.62 with API compatibility fixes. Background models built for all 3 ca
 R2 detects significantly more people but pose quality degraded vs stock on standing people —
 too little data overwrote general COCO pose knowledge.
 
-*Current 3-way comparison (training on Kaggle):*
+*3-way pose comparison (completed on Kaggle):*
 
 | Model | Dataset | Status |
 |-------|---------|--------|
 | bjj-pose-r2_bbox | 602 gym frames, bbox only | Trained |
-| bjj-pose-vicos | 12K ViCoS BJJ frames, full keypoints | Training (~85/100 epochs) |
-| bjj-pose-hybrid | r2_bbox 20x upsampled + vicos_12k (24K) | Queued |
+| bjj-pose-vicos | 12K ViCoS BJJ frames, full keypoints | Trained |
+| bjj-pose-hybrid | r2_bbox 20x upsampled + vicos_12k (24K) | Trained |
 
-All train from stock yolo26n-pose.pt, freeze=10, 100 epochs on T4 GPU.
+All trained from stock yolo26n-pose.pt, freeze=10, 100 epochs on T4 GPU.
 
-*Detection-only training (in progress):*
+*Detection-only model (active in Stage A):*
 
-| Model | Dataset | Status |
-|-------|---------|--------|
-| bjj-detect-all-cameras | 902 frames, 3 cameras, bbox only (from CVAT tracking exports) | Dataset rebuilt (v2), needs retraining |
+| Model | Dataset | Metrics | Status |
+|-------|---------|---------|--------|
+| bjj-detect-all-cameras | 902 frames, 3 cameras, bbox only | mAP@0.5=0.939, mAP@0.50-95=0.669, F1=0.89@0.537 | **Active** |
 
-Base model: stock yolo26n.pt (detection, not pose). freeze=10, 100 epochs.
+Base model: stock yolo26n.pt (detection, not pose). freeze=10, 100 epochs on T4 GPU.
 Dataset: 10789 annotations across 902 frames (FP7oJQ 301 + J_EDEw 301 + PPDmUg 300).
 Train/val: 749/153 (83/17%), per-camera stratified temporal split.
+CoreML export: `models/bjj-detect-all-cameras.mlpackage` (active inference path).
+Config: `conf: 0.45`, `require_keypoints: false`, `prefer_coreml: true`.
 
 *Dataset v2 fix (2026-05-06):* FP7oJQ frame extraction was misaligned — used
 `range(0, 3001, 10)` (every 10th frame across 3000) when annotations covered
@@ -132,6 +134,27 @@ J_EDEw `data/cvat_tasks/round1_20260497_J_EDEw/J_EDEw-20260318-200015.mp4`,
 PPDmUg `data/raw/nest/training_samples/training_PPDmUg_3000.mp4`.
 First trained model had FP7oJQ false positives from background memorization.
 
+*Two-clip validation (2026-05-08, J_EDEw clips 200246 + 200517):*
+- Stage A avg detections/frame: 9.1 and 10.0 (vs 11.9 at conf=0.25 in comparison video)
+- Tracklet counts: 215 and 230 per clip
+- Short tracklet ratio (<30 frames): 50.2% and 51.7% — significant fragmentation
+- Very short tracklets (<10 frames): 32.6% and 37.8%
+- AprilTag 1: 3 observations in clip 200246 (frames 1781–1782), 0 in clip 200517
+- Tag 1 stitched to person p0003 (4 tracklets collapsed, 60s span, 1,101 detections)
+- Tag 1 matched in 0 match sessions (fragmentation may disrupt proximity signal)
+- Person IDs: 22 and 17 per clip; match sessions: 26 and 32 per clip
+- Stage F exported all clips successfully (26 + 32 mp4s)
+- Bug found and fixed: `prefer_coreml` field missing from DetectorConfig Pydantic model
+  (`src/bjj_pipeline/config/models.py`) — latent since CP22d, surfaced by Pydantic
+  `extra="forbid"` validation
+
+*Key decisions:*
+- Detection-only model preferred over pose model — pose supervision from domain data
+  degrades bbox quality due to annotation noise on fisheye ceiling-mount footage
+- ViCoS keypoints retained for future pose work but not active in current model
+- FP7oJQ false positive root cause confirmed: frame extraction bug (resolved),
+  plus zero empty frames across all cameras (pending)
+
 *Key findings:*
 - Bbox-only training preserves stock pose quality while improving detection
 - Hybrid approach: gym bbox trains detection head, ViCoS trains pose head
@@ -139,6 +162,12 @@ First trained model had FP7oJQ false positives from background memorization.
 - freeze=10 vs freeze=6 probe tied on 602 frames — stay frozen until more diverse data
 - CVAT keypoint order differs from COCO — remapping required (see training-pipeline.md)
 - MPS training has float64 issue — use CPU locally or GPU on Kaggle/Colab
+
+*Open issues:*
+- Tracklet deduplication: ~50% of tracklets <30 frames, ~35% <10 frames
+- Empty frame injection: not yet implemented — next data quality step
+- Bbox size tier filtering: `tools/visualize_bbox_tiers.py` built, thresholds not applied
+- PPDmUg near-zero detections on held-out clip (may be empty mat or model weakness)
 
 ## Tool Inventory
 
@@ -162,6 +191,7 @@ First trained model had FP7oJQ false positives from background memorization.
 | `tools/coreml_benchmark.py` | CoreML vs MPS speed comparison |
 | `tools/investigate_fp7_annotations.py` | FP7oJQ false positive root cause analysis |
 | `tools/visualize_bbox_tiers.py` | Color-coded bbox size tier overlays on training frames |
+| `tools/compare_models.py` | Flexible 2x2 grid model comparison video tool |
 
 ## Training Data Locations
 
@@ -205,11 +235,11 @@ First trained model had FP7oJQ false positives from background memorization.
 ## Planned Work
 
 **CP23b remaining:**
-- Complete 3-way model comparison (r2_bbox vs vicos vs hybrid) via diff video
-- Identify winning training approach, potentially test freeze=6 variants
-- Bbox-only annotation strategy for faster data collection
-- Full pipeline comparison (A→F) with different models on 5-minute window
-- CoreML export of winning model for production inference
+- Ground truth recall/precision evaluation against CVAT annotations (next session)
+- Empty frame injection (~30-50 per camera) to reduce false positives, then retrain
+- Bbox size tier filtering review (outputs from `tools/visualize_bbox_tiers.py`)
+- Tracklet deduplication strategy (baseline: ~50% short tracklets)
+- Full session run with new detection model (all 3 cameras, full clip set)
 
 **CP23c (custom data flywheel):**
 - Background subtraction for missed detection discovery
@@ -225,6 +255,39 @@ First trained model had FP7oJQ false positives from background memorization.
 - CP22c: ROI mask geometry fix (parked)
 - Camera temporal jitter investigation
 - CVAT XML import debugging (IndexError server-side)
+
+## Next Session: Ground Truth Evaluation
+
+**Goal:** Build a recall/precision evaluation framework using CVAT ground
+truth annotations to quantitatively measure Stage A detection quality and
+Stage D identity stitching quality.
+
+**Ground truth data available:**
+- `training_YOLO_track_detections_FP7oJQ_clip1_0-3000.zip`
+- `training_YOLO_track_detections_J_EDEw_clip1_0-3000.zip`
+- `training_YOLO_track_detections_PPDmUg_clip1_0-2990.zip`
+
+Each zip contains per-frame label files with format:
+`class cx cy w h track_id` (6 fields, class=1, needs remap to 0)
+
+**What to evaluate:**
+1. Stage A bbox recall: what fraction of GT annotated people does Stage A
+   detect per frame? (IoU matching at 0.5 threshold)
+2. Stage A bbox precision: what fraction of Stage A detections match a GT
+   bbox? (false positive rate)
+3. Stage D identity recall: do Stage D global person IDs correctly group
+   detections that share a GT track_id across frames?
+
+**Key design constraint:** The GT clips used for training (frames 0-300 for
+FP7oJQ, every 10th frame 0-3000 for J_EDEw and PPDmUg) overlap with training
+data. Evaluation should either use held-out frame ranges or the full clip
+range with a note that in-distribution frames will score higher.
+
+**Tools to build:**
+- `tools/evaluate_stage_a.py` — runs Stage A on GT clip, matches detections
+  to GT bboxes via IoU, computes per-frame and aggregate recall/precision
+- `tools/evaluate_stage_d.py` — loads Stage D person_tracks.parquet, maps
+  to GT track_ids, computes identity assignment accuracy
 
 ## Never Touch
 

@@ -6,16 +6,21 @@ paths:
 # CV Pipeline Stages
 
 ## Phase 1 — Online (parallel, per-clip via multiplex_AC)
-- **Stage A** `detect_track`: YOLO26n-pose detection (CP22, STAL loss) + BoT-SORT on raw frames. Projects
-  contact points to world coordinates via `project_to_world()` (undistortion applied
-  internally when K+dist present). Optionally loads `calibration_correction.json` (CP18
-  affine, superseded by CP19). CP20 additions: keypoints extraction (17 COCO keypoints),
-  isolation gate (per-detection is_isolated flag, `require_keypoints` config controls
-  whether H4 torso keypoint check is applied — set false for detect-only models),
-  HSV color histogram extraction
-  (torso-crop with center-bbox fallback). Outputs: detections, tracklet_frames,
-  tracklet_summaries, contact_points (all .parquet), keypoints.parquet,
-  color_histograms.parquet, tracklet_histogram_summaries.parquet, audit.jsonl.
+- **Stage A** `detect_track`: `bjj-detect-all-cameras.pt` detection-only model (CP23b,
+  domain-tuned yolo26n, 902 frames 3 cameras) + BoT-SORT on raw frames. Detection-only:
+  no pose head, `require_keypoints: false`, `conf: 0.45`. CoreML `.mlpackage` is the
+  active inference path (`prefer_coreml: true`). Keypoints sidecar writes NaN columns
+  when model has no pose head — this is expected behavior.
+  Projects contact points to world coordinates via `project_to_world()` (undistortion
+  applied internally when K+dist present). Optionally loads `calibration_correction.json`
+  (CP18 affine, superseded by CP19). CP20 additions: keypoints extraction (17 COCO
+  keypoints when pose model used), isolation gate (per-detection is_isolated flag,
+  `require_keypoints` config controls whether H4 torso keypoint check is applied — set
+  false for detect-only models), HSV color histogram extraction (torso-crop with
+  center-bbox fallback, falls back to center-bbox when no keypoints available).
+  Outputs: detections, tracklet_frames, tracklet_summaries, contact_points (all .parquet),
+  keypoints.parquet, color_histograms.parquet, tracklet_histogram_summaries.parquet,
+  audit.jsonl.
 - **Stage B** `masks`: SAM — deferred for POC. Falls back to YOLO bbox.
 - **Stage C** `tags`: AprilTag identity. C0 scheduling/cadence, C1 ROI scan, C2 voting.
   Outputs: tag_observations.jsonl, identity_hints.jsonl.
