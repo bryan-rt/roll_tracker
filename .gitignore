@@ -213,6 +213,9 @@ models/*.mlpackage
 services/uploader/.env
 services/processor/.env
 services/nest_recorder/.env
+
+# Training pipeline config (contains CVAT credentials)
+src/training_pipeline/pipeline_config.yaml
 backend/firebase/*.json
 backend/supabase/db_pwd.json
 app_mobile/android/app/google-services.json
@@ -241,3 +244,4 @@ app_mobile/android/app/release
 # Web app
 app_web/node_modules/
 app_web/dist/
+models/training_runs/

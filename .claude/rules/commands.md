@@ -29,9 +29,9 @@ python -m bjj_pipeline.tools.calibrate_camera \
 ## Pipeline
 ```bash
 # Full run
-python -m bjj_pipeline.stages.orchestration.cli run --input <clip.mp4> --camera cam03
+python -m bjj_pipeline.stages.orchestration.cli run --clip <clip.mp4> --camera J_EDEw
 # Stage-specific (e.g. stop after D1)
-python -m bjj_pipeline.stages.orchestration.cli run --input <clip> --camera cam03 \
+python -m bjj_pipeline.stages.orchestration.cli run --clip <clip.mp4> --camera J_EDEw \
   --config '{"stages": {"stage_D": {"run_until": "D1"}}}'
 # Status / validate
 python -m bjj_pipeline.stages.orchestration.cli status --clip-id <clip_id>
@@ -92,4 +92,33 @@ python tools/camera_geometry_analysis.py all \
 ## Audio Survey
 ```bash
 python tools/detect_buzzer.py --input <mp4_or_dir> --survey
+```
+
+## Model Comparison
+```bash
+# Side-by-side 2x2 model comparison video
+python tools/compare_models.py \
+  --video <clip.mp4> \
+  --models models/yolo26n.pt models/bjj-detect-all-cameras.pt \
+  --labels "Base" "Domain-Tuned" \
+  --output outputs/_benchmarks/comparison.mp4 \
+  --max-frames 300 --conf 0.25 --device mps
+```
+
+## Training Data Preparation
+```bash
+# Prepare detection training dataset (all 3 cameras)
+python tools/prepare_detection_dataset.py
+
+# Visualize bbox size tiers across training data
+python tools/visualize_bbox_tiers.py
+
+# FP7oJQ false positive investigation (read-only analysis)
+python tools/investigate_fp7_annotations.py
+```
+
+## CoreML Export
+```bash
+# Export detection model to CoreML (.mlpackage)
+python -c "from ultralytics import YOLO; YOLO('models/bjj-detect-all-cameras.pt').export(format='coreml')"
 ```

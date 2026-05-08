@@ -40,12 +40,12 @@ stages:
 
     detector:
       # YOLO detection weights (required)
-      model_path: models/yolo26n-pose.pt
+      model_path: models/bjj-detect-all-cameras.pt  # Updated from yolo26n-pose.pt — domain-tuned detection-only model
       # Optional YOLO segmentation weights. If missing at runtime, Stage A will
       # fall back to deterministic bbox masks and emit an audit event.
       seg_model_path: models/yolov8s-seg.pt
       use_seg: false
-      conf: 0.25
+      conf: 0.45  # Updated from 0.25 — F1-optimal for bjj-detect-all-cameras.pt (peak at 0.537)
       imgsz: null
       device: "auto"
       prefer_coreml: true
@@ -63,7 +63,7 @@ stages:
     detection:
       isolation_gate:
         enabled: true
-        require_keypoints: true    # false → skip H4, use H1+H2+H3 only
+        require_keypoints: false   # Disabled — bjj-detect-all-cameras.pt has no pose head (was: true)
         min_aspect_ratio: 0.8
         max_iou_overlap: 0.3
         min_bbox_area: null       # auto per-camera from p5 if null

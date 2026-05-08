@@ -62,14 +62,16 @@ def connect(url: str, username: str, password: str):
 def create_project_if_needed(client, name: str = "BJJ Training Data") -> int:
     """Create a CVAT project with COCO person keypoint skeleton, or return existing ID."""
     from cvat_sdk.api_client.models import (
-        LabelRequest,
+        PatchedLabelRequest,
         ProjectWriteRequest,
         SublabelRequest,
     )
 
     # Check for existing project
     projects = client.projects.list()
-    for p in projects.results:
+    # SDK may return list directly or paginated result with .results
+    project_list = getattr(projects, "results", projects)
+    for p in project_list:
         if p.name == name:
             logger.info(f"Using existing CVAT project: {name} (id={p.id})")
             return p.id
@@ -79,7 +81,7 @@ def create_project_if_needed(client, name: str = "BJJ Training Data") -> int:
         SublabelRequest(name=kp, type="points")
         for kp in _PERSON_KEYPOINTS
     ]
-    person_label = LabelRequest(
+    person_label = PatchedLabelRequest(
         name="person",
         type="skeleton",
         sublabels=sublabels,
@@ -135,7 +137,7 @@ def upload_task(
             if image_files:
                 task.upload_data(
                     resources=[str(f) for f in image_files],
-                    image_quality=95,
+                    params={"image_quality": 95},
                 )
                 logger.info(f"Uploaded {len(image_files)} images to task {task_id}")
 
@@ -175,7 +177,8 @@ def list_open_tasks(
     tasks_list = client.tasks.list()
     results = []
 
-    for t in tasks_list.results:
+    # SDK may return list directly or paginated result with .results
+    for t in getattr(tasks_list, "results", tasks_list):
         # Filter by project name prefix if project is set
         project_name = ""
         if t.project_id:
@@ -284,13 +287,13 @@ def upload_video_task(
     # Upload video
     task.upload_data(
         resources=[str(video_path)],
-        image_quality=95,
+        params={"image_quality": 95},
     )
     logger.info(f"Uploaded video to task {task_id}: {video_path.name}")
 
     # Import track annotations
     task.import_annotations(
-        format_name="CVAT for Video 1.1",
+        format_name="CVAT 1.1",
         filename=str(annotations_xml),
     )
     logger.info(f"Imported track annotations to task {task_id}")
@@ -318,7 +321,7 @@ def download_video_annotations(
     with tempfile.TemporaryDirectory() as tmpdir:
         export_zip = Path(tmpdir) / "export.zip"
         task.export_dataset(
-            format_name="CVAT for Video 1.1",
+            format_name="CVAT for video 1.1",
             filename=str(export_zip),
         )
 
