@@ -1,0 +1,89 @@
+model_id: bjj-detect-all-cameras
+weights_path: models/bjj-detect-all-cameras.pt
+base_model: yolo26n.pt
+trained_at: '2026-05-06'
+training_config:
+  epochs: 100
+  batch: 16
+  freeze: 10
+  imgsz: 640
+  lr0: 0.001
+  platform: kaggle-t4
+training_data:
+- export: training_YOLO_track_detections_FP7oJQ_clip1_0-3000.zip
+  source_video: FP7oJQ-20260318-200014.mp4
+  camera_id: FP7oJQ
+  resolution:
+  - 1920
+  - 1080
+  annotated_range:
+    start: 0
+    stop: 300
+    stride: 1
+    count: 301
+  splits:
+    train:
+      start: 0
+      stop: 249
+      stride: 1
+      count: 250
+    val:
+      start: 250
+      stop: 300
+      stride: 1
+      count: 51
+- export: training_YOLO_track_detections_J_EDEw_clip1_0-3000.zip
+  source_video: J_EDEw-20260318-200015.mp4
+  camera_id: J_EDEw
+  resolution:
+  - 1280
+  - 720
+  annotated_range:
+    start: 0
+    stop: 3000
+    stride: 10
+    count: 301
+  splits:
+    train:
+      start: 0
+      stop: 2490
+      stride: 10
+      count: 250
+    val:
+      start: 2500
+      stop: 3000
+      stride: 10
+      count: 51
+- export: training_YOLO_track_detections_PPDmUg_clip1_0-2990.zip
+  source_video: training_PPDmUg_3000.mp4
+  camera_id: PPDmUg
+  resolution:
+  - 1280
+  - 720
+  annotated_range:
+    start: 0
+    stop: 2990
+    stride: 10
+    count: 300
+  splits:
+    train:
+      start: 0
+      stop: 2480
+      stride: 10
+      count: 249
+    val:
+      start: 2490
+      stop: 2990
+      stride: 10
+      count: 51
+notes: 'Detection-only model (no pose head trained). Base: stock yolo26n.pt.
+
+  Trained on Kaggle T4 GPU via tools/colab_detection_training.ipynb.
+
+  902 total frames (749 train / 153 val), 83/17 temporal split per camera.
+
+  Val split is the only held-out evaluation surface with GT annotations.
+
+  annotated_range is authoritative; zip contents may include CVAT
+
+  auto-interpolations outside this range that are NOT trusted GT.'
