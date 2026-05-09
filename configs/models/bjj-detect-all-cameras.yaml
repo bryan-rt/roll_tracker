@@ -56,6 +56,7 @@ training_data:
       count: 51
 - export: training_YOLO_track_detections_PPDmUg_clip1_0-2990.zip
   source_video: training_PPDmUg_3000.mp4
+  source_video_path: data/raw/nest/training_samples/training_PPDmUg_3000.mp4
   camera_id: PPDmUg
   resolution:
   - 1280

@@ -374,23 +374,31 @@ For this brief, `bjj-detect-all-cameras.yaml` is generated programmatically from
 
 The `create-manifest` subcommand is stubbed in this brief's CLI and will be implemented in a future brief.
 
-## Part D: Open Questions
+## Part D: Open Questions (all RESOLVED as of TB-EVAL-1)
 
-Questions that could not be answered from repo inspection alone. User should answer these directly.
+1. **PPDmUg training sample provenance** (RESOLVED)
 
-1. **PPDmUg training sample provenance** (OPEN)
+   Path: `data/raw/nest/training_samples/training_PPDmUg_3000.mp4`. No matching
+   Nest clip exists; eval runs the model directly on this video via `--run-model`.
+   Manifest PPDmUg entry updated with `source_video_path` field pointing at this
+   path.
 
-   `data/raw/nest/training_samples/training_PPDmUg_3000.mp4` is not pixel-identical to any Nest clip in `data/raw/nest/.../PPDmUg/`. Visual comparison confirms different scene content at matching frame indices. Correlation search found no strong match. Where did this video come from? Is it a segment from a different recording session, or was it created by a process not tracked in the repo?
+2. **PPDmUg pipeline evaluation path** (RESOLVED)
 
-2. **PPDmUg pipeline evaluation path** (OPEN)
+   Direct inference via `--run-model` on `training_PPDmUg_3000.mp4`, val frames
+   only (2490--2990 stride 10, 51 frames). No attempt to locate a matching Nest
+   clip. Cross-validation against parquet on FP7oJQ certifies the direct-inference
+   path before trusting PPDmUg numbers.
 
-   Pipeline Stage A outputs exist for Nest clip `PPDmUg-20260318-200019` but NOT for the training sample video. To evaluate Stage A detection quality on PPDmUg GT annotations, either: (a) run the model directly on the training sample in the eval tool, or (b) find the Nest clip that corresponds to the training sample and use its pipeline output. Which approach is preferred?
+3. **Kaggle training logs (`results.csv`)** (RESOLVED)
 
-3. **Kaggle training logs** (OPEN)
+   Not stored locally, not needed for the validation pipeline. Future training
+   runs may optionally archive `results.csv` for debugging but it is not a
+   manifest requirement and not a blocker for evaluation.
 
-   No Kaggle training logs/metrics exist locally for `bjj-detect-all-cameras.pt`. The training config in the manifest is INFERRED from the notebook. Should Kaggle results.csv / training logs be downloaded and stored locally for provenance?
+4. **Pose model manifests** (RESOLVED)
 
-4. **Pose model manifests** (OPEN)
-
-   Six pose models exist (`bjj-pose-r1` through `bjj-pose-hybrid`) with no manifests. Local training runs exist for R1 and R2 probe only; final R2/vicos/hybrid models were trained on Kaggle. Should manifests be backfilled for these models, or are they considered experimental/archived?
+   Out of scope. Pose models predate the manifest convention and will not be
+   backfilled. Going forward, every new model trained must include a manifest
+   at training time.
 
