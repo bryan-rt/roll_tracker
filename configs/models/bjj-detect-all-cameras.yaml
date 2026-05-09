@@ -1,5 +1,6 @@
 model_id: bjj-detect-all-cameras
 weights_path: models/bjj-detect-all-cameras.pt
+pipeline_gym_id: _eval_gt
 base_model: yolo26n.pt
 trained_at: '2026-05-06'
 training_config:
@@ -57,6 +58,7 @@ training_data:
 - export: training_YOLO_track_detections_PPDmUg_clip1_0-2990.zip
   source_video: training_PPDmUg_3000.mp4
   source_video_path: data/raw/nest/training_samples/training_PPDmUg_3000.mp4
+  pipeline_output_clip_id: PPDmUg-20260318-training
   camera_id: PPDmUg
   resolution:
   - 1280
