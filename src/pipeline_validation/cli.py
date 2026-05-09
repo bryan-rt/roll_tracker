@@ -872,7 +872,10 @@ def main() -> None:
     stage_a.add_argument("--gym-id", default=None,
                          help="Gym ID for outputs directory (auto-detected if unambiguous)")
 
-    sub.add_parser("stage-d", help="Stage D identity stitching evaluation (TB-EVAL-2)")
+    stage_d = sub.add_parser("stage-d", help="Stage D identity stitching evaluation (TB-EVAL-2)")
+    stage_d.add_argument("--model", default="bjj-detect-all-cameras",
+                         help="Model ID (must have manifest at configs/models/{id}.yaml)")
+
     sub.add_parser("stage-f", help="Stage F match visualization (TB-EVAL-3)")
     sub.add_parser("create-manifest", help="Generate empty manifest template (future)")
 
@@ -887,7 +890,14 @@ def main() -> None:
             print(f"Manifest not found: {manifest_path}")
             sys.exit(1)
         evaluate_all(manifest_path, run_model=args.run_model, gym_id=args.gym_id)
-    elif args.command in ("stage-d", "stage-f", "create-manifest"):
+    elif args.command == "stage-d":
+        from pipeline_validation.stage_d.evaluate import evaluate_all as eval_d
+        manifest_path = CONFIGS_DIR / "models" / f"{args.model}.yaml"
+        if not manifest_path.exists():
+            print(f"Manifest not found: {manifest_path}")
+            sys.exit(1)
+        eval_d(manifest_path)
+    elif args.command in ("stage-f", "create-manifest"):
         print(f"'{args.command}' is not yet implemented.")
         sys.exit(0)
     else:
