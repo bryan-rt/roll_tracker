@@ -29,11 +29,13 @@ questions in Pass 1. Do not resolve silently or guess.
 src/bjj_pipeline/        # CV pipeline package (stages A→F, contracts, config, core)
 src/calibration_pipeline/ # Gym setup: lens cal, H refinement, mat line detection
 src/training_pipeline/    # Active learning: CVAT integration, fine-tuning, evaluation
+src/pipeline_validation/  # Evaluation framework: detection, identity, match viz
 services/                 # Docker: nest_recorder, processor, uploader
 backend/supabase/         # Migrations, config.toml
 app_mobile/               # Flutter athlete app
 app_web/                  # Vite+React gym owner app
 configs/                  # default.yaml, per-camera overrides, homography.json
+configs/models/           # Per-model training manifests (model_id.yaml)
 tools/                    # Training, evaluation, comparison, packaging scripts
 docs/                     # Calibration guide, decisions archive, audits
 .claude/rules/            # Domain-specific context (auto-loaded by path scope)
@@ -235,7 +237,6 @@ First trained model had FP7oJQ false positives from background memorization.
 ## Planned Work
 
 **CP23b remaining:**
-- Ground truth recall/precision evaluation against CVAT annotations (next session)
 - Empty frame injection (~30-50 per camera) to reduce false positives, then retrain
 - Bbox size tier filtering review (outputs from `tools/visualize_bbox_tiers.py`)
 - Tracklet deduplication strategy (baseline: ~50% short tracklets)
@@ -256,38 +257,101 @@ First trained model had FP7oJQ false positives from background memorization.
 - Camera temporal jitter investigation
 - CVAT XML import debugging (IndexError server-side)
 
-## Next Session: Ground Truth Evaluation
+## Pipeline Validation Framework (TB-EVAL series, completed 2026-05-12)
 
-**Goal:** Build a recall/precision evaluation framework using CVAT ground
-truth annotations to quantitatively measure Stage A detection quality and
-Stage D identity stitching quality.
+**Module:** `src/pipeline_validation/` — three evaluation layers plus common utilities.
 
-**Ground truth data available:**
-- `training_YOLO_track_detections_FP7oJQ_clip1_0-3000.zip`
-- `training_YOLO_track_detections_J_EDEw_clip1_0-3000.zip`
-- `training_YOLO_track_detections_PPDmUg_clip1_0-2990.zip`
+### Evaluating a new detection model
 
-Each zip contains per-frame label files with format:
-`class cx cy w h track_id` (6 fields, class=1, needs remap to 0)
+1. Place weights at `models/{model_id}.pt`
+2. Create `configs/models/{model_id}.yaml` (see existing manifest as template)
+3. Run: `PYTHONPATH=src python -m pipeline_validation evaluate --model {model_id}`
+4. Review outputs at:
+   - `outputs/_eval/stage_a/{model_id}/_aggregate.md` (detection quality)
+   - `outputs/_eval/stage_d/{model_id}/_aggregate.md` (identity quality)
+   - `outputs/_eval/stage_f/{model_id}/*/match_preview.mp4` (visualization)
 
-**What to evaluate:**
-1. Stage A bbox recall: what fraction of GT annotated people does Stage A
-   detect per frame? (IoU matching at 0.5 threshold)
-2. Stage A bbox precision: what fraction of Stage A detections match a GT
-   bbox? (false positive rate)
-3. Stage D identity recall: do Stage D global person IDs correctly group
-   detections that share a GT track_id across frames?
+The `evaluate` command runs the full pipeline rerun + Stage A/D/F evaluation.
+Uses direct inference for Stage A evaluation exclusively (not parquet path).
+Flags: `--skip-pipeline`, `--skip-stage-a`, `--skip-stage-d`, `--skip-stage-f`
+for partial reruns; `--force` to re-run even if outputs exist; `--dry-run` to
+preview the plan without executing.
 
-**Key design constraint:** The GT clips used for training (frames 0-300 for
-FP7oJQ, every 10th frame 0-3000 for J_EDEw and PPDmUg) overlap with training
-data. Evaluation should either use held-out frame ranges or the full clip
-range with a note that in-distribution frames will score higher.
+Individual subcommands remain available for debugging:
+`PYTHONPATH=src python -m pipeline_validation <stage-a|stage-d|stage-f|discover>`
 
-**Tools to build:**
-- `tools/evaluate_stage_a.py` — runs Stage A on GT clip, matches detections
-  to GT bboxes via IoU, computes per-frame and aggregate recall/precision
-- `tools/evaluate_stage_d.py` — loads Stage D person_tracks.parquet, maps
-  to GT track_ids, computes identity assignment accuracy
+**Manifest convention:** `configs/models/{model_id}.yaml` per model. Schema: model_id,
+weights_path, pipeline_gym_id, training_data entries with annotated_range, splits, resolution.
+
+**annotated_range is authoritative:** GT loader ONLY loads labels for frames defined by
+the manifest's annotated_range x split. CVAT auto-interpolated labels outside annotated_range
+are NOT trusted GT. Zip contents are advisory; annotated_range is the source of truth.
+
+**GT evaluation surface (bjj-detect-all-cameras):**
+
+| Camera | Annotated | Train (in-dist) | Val (held-out) |
+|--------|-----------|-----------------|----------------|
+| FP7oJQ | 301 (0-300 stride 1) | 250 | 51 |
+| J_EDEw | 301 (0-3000 stride 10) | 250 | 51 |
+| PPDmUg | 300 (0-2990 stride 10) | 249 | 51 |
+
+Total: 902 annotated, 153 held-out. Pipeline outputs at `outputs/_eval_gt/` (gym_id `_eval_gt`,
+hard links — symlinks don't work due to `Path.resolve()` following them).
+
+### Evaluation Baselines: bjj-detect-all-cameras (val split)
+
+**Stage A Detection (TB-EVAL-1):**
+
+| Camera | Recall@0.5 | Precision@0.5 | Mean IoU | Recall@0.7 | Recall@0.9 |
+|--------|-----------|--------------|----------|-----------|-----------|
+| FP7oJQ | 0.847 | 0.989 | 0.850 | 0.756 | 0.340 |
+| J_EDEw | 0.864 | 0.921 | 0.843 | 0.770 | 0.317 |
+| PPDmUg | 0.750 | 0.981 | 0.834 | 0.681 | 0.208 |
+| **Aggregate** | **0.832** | **0.959** | | | |
+
+Topology (TB-EVAL-1.1): Duplicate rate 6-69%, true merge 0-28%, true split 0-16% (val).
+
+**Stage D Identity (TB-EVAL-2):**
+
+| Camera | ID Recall | ID Precision | Mean Coverage | Mean Purity |
+|--------|-----------|-------------|--------------|-------------|
+| FP7oJQ | 0.571 | 1.000 | 0.329 | 0.913 |
+| J_EDEw | 0.571 | 0.833 | 0.239 | 0.832 |
+| PPDmUg | 0.750 | 0.500 | 0.360 | 0.842 |
+
+Failure mode breakdown (all cameras combined):
+- detection_failure: 46% (Stage A missed person)
+- tracklet_dropped: 25% (Stage D rejected tracklet)
+- sloppy_box: 6% (boxes too loose)
+- true_switch: 23% (Stage D mis-stitched)
+
+**Match Preview Visualization (TB-EVAL-3):** Diagnostic mp4 per camera at
+`outputs/_eval/stage_f/bjj-detect-all-cameras/{cam}/match_preview.mp4`.
+Four layers: all detections (grey), person-assigned (colored), match envelopes
+(orange dashed, faithful via `plan_crop_fixed_roi`), tag icons (yellow).
+
+### Known Issues Surfaced by Framework
+
+- **Stage D drops ~56% of detections** across all cameras (25K/44K FP7oJQ,
+  33K/49K J_EDEw, 12K/19K PPDmUg), including tag-anchored tracklets.
+  J_EDEw t201 (tag:1, frame 2770) was dropped — a Tier 1 identity anchor lost.
+  Tracklet acceptance criteria suspected; deferred investigation.
+- **Stage C is a placeholder** for everything except tag observations —
+  identity_hints.jsonl is empty for FP7oJQ and PPDmUg. Documented drift
+  between CLAUDE.md (describes full tag pipeline) and code (placeholder run).
+- **PPDmUg training sample** (`training_PPDmUg_3000.mp4`) is not pixel-identical
+  to any Nest clip. Provenance unknown. Pipeline output uses clip_id
+  `PPDmUg-20260318-training` via manifest's `pipeline_output_clip_id`.
+- **Pipeline ingest** uses hard links not symlinks under `data/raw/nest/_eval_gt/`
+  because `Path.resolve()` follows symlinks, losing the `nest` path component.
+
+### Open Follow-ups
+
+- Stage D tracklet drop investigation (acceptance threshold tuning)
+- Empty frame injection for training data (reduce FP rate)
+- Bbox size tier filtering (thresholds not yet applied)
+- Stage C full implementation (beyond tag observations)
+- PPDmUg training sample provenance
 
 ## Never Touch
 

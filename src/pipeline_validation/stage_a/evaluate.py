@@ -59,6 +59,16 @@ class FrameResult:
 
 
 @dataclass
+class TopologyMetrics:
+    duplicate_rate: float = 0.0
+    true_merge_rate: float = 0.0
+    true_split_rate: float = 0.0
+    duplicate_frames: list[int] = field(default_factory=list)
+    true_merge_frames: list[int] = field(default_factory=list)
+    true_split_frames: list[int] = field(default_factory=list)
+
+
+@dataclass
 class SplitMetrics:
     split: str
     n_frames: int
@@ -70,8 +80,7 @@ class SplitMetrics:
     iou_histogram: dict[str, int] = field(default_factory=dict)
     # Box count analysis
     box_count_analysis: list[dict] = field(default_factory=list)
-    merge_rate: float = 0.0
-    split_rate: float = 0.0
+    topology: TopologyMetrics = field(default_factory=TopologyMetrics)
     # Frame coverage
     zero_det_frames: int = 0
     zero_det_fraction: float = 0.0
@@ -228,44 +237,102 @@ def _match_frame(
     )
 
 
-def _compute_merge_split(frame_results: list[FrameResult]) -> tuple[float, float]:
-    """Compute merge and split rates across frames.
+def compute_frame_topology(fr: FrameResult) -> dict[str, int]:
+    """Classify topology events for a single frame.
 
-    Merge: fraction of multi-person frames where >=1 pred box overlaps >=2 GT (IoU>=0.3).
-    Split: fraction of frames where >=1 GT box is overlapped by >=2 pred (IoU>=0.3).
+    Returns per-frame event counts: {"duplicate": int, "true_merge": int,
+    "true_split": int}. Single source of truth for topology classification —
+    used by both _compute_topology_metrics and _render_failure_gallery.
+
+    Thresholds:
+        pred-pred IoU >= 0.7 → duplicate (NMS failure)
+        envelope margin > 0.05 → true merge
+        leftover-GT IoU >= 0.3 → true split candidate
     """
+    counts = {"duplicate": 0, "true_merge": 0, "true_split": 0}
+
+    if fr.iou_mat.size == 0 or len(fr.pred_boxes) == 0:
+        return counts
+
+    matched_gt_set = {g for g, _ in fr.matches_05}
+    matched_pred_set = {p for _, p in fr.matches_05}
+    matched_pairs = {p: g for g, p in fr.matches_05}  # pred_idx -> gt_idx
+
+    gt_arr = np.array([[b.x1, b.y1, b.x2, b.y2] for b in fr.gt_boxes]) if fr.gt_boxes else np.zeros((0, 4))
+    pred_arr = np.array([[b.x1, b.y1, b.x2, b.y2] for b in fr.pred_boxes])
+
+    # Pred-pred IoU matrix
+    pp_iou = iou_matrix(pred_arr, pred_arr)
+    np.fill_diagonal(pp_iou, 0.0)
+
+    leftover_preds = [pi for pi in range(len(fr.pred_boxes)) if pi not in matched_pred_set]
+    dup_classified = set()
+
+    # --- Duplicates (NMS failures) ---
+    for lp in leftover_preds:
+        best_pp = 0.0
+        for mp in matched_pred_set:
+            if pp_iou[lp, mp] > best_pp:
+                best_pp = pp_iou[lp, mp]
+        if best_pp >= 0.7:
+            counts["duplicate"] += 1
+            dup_classified.add(lp)
+
+    # --- True splits ---
+    for lp in leftover_preds:
+        if lp in dup_classified:
+            continue
+        for gi in range(len(fr.gt_boxes)):
+            if fr.iou_mat[gi, lp] >= 0.3 and gi in matched_gt_set:
+                counts["true_split"] += 1
+                break
+
+    # --- True merges ---
+    if len(fr.gt_boxes) >= 2:
+        for pi, gi in matched_pairs.items():
+            for gj in range(len(fr.gt_boxes)):
+                if gj == gi or fr.iou_mat[gj, pi] < 0.3:
+                    continue
+                env = np.array([[
+                    min(gt_arr[gi, 0], gt_arr[gj, 0]),
+                    min(gt_arr[gi, 1], gt_arr[gj, 1]),
+                    max(gt_arr[gi, 2], gt_arr[gj, 2]),
+                    max(gt_arr[gi, 3], gt_arr[gj, 3]),
+                ]])
+                env_iou = iou_matrix(env, pred_arr[pi:pi+1])[0, 0]
+                iou_gi = fr.iou_mat[gi, pi]
+                iou_gj = fr.iou_mat[gj, pi]
+                larger = max(iou_gi, iou_gj)
+                if env_iou > iou_gi and env_iou > iou_gj and (env_iou - larger) > 0.05:
+                    counts["true_merge"] += 1
+                    break  # one merge event per matched pred is enough
+
+    return counts
+
+
+def _compute_topology_metrics(frame_results: list[FrameResult]) -> TopologyMetrics:
+    """Aggregate topology events across all frames in a split."""
+    topo = TopologyMetrics()
     multi_person_frames = 0
-    merge_frames = 0
-    total_frames = 0
-    split_frames = 0
 
     for fr in frame_results:
-        total_frames += 1
-        n_gt = len(fr.gt_boxes)
-        n_pred = len(fr.pred_boxes)
-
-        if n_gt >= 2:
+        if len(fr.gt_boxes) >= 2:
             multi_person_frames += 1
 
-        if fr.iou_mat.size == 0:
-            continue
+        events = compute_frame_topology(fr)
+        if events["duplicate"] > 0:
+            topo.duplicate_frames.append(fr.frame_index)
+        if events["true_merge"] > 0:
+            topo.true_merge_frames.append(fr.frame_index)
+        if events["true_split"] > 0:
+            topo.true_split_frames.append(fr.frame_index)
 
-        # Merge: any pred column has IoU >= 0.3 with >= 2 GT rows
-        if n_gt >= 2 and n_pred >= 1:
-            pred_overlap_counts = np.sum(fr.iou_mat >= 0.3, axis=0)  # per pred
-            if np.any(pred_overlap_counts >= 2):
-                merge_frames += 1
+    n = len(frame_results)
+    topo.duplicate_rate = len(topo.duplicate_frames) / n if n > 0 else 0.0
+    topo.true_merge_rate = len(topo.true_merge_frames) / multi_person_frames if multi_person_frames > 0 else 0.0
+    topo.true_split_rate = len(topo.true_split_frames) / n if n > 0 else 0.0
 
-        # Split: any GT row has IoU >= 0.3 with >= 2 pred columns
-        if n_pred >= 2 and n_gt >= 1:
-            gt_overlap_counts = np.sum(fr.iou_mat >= 0.3, axis=1)  # per GT
-            if np.any(gt_overlap_counts >= 2):
-                split_frames += 1
-
-    merge_rate = merge_frames / multi_person_frames if multi_person_frames > 0 else 0.0
-    split_rate = split_frames / total_frames if total_frames > 0 else 0.0
-
-    return merge_rate, split_rate
+    return topo
 
 
 def _compute_split_metrics(
@@ -327,8 +394,8 @@ def _compute_split_metrics(
             "mean_pred": float(np.mean(preds)) if preds else 0.0,
         })
 
-    # Merge and split rates
-    metrics.merge_rate, metrics.split_rate = _compute_merge_split(frame_results)
+    # Topology metrics (duplicates, true merges, true splits)
+    metrics.topology = _compute_topology_metrics(frame_results)
 
     # Frame coverage
     metrics.zero_det_frames = sum(1 for fr in frame_results if len(fr.pred_boxes) == 0)
@@ -492,77 +559,167 @@ def _render_failure_gallery(
         if gi not in {g for g, _ in fr.matches_05}
     ), reverse=True)
 
-    # Merge frames: pred overlaps >= 2 GT at IoU >= 0.3
-    merge_frames = []
+    # Topology-based ranking using compute_frame_topology
+    dup_ranked = []
+    merge_ranked = []
+    split_ranked = []
     for fr in frame_results:
-        if fr.iou_mat.size == 0 or len(fr.gt_boxes) < 2:
-            continue
-        pred_overlap = np.sum(fr.iou_mat >= 0.3, axis=0)
-        merge_count = int(np.sum(pred_overlap >= 2))
-        if merge_count > 0:
-            merge_frames.append((merge_count, fr))
-    merge_frames.sort(key=lambda x: x[0], reverse=True)
+        events = compute_frame_topology(fr)
+        if events["duplicate"] > 0:
+            dup_ranked.append((events["duplicate"], fr))
+        if events["true_merge"] > 0:
+            merge_ranked.append((events["true_merge"], fr))
+        if events["true_split"] > 0:
+            split_ranked.append((events["true_split"], fr))
+    dup_ranked.sort(key=lambda x: x[0], reverse=True)
+    merge_ranked.sort(key=lambda x: x[0], reverse=True)
+    split_ranked.sort(key=lambda x: x[0], reverse=True)
 
     cap = cv2.VideoCapture(str(source_video))
     if not cap.isOpened():
         logger.warning("Cannot open %s for failure gallery", source_video)
         return
 
-    def _draw_frame(fr: FrameResult, category: str) -> np.ndarray | None:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, fr.frame_index)
+    def _read_frame(fi: int) -> np.ndarray | None:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, fi)
         ret, img = cap.read()
-        if not ret:
-            return None
+        return img if ret else None
 
-        matched_gt = {g for g, _ in fr.matches_05}
+    def _draw_fp(fr: FrameResult, img: np.ndarray) -> None:
         matched_pred = {p for _, p in fr.matches_05}
+        for gt in fr.gt_boxes:
+            cv2.rectangle(img, (int(gt.x1), int(gt.y1)), (int(gt.x2), int(gt.y2)), (0, 255, 0), 2)
+        for pi, pred in enumerate(fr.pred_boxes):
+            if pi not in matched_pred:
+                cv2.rectangle(img, (int(pred.x1), int(pred.y1)), (int(pred.x2), int(pred.y2)), (0, 0, 255), 2)
 
-        if category == "false_positive":
-            for gi, gt in enumerate(fr.gt_boxes):
-                cv2.rectangle(img, (int(gt.x1), int(gt.y1)), (int(gt.x2), int(gt.y2)), (0, 255, 0), 2)
-            for pi, pred in enumerate(fr.pred_boxes):
-                if pi not in matched_pred:
-                    cv2.rectangle(img, (int(pred.x1), int(pred.y1)), (int(pred.x2), int(pred.y2)), (0, 0, 255), 2)
+    def _draw_fn(fr: FrameResult, img: np.ndarray) -> None:
+        matched_gt = {g for g, _ in fr.matches_05}
+        for pred in fr.pred_boxes:
+            cv2.rectangle(img, (int(pred.x1), int(pred.y1)), (int(pred.x2), int(pred.y2)), (255, 255, 255), 1)
+        for gi, gt in enumerate(fr.gt_boxes):
+            if gi not in matched_gt:
+                cv2.rectangle(img, (int(gt.x1), int(gt.y1)), (int(gt.x2), int(gt.y2)), (0, 255, 255), 2)
 
-        elif category == "missed_detection":
-            for pi, pred in enumerate(fr.pred_boxes):
-                cv2.rectangle(img, (int(pred.x1), int(pred.y1)), (int(pred.x2), int(pred.y2)), (255, 255, 255), 1)
-            for gi, gt in enumerate(fr.gt_boxes):
-                if gi not in matched_gt:
-                    cv2.rectangle(img, (int(gt.x1), int(gt.y1)), (int(gt.x2), int(gt.y2)), (0, 255, 255), 2)
+    def _draw_duplicate(fr: FrameResult, img: np.ndarray) -> None:
+        """Matched pred in green, duplicate (leftover) pred in orange."""
+        matched_pred = {p for _, p in fr.matches_05}
+        pred_arr = np.array([[b.x1, b.y1, b.x2, b.y2] for b in fr.pred_boxes])
+        pp_iou = iou_matrix(pred_arr, pred_arr)
+        np.fill_diagonal(pp_iou, 0.0)
 
-        elif category == "merge":
-            for gi, gt in enumerate(fr.gt_boxes):
-                cv2.rectangle(img, (int(gt.x1), int(gt.y1)), (int(gt.x2), int(gt.y2)), (0, 255, 0), 2)
-            for pi, pred in enumerate(fr.pred_boxes):
-                if fr.iou_mat.shape[1] > pi:
-                    overlap_count = int(np.sum(fr.iou_mat[:, pi] >= 0.3))
-                    if overlap_count >= 2:
-                        cv2.rectangle(img, (int(pred.x1), int(pred.y1)), (int(pred.x2), int(pred.y2)), (0, 165, 255), 2)
+        for pi, pred in enumerate(fr.pred_boxes):
+            if pi in matched_pred:
+                cv2.rectangle(img, (int(pred.x1), int(pred.y1)), (int(pred.x2), int(pred.y2)), (0, 255, 0), 2)
+            else:
+                best_pp = max((pp_iou[pi, mp] for mp in matched_pred), default=0.0)
+                if best_pp >= 0.7:
+                    cv2.rectangle(img, (int(pred.x1), int(pred.y1)), (int(pred.x2), int(pred.y2)), (0, 165, 255), 2)
 
-        return img
+    def _draw_true_merge(fr: FrameResult, img: np.ndarray) -> None:
+        """Merging pred in red, the two GT boxes it merged in green."""
+        matched_pairs = {p: g for g, p in fr.matches_05}
+        gt_arr = np.array([[b.x1, b.y1, b.x2, b.y2] for b in fr.gt_boxes])
 
-    # Render each category
+        merge_preds = set()
+        merge_gts = set()
+        for pi, gi in matched_pairs.items():
+            for gj in range(len(fr.gt_boxes)):
+                if gj == gi or fr.iou_mat[gj, pi] < 0.3:
+                    continue
+                env = np.array([[
+                    min(gt_arr[gi, 0], gt_arr[gj, 0]), min(gt_arr[gi, 1], gt_arr[gj, 1]),
+                    max(gt_arr[gi, 2], gt_arr[gj, 2]), max(gt_arr[gi, 3], gt_arr[gj, 3]),
+                ]])
+                pred_single = np.array([[fr.pred_boxes[pi].x1, fr.pred_boxes[pi].y1,
+                                         fr.pred_boxes[pi].x2, fr.pred_boxes[pi].y2]])
+                env_iou = iou_matrix(env, pred_single)[0, 0]
+                larger = max(fr.iou_mat[gi, pi], fr.iou_mat[gj, pi])
+                if env_iou > fr.iou_mat[gi, pi] and env_iou > fr.iou_mat[gj, pi] and (env_iou - larger) > 0.05:
+                    merge_preds.add(pi)
+                    merge_gts.add(gi)
+                    merge_gts.add(gj)
+
+        for gi, gt in enumerate(fr.gt_boxes):
+            color = (0, 255, 0) if gi in merge_gts else (200, 200, 200)
+            cv2.rectangle(img, (int(gt.x1), int(gt.y1)), (int(gt.x2), int(gt.y2)), color, 2)
+        for pi, pred in enumerate(fr.pred_boxes):
+            if pi in merge_preds:
+                cv2.rectangle(img, (int(pred.x1), int(pred.y1)), (int(pred.x2), int(pred.y2)), (0, 0, 255), 2)
+
+    def _draw_true_split(fr: FrameResult, img: np.ndarray) -> None:
+        """Two preds claiming same GT: cyan and magenta preds, contested GT in green."""
+        matched_gt_set = {g for g, _ in fr.matches_05}
+        matched_pred_set = {p for _, p in fr.matches_05}
+        pred_arr = np.array([[b.x1, b.y1, b.x2, b.y2] for b in fr.pred_boxes])
+        pp_iou = iou_matrix(pred_arr, pred_arr)
+        np.fill_diagonal(pp_iou, 0.0)
+
+        split_preds = set()
+        contested_gts = set()
+        for lp in range(len(fr.pred_boxes)):
+            if lp in matched_pred_set:
+                continue
+            best_pp = max((pp_iou[lp, mp] for mp in matched_pred_set), default=0.0)
+            if best_pp >= 0.7:
+                continue  # duplicate, not split
+            for gi in range(len(fr.gt_boxes)):
+                if fr.iou_mat[gi, lp] >= 0.3 and gi in matched_gt_set:
+                    split_preds.add(lp)
+                    contested_gts.add(gi)
+                    # Also mark the matched pred for this GT
+                    for g, p in fr.matches_05:
+                        if g == gi:
+                            split_preds.add(p)
+                    break
+
+        colors = [(255, 255, 0), (255, 0, 255)]  # cyan, magenta in BGR
+        for gi, gt in enumerate(fr.gt_boxes):
+            color = (0, 255, 0) if gi in contested_gts else (200, 200, 200)
+            cv2.rectangle(img, (int(gt.x1), int(gt.y1)), (int(gt.x2), int(gt.y2)), color, 2)
+        for ci, pi in enumerate(sorted(split_preds)):
+            pred = fr.pred_boxes[pi]
+            color = colors[ci % len(colors)]
+            cv2.rectangle(img, (int(pred.x1), int(pred.y1)), (int(pred.x2), int(pred.y2)), color, 2)
+
+    # Render FP
     for i, fr in enumerate(fp_frames[:max_per_category]):
         n_fp = sum(1 for pi in range(len(fr.pred_boxes)) if pi not in {p for _, p in fr.matches_05})
         if n_fp == 0:
             break
-        img = _draw_frame(fr, "false_positive")
+        img = _read_frame(fr.frame_index)
         if img is not None:
+            _draw_fp(fr, img)
             cv2.imwrite(str(out_dir / f"false_positive_{i:02d}_f{fr.frame_index}.jpg"), img)
 
+    # Render FN
     for i, fr in enumerate(fn_frames[:max_per_category]):
         n_fn = sum(1 for gi in range(len(fr.gt_boxes)) if gi not in {g for g, _ in fr.matches_05})
         if n_fn == 0:
             break
-        img = _draw_frame(fr, "missed_detection")
+        img = _read_frame(fr.frame_index)
         if img is not None:
+            _draw_fn(fr, img)
             cv2.imwrite(str(out_dir / f"missed_detection_{i:02d}_f{fr.frame_index}.jpg"), img)
 
-    for i, (_, fr) in enumerate(merge_frames[:max_per_category]):
-        img = _draw_frame(fr, "merge")
+    # Render topology categories (skip if empty)
+    for i, (_, fr) in enumerate(dup_ranked[:max_per_category]):
+        img = _read_frame(fr.frame_index)
         if img is not None:
-            cv2.imwrite(str(out_dir / f"merge_{i:02d}_f{fr.frame_index}.jpg"), img)
+            _draw_duplicate(fr, img)
+            cv2.imwrite(str(out_dir / f"duplicate_{i:02d}_f{fr.frame_index}.jpg"), img)
+
+    for i, (_, fr) in enumerate(merge_ranked[:max_per_category]):
+        img = _read_frame(fr.frame_index)
+        if img is not None:
+            _draw_true_merge(fr, img)
+            cv2.imwrite(str(out_dir / f"true_merge_{i:02d}_f{fr.frame_index}.jpg"), img)
+
+    for i, (_, fr) in enumerate(split_ranked[:max_per_category]):
+        img = _read_frame(fr.frame_index)
+        if img is not None:
+            _draw_true_split(fr, img)
+            cv2.imwrite(str(out_dir / f"true_split_{i:02d}_f{fr.frame_index}.jpg"), img)
 
     cap.release()
     logger.info("Failure gallery: %s", out_dir)
@@ -593,8 +750,10 @@ def _format_split_report(metrics: SplitMetrics, header: str) -> str:
     lines.append("\n### Box Count Analysis\n")
     for bca in metrics.box_count_analysis:
         lines.append(f"  GT={bca['gt_count']}: {bca['n_frames']} frames, mean pred={bca['mean_pred']:.1f}")
-    lines.append(f"  Merge rate: {metrics.merge_rate:.1%} of multi-person frames had >=1 pred box overlapping >=2 GT boxes (IoU >= 0.3)")
-    lines.append(f"  Split rate: {metrics.split_rate:.1%} of frames had >=1 GT box overlapped by >=2 pred boxes (IoU >= 0.3)")
+    t = metrics.topology
+    lines.append(f"  Duplicate rate: {t.duplicate_rate:.1%} of frames had a duplicate detection (pred-pred IoU >= 0.7)")
+    lines.append(f"  True merge rate: {t.true_merge_rate:.1%} of multi-person frames had a true merge (pred matches union envelope better than individual GT)")
+    lines.append(f"  True split rate: {t.true_split_rate:.1%} of frames had a true split (two distinct preds claim same GT)")
 
     # Frame coverage
     lines.append(f"\n### Frame Coverage\n")
@@ -651,8 +810,9 @@ def _metrics_to_dict(m: SplitMetrics) -> dict:
         "mean_iou": m.mean_iou,
         "iou_histogram": m.iou_histogram,
         "box_count_analysis": m.box_count_analysis,
-        "merge_rate": m.merge_rate,
-        "split_rate": m.split_rate,
+        "duplicate_rate": m.topology.duplicate_rate,
+        "true_merge_rate": m.topology.true_merge_rate,
+        "true_split_rate": m.topology.true_split_rate,
         "zero_det_frames": m.zero_det_frames,
         "zero_det_fraction": m.zero_det_fraction,
         "total_gt": m.total_gt,

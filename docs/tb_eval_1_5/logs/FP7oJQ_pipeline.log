@@ -1,0 +1,41 @@
+[Stage A] Using device: mps (auto-detected)
+[32m[1mSUCCESS [0m | [32m[1mBotSort: det_thresh=0.3, max_age=30, max_obs=50, min_hits=3, iou_threshold=0.3, per_class=False, asso_func=iou, track_high_thresh=0.5, track_low_thresh=0.1, new_track_thresh=0.6, track_buffer=30, match_thresh=0.8, proximity_thresh=0.5, appearance_thresh=0.25, cmc_method=ecc, frame_rate=30, fuse_first_associate=False, with_reid=False[0m
+WARNING ⚠️ Unable to automatically guess model task, assuming 'task=detect'. Explicitly define task for your model, i.e. 'task=detect', 'segment', 'classify','pose' or 'obb'.
+[Stage A] Loaded CoreML model: models/bjj-detect-all-cameras.mlpackage
+Loading models/bjj-detect-all-cameras.mlpackage for CoreML inference...
+/Users/bryanthomas/Desktop/Professional/Projects/roll_tracker/src/bjj_pipeline/stages/stitch/d0_bank.py:788: FutureWarning: The behavior of array concatenation with empty entries is deprecated. In a future version, this will no longer exclude empty items when determining the result dtype. To retain the old behavior, exclude the empty entries before the concat operation.
+  tf["x_ctx"] = pd.to_numeric(tf["x_m_repaired"].combine_first(tf.get("x_m")), errors="coerce").astype("float64")
+/Users/bryanthomas/Desktop/Professional/Projects/roll_tracker/src/bjj_pipeline/stages/stitch/d0_bank.py:789: FutureWarning: The behavior of array concatenation with empty entries is deprecated. In a future version, this will no longer exclude empty items when determining the result dtype. To retain the old behavior, exclude the empty entries before the concat operation.
+  tf["y_ctx"] = pd.to_numeric(tf["y_m_repaired"].combine_first(tf.get("y_m")), errors="coerce").astype("float64")
+/Users/bryanthomas/Desktop/Professional/Projects/roll_tracker/src/bjj_pipeline/stages/stitch/d4_emit.py:378: FutureWarning: The behavior of array concatenation with empty entries is deprecated. In a future version, this will no longer exclude empty items when determining the result dtype. To retain the old behavior, exclude the empty entries before the concat operation.
+  merged["x_m"] = merged["x_m_repaired"].combine_first(merged["x_m"])
+/Users/bryanthomas/Desktop/Professional/Projects/roll_tracker/src/bjj_pipeline/stages/stitch/d4_emit.py:379: FutureWarning: The behavior of array concatenation with empty entries is deprecated. In a future version, this will no longer exclude empty items when determining the result dtype. To retain the old behavior, exclude the empty entries before the concat operation.
+  merged["y_m"] = merged["y_m_repaired"].combine_first(merged["y_m"])
+[D1 DEBUG] nodes_df columns and dtypes before write:
+ node_id                          object
+node_type                        object
+capacity                          int64
+start_frame                       Int64
+end_frame                         Int64
+base_tracklet_id                 object
+segment_type                     object
+carrier_tracklet_id              object
+disappearing_tracklet_id         object
+new_tracklet_id                  object
+must_link_anchor_key             object
+must_link_confidence            float64
+cannot_link_anchor_keys_json     object
+payload_json                     object
+dtype: object
+[D1 DEBUG] edges_df columns and dtypes before write:
+ edge_id         object
+edge_type       object
+u               object
+v               object
+capacity         int64
+dt_frames        Int64
+merge_end        Int64
+split_start      Int64
+payload_json    object
+dtype: object
+[roll-tracker] Stage D dispatcher completed run_until=D4 outputs=[stage_D/tracklet_bank_frames.parquet, stage_D/tracklet_bank_summaries.parquet, stage_D/person_tracks.parquet, stage_D/identity_assignments.jsonl, stage_D/d1_graph_nodes.parquet, stage_D/d1_graph_edges.parquet, stage_D/d1_segments.parquet, stage_D/d2_edge_costs.parquet, stage_D/d2_constraints.json, stage_D/audit.jsonl]
