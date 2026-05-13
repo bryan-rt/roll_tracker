@@ -901,20 +901,27 @@ def _resolve_ingest_path(manifest, export) -> Path:
     cam = export.camera_id
     clip_id = export.pipeline_output_clip_id or export.source_video.replace(".mp4", "")
 
-    # Derive date/hour from clip_id: CAM-YYYYMMDD-HHMMSS or CAM-YYYYMMDD-*
+    # Check if hard link already exists (search under gym_id/cam)
+    nest_base = REPO_ROOT / "data" / "raw" / "nest" / gym_id / cam
+    existing = list(nest_base.rglob(f"{clip_id}.mp4"))
+    if existing:
+        return existing[0]
+
+    # Derive date/hour from clip_id: CAM-YYYYMMDD-HHMMSS
     parts = clip_id.split("-")
     if len(parts) >= 2 and len(parts[1]) == 8:
         date_str = f"{parts[1][:4]}-{parts[1][4:6]}-{parts[1][6:8]}"
-        hour_str = parts[2][:2] if len(parts) >= 3 and len(parts[2]) >= 2 else "00"
+        # Hour from third segment — must be numeric
+        if len(parts) >= 3 and len(parts[2]) >= 2 and parts[2][:2].isdigit():
+            hour_str = parts[2][:2]
+        else:
+            hour_str = "20"  # default for gym evening sessions
     else:
         date_str = "2026-01-01"
         hour_str = "00"
 
-    nest_dir = REPO_ROOT / "data" / "raw" / "nest" / gym_id / cam / date_str / hour_str
+    nest_dir = nest_base / date_str / hour_str
     link_path = nest_dir / f"{clip_id}.mp4"
-
-    if link_path.exists():
-        return link_path
 
     # Find source video
     if export.source_video_path:
