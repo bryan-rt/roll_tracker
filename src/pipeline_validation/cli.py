@@ -852,6 +852,329 @@ def cmd_discover(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------------
+# evaluate subcommand — unified end-to-end model evaluation
+# ---------------------------------------------------------------------------
+
+EVAL_DIR_A = REPO_ROOT / "outputs" / "_eval" / "stage_a"
+EVAL_DIR_D = REPO_ROOT / "outputs" / "_eval" / "stage_d"
+EVAL_DIR_F = REPO_ROOT / "outputs" / "_eval" / "stage_f"
+
+
+def _validate_manifest_for_eval(manifest) -> list[str]:
+    """Validate manifest before evaluation. Returns list of error messages."""
+    errors = []
+    if not (REPO_ROOT / manifest.weights_path).exists():
+        errors.append(f"weights_path not found: {manifest.weights_path}")
+    if not manifest.pipeline_gym_id:
+        errors.append("pipeline_gym_id not set in manifest (required for pipeline rerun)")
+    for e in manifest.training_data:
+        zip_path = TRAINING_DATA_DIR / e.export
+        if not zip_path.exists():
+            errors.append(f"GT zip not found: {e.export}")
+        if e.source_video_path and not (REPO_ROOT / e.source_video_path).exists():
+            errors.append(f"source_video_path not found: {e.source_video_path}")
+    return errors
+
+
+def _pipeline_outputs_exist(manifest, export) -> bool:
+    """Check if pipeline ran through Stage E for this camera."""
+    gym_id = manifest.pipeline_gym_id
+    clip_id = export.pipeline_output_clip_id or export.source_video.replace(".mp4", "")
+    cam = export.camera_id
+    pattern = f"{gym_id}/{cam}/**/{clip_id}/stage_E/match_sessions.jsonl"
+    return len(list((REPO_ROOT / "outputs").glob(pattern))) > 0
+
+
+def _eval_output_exists(stage: str, model_id: str, camera_id: str) -> bool:
+    """Check if evaluation output exists for a stage."""
+    paths = {
+        "stage-a": EVAL_DIR_A / model_id / camera_id / "report.md",
+        "stage-d": EVAL_DIR_D / model_id / camera_id / "report.md",
+        "stage-f": EVAL_DIR_F / model_id / camera_id / "match_preview.mp4",
+    }
+    return paths.get(stage, Path("/nonexistent")).exists()
+
+
+def _resolve_ingest_path(manifest, export) -> Path:
+    """Ensure hard link exists at canonical nest path. Returns the path."""
+    gym_id = manifest.pipeline_gym_id
+    cam = export.camera_id
+    clip_id = export.pipeline_output_clip_id or export.source_video.replace(".mp4", "")
+
+    # Derive date/hour from clip_id: CAM-YYYYMMDD-HHMMSS or CAM-YYYYMMDD-*
+    parts = clip_id.split("-")
+    if len(parts) >= 2 and len(parts[1]) == 8:
+        date_str = f"{parts[1][:4]}-{parts[1][4:6]}-{parts[1][6:8]}"
+        hour_str = parts[2][:2] if len(parts) >= 3 and len(parts[2]) >= 2 else "00"
+    else:
+        date_str = "2026-01-01"
+        hour_str = "00"
+
+    nest_dir = REPO_ROOT / "data" / "raw" / "nest" / gym_id / cam / date_str / hour_str
+    link_path = nest_dir / f"{clip_id}.mp4"
+
+    if link_path.exists():
+        return link_path
+
+    # Find source video
+    if export.source_video_path:
+        source = REPO_ROOT / export.source_video_path
+    else:
+        # Try canonical nest path under existing gym_ids
+        candidates = list((REPO_ROOT / "data" / "raw" / "nest").glob(
+            f"*/{cam}/{date_str}/{hour_str}/{clip_id}.mp4"
+        ))
+        source = candidates[0] if candidates else None
+
+    if source is None or not source.exists():
+        raise FileNotFoundError(f"Cannot find source video for {cam}/{clip_id}")
+
+    nest_dir.mkdir(parents=True, exist_ok=True)
+    os.link(str(source), str(link_path))
+    return link_path
+
+
+def _run_pipeline_for_camera(manifest, export, log_dir: Path) -> bool:
+    """Run bjj_pipeline CLI for one camera. Returns True on success."""
+    clip_path = _resolve_ingest_path(manifest, export)
+    cmd = [
+        sys.executable, "-m", "bjj_pipeline.stages.orchestration.cli", "run",
+        "--clip", str(clip_path),
+        "--camera", export.camera_id,
+        "--to-stage", "E",
+        "--force",
+    ]
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"{export.camera_id}_pipeline.log"
+    with open(log_path, "w") as log_f:
+        result = __import__("subprocess").run(
+            cmd, stdout=log_f, stderr=__import__("subprocess").STDOUT,
+        )
+    return result.returncode == 0
+
+
+def cmd_evaluate(args: argparse.Namespace) -> None:
+    """Unified end-to-end model evaluation."""
+    import time as _time
+
+    from pipeline_validation.common.manifest import load_manifest
+
+    model_id = args.model
+    manifest_path = CONFIGS_DIR / "models" / f"{model_id}.yaml"
+    if not manifest_path.exists():
+        print(f"Manifest not found: {manifest_path}")
+        sys.exit(1)
+
+    manifest = load_manifest(manifest_path)
+
+    # Manifest validation
+    errors = _validate_manifest_for_eval(manifest)
+    if errors:
+        print("Manifest validation failed:")
+        for e in errors:
+            print(f"  - {e}")
+        sys.exit(1)
+
+    # Filter exports by --clip-id
+    exports = manifest.training_data
+    if args.clip_id:
+        exports = [e for e in exports if (
+            (e.pipeline_output_clip_id or e.source_video.replace(".mp4", "")) == args.clip_id
+            or e.camera_id == args.clip_id
+        )]
+        if not exports:
+            print(f"No export matches --clip-id {args.clip_id}")
+            sys.exit(1)
+
+    cameras = [e.camera_id for e in exports]
+    force = args.force
+
+    # Build execution plan
+    print(f"\nEvaluating {model_id} against {len(exports)} cameras: {', '.join(cameras)}")
+    print(f"Estimated total runtime: ~31 min (full) / near-zero (cached)\n")
+
+    # Step 1: Pipeline rerun plan
+    pipeline_plan: dict[str, str] = {}  # cam -> "SKIP" | "will run"
+    if args.skip_pipeline:
+        for e in exports:
+            pipeline_plan[e.camera_id] = "SKIP (--skip-pipeline)"
+    else:
+        for e in exports:
+            clip_id = e.pipeline_output_clip_id or e.source_video.replace(".mp4", "")
+            if _pipeline_outputs_exist(manifest, e) and not force:
+                pipeline_plan[e.camera_id] = "SKIP (outputs exist)"
+            else:
+                pipeline_plan[e.camera_id] = "will run"
+
+    print("Step 1: Pipeline rerun (Stage A->E)")
+    for e in exports:
+        clip_id = e.pipeline_output_clip_id or e.source_video.replace(".mp4", "")
+        print(f"  {clip_id:<35} [{pipeline_plan[e.camera_id]}]")
+
+    # Steps 2-4 plan
+    eval_steps = [
+        ("Step 2: Stage A detection evaluation", "stage-a", args.skip_stage_a, EVAL_DIR_A),
+        ("Step 3: Stage D identity evaluation", "stage-d", args.skip_stage_d, EVAL_DIR_D),
+        ("Step 4: Stage F match visualization", "stage-f", args.skip_stage_f, EVAL_DIR_F),
+    ]
+    step_plans: dict[str, str] = {}
+    for label, stage_key, skip_flag, eval_dir in eval_steps:
+        if skip_flag:
+            status = "SKIP (--skip flag)"
+        elif all(_eval_output_exists(stage_key, model_id, e.camera_id) for e in exports) and not force:
+            status = "SKIP (outputs exist)"
+        else:
+            status = "will run"
+        step_plans[stage_key] = status
+        print(f"\n{label}")
+        print(f"  -> {eval_dir / model_id}/   [{status}]")
+
+    # Check if everything skipped
+    all_skip = (
+        all(v.startswith("SKIP") for v in pipeline_plan.values())
+        and all(v.startswith("SKIP") for v in step_plans.values())
+    )
+    if all_skip:
+        print(f"\nAll steps would be skipped (outputs already exist). Use --force to re-run.")
+
+    if args.dry_run:
+        print("\n(dry-run mode — no execution)")
+        return
+
+    # Execute
+    t_start = _time.time()
+    results: dict[str, dict[str, int]] = {
+        "pipeline": {"ok": 0, "skip": 0, "fail": 0},
+        "stage-a": {"ok": 0, "skip": 0, "fail": 0},
+        "stage-d": {"ok": 0, "skip": 0, "fail": 0},
+        "stage-f": {"ok": 0, "skip": 0, "fail": 0},
+    }
+    log_dir = REPO_ROOT / "outputs" / "_eval" / "_logs" / model_id
+
+    # Step 1: Pipeline rerun (per-camera independent)
+    if not args.skip_pipeline:
+        print("\n--- Step 1: Pipeline rerun ---")
+        for e in exports:
+            if pipeline_plan[e.camera_id].startswith("SKIP"):
+                results["pipeline"]["skip"] += 1
+                print(f"  {e.camera_id}: skipped")
+                continue
+            print(f"  {e.camera_id}: running pipeline...")
+            ok = _run_pipeline_for_camera(manifest, e, log_dir)
+            if ok:
+                results["pipeline"]["ok"] += 1
+                print(f"  {e.camera_id}: SUCCESS")
+            else:
+                results["pipeline"]["fail"] += 1
+                log_path = log_dir / f"{e.camera_id}_pipeline.log"
+                print(f"  {e.camera_id}: FAILED — see {log_path}")
+                print("Pipeline failure halts evaluation. Fix the issue and re-run.")
+                sys.exit(1)
+    else:
+        results["pipeline"]["skip"] = len(exports)
+
+    # Pre-step verification: check pipeline outputs exist for all cameras
+    if not args.skip_stage_d or not args.skip_stage_f:
+        for e in exports:
+            if not _pipeline_outputs_exist(manifest, e):
+                clip_id = e.pipeline_output_clip_id or e.source_video.replace(".mp4", "")
+                print(f"\nCannot proceed: pipeline outputs not found for {e.camera_id} "
+                      f"({clip_id}). Re-run without --skip-pipeline.")
+                sys.exit(1)
+
+    # Step 2: Stage A
+    if not args.skip_stage_a:
+        if step_plans["stage-a"].startswith("SKIP"):
+            results["stage-a"]["skip"] = len(exports)
+            print("\n--- Step 2: Stage A evaluation --- [SKIPPED]")
+        else:
+            print("\n--- Step 2: Stage A evaluation ---")
+            try:
+                from pipeline_validation.stage_a.evaluate import evaluate_all
+                evaluate_all(manifest_path, run_model=True)
+                results["stage-a"]["ok"] = len(exports)
+            except Exception as exc:
+                print(f"  Stage A failed: {exc}")
+                results["stage-a"]["fail"] = len(exports)
+    else:
+        results["stage-a"]["skip"] = len(exports)
+
+    # Step 3: Stage D
+    if not args.skip_stage_d:
+        if step_plans["stage-d"].startswith("SKIP"):
+            results["stage-d"]["skip"] = len(exports)
+            print("\n--- Step 3: Stage D evaluation --- [SKIPPED]")
+        else:
+            print("\n--- Step 3: Stage D evaluation ---")
+            try:
+                from pipeline_validation.stage_d.evaluate import evaluate_all as eval_d
+                eval_d(manifest_path)
+                results["stage-d"]["ok"] = len(exports)
+            except Exception as exc:
+                print(f"  Stage D failed: {exc}")
+                results["stage-d"]["fail"] = len(exports)
+    else:
+        results["stage-d"]["skip"] = len(exports)
+
+    # Step 4: Stage F
+    if not args.skip_stage_f:
+        if step_plans["stage-f"].startswith("SKIP"):
+            results["stage-f"]["skip"] = len(exports)
+            print("\n--- Step 4: Stage F visualization --- [SKIPPED]")
+        else:
+            print("\n--- Step 4: Stage F visualization ---")
+            try:
+                from pipeline_validation.stage_f.visualize import render_all
+                render_all(manifest_path)
+                results["stage-f"]["ok"] = len(exports)
+            except Exception as exc:
+                print(f"  Stage F failed: {exc}")
+                results["stage-f"]["fail"] = len(exports)
+    else:
+        results["stage-f"]["skip"] = len(exports)
+
+    # Summary
+    elapsed = _time.time() - t_start
+    minutes = int(elapsed // 60)
+    seconds = int(elapsed % 60)
+
+    summary_lines = [
+        f"===== Evaluation complete: {model_id} =====",
+    ]
+    step_names = {
+        "pipeline": "Pipeline rerun",
+        "stage-a": "Stage A eval",
+        "stage-d": "Stage D eval",
+        "stage-f": "Stage F viz",
+    }
+    for key, label in step_names.items():
+        r = results[key]
+        total = r["ok"] + r["skip"] + r["fail"]
+        if r["skip"] == total:
+            summary_lines.append(f"  {label + ':':<18} {total}/{total} cameras skipped")
+        elif r["fail"] > 0:
+            summary_lines.append(f"  {label + ':':<18} {r['ok']}/{total} succeeded, {r['fail']} failed")
+        else:
+            summary_lines.append(f"  {label + ':':<18} {r['ok']}/{total} cameras succeeded")
+
+    summary_lines.extend([
+        "",
+        "Reports:",
+        f"  {EVAL_DIR_A / model_id / '_aggregate.md'}",
+        f"  {EVAL_DIR_D / model_id / '_aggregate.md'}",
+        f"  {EVAL_DIR_F / model_id}/  ({len(exports)} mp4s)",
+        "",
+        f"Total runtime: {minutes}m {seconds}s",
+    ])
+
+    summary = "\n".join(summary_lines)
+    print(f"\n{summary}")
+
+    log_dir.mkdir(parents=True, exist_ok=True)
+    (log_dir / "evaluate_summary.txt").write_text(summary)
+
+
+# ---------------------------------------------------------------------------
 # Main CLI
 # ---------------------------------------------------------------------------
 
@@ -880,6 +1203,17 @@ def main() -> None:
     stage_f.add_argument("--model", default="bjj-detect-all-cameras",
                          help="Model ID (must have manifest at configs/models/{id}.yaml)")
 
+    evaluate = sub.add_parser("evaluate", help="Full model evaluation (pipeline + stage-a + stage-d + stage-f)")
+    evaluate.add_argument("--model", required=True,
+                          help="Model ID (must have manifest at configs/models/{id}.yaml)")
+    evaluate.add_argument("--skip-pipeline", action="store_true", help="Skip pipeline rerun")
+    evaluate.add_argument("--skip-stage-a", action="store_true", help="Skip Stage A evaluation")
+    evaluate.add_argument("--skip-stage-d", action="store_true", help="Skip Stage D evaluation")
+    evaluate.add_argument("--skip-stage-f", action="store_true", help="Skip Stage F visualization")
+    evaluate.add_argument("--force", action="store_true", help="Rerun even if outputs exist")
+    evaluate.add_argument("--clip-id", default=None, help="Restrict to one camera's clip")
+    evaluate.add_argument("--dry-run", action="store_true", help="Print plan, don't execute")
+
     sub.add_parser("create-manifest", help="Generate empty manifest template (future)")
 
     args = parser.parse_args()
@@ -907,6 +1241,8 @@ def main() -> None:
             print(f"Manifest not found: {manifest_path}")
             sys.exit(1)
         render_all(manifest_path)
+    elif args.command == "evaluate":
+        cmd_evaluate(args)
     elif args.command == "create-manifest":
         print(f"'{args.command}' is not yet implemented.")
         sys.exit(0)

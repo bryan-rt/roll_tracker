@@ -260,7 +260,26 @@ First trained model had FP7oJQ false positives from background memorization.
 ## Pipeline Validation Framework (TB-EVAL series, completed 2026-05-12)
 
 **Module:** `src/pipeline_validation/` — three evaluation layers plus common utilities.
-**Entry point:** `PYTHONPATH=src python -m pipeline_validation <stage-a|stage-d|stage-f|discover>`
+
+### Evaluating a new detection model
+
+1. Place weights at `models/{model_id}.pt`
+2. Create `configs/models/{model_id}.yaml` (see existing manifest as template)
+3. Run: `PYTHONPATH=src python -m pipeline_validation evaluate --model {model_id}`
+4. Review outputs at:
+   - `outputs/_eval/stage_a/{model_id}/_aggregate.md` (detection quality)
+   - `outputs/_eval/stage_d/{model_id}/_aggregate.md` (identity quality)
+   - `outputs/_eval/stage_f/{model_id}/*/match_preview.mp4` (visualization)
+
+The `evaluate` command runs the full pipeline rerun + Stage A/D/F evaluation.
+Uses direct inference for Stage A evaluation exclusively (not parquet path).
+Flags: `--skip-pipeline`, `--skip-stage-a`, `--skip-stage-d`, `--skip-stage-f`
+for partial reruns; `--force` to re-run even if outputs exist; `--dry-run` to
+preview the plan without executing.
+
+Individual subcommands remain available for debugging:
+`PYTHONPATH=src python -m pipeline_validation <stage-a|stage-d|stage-f|discover>`
+
 **Manifest convention:** `configs/models/{model_id}.yaml` per model. Schema: model_id,
 weights_path, pipeline_gym_id, training_data entries with annotated_range, splits, resolution.
 
