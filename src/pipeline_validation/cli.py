@@ -876,7 +876,10 @@ def main() -> None:
     stage_d.add_argument("--model", default="bjj-detect-all-cameras",
                          help="Model ID (must have manifest at configs/models/{id}.yaml)")
 
-    sub.add_parser("stage-f", help="Stage F match visualization (TB-EVAL-3)")
+    stage_f = sub.add_parser("stage-f", help="Stage F match visualization (TB-EVAL-3)")
+    stage_f.add_argument("--model", default="bjj-detect-all-cameras",
+                         help="Model ID (must have manifest at configs/models/{id}.yaml)")
+
     sub.add_parser("create-manifest", help="Generate empty manifest template (future)")
 
     args = parser.parse_args()
@@ -897,7 +900,14 @@ def main() -> None:
             print(f"Manifest not found: {manifest_path}")
             sys.exit(1)
         eval_d(manifest_path)
-    elif args.command in ("stage-f", "create-manifest"):
+    elif args.command == "stage-f":
+        from pipeline_validation.stage_f.visualize import render_all
+        manifest_path = CONFIGS_DIR / "models" / f"{args.model}.yaml"
+        if not manifest_path.exists():
+            print(f"Manifest not found: {manifest_path}")
+            sys.exit(1)
+        render_all(manifest_path)
+    elif args.command == "create-manifest":
         print(f"'{args.command}' is not yet implemented.")
         sys.exit(0)
     else:
