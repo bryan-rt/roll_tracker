@@ -571,11 +571,10 @@ class StageD3Config(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    # "Explain each tracklet OR pay a penalty":
-    # We define a boolean per base_tracklet_id present in D1 SINGLE_TRACKLET nodes.
-    # If the solution uses zero flow through all nodes belonging to that base_tracklet_id,
-    # we pay this penalty (in cost units) once for that base_tracklet_id.
-    unexplained_tracklet_penalty: float = Field(default=5.0, ge=0.0)
+    # CP3b: Floor-protected length-proportional penalty.
+    # penalty = max(base, per_frame * n_frames) per tracklet.
+    unexplained_tracklet_penalty_base: float = Field(default=25.0, ge=0.0)
+    unexplained_tracklet_penalty_per_frame: float = Field(default=0.1, ge=0.0)
 
     # Tag fragmentation (time-separated): penalty for starting a new fragment of the same
     # AprilTag across disconnected time windows. Larger values prefer continuity when possible

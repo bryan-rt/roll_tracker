@@ -295,12 +295,30 @@ def _write_solution_ledger_json(
 			sum_edge_costs_w_flow += c * float(f)
 			n_edge_instances += int(f)
 
-	penalty = res.unexplained_tracklet_penalty
+	penalty_base = res.unexplained_tracklet_penalty_base
+	penalty_per_frame = res.unexplained_tracklet_penalty_per_frame
 	dropped = sorted([str(x) for x in (res.dropped_tracklet_ids or [])])
 	explained = sorted([str(x) for x in (res.explained_tracklet_ids or [])])
+
+	# Compute per-tid frame counts from SINGLE_TRACKLET nodes for penalty sum + ledger.
+	_single = compiled.nodes_df[compiled.nodes_df["node_type"].astype(str) == "NodeType.SINGLE_TRACKLET"]
+	_tid_frames: Dict[str, int] = {}
+	for _, _nr in _single.iterrows():
+		_tid = str(_nr.get("base_tracklet_id", ""))
+		try:
+			_nf = max(1, int(_nr["end_frame"]) - int(_nr["start_frame"]) + 1)
+		except Exception:
+			_nf = 1
+		_tid_frames[_tid] = _tid_frames.get(_tid, 0) + _nf
+
 	sum_penalties = 0.0
-	if penalty is not None and penalty > 0 and len(dropped) > 0:
-		sum_penalties = float(penalty) * float(len(dropped))
+	_base_s = float(penalty_base or 0)
+	_pf_s = float(penalty_per_frame or 0)
+	for _tid in dropped:
+		_nf = float(_tid_frames.get(_tid, 1))
+		_flat = _base_s
+		_length = _pf_s * _nf
+		sum_penalties += max(_flat, _length)
 
 	term_cols = [c for c in edges_sel.columns if isinstance(c, str) and c.startswith("term_")]
 	term_cols = sorted(term_cols)
@@ -441,7 +459,8 @@ def _write_solution_ledger_json(
 			"n_tracklets_total": int(res.n_tracklets_total),
 			"n_tracklets_explained": int(res.n_tracklets_explained),
 			"n_tracklets_unexplained": int(res.n_tracklets_unexplained),
-			"unexplained_tracklet_penalty": res.unexplained_tracklet_penalty,
+			"unexplained_tracklet_penalty_base": res.unexplained_tracklet_penalty_base,
+			"unexplained_tracklet_penalty_per_frame": res.unexplained_tracklet_penalty_per_frame,
 		},
 		"rounding": {
 			"rounding_n_edges": res.rounding_n_edges,
@@ -450,7 +469,11 @@ def _write_solution_ledger_json(
 			"rounding_max_abs_cost_error": res.rounding_max_abs_cost_error,
 		},
 		"dropped_tracklets": [
-			{"base_tracklet_id": tid, "penalty": float(penalty) if penalty is not None else 0.0} for tid in dropped
+			{
+				"base_tracklet_id": tid,
+				"n_frames": int(_tid_frames.get(tid, 1)),
+				"penalty": max(float(penalty_base or 0), float(penalty_per_frame or 0) * float(_tid_frames.get(tid, 1))),
+			} for tid in dropped
 		],
 		"explained_tracklets": explained,
 		"capacity_summary": capacity_summary,

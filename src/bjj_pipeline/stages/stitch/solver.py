@@ -60,11 +60,16 @@ def run_d3(*, config: Dict[str, Any], inputs: Dict[str, Any]) -> tuple[Any, Any]
 		)
 		gbw_i = int(gbw) if gbw is not None else 10
 
-		# D3 — "explain each tracklet or pay a penalty": optional penalty from config.
-		penalty = _cfg_get(
+		# D3 — floor-protected length-proportional penalty (CP3b).
+		penalty_base = _cfg_get(
 			config,
-			"stages.stage_D.d3.unexplained_tracklet_penalty",
-			_cfg_get(config, "stage_D.d3.unexplained_tracklet_penalty", None),
+			"stages.stage_D.d3.unexplained_tracklet_penalty_base",
+			_cfg_get(config, "stage_D.d3.unexplained_tracklet_penalty_base", None),
+		)
+		penalty_per_frame = _cfg_get(
+			config,
+			"stages.stage_D.d3.unexplained_tracklet_penalty_per_frame",
+			_cfg_get(config, "stage_D.d3.unexplained_tracklet_penalty_per_frame", None),
 		)
 
 		res = solve_structure_ilp2(
@@ -72,7 +77,8 @@ def run_d3(*, config: Dict[str, Any], inputs: Dict[str, Any]) -> tuple[Any, Any]
 			layout=layout,
 			manifest=manifest,
 			checkpoint=str(checkpoint),
-			unexplained_tracklet_penalty=float(penalty) if penalty is not None else None,
+			unexplained_tracklet_penalty_base=float(penalty_base) if penalty_base is not None else None,
+			unexplained_tracklet_penalty_per_frame=float(penalty_per_frame) if penalty_per_frame is not None else None,
 			group_boundary_window_frames=int(gbw_i),
 		)
 		return (_, res)

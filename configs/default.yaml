@@ -280,10 +280,12 @@ stages:
       shadowed_reconnect_policy: disallow   # disallow|penalize|allow
       shadowed_reconnect_penalty: 10.0
     d3:
-      # D3 — “explain each tracklet or pay a penalty”
-      # If a base tracklet_id appears in D1 nodes (SINGLE_TRACKLET), but the selected solution uses none
-      # of its nodes, we pay this penalty once per base_tracklet_id.
-      unexplained_tracklet_penalty: 25.0
+      # Floor-protected length-proportional penalty (CP3b).
+      # penalty = max(base, per_frame * n_frames).
+      # Short tracklets (< base/per_frame = 250 frames) pay the flat base — preserves CP2.
+      # Long tracklets pay per_frame * n_frames, escalating with length.
+      unexplained_tracklet_penalty_base: 25.0
+      unexplained_tracklet_penalty_per_frame: 0.1
       # D3 — tag fragmentation (time-separated): penalty per new fragment start
       tag_fragment_start_penalty: 2500.0
 
