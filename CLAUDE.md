@@ -64,7 +64,7 @@ docs/                     # Calibration guide, decisions archive, audits
 
 ## Current Status
 
-*Last updated 2026-05-08.*
+*Last updated 2026-05-19.*
 
 Pipeline A→F verified E2E. Session pipeline validated (3-camera, 35/36 clips).
 
@@ -330,12 +330,117 @@ Failure mode breakdown (all cameras combined):
 Four layers: all detections (grey), person-assigned (colored), match envelopes
 (orange dashed, faithful via `plan_crop_fixed_roi`), tag icons (yellow).
 
+### GT Person Trace Layer (CP6, permanent)
+
+`src/pipeline_validation/gt_person_trace.py` -- runs automatically as part of every
+`evaluate` call. Joins five existing artifacts (per_frame_matches, detections,
+d1_graph_nodes, d3_solution_ledger, person_tracks, identity_mapping) into a per-frame
+per-GT-person trace.
+
+**Outputs** (per camera, under `outputs/_eval/stage_d/{model_id}/{camera}/`):
+- `gt_person_trace.jsonl` -- one row per (camera, clip, frame, gt_person). Full chain:
+  detection -> tracklet -> D1 node/carrier -> D3 status -> D4 person_id -> failure_mode.
+- `gt_person_summary.json` -- per-GT-person failure-mode counts.
+- `gt_camera_summary.json` / `gt_camera_summary_lite.json` (aggregate).
+
+**Six failure modes** (full): present, stage_a_no_detection, stage_a_untracked,
+d3_dropped, d4_unassigned, present_misattributed. Plus missing_canonical (GT track with
+no canonical assignment). Lite mode (4) collapses the three Stage D modes into
+stage_d_no_person -- used for historical baselines that lack pipeline artifacts.
+
+**This is now the primary Stage D diagnostic.** The six-way breakdown replaces aggregate
+coverage as the headline metric. After any intervention, read the per-camera breakdown to
+see which mode shifted.
+
+**Schema is a contract.** Adding columns is fine; renaming/removing requires a deliberate
+migration since downstream tooling will depend on it.
+
+**CP6 baseline results (current run, full mode):**
+
+| Camera | present | a_miss | untracked | d3_drop | d4_unasgn | misattrib | miss_can |
+|--------|---------|--------|-----------|---------|-----------|-----------|----------|
+| FP7oJQ | 5.1% | 9.9% | 8.1% | 24.0% | 6.5% | 17.9% | 28.6% |
+| J_EDEw | 4.7% | 11.7% | 13.5% | 49.7% | 0.7% | 19.7% | 0.0% |
+| PPDmUg | 6.1% | 13.3% | 7.2% | 39.9% | 2.0% | 18.9% | 12.7% |
+
+d3_dropped is the dominant failure mode on J_EDEw and PPDmUg. Parallel-carrier
+displacement confirmed as root cause (see `docs/cp6_gt_trace_baseline.md` Section 4).
+CP5 (parallel-carrier consolidation) verdict: **resume**.
+
+**Baseline preservation discipline (NEW):** When preserving an eval baseline going forward,
+copy BOTH `outputs/_eval/` AND the relevant `outputs/_eval_gt/{camera}/{clip}/` directories.
+Pipeline artifacts are required for full-mode trace. The four historical baselines
+(penalty_15 through cp4_pre) are lite-mode only because they predate this rule.
+
+## Stage D Identity Investigation (CP0-CP6, completed 2026-05-19)
+
+A seven-checkpoint investigation into why Stage D coverage was 24-36% despite Stage A
+recall of 75-86%. Conclusion: the dominant failure mode is parallel-carrier displacement
+in D1 graph construction, not penalty tuning.
+
+**The arc:**
+- **CP0** (`docs/stage_d_audit_findings.md`): Config audit. Confirmed 7 of 8 D3 penalty
+  fields are dead (never wired from config -> constraints). Only
+  `unexplained_tracklet_penalty` is live (via explicit solver.py parameter, bypassing
+  the broken constraints path).
+- **CP1** (`docs/cp1_evidence.md`): Quantitative evidence. Cost inversion confirmed --
+  interior BIRTH+DEATH (20.02) exceeded the flat drop penalty (15.0), so dropping
+  interior tracklets was globally optimal.
+- **CP2** (`docs/cp2_results.md`): Penalty 15->25. Partial -- helped FP7oJQ marginally,
+  no effect on J_EDEw/PPDmUg. Binding constraint is not the cost floor.
+- **CP2.5** (`docs/cp2.5_diagnostics.md`): Diagnosed flat penalty as length-agnostic.
+  Recommended length-proportional.
+- **CP3** (`docs/cp3_results.md`): Pure per-frame penalty. REGRESSION (short tracklets
+  became too cheap to drop). Rolled back.
+- **CP3b** (`docs/cp3b_results.md`): Floor-protected `max(base, per_frame*n_frames)`.
+  No regression but no improvement on long tracklets. Penalty mechanism declared
+  saturated.
+- **CP4** (`docs/cp4_flow_topology.md`): Root cause found -- parallel-carrier displacement.
+  When two tracklets are simultaneous carrier candidates for a merge event, D1 creates
+  duplicate GROUP nodes; the solver routes one and orphans the other's entire chain.
+  Penalty cannot fix this (it's structural, upstream of cost).
+- **CP6** (`docs/cp6_gt_trace_baseline.md`): Built a permanent GT-anchored trace layer in
+  pipeline_validation (see below). Confirmed CP4 at the row level AND found the picture is
+  bigger than pairwise: J_EDEw has FOUR long carriers dropped (t1, t3, t5, t111), only two
+  kept (t108, t2). 100% of d3_dropped frames across all cameras have a concurrent kept
+  tracklet on a different GT person. Carrier competition reaches 12 simultaneous carriers
+  per frame (J_EDEw, median 7).
+
+**Current config state** (`configs/default.yaml` stages.stage_D.d3):
+- `unexplained_tracklet_penalty_base: 25.0`
+- `unexplained_tracklet_penalty_per_frame: 0.1`
+- Formula: `max(base, per_frame * n_frames)` where n_frames = SINGLE_TRACKLET node frames
+- The 7 dead penalty fields from CP0 remain present but unwired (documented, not fixed)
+
+**Two reframings from CP6 that supersede earlier framing:**
+1. The old "Stage D drops ~56% of detections / tracklet acceptance criteria suspected"
+   framing is RETIRED. The mechanism is parallel-carrier displacement in D1, fully
+   characterized.
+2. `present_misattributed` (18-20% per camera) is now understood as a fundamental ceiling:
+   tracklets cover MULTIPLE GT persons (J_EDEw GT persons are each fragmented across 33-53
+   tracklets), so a single tracklet's one person_id assignment is correct for only a
+   fraction of the GT persons it physically covers. This is a representation problem
+   (tracking a bbox-position != tracking a person), addressable only by ReID/pose identity,
+   not by Stage D routing.
+
+**Recovery ceiling for CP5** (from CP6 trace analysis): CP5 (parallel-carrier consolidation)
+recovers frames lost to d3_dropped. Conservative estimate: J_EDEw 4.7%->14.2% present,
+PPDmUg 6.1%->15.7%. Ideal ceiling (every rescued drop attributed correctly where a canonical
+slot is free): J_EDEw 37.5%, PPDmUg 42.1%, FP7oJQ 24.8%. All far below the >75% target.
+CP5 is a necessary stepping stone, not the destination. Reaching usable coverage requires
+subsequent ReID/identity work to attack present_misattributed.
+
+**CP5 status:** Designed (Pass 1 + Pass 2 complete in a prior CLI session, then paused for
+the CP6 diagnostic). Resume brief carries a multi-way competition refinement. See the CP5
+resume brief.
+
 ### Known Issues Surfaced by Framework
 
-- **Stage D drops ~56% of detections** across all cameras (25K/44K FP7oJQ,
-  33K/49K J_EDEw, 12K/19K PPDmUg), including tag-anchored tracklets.
-  J_EDEw t201 (tag:1, frame 2770) was dropped — a Tier 1 identity anchor lost.
-  Tracklet acceptance criteria suspected; deferred investigation.
+- **Stage D coverage loss is parallel-carrier displacement** (CP0-CP6, resolved diagnosis).
+  See "Stage D Identity Investigation" above. The earlier "tracklet acceptance criteria"
+  hypothesis was superseded -- the mechanism is in D1 graph construction. J_EDEw t201
+  (tag:1) drop is partially a separate cost-bound case (mostly non-carrier fragments), not
+  pure carrier displacement.
 - **Stage C is a placeholder** for everything except tag observations —
   identity_hints.jsonl is empty for FP7oJQ and PPDmUg. Documented drift
   between CLAUDE.md (describes full tag pipeline) and code (placeholder run).
@@ -347,7 +452,7 @@ Four layers: all detections (grey), person-assigned (colored), match envelopes
 
 ### Open Follow-ups
 
-- Stage D tracklet drop investigation (acceptance threshold tuning)
+- **CP5 (resume):** Parallel-carrier consolidation -- confirmed by CP6 GT trace
 - Empty frame injection for training data (reduce FP rate)
 - Bbox size tier filtering (thresholds not yet applied)
 - Stage C full implementation (beyond tag observations)

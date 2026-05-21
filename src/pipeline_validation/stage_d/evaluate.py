@@ -819,6 +819,48 @@ def evaluate_all(manifest_path: Path) -> None:
     # Aggregate report
     _write_aggregate_report(model_id, all_camera_results, eval_base)
 
+    # Step 4: GT person trace (CP6)
+    from pipeline_validation.gt_person_trace import (
+        compute_gt_person_trace,
+        write_camera_summary,
+        write_trace_artifacts,
+    )
+
+    eval_root = EVAL_DIR.parent  # outputs/_eval/
+    trace_results = []
+    for export in manifest.training_data:
+        cam = export.camera_id
+        try:
+            paths = _resolve_pipeline_paths(manifest, export)
+            clip_dir = paths["clip_dir"]
+        except FileNotFoundError:
+            clip_dir = None
+        try:
+            tr = compute_gt_person_trace(
+                eval_dir=eval_root,
+                model_id=model_id,
+                camera_id=cam,
+                pipeline_clip_dir=clip_dir,
+            )
+            write_trace_artifacts(tr, eval_root)
+            trace_results.append(tr)
+            logger.info(
+                "%s trace: mode=%s, %d frames, %d warnings",
+                cam, tr.mode, len(tr.trace_df), len(tr.warnings),
+            )
+            if tr.mode == "lite":
+                logger.warning(
+                    "%s ran in LITE MODE -- 3 Stage D failure modes collapsed "
+                    "into stage_d_no_person. Pipeline artifacts at %s not "
+                    "available.",
+                    cam, clip_dir,
+                )
+        except Exception as exc:
+            logger.warning("GT trace failed for %s: %s", cam, exc)
+
+    if trace_results:
+        write_camera_summary(trace_results, eval_root, model_id)
+
 
 def _write_aggregate_report(
     model_id: str,
