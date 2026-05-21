@@ -60,8 +60,9 @@ class ILPResult:
 	rounding_n_edges_nonzero: int
 	rounding_max_abs_scaled_error: float
 	rounding_max_abs_cost_error: float
-	# Tracklet "explain-or-penalize" diagnostics
-	unexplained_tracklet_penalty: float | None
+	# Tracklet "explain-or-penalize" diagnostics (CP3b: floor-protected length-proportional)
+	unexplained_tracklet_penalty_base: float | None
+	unexplained_tracklet_penalty_per_frame: float | None
 	n_tracklets_total: int
 	n_tracklets_explained: int
 	n_tracklets_unexplained: int
@@ -1408,7 +1409,8 @@ def _solve_identity_ilp2_identity_only(
 	constraints: Dict[str, Any] | None,
 	debug_dir: Path | None,
 	emit_transparency: bool,
-	unexplained_tracklet_penalty: float | None,
+	unexplained_tracklet_penalty_base: float | None,
+	unexplained_tracklet_penalty_per_frame: float | None,
 	group_boundary_window_frames: int,
 	tag_inputs: Optional[Dict[str, Any]] = None,
 ) -> Tuple[ILPResult, Dict[str, Dict[str, int]], Dict[str, List[Dict[str, Any]]]]:
@@ -1903,19 +1905,29 @@ def _solve_identity_ilp2_identity_only(
 				must_link_visit_vars[tk] = ml_visit
 				must_link_miss_vars[tk] = ml_miss
 
-	# --- ILP2-A2: Explain-or-penalize (coverage) ---
-	# If a base_tracklet_id appears in SINGLE_TRACKLET nodes, either explain it (use any incident edge)
-	# or pay a penalty once per base_tracklet_id.
+	# --- ILP2-A2: Explain-or-penalize (CP3b: floor-protected length-proportional) ---
+	# penalty = max(base_floor, per_frame * n_frames) per base_tracklet_id.
 	explain_debug: Optional[Dict[str, Any]] = None
-	penalty_scaled: Optional[int] = None
 	unexplained_var_by_tid: Dict[str, Any] = {}
+	tid_to_n_frames: Dict[str, int] = {}
+	tid_to_penalty_scaled: Dict[str, int] = {}
+	_penalty_active = (unexplained_tracklet_penalty_base is not None or unexplained_tracklet_penalty_per_frame is not None)
 
-	if unexplained_tracklet_penalty is not None:
+	# Scale both penalty components
+	base_floor_scaled: Optional[int] = None
+	per_frame_scaled: Optional[int] = None
+	if unexplained_tracklet_penalty_base is not None:
 		try:
-			penalty_scaled = int(round(float(unexplained_tracklet_penalty) * float(scale)))
+			base_floor_scaled = int(round(float(unexplained_tracklet_penalty_base) * float(scale)))
 		except Exception:
-			penalty_scaled = None
+			base_floor_scaled = None
+	if unexplained_tracklet_penalty_per_frame is not None:
+		try:
+			per_frame_scaled = int(round(float(unexplained_tracklet_penalty_per_frame) * float(scale)))
+		except Exception:
+			per_frame_scaled = None
 
+	if _penalty_active:
 		# Universe of base tracklet ids (deterministic)
 		base_tids: List[str] = []
 		base_tid_to_nodes: Dict[str, List[str]] = {}
@@ -1931,8 +1943,31 @@ def _solve_identity_ilp2_identity_only(
 					base_tid_to_nodes.setdefault(tid, []).append(str(rr["node_id"]))
 				base_tids = sorted(base_tid_to_nodes.keys())
 
-		# Build incident edge lists per tid using node->incident edges
-		# (use used_var[e] for cap==1 and cap>1 consistently)
+		# Compute per-tracklet frame counts from SINGLE_TRACKLET node spans.
+		for tid in base_tids:
+			nids = base_tid_to_nodes.get(tid, [])
+			total_frames = 0
+			for nid in nids:
+				nrow = nodes.loc[nodes["node_id"] == nid]
+				if nrow.empty:
+					continue
+				nr = nrow.iloc[0]
+				try:
+					sf = int(nr["start_frame"])
+					ef = int(nr["end_frame"])
+					total_frames += max(1, ef - sf + 1)
+				except Exception:
+					total_frames += 1
+			tid_to_n_frames[tid] = max(1, total_frames)
+
+		# Compute per-tracklet penalty: max(base_floor, per_frame * n_frames)
+		for tid in base_tids:
+			n_frames = tid_to_n_frames.get(tid, 1)
+			flat_part = int(base_floor_scaled) if base_floor_scaled is not None else 0
+			length_part = int((per_frame_scaled or 0) * n_frames)
+			tid_to_penalty_scaled[tid] = max(flat_part, length_part)
+
+		# Build incident edge lists per tid
 		tid_records: List[Dict[str, Any]] = []
 
 		for tid in base_tids:
@@ -1945,18 +1980,14 @@ def _solve_identity_ilp2_identity_only(
 
 			expl = model.NewBoolVar(f"explained[{tid}]")
 			unexpl = model.NewBoolVar(f"unexplained[{tid}]")
-			# unexpl = 1 - expl
 			model.Add(expl + unexpl == 1)
 
 			if incident_edges:
-				# explained >= used_e for all incident edges
 				for eid in incident_edges:
 					if eid in used_var:
 						model.Add(expl >= used_var[eid])
-				# sum(used_e) >= explained
 				model.Add(sum(used_var[eid] for eid in incident_edges if eid in used_var) >= expl)
 			else:
-				# No incident edges: cannot be explained
 				model.Add(expl == 0)
 				model.Add(unexpl == 1)
 
@@ -1968,18 +1999,31 @@ def _solve_identity_ilp2_identity_only(
 					"base_tracklet_id": tid,
 					"n_single_nodes": int(len(nids)),
 					"n_incident_edges": int(len(incident_edges)),
+					"n_frames": int(tid_to_n_frames.get(tid, 1)),
+					"penalty_scaled": int(tid_to_penalty_scaled.get(tid, 0)),
 					"note": ("no_incident_edges" if not incident_edges else None),
 				}
 			)
 
-		# Attach penalty to objective terms later (below) by emitting penalty vars now.
+		# Summary stats for audit provenance
+		all_n_frames = sorted(tid_to_n_frames.get(tid, 1) for tid in base_tids) if base_tids else [0]
+		breakeven = int(round(float(unexplained_tracklet_penalty_base or 0) / max(1e-9, float(unexplained_tracklet_penalty_per_frame or 1e-9))))
+		n_above_breakeven = sum(1 for tid in base_tids if tid_to_n_frames.get(tid, 1) > breakeven) if base_tids else 0
+
 		explain_debug = {
-			"schema_version": "ilp2_explain_or_penalize_v0.1.0",
+			"schema_version": "ilp2_explain_or_penalize_v0.3.0",
 			"summary": {
 				"n_tracklets_total": int(len(base_tids)),
-				"penalty_unscaled": float(unexplained_tracklet_penalty),
+				"penalty_base_unscaled": float(unexplained_tracklet_penalty_base or 0),
+				"penalty_per_frame_unscaled": float(unexplained_tracklet_penalty_per_frame or 0),
 				"cost_scale": int(scale),
-				"penalty_scaled": int(penalty_scaled or 0),
+				"base_floor_scaled": int(base_floor_scaled or 0),
+				"per_frame_scaled": int(per_frame_scaled or 0),
+				"n_frames_min": int(all_n_frames[0]) if all_n_frames else 0,
+				"n_frames_median": int(all_n_frames[len(all_n_frames) // 2]) if all_n_frames else 0,
+				"n_frames_max": int(all_n_frames[-1]) if all_n_frames else 0,
+				"floor_breakeven_frames": int(breakeven),
+				"n_tracklets_above_floor_breakeven": int(n_above_breakeven),
 			},
 			"tracklets": tid_records,
 		}
@@ -1992,10 +2036,12 @@ def _solve_identity_ilp2_identity_only(
 			continue
 		terms.append(ci * flow_var[eid])
 
-	# Explain-or-penalize penalty terms
-	if unexplained_tracklet_penalty is not None and penalty_scaled is not None and penalty_scaled > 0:
+	# Explain-or-penalize penalty terms (CP3b: per-tracklet max(floor, length))
+	if _penalty_active and tid_to_penalty_scaled:
 		for tid, uvar in unexplained_var_by_tid.items():
-			terms.append(int(penalty_scaled) * uvar)
+			p = tid_to_penalty_scaled.get(tid, 0)
+			if p > 0:
+				terms.append(p * uvar)
 
 	# MCF-2a: miss penalties (soft enforcement)
 	# CP17: corroborated tags get boosted miss penalty
@@ -2060,7 +2106,7 @@ def _solve_identity_ilp2_identity_only(
 	# Post-solve: explain-or-penalize stats + debug artifact
 	explained_ids: List[str] = []
 	dropped_ids: List[str] = []
-	if unexplained_tracklet_penalty is not None and explained_var_by_tid:
+	if _penalty_active and explained_var_by_tid:
 		for tid in sorted(explained_var_by_tid.keys()):
 			try:
 				is_expl = int(solver.Value(explained_var_by_tid[tid])) == 1 if status in (cp_model.OPTIMAL, cp_model.FEASIBLE) else False
@@ -2078,7 +2124,9 @@ def _solve_identity_ilp2_identity_only(
 				{
 					"n_tracklets_explained": int(len(explained_ids)),
 					"n_tracklets_unexplained": int(len(dropped_ids)),
-					"total_unexplained_penalty_scaled": int((penalty_scaled or 0) * len(dropped_ids)),
+					"total_unexplained_penalty_scaled": int(sum(
+						tid_to_penalty_scaled.get(tid, 0) for tid in dropped_ids
+					)),
 					"solution_status": status_s,
 				}
 			)
@@ -2250,7 +2298,8 @@ def _solve_identity_ilp2_identity_only(
 		rounding_n_edges_nonzero=int(rounding_stats.get("rounding_n_edges_nonzero", 0)),
 		rounding_max_abs_scaled_error=float(rounding_stats.get("rounding_max_abs_scaled_error", 0.0)),
 		rounding_max_abs_cost_error=float(rounding_stats.get("rounding_max_abs_cost_error", 0.0)),
-		unexplained_tracklet_penalty=float(unexplained_tracklet_penalty) if unexplained_tracklet_penalty is not None else None,
+		unexplained_tracklet_penalty_base=float(unexplained_tracklet_penalty_base) if unexplained_tracklet_penalty_base is not None else None,
+		unexplained_tracklet_penalty_per_frame=float(unexplained_tracklet_penalty_per_frame) if unexplained_tracklet_penalty_per_frame is not None else None,
 		n_tracklets_total=int(len(explained_var_by_tid)),
 		n_tracklets_explained=int(len(explained_ids)),
 		n_tracklets_unexplained=int(len(dropped_ids)),
@@ -2268,7 +2317,8 @@ def solve_structure_ilp2_core(
 	constraints: Dict[str, Any] | None = None,
 	debug_dir: Path | None = None,
 	emit_transparency: bool = True,
-	unexplained_tracklet_penalty: float | None = None,
+	unexplained_tracklet_penalty_base: float | None = None,
+	unexplained_tracklet_penalty_per_frame: float | None = None,
 	group_boundary_window_frames: int = 10,
 	tag_inputs: Optional[Dict[str, Any]] = None,
 ) -> Tuple[ILPResult, Dict[str, Dict[str, int]], Dict[str, List[Dict[str, Any]]]]:
@@ -2283,7 +2333,8 @@ def solve_structure_ilp2_core(
 		constraints=constraints,
 		debug_dir=debug_dir,
 		emit_transparency=emit_transparency,
-		unexplained_tracklet_penalty=unexplained_tracklet_penalty,
+		unexplained_tracklet_penalty_base=unexplained_tracklet_penalty_base,
+		unexplained_tracklet_penalty_per_frame=unexplained_tracklet_penalty_per_frame,
 		group_boundary_window_frames=int(group_boundary_window_frames),
 		tag_inputs=tag_inputs,
 	)
@@ -2295,7 +2346,8 @@ def solve_structure_ilp2(
 	layout: ClipOutputLayout,
 	manifest: ClipManifest,
 	checkpoint: str,
-	unexplained_tracklet_penalty: float | None = None,
+	unexplained_tracklet_penalty_base: float | None = None,
+	unexplained_tracklet_penalty_per_frame: float | None = None,
 	group_boundary_window_frames: int = 10,
 ) -> ILPResult:
 	"""Wrapper: solve + write the standard debug/audit outputs."""
@@ -2322,7 +2374,8 @@ def solve_structure_ilp2(
 		constraints=compiled.constraints,
 		debug_dir=dbg,
 		emit_transparency=True,
-		unexplained_tracklet_penalty=unexplained_tracklet_penalty,
+		unexplained_tracklet_penalty_base=unexplained_tracklet_penalty_base,
+		unexplained_tracklet_penalty_per_frame=unexplained_tracklet_penalty_per_frame,
 		group_boundary_window_frames=int(group_boundary_window_frames),
 		tag_inputs=tag_inputs,
 	)
@@ -2432,7 +2485,8 @@ def solve_structure_ilp2(
 			"n_selected_edges": len(res.selected_edge_ids),
 			"selected_edge_type_counts": dict(sorted(edge_type_counts.items(), key=lambda kv: kv[0])),
 			"explain_or_penalize": {
-				"unexplained_tracklet_penalty": res.unexplained_tracklet_penalty,
+				"unexplained_tracklet_penalty_base": res.unexplained_tracklet_penalty_base,
+				"unexplained_tracklet_penalty_per_frame": res.unexplained_tracklet_penalty_per_frame,
 				"n_tracklets_total": res.n_tracklets_total,
 				"n_tracklets_explained": res.n_tracklets_explained,
 				"n_tracklets_unexplained": res.n_tracklets_unexplained,
