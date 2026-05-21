@@ -225,3 +225,23 @@ outputs/_eval_gt/{cam}/.../_debug/d3_entities_format_a.json
 outputs/_eval_gt/{cam}/.../_debug/d3_solution_ledger.json
 outputs/_eval_gt/{cam}/.../_debug/d3_ilp2_explain_or_penalize.json
 ```
+
+---
+
+## Postscript (added post-CP6, 2026-05-19)
+
+CP6's GT-anchored trace confirmed CP4's mechanism at the row level but revealed the
+competition is MULTI-WAY, not pairwise. For J_EDEw, the trace shows four long carriers
+dropped (t1, t3, t5, t111) and only two kept (t108, t2) -- all mutually exclusive on GT
+persons at every overlapping frame. t108 vs t111 is a clean parallel-carrier pair CP4
+didn't name. Carrier competition reaches 12 simultaneous carriers per frame (median 7).
+
+Implication for CP5: the "pick one carrier per merge event" consolidation rule must
+handle N-way competition (N up to ~12), not just the pairwise case CP4 illustrated. The
+deterministic tiebreak chain (merge_dist_m -> length -> ID) should already handle N
+candidates, but CP5 must verify this explicitly with a unit test on a 4+-way case.
+
+NOTE ON FRAME COUNTS: CP4 cites "t1 = 4,427 frames" (full tracklet lifespan from
+tracklet_bank_summaries). CP6 cites "t1 = 293 frames" (GT-matched frames only -- annotated
+val frames, stride-10 sampled). Both are correct; they use different denominators. Do not
+treat the discrepancy as a bug.

@@ -63,6 +63,13 @@ bug fix history. It is NOT auto-loaded by Claude Code. Access it manually when n
 | H in undistorted pixel space | ✅ Decided | Verified by tracing wizard Step 3 code path. Comments saying "raw" are stale. |
 | Lens calibration fixed-f candidate sweep | ✅ Decided | Replaces loose-bounds single optimizer. `_get_f_candidates` from `homography_calibrate.py`. k bounds ±1.0. |
 | Camera geometry analysis tool (4-phase) | ✅ Implemented | height surface → ROI mask → detectability → coverage optimization. `tools/camera_geometry_analysis.py`. |
+| Stage D coverage root cause (CP4/CP6) | ✅ Diagnosed | Parallel-carrier displacement in D1 graph construction. Not penalty-tunable. 100% of d3_dropped frames have a concurrent kept tracklet on a different GT person. |
+| unexplained_tracklet_penalty floor-protected length-proportional (CP3b) | ✅ Implemented | max(base=25.0, per_frame=0.1 × n_frames). Protects short tracklets, adds length pressure. Saturated — can't overcome flow topology. |
+| CP3 pure per-frame penalty | ❌ Rejected | Regression — short tracklets became too cheap to drop. Rolled back. |
+| GT Person Trace layer (CP6) | ✅ Implemented | Permanent layer in pipeline_validation. Per-frame per-GT-person trace through all stages. Six-mode failure breakdown is now the primary Stage D metric. |
+| present_misattributed is a representation ceiling (CP6) | ✅ Understood | Tracklets cover multiple GT persons (33–53 tracklets per GT person in J_EDEw). One person_id per tracklet → inherent misattribution. Needs ReID/pose identity, not routing fixes. |
+| Eval baseline preservation includes pipeline artifacts | ✅ Decided | Copy both _eval/ and _eval_gt/{cam}/{clip}/ for full-mode trace. Historical baselines (pre-CP6) are lite-mode only. |
+| CP5 parallel-carrier consolidation in D1 | 🔲 Designed, paused | Pass 1+2 complete. Resume brief adds multi-way competition handling. Stepping stone — recovers d3_dropped but ceiling is ~15–40% present. |
 | ROI mask union fix | 🔲 Pending | Replace band polygon with `foot_poly.union(head_poly)` in `run_phase2`. |
 | Processor service dockerization | 📋 MVP task | Pipeline runs natively now. Docker for Linux deployment. |
 | Notification channel for drift alerts | 📋 TBD | Supabase Realtime likely. |
