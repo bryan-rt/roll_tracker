@@ -69,7 +69,7 @@ bug fix history. It is NOT auto-loaded by Claude Code. Access it manually when n
 | GT Person Trace layer (CP6) | ✅ Implemented | Permanent layer in pipeline_validation. Per-frame per-GT-person trace through all stages. Six-mode failure breakdown is now the primary Stage D metric. |
 | present_misattributed is a representation ceiling (CP6) | ✅ Understood | Tracklets cover multiple GT persons (33–53 tracklets per GT person in J_EDEw). One person_id per tracklet → inherent misattribution. Needs ReID/pose identity, not routing fixes. |
 | Eval baseline preservation includes pipeline artifacts | ✅ Decided | Copy both _eval/ and _eval_gt/{cam}/{clip}/ for full-mode trace. Historical baselines (pre-CP6) are lite-mode only. |
-| CP5 parallel-carrier consolidation in D1 | 🔲 Designed, paused | Pass 1+2 complete. Resume brief adds multi-way competition handling. Stepping stone — recovers d3_dropped but ceiling is ~15–40% present. |
+| CP5 parallel-carrier consolidation in D1 | ✅ Implemented | d3_dropped collapsed: J_EDEw 49.7%→7.9%, PPDmUg 39.9%→0%, FP7oJQ 24.0%→4.6%. present_misattributed now dominant (59–66%). Solver OPTIMAL, mergers stable. |
 | ROI mask union fix | 🔲 Pending | Replace band polygon with `foot_poly.union(head_poly)` in `run_phase2`. |
 | Processor service dockerization | 📋 MVP task | Pipeline runs natively now. Docker for Linux deployment. |
 | Notification channel for drift alerts | 📋 TBD | Supabase Realtime likely. |

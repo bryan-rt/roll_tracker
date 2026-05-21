@@ -64,7 +64,7 @@ docs/                     # Calibration guide, decisions archive, audits
 
 ## Current Status
 
-*Last updated 2026-05-19.*
+*Last updated 2026-05-21.*
 
 Pipeline A→F verified E2E. Session pipeline validated (3-camera, 35/36 clips).
 
@@ -430,9 +430,13 @@ slot is free): J_EDEw 37.5%, PPDmUg 42.1%, FP7oJQ 24.8%. All far below the >75% 
 CP5 is a necessary stepping stone, not the destination. Reaching usable coverage requires
 subsequent ReID/identity work to attack present_misattributed.
 
-**CP5 status:** Designed (Pass 1 + Pass 2 complete in a prior CLI session, then paused for
-the CP6 diagnostic). Resume brief carries a multi-way competition refinement. See the CP5
-resume brief.
+**CP5 (completed 2026-05-21):** Parallel-carrier consolidation in D1 graph construction.
+`_consolidate_parallel_triggers` helper in `d1_graph_build.py` — deterministic N-way
+tiebreak (dist -> n_frames -> lexicographic carrier_id). Results (`docs/cp5_results.md`):
+d3_dropped collapsed (J_EDEw 49.7% -> 7.9%, PPDmUg 39.9% -> 0.0%, FP7oJQ 24.0% -> 4.6%).
+present rose modestly (J_EDEw 7.4%, PPDmUg 10.6%, FP7oJQ 6.4%). present_misattributed
+is now the dominant failure mode (59-66%), confirming the representation ceiling. Solver
+OPTIMAL, mergers stable. Next: ReID/identity work to attack misattribution.
 
 ### Known Issues Surfaced by Framework
 
@@ -452,7 +456,7 @@ resume brief.
 
 ### Open Follow-ups
 
-- **CP5 (resume):** Parallel-carrier consolidation -- confirmed by CP6 GT trace
+- **CP7 (next):** ReID/identity work to attack present_misattributed (59-66%, new dominant mode)
 - Empty frame injection for training data (reduce FP rate)
 - Bbox size tier filtering (thresholds not yet applied)
 - Stage C full implementation (beyond tag observations)

@@ -94,6 +94,77 @@ def _parse_json_list(s: Any) -> List[str]:
 	return []
 
 
+def _consolidate_parallel_triggers(
+	triggers: List[Dict[str, Any]],
+	event_key: str,
+	frame_key: str,
+	dist_key: str,
+	ts_by_tid: Dict[str, Any],
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+	"""Consolidate parallel-carrier triggers for the same physical event.
+
+	Two triggers are parallel when they share the same (event_key value, frame_key value)
+	but have different carriers.  For each such group, keep exactly one carrier using a
+	deterministic tiebreak (order matters — do not reorder):
+	  1. Lowest dist (most spatially aligned).  NaN/missing → inf (always loses).
+	  2. Longest carrier tracklet (highest n_frames).  Missing → 0 (always loses).
+	  3. Lexicographically smallest carrier tracklet_id.
+
+	Returns (kept_triggers, consolidation_records).  kept_triggers contains the original
+	trigger dicts unmodified — all keys (merge_end, etc.) survive downstream.
+	consolidation_records is one entry per consolidated group (empty when no consolidation).
+	"""
+	if not triggers:
+		return triggers, []
+
+	# Group by (event_key_value, frame)
+	groups: Dict[Tuple[str, int], List[Dict[str, Any]]] = {}
+	for t in triggers:
+		key = (str(t[event_key]), int(t[frame_key]))
+		groups.setdefault(key, []).append(t)
+
+	kept: List[Dict[str, Any]] = []
+	records: List[Dict[str, Any]] = []
+
+	def _sort_key(t: Dict[str, Any]) -> Tuple[float, int, str]:
+		d = t.get(dist_key)
+		dist = float(d) if d is not None and not pd.isna(d) else float("inf")
+		carrier = str(t["carrier"])
+		row = ts_by_tid.get(carrier)
+		nf = row.get("n_frames") if row is not None else None
+		n = int(nf) if nf is not None and not pd.isna(nf) else 0
+		return (dist, -n, carrier)
+
+	for (ev_val, frame_val), group in sorted(groups.items()):
+		if len(group) == 1:
+			kept.append(group[0])
+			continue
+		ranked = sorted(group, key=_sort_key)
+		winner = ranked[0]
+		losers = ranked[1:]
+		kept.append(winner)
+
+		w_key = _sort_key(winner)
+		records.append({
+			"event_key_value": ev_val,
+			"frame": frame_val,
+			"chosen_carrier": str(winner["carrier"]),
+			"chosen_dist": w_key[0],
+			"chosen_n_frames": -w_key[1],
+			"n_discarded": len(losers),
+			"discarded": [
+				{
+					"carrier": str(lo["carrier"]),
+					"dist": _sort_key(lo)[0],
+					"n_frames": -_sort_key(lo)[1],
+				}
+				for lo in losers
+			],
+		})
+
+	return kept, records
+
+
 def _get_manifest_fields(manifest: Any) -> Tuple[Optional[float], Optional[int], Optional[int]]:
 	"""Extract fps, frame_count, duration_ms from manifest (dict or ClipManifest)."""
 	fps = None
@@ -738,6 +809,15 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 				if (int(m["merge_frame"]) - int(ts_by_tid[m["disappear"]]["end_frame"])) <= merge_trigger_max_age_frames
 			]
 
+		# ---- consolidate parallel-carrier merge triggers (CP5) ----
+		merge_triggers, merge_consolidation_records = _consolidate_parallel_triggers(
+			triggers=merge_triggers,
+			event_key="disappear",
+			frame_key="merge_frame",
+			dist_key="merge_dist_m",
+			ts_by_tid=ts_by_tid,
+		)
+
 		# ---- split triggers: new tid starts while carrier exists, close in space ----
 		split_triggers_raw: List[Dict[str, Any]] = []
 		suppressed_split_triggers_entrance: List[Dict[str, Any]] = []
@@ -809,6 +889,15 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 				else:
 					kept.append(t)
 			split_triggers.extend(kept)
+
+		# ---- consolidate parallel-carrier split triggers (CP5) ----
+		split_triggers, split_consolidation_records = _consolidate_parallel_triggers(
+			triggers=split_triggers,
+			event_key="new",
+			frame_key="split_frame",
+			dist_key="split_dist_m",
+			ts_by_tid=ts_by_tid,
+		)
 
 		# ---- pair merges to splits to form GROUP spans per carrier ----
 		group_spans: List[Dict[str, Any]] = []
@@ -1836,6 +1925,24 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 				}
 			)
 
+
+		_write_audit_event(
+			audit_path,
+			{
+				"event": "d1_parallel_carrier_consolidation",
+				"event_type": "d1_parallel_carrier_consolidation",
+				"stage": "D1",
+				"ts_ms": _now_ms(),
+				"n_merge_trigger_groups_consolidated": len(merge_consolidation_records),
+				"n_merge_triggers_discarded": sum(r["n_discarded"] for r in merge_consolidation_records),
+				"n_split_trigger_groups_consolidated": len(split_consolidation_records),
+				"n_split_triggers_discarded": sum(r["n_discarded"] for r in split_consolidation_records),
+				"consolidations_detail": {
+					"merge": merge_consolidation_records,
+					"split": split_consolidation_records,
+				},
+			},
+		)
 
 		_write_audit_event(
 			audit_path,
