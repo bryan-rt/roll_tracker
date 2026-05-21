@@ -6,7 +6,10 @@ from typing import Any, Dict
 
 import pandas as pd
 
-from bjj_pipeline.stages.stitch.d1_graph_build import run_d1
+from bjj_pipeline.stages.stitch.d1_graph_build import (
+    _consolidate_parallel_triggers,
+    run_d1,
+)
 from bjj_pipeline.stages.stitch.graph import EdgeType, NodeType
 
 
@@ -219,3 +222,148 @@ def test_d1_debug_artifacts_include_segments(tmp_path: Path):
     assert (stage_d_dir / "d1_graph_nodes.parquet").exists()
     assert (stage_d_dir / "d1_graph_edges.parquet").exists()
     assert (stage_d_dir / "d1_segments.parquet").exists()
+
+
+# ---------------------------------------------------------------------------
+# CP5: _consolidate_parallel_triggers unit tests
+# ---------------------------------------------------------------------------
+
+def _fake_ts(tid: str, n_frames: int) -> pd.Series:
+    return pd.Series({
+        "tracklet_id": tid,
+        "n_frames": n_frames,
+        "start_frame": 0,
+        "end_frame": 999,
+    })
+
+
+def test_consolidate_4way_all_tiebreak_levels():
+    """4-way carrier competition exercising all three tiebreak levels.
+
+    Event 1 (disappear=t99, frame=500): 4 carriers.
+      - t40 wins on dist (0.1 vs 0.3).
+    Event 2 (disappear=t88, frame=600): 3 carriers with same dist.
+      - t20 wins: dist tied → n_frames (t20=200 ties t30=200, beats t10=100)
+        → lexicographic ("t20" < "t30").
+    """
+    ts_by_tid = {
+        "t10": _fake_ts("t10", 100),
+        "t20": _fake_ts("t20", 200),
+        "t30": _fake_ts("t30", 200),
+        "t40": _fake_ts("t40", 50),
+    }
+
+    triggers = [
+        # Event 1: 4-way, t40 wins on dist
+        {"carrier": "t10", "disappear": "t99", "merge_frame": 500, "merge_end": 499, "merge_dist_m": 0.3},
+        {"carrier": "t20", "disappear": "t99", "merge_frame": 500, "merge_end": 499, "merge_dist_m": 0.3},
+        {"carrier": "t30", "disappear": "t99", "merge_frame": 500, "merge_end": 499, "merge_dist_m": 0.3},
+        {"carrier": "t40", "disappear": "t99", "merge_frame": 500, "merge_end": 499, "merge_dist_m": 0.1},
+        # Event 2: 3-way, all dist=0.2, t20 wins on n_frames then lexicographic
+        {"carrier": "t10", "disappear": "t88", "merge_frame": 600, "merge_end": 599, "merge_dist_m": 0.2},
+        {"carrier": "t20", "disappear": "t88", "merge_frame": 600, "merge_end": 599, "merge_dist_m": 0.2},
+        {"carrier": "t30", "disappear": "t88", "merge_frame": 600, "merge_end": 599, "merge_dist_m": 0.2},
+    ]
+
+    kept, records = _consolidate_parallel_triggers(
+        triggers=triggers,
+        event_key="disappear",
+        frame_key="merge_frame",
+        dist_key="merge_dist_m",
+        ts_by_tid=ts_by_tid,
+    )
+
+    # Exactly 2 kept (one per event)
+    assert len(kept) == 2
+
+    # Event 1: t40 wins on lowest dist
+    event1_winner = [t for t in kept if t["disappear"] == "t99"]
+    assert len(event1_winner) == 1
+    assert event1_winner[0]["carrier"] == "t40"
+
+    # Event 2: t20 wins (dist tie → n_frames tie t20=t30 → lexicographic "t20" < "t30")
+    event2_winner = [t for t in kept if t["disappear"] == "t88"]
+    assert len(event2_winner) == 1
+    assert event2_winner[0]["carrier"] == "t20", (
+        "t20 must win event 2 despite losing event 1 — per-event independence"
+    )
+
+    # Original trigger dicts preserved (merge_end key survives)
+    assert event1_winner[0]["merge_end"] == 499
+    assert event2_winner[0]["merge_end"] == 599
+
+    # Consolidation records
+    assert len(records) == 2
+    rec1 = [r for r in records if r["event_key_value"] == "t99"][0]
+    rec2 = [r for r in records if r["event_key_value"] == "t88"][0]
+    assert rec1["n_discarded"] == 3
+    assert rec1["chosen_carrier"] == "t40"
+    assert rec2["n_discarded"] == 2
+    assert rec2["chosen_carrier"] == "t20"
+
+    # Discarded records include dist and n_frames
+    for d in rec1["discarded"]:
+        assert "dist" in d and "n_frames" in d
+    for d in rec2["discarded"]:
+        assert "dist" in d and "n_frames" in d
+
+
+def test_consolidate_no_parallel_triggers():
+    """No consolidation needed — each event has a unique carrier."""
+    ts_by_tid = {
+        "t1": _fake_ts("t1", 100),
+        "t2": _fake_ts("t2", 200),
+    }
+
+    triggers = [
+        {"carrier": "t1", "disappear": "t99", "merge_frame": 500, "merge_end": 499, "merge_dist_m": 0.2},
+        {"carrier": "t2", "disappear": "t88", "merge_frame": 600, "merge_end": 599, "merge_dist_m": 0.3},
+    ]
+
+    kept, records = _consolidate_parallel_triggers(
+        triggers=triggers,
+        event_key="disappear",
+        frame_key="merge_frame",
+        dist_key="merge_dist_m",
+        ts_by_tid=ts_by_tid,
+    )
+
+    assert len(kept) == 2
+    assert len(records) == 0
+
+
+def test_consolidate_empty_triggers():
+    """Empty input returns empty output."""
+    kept, records = _consolidate_parallel_triggers(
+        triggers=[],
+        event_key="disappear",
+        frame_key="merge_frame",
+        dist_key="merge_dist_m",
+        ts_by_tid={},
+    )
+    assert kept == []
+    assert records == []
+
+
+def test_consolidate_nan_dist_fallback():
+    """NaN dist falls back to inf — carrier with valid dist always wins."""
+    ts_by_tid = {
+        "t1": _fake_ts("t1", 100),
+        "t2": _fake_ts("t2", 200),
+    }
+
+    triggers = [
+        {"carrier": "t1", "disappear": "t99", "merge_frame": 500, "merge_end": 499, "merge_dist_m": float("nan")},
+        {"carrier": "t2", "disappear": "t99", "merge_frame": 500, "merge_end": 499, "merge_dist_m": 0.5},
+    ]
+
+    kept, records = _consolidate_parallel_triggers(
+        triggers=triggers,
+        event_key="disappear",
+        frame_key="merge_frame",
+        dist_key="merge_dist_m",
+        ts_by_tid=ts_by_tid,
+    )
+
+    assert len(kept) == 1
+    assert kept[0]["carrier"] == "t2"

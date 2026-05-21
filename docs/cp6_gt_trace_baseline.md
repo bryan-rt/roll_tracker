@@ -287,9 +287,15 @@ parallel-carrier consolidation is the highest-leverage fix.
 
 ### missing_canonical stability
 
-missing_canonical is perfectly stable across all snapshots (FP7oJQ: 28.6%, J_EDEw: 0.0%,
-PPDmUg: 12.7%). This confirms it's a GT annotation property, not a pipeline variable.
-FP7oJQ has 4 GT tracks with zero matched frames; PPDmUg has 1.
+missing_canonical was stable across all five CP6 snapshots (FP7oJQ: 28.6%, J_EDEw: 0.0%,
+PPDmUg: 12.7%). This was initially interpreted as a GT annotation property, but **CP5
+disproved this**: after parallel-carrier consolidation, missing_canonical dropped to 0%
+on all cameras. The mechanism: missing_canonical GT tracks had matched detections (Stage A
+found them), but those detections lived in dropped tracklets with no person_id. When CP5
+reduced dropped tracklets from 37 to 4 (FP7oJQ), 37 to 2 (J_EDEw), 14 to 0 (PPDmUg),
+those detections gained person_ids, and canonical assignments emerged. **missing_canonical
+is a pipeline-dependent variable, not a GT property.** It was stable across CP6 snapshots
+only because those snapshots had similar Stage D routing (all pre-consolidation).
 
 ### Baseline preservation lesson
 
