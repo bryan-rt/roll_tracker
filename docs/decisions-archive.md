@@ -70,6 +70,7 @@ bug fix history. It is NOT auto-loaded by Claude Code. Access it manually when n
 | present_misattributed is a representation ceiling (CP6) | ✅ Understood | Tracklets cover multiple GT persons (33–53 tracklets per GT person in J_EDEw). One person_id per tracklet → inherent misattribution. Needs ReID/pose identity, not routing fixes. |
 | Eval baseline preservation includes pipeline artifacts | ✅ Decided | Copy both _eval/ and _eval_gt/{cam}/{clip}/ for full-mode trace. Historical baselines (pre-CP6) are lite-mode only. |
 | CP5 parallel-carrier consolidation in D1 | ✅ Implemented | d3_dropped collapsed: J_EDEw 49.7%→7.9%, PPDmUg 39.9%→0%, FP7oJQ 24.0%→4.6%. present_misattributed now dominant (59–66%). Solver OPTIMAL, mergers stable. |
+| DetectorConfig.iou: tunable NMS threshold (CP7-pre-6) | ✅ Ratified | Optional[float]=None. Default-inert (proven by artifact-diff regression: detections `0ceee2a1…`, person_tracks `8e6383d2…` identical pre/post). Setting iou bypasses CoreML → .pt + disables end2end NMS. Runtime WARNING emitted. See entry below. |
 | ROI mask union fix | 🔲 Pending | Replace band polygon with `foot_poly.union(head_poly)` in `run_phase2`. |
 | Processor service dockerization | 📋 MVP task | Pipeline runs natively now. Docker for Linux deployment. |
 | Notification channel for drift alerts | 📋 TBD | Supabase Realtime likely. |
@@ -98,6 +99,46 @@ Current representative baseline (M1 Air, MPS 2-worker QoS, 36 clips):
 PPDmUg-20260318-202751 fails at D2 — `int(bank_df["frame_index"].min())` returns NAType.
 Degenerate clip with extremely sparse tracklets. Needs null-safe integer handling in
 D2 `compute_edge_costs()`.
+
+## CP7-pre-6: NMS IoU Tunable — Ratification Record (2026-05-22)
+
+**What:** `DetectorConfig.iou: Optional[float] = None` added to `models.py`, wired through
+`detector.py`, `run.py`, and `multiplex_runner.py`. Committed cf823be, ratified retroactively.
+
+**Default-inert proof:** Artifact-diff regression test ran full A→E pipeline on FP7oJQ
+(4530 frames) before and after the plumbing change with iou unset. Both runs loaded the
+production CoreML backend (`models/bjj-detect-all-cameras.mlpackage`). Results:
+- `detections.parquet`: `0ceee2a176a7164ec1e7a3d481772c3f` (identical)
+- `person_tracks.parquet`: `8e6383d25d5e954e36632043ffe5ba2b` (identical)
+
+Both regression arms confirmed loading CoreML (the production inference path), so the
+proof exercises the actual production backend, not a weaker .pt-only test.
+
+**End2end/CoreML double-NMS finding:** YOLOv26n models have NMS baked into the model
+graph (`model.end2end = True`). The ultralytics `model.predict(iou=X)` kwarg is ignored
+when `end2end` is active — Python-side NMS is bypassed. CoreML exports additionally bake
+NMS into the compiled model. The `iou` kwarg is therefore doubly inert on the production
+CoreML path. Making NMS tunable required: (1) skip CoreML, load .pt directly;
+(2) set `model.end2end = False` and `model.model[-1].end2end = False` on the Detect head.
+
+**Coupling when iou is set:** Setting `iou` to any non-None value triggers:
+1. CoreML bypass (falls back to .pt weights on MPS)
+2. End2end NMS disabled on the model graph
+3. Python-side NMS activated with the specified IoU threshold
+4. Runtime WARNING logged with perf impact (~32 fps .pt/MPS vs ~79 fps CoreML/ANE)
+
+This means setting `iou` is NOT just a threshold tweak — it substitutes the inference
+backend. Detection output will differ from production CoreML even at `iou=0.7` (matching
+the ultralytics default) because the NMS implementation differs.
+
+**Sweep caveat:** All CP7-pre-6 sweep numbers (docs/cp7_pre6_nms_sweep.md) were produced
+on .pt with Python-side NMS, NOT production CoreML/ANE. The cross-arm trend (relaxing NMS
+monotonically worsens misattribution) is valid; the absolute numbers are not
+production-comparable.
+
+**Sweep conclusion (settled):** NMS relaxation ruled out as standalone fix. Every
+relaxation step worsened misattribution (4.0% → 25.1%), fragmentation (1.0 → 4.5
+tracklets/GT), and solo-context regression. See docs/cp7_pre6_nms_sweep.md.
 
 ## Applied Migrations (23 total)
 

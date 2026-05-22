@@ -127,6 +127,10 @@ Dataset: 10789 annotations across 902 frames (FP7oJQ 301 + J_EDEw 301 + PPDmUg 3
 Train/val: 749/153 (83/17%), per-camera stratified temporal split.
 CoreML export: `models/bjj-detect-all-cameras.mlpackage` (active inference path).
 Config: `conf: 0.45`, `require_keypoints: false`, `prefer_coreml: true`.
+`DetectorConfig.iou: Optional[float] = None` — NMS IoU threshold (CP7-pre-6). Default
+None = production CoreML path (inert, proven by artifact-diff regression). Setting iou
+to any value **bypasses CoreML → .pt** and disables end2end NMS (~32fps vs ~79fps).
+See `docs/decisions-archive.md` for the end2end/CoreML double-NMS finding.
 
 *Dataset v2 fix (2026-05-06):* FP7oJQ frame extraction was misaligned — used
 `range(0, 3001, 10)` (every 10th frame across 3000) when annotations covered
