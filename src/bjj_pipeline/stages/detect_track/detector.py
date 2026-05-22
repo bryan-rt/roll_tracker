@@ -83,6 +83,7 @@ class UltralyticsYoloDetector(DetectorBackend):
 		seg_model_path: Optional[str],
 		use_seg: bool,
 		conf: float,
+		iou: Optional[float] = None,
 		imgsz: Optional[int],
 		device: Optional[str],
 		prefer_coreml: bool = True,
@@ -91,6 +92,7 @@ class UltralyticsYoloDetector(DetectorBackend):
 		self.seg_model_path = seg_model_path
 		self.use_seg = use_seg
 		self.conf = float(conf)
+		self.iou = float(iou) if iou is not None else None
 		self.imgsz = imgsz
 		self.prefer_coreml = prefer_coreml
 		self._using_coreml = False
@@ -132,15 +134,38 @@ class UltralyticsYoloDetector(DetectorBackend):
 				) from e
 
 			# CP22d: prefer CoreML .mlpackage when available (ANE acceleration)
-			if self.prefer_coreml:
+			# CoreML has NMS baked in; iou kwarg is ignored. When custom iou is
+			# requested, skip CoreML and use .pt for tunable Python-side NMS.
+			if self.prefer_coreml and self.iou is None:
 				mlpackage_path = Path(self.model_path).with_suffix(".mlpackage")
 				if mlpackage_path.exists():
 					self._model = YOLO(str(mlpackage_path))
 					self._using_coreml = True
 					print(f"[Stage A] Loaded CoreML model: {mlpackage_path}", flush=True)
 					return  # CoreML pose model handles detection+keypoints; skip seg model
+			elif self.iou is not None and self.prefer_coreml:
+				logger.warning(
+					"[NMS override] iou=%.2f requested — bypassing CoreML (baked-in NMS, "
+					"iou kwarg ignored) and loading .pt with Python-side NMS. "
+					"This is materially slower (~32 fps .pt/MPS vs ~79 fps CoreML/ANE) "
+					"and detection output will differ from the production CoreML path. "
+					"See docs/decisions-archive.md for the end2end/CoreML double-NMS finding.",
+					self.iou,
+				)
 
 			self._model = YOLO(self.model_path)
+
+			# YOLOv26+ models have end2end NMS baked into the model graph.
+			# When custom iou is specified, disable end2end so Python-side NMS
+			# respects the iou kwarg.
+			if self.iou is not None:
+				model_obj = self._model.model
+				if getattr(model_obj, "end2end", False):
+					model_obj.end2end = False
+					head = model_obj.model[-1] if hasattr(model_obj, "model") else None
+					if head is not None and getattr(head, "end2end", False):
+						head.end2end = False
+					logger.info("Disabled end2end NMS on model graph for custom iou=%.2f", self.iou)
 
 		if self.use_seg and self._seg_model is None:
 			# "Always try" segmentation: attempt explicit seg_model_path first, then a derived
@@ -215,6 +240,8 @@ class UltralyticsYoloDetector(DetectorBackend):
 			raise RuntimeError("YOLO model failed to load")
 
 		kwargs = {"conf": self.conf}
+		if self.iou is not None:
+			kwargs["iou"] = self.iou
 		if self.imgsz is not None:
 			kwargs["imgsz"] = int(self.imgsz)
 		if self.device is not None:
@@ -359,6 +386,8 @@ class UltralyticsYoloDetector(DetectorBackend):
 			raise RuntimeError("YOLO model failed to load")
 
 		kwargs = {"conf": self.conf}
+		if self.iou is not None:
+			kwargs["iou"] = self.iou
 		if self.imgsz is not None:
 			kwargs["imgsz"] = int(self.imgsz)
 		if self.device is not None:

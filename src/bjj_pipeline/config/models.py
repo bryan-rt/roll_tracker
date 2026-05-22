@@ -105,6 +105,7 @@ class StageAConfig(BaseModel):
         )
         use_seg: bool = Field(default=False, description="Attempt to use YOLO segmentation masks")
         conf: float = Field(default=0.25, ge=0.0, le=1.0, description="Detection confidence threshold")
+        iou: Optional[float] = Field(default=None, ge=0.0, le=1.0, description="NMS IoU threshold (None = ultralytics default 0.7)")
         imgsz: Optional[int] = Field(default=None, gt=0, description="Optional inference image size")
         device: Optional[str] = Field(default=None, description="Optional detector device override (auto/mps/cuda/cpu)")
         prefer_coreml: bool = Field(default=True, description="Prefer CoreML .mlpackage sibling when available (ANE acceleration)")
