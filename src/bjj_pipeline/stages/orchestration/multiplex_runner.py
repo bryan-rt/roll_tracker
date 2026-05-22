@@ -486,6 +486,8 @@ def run_multiplex_AC(*,
                     if use_seg_cfg is False:
                         stage_a_writer.audit("stage_a_use_seg_overridden_true", {"configured_use_seg": False})
                     conf = float(_cfg_get(resolved_config, "stages.stage_A.detector.conf", _cfg_get(resolved_config, "detector.conf", 0.25)))
+                    iou_raw = _cfg_get(resolved_config, "stages.stage_A.detector.iou", _cfg_get(resolved_config, "detector.iou", None))
+                    iou = float(iou_raw) if iou_raw is not None else None
                     imgsz = _cfg_get(resolved_config, "stages.stage_A.detector.imgsz", _cfg_get(resolved_config, "detector.imgsz", None))
                     device = _cfg_get(resolved_config, "stages.stage_A.detector.device", _cfg_get(resolved_config, "detector.device", None))
                     prefer_coreml = bool(_cfg_get(resolved_config, "stages.stage_A.detector.prefer_coreml", True))
@@ -495,6 +497,7 @@ def run_multiplex_AC(*,
                         seg_model_path=str(seg_model_path) if seg_model_path is not None else None,
                         use_seg=use_seg,
                         conf=conf,
+                        iou=iou,
                         imgsz=int(imgsz) if imgsz is not None else None,
                         device=str(device) if device is not None else None,
                         prefer_coreml=prefer_coreml,

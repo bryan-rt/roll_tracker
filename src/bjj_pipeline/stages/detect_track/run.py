@@ -193,6 +193,8 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 	)
 	use_seg = bool(_cfg_get(config, "stages.stage_A.detector.use_seg", _cfg_get(config, "detector.use_seg", True)))
 	conf = float(_cfg_get(config, "stages.stage_A.detector.conf", _cfg_get(config, "detector.conf", 0.25)))
+	iou_raw = _cfg_get(config, "stages.stage_A.detector.iou", _cfg_get(config, "detector.iou", None))
+	iou = float(iou_raw) if iou_raw is not None else None
 	imgsz = _cfg_get(config, "stages.stage_A.detector.imgsz", _cfg_get(config, "detector.imgsz", None))
 	device = _cfg_get(config, "stages.stage_A.detector.device", _cfg_get(config, "detector.device", None))
 	prefer_coreml = bool(_cfg_get(config, "stages.stage_A.detector.prefer_coreml", True))
@@ -202,6 +204,7 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 		seg_model_path=str(seg_model_path) if seg_model_path is not None else None,
 		use_seg=use_seg,
 		conf=conf,
+		iou=iou,
 		imgsz=int(imgsz) if imgsz is not None else None,
 		device=str(device) if device is not None else None,
 		prefer_coreml=prefer_coreml,
