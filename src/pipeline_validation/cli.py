@@ -9,6 +9,7 @@ Subcommands:
     stage-d     Run Stage D identity stitching evaluation (TB-EVAL-2).
     stage-f     Run Stage F match visualization (TB-EVAL-3).
     swap-diagnostic  Tracker swap boundary diagnostic (CP-SWAP-1).
+    swap-characterize  Swap pattern characterization (CP-SWAP-2).
 """
 from __future__ import annotations
 
@@ -1278,6 +1279,109 @@ def cmd_swap_diagnostic(args: argparse.Namespace) -> None:
     print(f"\nDone. Aggregate report: {agg_path}")
 
 
+def cmd_swap_characterize(args: argparse.Namespace) -> None:
+    """Characterize swap patterns for splitter design (CP-SWAP-2)."""
+    import logging as _logging
+
+    import pandas as pd
+
+    from pipeline_validation.common.manifest import load_manifest
+    from pipeline_validation.tracker_swap.characterize import (
+        SwapContext,
+        run_characterization,
+    )
+    from pipeline_validation.tracker_swap.characterize_report import (
+        write_characterization_reports,
+    )
+
+    _logging.basicConfig(level=_logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+
+    model_id = args.model
+    manifest_path = CONFIGS_DIR / "models" / f"{model_id}.yaml"
+    if not manifest_path.exists():
+        print(f"Manifest not found: {manifest_path}")
+        sys.exit(1)
+
+    manifest = load_manifest(manifest_path)
+    gym_id = args.gym_id or manifest.pipeline_gym_id or "_eval_gt"
+    swap_base = OUTPUTS_DIR / "_eval" / "tracker_swap" / model_id
+
+    results = []
+    for export in manifest.training_data:
+        cam = export.camera_id
+        clip_id = export.pipeline_output_clip_id or export.source_video.replace(".mp4", "")
+        print(f"\n--- {cam} ({clip_id}) ---")
+
+        # Check CP-SWAP-1 outputs exist
+        cam_swap_dir = swap_base / cam
+        events_path = cam_swap_dir / "swap_events.jsonl"
+        features_path = cam_swap_dir / "frame_features.parquet"
+        if not events_path.exists() or not features_path.exists():
+            print(f"  CP-SWAP-1 outputs not found at {cam_swap_dir}")
+            print("  Run 'swap-diagnostic' first.")
+            sys.exit(1)
+
+        # Load swap events
+        swap_events = []
+        with open(events_path) as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    swap_events.append(json.loads(line))
+        print(f"  Swap events: {len(swap_events)}")
+
+        # Load frame features (has GT assignments from CP-SWAP-1)
+        frame_features = pd.read_parquet(features_path)
+        print(f"  Frame features: {len(frame_features)} rows")
+
+        # Resolve clip directory for pipeline artifacts
+        pattern = f"{gym_id}/{cam}/**/{clip_id}"
+        matches = list(OUTPUTS_DIR.glob(pattern))
+        if not matches:
+            print(f"  No pipeline output found for {cam}/{clip_id} under {gym_id}, skipping")
+            continue
+        clip_dir = matches[0]
+
+        # Load detections
+        det_path = clip_dir / "stage_A" / "detections.parquet"
+        if not det_path.exists():
+            print(f"  detections.parquet not found, skipping")
+            continue
+        detections = pd.read_parquet(det_path)
+        detections = detections[detections["tracklet_id"].notna()].copy()
+
+        # Load bank frames (optional)
+        bank_path = clip_dir / "stage_D" / "tracklet_bank_frames.parquet"
+        bank_frames = None
+        if bank_path.exists():
+            bank_frames = pd.read_parquet(bank_path)
+            print(f"  Bank frames: {len(bank_frames)} rows")
+        else:
+            print("  Bank frames: not available")
+
+        stride = export.annotated_range.stride
+        print(f"  Stride: {stride}")
+
+        ctx = SwapContext(
+            camera_id=cam,
+            stride=stride,
+            swap_events=swap_events,
+            frame_features=frame_features,
+            bank_frames=bank_frames,
+            detections=detections,
+        )
+
+        result = run_characterization(ctx)
+        results.append(result)
+
+    if not results:
+        print("\nNo cameras processed.")
+        sys.exit(1)
+
+    md_path = write_characterization_reports(model_id, results)
+    print(f"\nDone. Characterization report: {md_path}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="pipeline_validation",
@@ -1321,6 +1425,13 @@ def main() -> None:
     swap_diag.add_argument("--gym-id", default=None,
                            help="Gym ID for pipeline output paths")
 
+    swap_char = sub.add_parser("swap-characterize",
+                               help="Characterize swap patterns for splitter design (CP-SWAP-2)")
+    swap_char.add_argument("--model", default="bjj-detect-all-cameras",
+                           help="Model ID (must have manifest at configs/models/{id}.yaml)")
+    swap_char.add_argument("--gym-id", default=None,
+                           help="Gym ID for pipeline output paths")
+
     sub.add_parser("create-manifest", help="Generate empty manifest template (future)")
 
     args = parser.parse_args()
@@ -1352,6 +1463,8 @@ def main() -> None:
         cmd_evaluate(args)
     elif args.command == "swap-diagnostic":
         cmd_swap_diagnostic(args)
+    elif args.command == "swap-characterize":
+        cmd_swap_characterize(args)
     elif args.command == "create-manifest":
         print(f"'{args.command}' is not yet implemented.")
         sys.exit(0)
