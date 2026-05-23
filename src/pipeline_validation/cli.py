@@ -8,6 +8,7 @@ Subcommands:
     stage-a     Run Stage A detection evaluation (TB-EVAL-1).
     stage-d     Run Stage D identity stitching evaluation (TB-EVAL-2).
     stage-f     Run Stage F match visualization (TB-EVAL-3).
+    swap-diagnostic  Tracker swap boundary diagnostic (CP-SWAP-1).
 """
 from __future__ import annotations
 
@@ -31,6 +32,7 @@ MODELS_DIR = REPO_ROOT / "models"
 TRAINING_DATA_DIR = REPO_ROOT / "data" / "training_data"
 RUNS_DIR = REPO_ROOT / "runs"
 CONFIGS_DIR = REPO_ROOT / "configs"
+OUTPUTS_DIR = REPO_ROOT / "outputs"
 TOOLS_DIR = REPO_ROOT / "tools"
 DOCS_DIR = REPO_ROOT / "docs"
 DISCOVERY_DOC = DOCS_DIR / "pipeline_validation_discovery.md"
@@ -1185,6 +1187,97 @@ def cmd_evaluate(args: argparse.Namespace) -> None:
 # Main CLI
 # ---------------------------------------------------------------------------
 
+def cmd_swap_diagnostic(args: argparse.Namespace) -> None:
+    """Tracker swap boundary diagnostic (CP-SWAP-1)."""
+    import logging as _logging
+
+    import pandas as pd
+
+    from pipeline_validation.common.gt_loader import load_gt_for_split
+    from pipeline_validation.common.manifest import load_manifest
+    from pipeline_validation.tracker_swap.diagnostic import run_diagnostic
+    from pipeline_validation.tracker_swap.report import write_reports
+
+    _logging.basicConfig(level=_logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+
+    model_id = args.model
+    manifest_path = CONFIGS_DIR / "models" / f"{model_id}.yaml"
+    if not manifest_path.exists():
+        print(f"Manifest not found: {manifest_path}")
+        sys.exit(1)
+
+    manifest = load_manifest(manifest_path)
+    gym_id = args.gym_id or manifest.pipeline_gym_id or "_eval_gt"
+
+    results = []
+    for export in manifest.training_data:
+        cam = export.camera_id
+        clip_id = export.pipeline_output_clip_id or export.source_video.replace(".mp4", "")
+        print(f"\n--- {cam} ({clip_id}) ---")
+
+        # Resolve clip directory
+        pattern = f"{gym_id}/{cam}/**/{clip_id}"
+        matches = list(OUTPUTS_DIR.glob(pattern))
+        if not matches:
+            print(f"  No pipeline output found for {cam}/{clip_id} under {gym_id}, skipping")
+            continue
+        clip_dir = matches[0]
+
+        # Load GT (train + val combined for max coverage)
+        zip_path = TRAINING_DATA_DIR / export.export
+        if not zip_path.exists():
+            print(f"  GT zip not found: {zip_path}, skipping")
+            continue
+        gt_train = load_gt_for_split(zip_path, export, "train")
+        gt_val = load_gt_for_split(zip_path, export, "val")
+        gt_by_frame = {**gt_train, **gt_val}
+        print(f"  GT frames: {len(gt_by_frame)} ({len(gt_train)} train + {len(gt_val)} val)")
+
+        # Load detections
+        det_path = clip_dir / "stage_A" / "detections.parquet"
+        if not det_path.exists():
+            print(f"  detections.parquet not found at {det_path}, skipping")
+            continue
+        detections_df = pd.read_parquet(det_path)
+        # Filter to detections with tracklet_id
+        detections_df = detections_df[detections_df["tracklet_id"].notna()].copy()
+        print(f"  Detections: {len(detections_df)} tracked ({detections_df['tracklet_id'].nunique()} tracklets)")
+
+        # Load optional bank frames
+        bank_path = clip_dir / "stage_D" / "tracklet_bank_frames.parquet"
+        bank_frames_df = None
+        if bank_path.exists():
+            bank_frames_df = pd.read_parquet(bank_path)
+            print(f"  Bank frames: {len(bank_frames_df)} rows")
+        else:
+            print("  Bank frames: not available")
+
+        # Load optional histograms
+        hist_path = clip_dir / "stage_A" / "color_histograms.parquet"
+        histograms_df = None
+        if hist_path.exists():
+            histograms_df = pd.read_parquet(hist_path)
+            print(f"  Histograms: {len(histograms_df)} rows")
+        else:
+            print("  Histograms: not available")
+
+        result = run_diagnostic(
+            camera_id=cam,
+            detections_df=detections_df,
+            gt_by_frame=gt_by_frame,
+            bank_frames_df=bank_frames_df,
+            histograms_df=histograms_df,
+        )
+        results.append(result)
+
+    if not results:
+        print("\nNo cameras processed. Check pipeline outputs and GT zips.")
+        sys.exit(1)
+
+    agg_path = write_reports(model_id, results)
+    print(f"\nDone. Aggregate report: {agg_path}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="pipeline_validation",
@@ -1221,6 +1314,13 @@ def main() -> None:
     evaluate.add_argument("--clip-id", default=None, help="Restrict to one camera's clip")
     evaluate.add_argument("--dry-run", action="store_true", help="Print plan, don't execute")
 
+    swap_diag = sub.add_parser("swap-diagnostic",
+                               help="Tracker swap boundary diagnostic (CP-SWAP-1)")
+    swap_diag.add_argument("--model", default="bjj-detect-all-cameras",
+                           help="Model ID (must have manifest at configs/models/{id}.yaml)")
+    swap_diag.add_argument("--gym-id", default=None,
+                           help="Gym ID for pipeline output paths")
+
     sub.add_parser("create-manifest", help="Generate empty manifest template (future)")
 
     args = parser.parse_args()
@@ -1250,6 +1350,8 @@ def main() -> None:
         render_all(manifest_path)
     elif args.command == "evaluate":
         cmd_evaluate(args)
+    elif args.command == "swap-diagnostic":
+        cmd_swap_diagnostic(args)
     elif args.command == "create-manifest":
         print(f"'{args.command}' is not yet implemented.")
         sys.exit(0)
