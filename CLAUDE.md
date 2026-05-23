@@ -338,8 +338,8 @@ Four layers: all detections (grey), person-assigned (colored), match envelopes
 
 `src/pipeline_validation/gt_person_trace.py` -- runs automatically as part of every
 `evaluate` call. Joins five existing artifacts (per_frame_matches, detections,
-d1_graph_nodes, d3_solution_ledger, person_tracks, identity_mapping) into a per-frame
-per-GT-person trace.
+d1_graph_nodes, d3_solution_ledger, person_tracks) into a per-frame per-GT-person trace.
+Identity mapping is derived internally from per_frame_matches + person_tracks (CP-EVAL-1).
 
 **Outputs** (per camera, under `outputs/_eval/stage_d/{model_id}/{camera}/`):
 - `gt_person_trace.jsonl` -- one row per (camera, clip, frame, gt_person). Full chain:
@@ -465,6 +465,12 @@ OPTIMAL, mergers stable. Next: ReID/identity work to attack misattribution.
 - Bbox size tier filtering (thresholds not yet applied)
 - Stage C full implementation (beyond tag observations)
 - PPDmUg training sample provenance
+
+## Active Decisions Log
+
+| Decision | Status | Notes |
+|----------|--------|-------|
+| CP-EVAL-1: Eval instrument freeze — single-path Layer 1/2 | **Active** | Identity mapping derived from `per_frame_matches.parquet` + `person_tracks.parquet` inside `gt_person_trace.py`. `stage_d/evaluate.py` is secondary diagnostic; its `identity_mapping.json` is not consumed by the authoritative trace. Spec: `docs/eval_instrument_spec.md` v1.0. |
 
 ## Never Touch
 

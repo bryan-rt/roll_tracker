@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -61,39 +62,97 @@ class TraceResult:
 
 
 # ---------------------------------------------------------------------------
-# Identity mapping loader
+# Identity mapping derivation (single-instrument path)
 # ---------------------------------------------------------------------------
 
-def _load_identity_mapping(path: Path) -> dict[int, str]:
-    """Load identity_mapping.json -> {gt_track_id_int: canonical_person_id}.
+def _derive_identity_mapping(
+    pfm_df: pd.DataFrame,
+    pt_df: pd.DataFrame,
+) -> dict[int, str]:
+    """Derive gt_track_id -> canonical_person_id from Layer 1 matches + person_tracks.
 
-    Entries with canonical_person_id == None are omitted (they represent
-    GT tracks with zero matched frames).  Raises ValueError if the file
-    is missing or empty.
+    Algorithm: most-frequent person_id vote per gt_track_id, with earliest-frame
+    tiebreak. GT tracks with zero matched frames or no person_id mappings get None
+    (omitted from the returned dict).
+
+    This is the authoritative identity mapping for full-mode trace (CP-EVAL-1).
     """
-    if not path.exists():
-        raise ValueError(f"identity_mapping.json not found: {path}")
-    raw = json.loads(path.read_text())
-    if not raw:
-        raise ValueError(f"identity_mapping.json is empty: {path}")
+    # Filter to matched rows with a prediction
+    matched = pfm_df[pfm_df["pred_detection_id"].notna()].copy()
+    if matched.empty:
+        logger.warning("No matched rows in per_frame_matches — identity mapping empty")
+        return {}
+
+    # Join pred_detection_id -> person_id via person_tracks
+    det_to_pid = dict(zip(pt_df["detection_id"], pt_df["person_id"]))
+    matched["person_id"] = matched["pred_detection_id"].map(det_to_pid)
+
+    # Drop rows where detection has no person_id (d4_unassigned detections)
+    matched = matched[matched["person_id"].notna()]
+    if matched.empty:
+        logger.warning("No matched detections have person_id — identity mapping empty")
+        return {}
 
     mapping: dict[int, str] = {}
-    purities: list[float] = []
-    for k, v in raw.items():
-        tid = int(k.removeprefix("gt_track_"))
-        cpid = v.get("canonical_person_id")
-        if cpid is not None:
-            mapping[tid] = cpid
-        purities.append(v.get("purity", 0.0))
+    for gt_tid, grp in matched.groupby("gt_track_id"):
+        gt_tid = int(gt_tid)
+        counts: Counter[str] = Counter()
+        earliest: dict[str, int] = {}
+        for _, row in grp.iterrows():
+            pid = row["person_id"]
+            counts[pid] += 1
+            fi = int(row["frame_index"])
+            if pid not in earliest or fi < earliest[pid]:
+                earliest[pid] = fi
 
-    if purities:
-        logger.info(
-            "identity_mapping loaded: %d GT tracks, min purity %.2f, mean purity %.2f",
-            len(raw),
-            min(purities),
-            sum(purities) / len(purities),
+        canonical = min(
+            counts.keys(),
+            key=lambda pid: (-counts[pid], earliest.get(pid, 0)),
         )
+        mapping[gt_tid] = canonical
 
+    logger.info(
+        "identity_mapping derived: %d GT tracks with canonical person_id",
+        len(mapping),
+    )
+    return mapping
+
+
+def _derive_identity_mapping_from_sequences(
+    sequences: list[dict],
+) -> dict[int, str]:
+    """Derive gt_track_id -> canonical_person_id from gt_track_sequences.jsonl data.
+
+    Same most-frequent-vote + earliest-frame tiebreak as _derive_identity_mapping,
+    but sourced from sequence records (lite mode path). Each sequence has
+    gt_track_id and frames[*].{person_id, frame_index}.
+    """
+    mapping: dict[int, str] = {}
+    for seq in sequences:
+        gt_tid = int(seq["gt_track_id"])
+        counts: Counter[str] = Counter()
+        earliest: dict[str, int] = {}
+        for frame in seq["frames"]:
+            pid = frame.get("person_id")
+            if pid is not None:
+                counts[pid] += 1
+                fi = int(frame["frame_index"])
+                if pid not in earliest or fi < earliest[pid]:
+                    earliest[pid] = fi
+
+        if not counts:
+            continue
+
+        canonical = min(
+            counts.keys(),
+            key=lambda pid: (-counts[pid], earliest.get(pid, 0)),
+        )
+        mapping[gt_tid] = canonical
+
+    logger.info(
+        "identity_mapping derived from sequences: %d GT tracks with canonical person_id",
+        len(mapping),
+    )
     return mapping
 
 
@@ -263,15 +322,36 @@ def _compute_full_trace(
     model_id: str,
     camera_id: str,
     pipeline_clip_dir: Path,
-    identity_mapping: dict[int, str],
     warnings: list[str],
 ) -> TraceResult:
     """Full 6-mode trace joining all pipeline artifacts."""
-    # 1. Load per_frame_matches
+    # 0. Dependency checks — fail fast with actionable messages
     pfm_path = eval_dir / "stage_a" / model_id / camera_id / "per_frame_matches.parquet"
+    if not pfm_path.exists():
+        raise ValueError(
+            f"per_frame_matches.parquet not found at {pfm_path}. "
+            f"Run stage-a evaluation first: "
+            f"python -m pipeline_validation stage-a --model {model_id}"
+        )
+    pt_path = pipeline_clip_dir / "stage_D" / "person_tracks.parquet"
+    if not pt_path.exists():
+        raise ValueError(
+            f"person_tracks.parquet not found at {pt_path}. "
+            f"Pipeline Stage D must have run for this clip."
+        )
+    logger.info("Layer 1 input: %s", pfm_path)
+    logger.info("Person tracks input: %s", pt_path)
+
+    # 1. Load per_frame_matches
     pfm = pd.read_parquet(pfm_path)
 
-    # 2. Filter unmatched_pred rows (NULL gt_track_id)
+    # 2. Load person_tracks (needed for identity mapping derivation + person_id lookup)
+    pt_df = pd.read_parquet(pt_path)
+
+    # 3. Derive identity mapping from Layer 1 matches + person_tracks (CP-EVAL-1)
+    identity_mapping = _derive_identity_mapping(pfm, pt_df)
+
+    # 4. Filter unmatched_pred rows (NULL gt_track_id)
     unmatched_pred = pfm["gt_track_id"].isna()
     n_unmatched = int(unmatched_pred.sum())
     if n_unmatched > 0:
@@ -280,15 +360,15 @@ def _compute_full_trace(
         )
     pfm = pfm[~unmatched_pred].copy()
 
-    # 3. Cast gt_track_id to int
+    # 5. Cast gt_track_id to int
     pfm["gt_track_id"] = pfm["gt_track_id"].astype(int)
 
-    # 4. Load detections.parquet -> map pred_detection_id -> tracklet_id
+    # 6. Load detections.parquet -> map pred_detection_id -> tracklet_id
     det_df = pd.read_parquet(pipeline_clip_dir / "stage_A" / "detections.parquet")
     det_tracklet_map = dict(zip(det_df["detection_id"], det_df["tracklet_id"]))
     pfm["tracklet_id"] = pfm["pred_detection_id"].map(det_tracklet_map)
 
-    # 5. Count detection_id mismatches
+    # 7. Count detection_id mismatches
     has_pred = pfm["pred_detection_id"].notna()
     no_tracklet = pfm["tracklet_id"].isna()
     mismatch_count = int((has_pred & no_tracklet).sum())
@@ -298,27 +378,24 @@ def _compute_full_trace(
             f"had no tracklet_id in detections.parquet"
         )
 
-    # 6. Build D1 lookup
+    # 8. Build D1 lookup
     d1_nodes = pd.read_parquet(
         pipeline_clip_dir / "stage_D" / "d1_graph_nodes.parquet"
     )
     d1_lookup = _build_d1_lookup(d1_nodes)
 
-    # 7. Build D3 status
+    # 9. Build D3 status
     d3_status = _build_d3_status(
         pipeline_clip_dir / "_debug" / "d3_solution_ledger.json"
     )
 
-    # 8. Build person_ids_for_detection
-    pt_df = pd.read_parquet(
-        pipeline_clip_dir / "stage_D" / "person_tracks.parquet"
-    )
+    # 10. Build person_ids_for_detection
     person_ids_for_det = _build_person_ids_for_detection(pt_df)
 
-    # 9. Get clip_id
+    # 11. Get clip_id
     clip_id = det_df["clip_id"].iloc[0] if len(det_df) > 0 else "unknown"
 
-    # 10. Build trace rows — resolution order matters, do not reorder
+    # 12. Build trace rows — resolution order matters, do not reorder
     rows = []
     for _, r in pfm.iterrows():
         gt_tid = int(r["gt_track_id"])
@@ -428,13 +505,14 @@ def _compute_lite_trace(
     eval_dir: Path,
     model_id: str,
     camera_id: str,
-    identity_mapping: dict[int, str],
     warnings: list[str],
 ) -> TraceResult:
-    """Lite 4-mode trace from gt_track_sequences.jsonl + identity_mapping."""
+    """Lite 4-mode trace from gt_track_sequences.jsonl, identity derived internally."""
     seq_path = eval_dir / "stage_d" / model_id / camera_id / "gt_track_sequences.jsonl"
     if not seq_path.exists():
         raise ValueError(f"gt_track_sequences.jsonl not found: {seq_path}")
+
+    logger.info("Lite mode input: %s", seq_path)
 
     sequences = []
     with open(seq_path) as f:
@@ -442,6 +520,9 @@ def _compute_lite_trace(
             line = line.strip()
             if line:
                 sequences.append(json.loads(line))
+
+    # Derive identity mapping from sequence data (CP-EVAL-1)
+    identity_mapping = _derive_identity_mapping_from_sequences(sequences)
 
     rows = []
     for seq in sequences:
@@ -526,17 +607,12 @@ def compute_gt_person_trace(
 
     If pipeline_clip_dir is provided and contains needed artifacts ->
     full 6-mode trace.  If None or missing -> lite 4-mode trace from
-    gt_track_sequences.jsonl + identity_mapping.json.
+    gt_track_sequences.jsonl (identity mapping derived internally in
+    both paths — no dependency on identity_mapping.json).
 
-    Raises ValueError if identity_mapping.json is empty or missing.
+    Raises ValueError if required artifacts are missing.
     """
     warnings: list[str] = []
-
-    # Always need identity_mapping
-    id_map_path = (
-        eval_dir / "stage_d" / model_id / camera_id / "identity_mapping.json"
-    )
-    identity_mapping = _load_identity_mapping(id_map_path)
 
     # Determine mode
     can_full = (
@@ -558,12 +634,11 @@ def compute_gt_person_trace(
 
     if can_full:
         return _compute_full_trace(
-            eval_dir, model_id, camera_id, pipeline_clip_dir,
-            identity_mapping, warnings,
+            eval_dir, model_id, camera_id, pipeline_clip_dir, warnings,
         )
     else:
         return _compute_lite_trace(
-            eval_dir, model_id, camera_id, identity_mapping, warnings,
+            eval_dir, model_id, camera_id, warnings,
         )
 
 
