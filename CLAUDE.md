@@ -471,6 +471,7 @@ OPTIMAL, mergers stable. Next: ReID/identity work to attack misattribution.
 | Decision | Status | Notes |
 |----------|--------|-------|
 | CP-EVAL-1: Eval instrument freeze — single-path Layer 1/2 | **Active** | Identity mapping derived from `per_frame_matches.parquet` + `person_tracks.parquet` inside `gt_person_trace.py`. `stage_d/evaluate.py` is secondary diagnostic; its `identity_mapping.json` is not consumed by the authoritative trace. Spec: `docs/eval_instrument_spec.md` v1.0. |
+| CP-REID-1: BoT-SORT ReID experiment (`osnet_x0_25_msmt17`) | **Rejected** | `with_reid=True` tested on all 3 cameras. FP7oJQ: zero effect. J_EDEw: d3_dropped -7pp but misattributed +5.1pp (net +1.5pp present). PPDmUg: misattributed -3.3pp but new drops +2.2pp. Pedestrian ReID model has too large a domain gap from overhead fisheye. 2-3x runtime overhead not justified. Config remains `with_reid: false`. Artifacts: `outputs/_eval/experiments/cp_reid_1/`. |
 
 ## Never Touch
 
