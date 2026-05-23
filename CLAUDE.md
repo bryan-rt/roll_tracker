@@ -64,9 +64,21 @@ docs/                     # Calibration guide, decisions archive, audits
 
 ## Current Status
 
-*Last updated 2026-05-21.*
+*Last updated 2026-05-23.*
 
 Pipeline A→F verified E2E. Session pipeline validated (3-camera, 35/36 clips).
+
+**Evaluation baseline (CP-SPLIT-1 active, CP-EVAL-1 frozen instrument v1.0):**
+
+| Camera | present | misattrib | no_det | untracked | d3_drop |
+|--------|---------|-----------|--------|-----------|---------|
+| FP7oJQ | 21.0% | 51.0% | 12.2% | 10.7% | 4.6% |
+| J_EDEw | 12.2% | 54.0% | 11.7% | 13.5% | 7.9% |
+| PPDmUg | 15.0% | 61.4% | 13.4% | 8.1% | 0.0% |
+
+Ceiling without new models: ~35-40% present. Primary blocker: IoU-only tracking
+cannot distinguish overlapping bodies during grappling. Next: domain-specific ReID
+from existing CVAT annotations.
 
 **CP20:** YOLOv8n-pose model, isolation gate, HSV color histograms, Tier 3 histogram
 cross-camera evidence. Stage A outputs 3 new sidecars: keypoints.parquet,
@@ -198,6 +210,9 @@ First trained model had FP7oJQ false positives from background memorization.
 | `tools/investigate_fp7_annotations.py` | FP7oJQ false positive root cause analysis |
 | `tools/visualize_bbox_tiers.py` | Color-coded bbox size tier overlays on training frames |
 | `tools/compare_models.py` | Flexible 2x2 grid model comparison video tool |
+| `python -m pipeline_validation evaluate` | Full model evaluation (pipeline + A/D/F eval) |
+| `python -m pipeline_validation swap-diagnostic` | GT-oracle swap boundary diagnostic (CP-SWAP-1) |
+| `python -m pipeline_validation swap-characterize` | Swap pattern characterization (CP-SWAP-2) |
 
 ## Training Data Locations
 
@@ -233,6 +248,7 @@ First trained model had FP7oJQ false positives from background memorization.
 | `training-pipeline.md` | `src/training_pipeline/**`, training tools |
 | `model-training.md` | `models/**`, dataset/training tools |
 | `cvat-workflow.md` | CVAT integration, annotation workflow |
+| `evaluation.md` | `src/pipeline_validation/**` |
 | `services.md` | `services/**` |
 | `commands.md` | Common dev commands |
 | `apps.md` | `app_mobile/**`, `app_web/**` |
@@ -470,11 +486,14 @@ OPTIMAL, mergers stable. Next: ReID/identity work to attack misattribution.
 
 | Decision | Status | Notes |
 |----------|--------|-------|
-| CP-EVAL-1: Eval instrument freeze — single-path Layer 1/2 | **Active** | Identity mapping derived from `per_frame_matches.parquet` + `person_tracks.parquet` inside `gt_person_trace.py`. `stage_d/evaluate.py` is secondary diagnostic; its `identity_mapping.json` is not consumed by the authoritative trace. Spec: `docs/eval_instrument_spec.md` v1.0. |
-| CP-REID-1: BoT-SORT ReID experiment (`osnet_x0_25_msmt17`) | **Rejected** | `with_reid=True` tested on all 3 cameras. FP7oJQ: zero effect. J_EDEw: d3_dropped -7pp but misattributed +5.1pp (net +1.5pp present). PPDmUg: misattributed -3.3pp but new drops +2.2pp. Pedestrian ReID model has too large a domain gap from overhead fisheye. 2-3x runtime overhead not justified. Config remains `with_reid: false`. Artifacts: `outputs/_eval/experiments/cp_reid_1/`. |
-| CP-SWAP-1: Tracker swap boundary diagnostic | **Results pending review** | GT-oracle swap identification + GT-free signal separability analysis. 167 swaps across 68 tracklets (3 cameras). Best single-feature AUC=0.663 (`bbox_aspect_change`); FP7oJQ strongest (0.776). Verdict: marginal separability — multi-feature detector may work, single-feature threshold insufficient. Histogram coverage at swap boundaries unexpectedly 100% (isolation gate not filtering at swap locations). Module: `src/pipeline_validation/tracker_swap/`. Artifacts: `outputs/_eval/tracker_swap/bjj-detect-all-cameras/`. |
-| CP-SWAP-2: Swap pattern characterization | **Results pending review** | Four-analysis characterization: topology (2% exchange, 28% cascade, 47% hop_into_unoccupied), persistence (56% sustained, 41% transient_return — 50% of transients are 1-frame flickers), spatial (81% < 0.5m, median 0.19m), kinematic spikes (45% no_spike on stride-1 FP7oJQ; 73-85% detectable on stride-10). Key findings: two-body exchange model insufficient (only 2%), splitter needs multi-tracklet reasoning + minimum-dwell filter, kinematic signals alone miss ~45% of swaps. Module: `src/pipeline_validation/tracker_swap/characterize.py`. |
-| CP-SPLIT-1: Post-D0 tracklet splitter | **Active** | Tiered swap boundary detection (Tier 1: speed cap 48 m/s, Tier 2: spike ratio 5x + min 5 m/s + isolation 3x, Tier 3: Bhattacharyya 0.15 + kinematic corroboration 2x). Min dwell 5 frames. Placement: D0.5 in `stages/stitch/d05_split.py`, between D0 and D1. Results vs CP5 baseline: present +14.6pp FP7oJQ (6.4%→21.0%), +4.8pp J_EDEw (7.4%→12.2%), +4.4pp PPDmUg (10.6%→15.0%). Misattributed -8.0pp FP7oJQ, -7.0pp J_EDEw, -4.6pp PPDmUg. d3_dropped unchanged. Config: `stage_D.d05_split` (all params tunable via YAML). Thresholds are initial calibration — further tuning expected. |
+| CP-EVAL-1: Eval instrument freeze — single-path Layer 1/2 | **Active** | Frozen 2026-05-22 (cdf1037). Hungarian IoU 0.5. Identity mapping derived from `per_frame_matches.parquet` + `person_tracks.parquet` inside `gt_person_trace.py`. Spec: `docs/eval_instrument_spec.md` v1.0. |
+| CP-REID-1: BoT-SORT ReID experiment | **Rejected** | Generic `osnet_x0_25_msmt17` — negligible improvement, 2-3x runtime. FP7oJQ: zero delta. J_EDEw: +1.5pp present but +5.1pp misattr. PPDmUg: -3.3pp misattr but +2.2pp drops. Config remains `with_reid: false`. |
+| CP-SWAP-1: Tracker-swap diagnostic | **Complete** | 167 GT-oracle swaps across 68/562 tracklets. Best single-feature AUC=0.663 (`bbox_aspect_change`). FP7oJQ world_accel 25.8x spike ratio, AUC=0.714. Histogram coverage 100% at swap boundaries. Module: `src/pipeline_validation/tracker_swap/`. |
+| CP-SWAP-2: Swap pattern characterization | **Complete** | 47% hop_into_unoccupied, 28% cascade, 2% exchange. 41% transient (50% single-frame flickers). 45% no kinematic spike. 81% within 0.5m. Informed CP-SPLIT-1 design. |
+| CP-SPLIT-1: Post-D0 tracklet splitter | **Active** | Tiered: speed cap 48 m/s + spike ratio 5x (min 5 m/s, isolation 3x) + Bhattacharyya 0.15 (kinematic corroboration 2x). Min dwell 5 frames. D0.5 in `d05_split.py` (fce5758). Results vs CP5: present +14.6/+4.8/+4.4pp, misattr -8.0/-7.0/-4.6pp. Config: `stage_D.d05_split`. Validator fix: af258b7. |
+| Domain-specific ReID training | **Next** | Fine-tune osnet_x0_25 using existing CVAT track_id annotations as identity-labeled crops. Zero additional annotation work. |
+| BoT-SORT parameter tuning | **Deferred** | iou_threshold, track_buffer experiments. After ReID model. |
+| GROUP node assignment reform | **Deferred** | D4 boundary fix using realized_group_pairings. ~3-5pp potential. |
 
 ## Never Touch
 

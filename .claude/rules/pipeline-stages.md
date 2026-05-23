@@ -26,9 +26,16 @@ paths:
   Outputs: tag_observations.jsonl, identity_hints.jsonl.
 
 ## Phase 2 — Offline (sequential, never parallelize)
-- **Stage D** `stitch`: ILP stitching via OR-Tools. D0 bank tables → D1 graph → D2 constraints
-  → D3 ILP solve (d3_ilp2 MCF solver exclusively, d3_ilp kept for comparison only,
-  shared helpers in d3_common) → D4 person_tracks.
+- **Stage D** `stitch`: ILP stitching via OR-Tools. D0 bank tables → D0.5 tracklet split
+  → D1 graph → D2 constraints → D3 ILP solve (d3_ilp2 MCF solver exclusively, d3_ilp
+  kept for comparison only, shared helpers in d3_common) → D4 person_tracks.
+  - **D0.5** `d05_split` (CP-SPLIT-1): Post-D0 tracklet splitter. Tiered swap boundary
+    detection (speed cap, kinematic spike+isolation, histogram Bhattacharyya) with min-dwell
+    filter. Modifies `tracklet_bank_frames.parquet` and `tracklet_bank_summaries.parquet`
+    in-place. Writes `d05_split_audit.jsonl`. Does NOT modify `stage_A/detections.parquet`.
+    Config: `stage_D.d05_split` (Optional[dict], defaults enabled). Runs inside D1+ guard
+    in `run.py`. D4 join safety: bank_frames↔detections join on (clip_id, camera_id,
+    frame_index, detection_id), not tracklet_id. Split IDs use `{tid}_s{N}` suffix.
 - **Stage E** `matches`: Two-layer engagement. E0 input validation → E1 cap2 GROUP seeds →
   E2 proximity hysteresis → E3 union+buffer → E4 buzzer gate (optional) → E5 min duration →
   E6 identity enrichment. Zero matches is valid (no exception).
