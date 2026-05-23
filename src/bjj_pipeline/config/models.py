@@ -621,6 +621,7 @@ class StageDConfig(BaseModel):
         description="Stage D3 internal checkpoint selector (POC_0..POC_4). Used only when run_until == D3.",
     )
     d0: Optional["StageD0Config"] = Field(default=None, description="Stage D0 cleanup configuration")
+    d05_split: Optional[dict] = Field(default=None, description="D0.5 tracklet splitter config (CP-SPLIT-1)")
     qa: Optional["StageDQAConfig"] = Field(default=None, description="Stage D visual QA configuration")
     d1: Optional["StageD1Config"] = Field(default=None, description="Stage D1 graph build configuration")
     d2_costs: Optional["StageD2CostsConfig"] = Field(default=None, description="Stage D2 costs + constraints configuration")

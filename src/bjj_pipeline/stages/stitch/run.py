@@ -60,6 +60,12 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 		register_stage_D0_defaults(manifest, layout)
 		write_manifest(manifest, layout.clip_manifest_path())
 
+		# D0.5: Post-D0 tracklet splitting (before D1 graph construction)
+		if run_until in ("D1", "D2", "D3", "D4", "D6"):
+			from bjj_pipeline.stages.stitch.d05_split import run_d05_split
+
+			run_d05_split(config=config, layout=layout, manifest=manifest)
+
 		# D1: construct candidate graph
 		if run_until in ("D1", "D2", "D3", "D4", "D6"):
 			from bjj_pipeline.stages.stitch.d1_graph_build import run_d1
