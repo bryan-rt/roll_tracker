@@ -196,6 +196,62 @@ overlap.
 d3_dropped unchanged across all cameras. Splitter thresholds are initial calibration.
 
 **Current ceiling:** ~35-40% present without new models. Misattributed remains dominant
-(51-61%). The fundamental blocker is IoU-only tracking — BoT-SORT cannot distinguish
-overlapping bodies. Next investment: domain-specific ReID model fine-tuned on existing
-CVAT track_id annotations (zero additional annotation work).
+(51-61%). The fundamental blocker is detection under-segmentation — see CP7 investigation
+below.
+
+## CP7 Misattribution Decomposition (pre-8 → pre-10, 2026-05-25)
+
+**Problem:** After CP-SPLIT-1, `present_misattributed` remained dominant (51-61%).
+CP7-pre-3 had established ~70% was detection under-segmentation, but the pre-8
+Axis-1/Axis-2 investigation attempted to measure the recoverable share for a
+Stage D concurrent-swap node vs detection separation.
+
+**Investigation sequence:**
+
+1. **CP7-pre-8** (Axis-1 signature characterization): Classified misattributed frames
+   as Branch A (GROUP routing failure) vs Branch B (concurrent-alive tracklet swap).
+   Result: apparent 84.3% Branch B, 6.9% Branch A, 33.9% ambiguous. Recommended
+   concurrent-swap node class. **SUPERSEDED** — the 84.3% was not measured against
+   detection geometry.
+
+2. **CP7-pre-9** (Branch-B margin disambiguation): Applied CP7-pre-3's containment test
+   to the two suspect buckets (ambiguous_a_b + branch_b_persistent, 1,811 frames).
+   Result: 92.8% of those frames are pair-box (one detection covering two GT people).
+   True concurrent-swap margin: 9.9% (223/2,259). Zero concurrent_role (genuine A/B
+   co-causation). The "concurrent tracklet holding canonical identity" was a consequence
+   of pair-box under-segmentation, not an independent swap failure.
+
+   Tau sweep stability: pair_box share 77.9% (tau=0.9) to 94.7% (tau=0.3). Robust.
+
+3. **CP7-pre-10** (pair-box bracketing): Tested whether pair-box spans ever resolve into
+   two separately-tracked boxes elsewhere in the clip (which would enable offline identity
+   propagation through the merged span). Horizon sweep: 30/90/300/full-clip frames.
+   Result: **0% bracketed at every horizon.** The second person is never separately
+   tracked anywhere in this clip → the lever is detection-level pair separation, and
+   possibly plain recall on isolated people; the two are not yet separated and the
+   separability experiment will distinguish them.
+
+   Fragment-map fix: original run showed 39% indeterminate due to D0.5 split tracklet ID
+   mismatch (gt_person_trace uses pre-split IDs, bank_frames uses post-split). Fragment
+   resolution (t10→t10_sN) reduced indeterminate to 13%. OPEN: spot-check remapped
+   carriers before treating 13% as hard.
+
+**Corrected misattribution hierarchy (FP7oJQ, one 2.5-min clip):**
+
+| Cause | Frames | % of 2,259 | Fix path |
+|-------|--------|------------|----------|
+| Pair-box, unbracketed | 1,259 | 55.7% | Detection separation |
+| Pair-box, indeterminate | 262 | 11.6% | Likely detection |
+| Pair-box, half-bracket/short | 160 | 7.1% | Mixed |
+| True Branch B (Axis-1) | 223 | 9.9% | Concurrent-swap node (~10% sidecar) |
+| Pure Branch A | 157 | 6.9% | GROUP routing |
+| Other | 198 | 8.8% | Unknown |
+
+**Conclusion:** Detection-level pair separation is the primary lever (~74% of
+misattribution, of which 55.7% is confirmed unbracketed). Stage D concurrent-swap node
+deferred as ~10% sidecar. Single-clip finding; confirmation pending on buzzer video
+(which forces separations).
+
+Pipeline-attribution caveat: bracket test uses majority-vote GT attribution from
+gt_person_trace, most reliable at separation points (benign lean, not ground-truth-
+verified outside 0-300).

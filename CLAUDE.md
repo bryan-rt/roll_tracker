@@ -76,9 +76,8 @@ Pipeline A→F verified E2E. Session pipeline validated (3-camera, 35/36 clips).
 | J_EDEw | 12.2% | 54.0% | 11.7% | 13.5% | 7.9% |
 | PPDmUg | 15.0% | 61.4% | 13.4% | 8.1% | 0.0% |
 
-Ceiling without new models: ~35-40% present. Primary blocker: IoU-only tracking
-cannot distinguish overlapping bodies during grappling. Next: domain-specific ReID
-from existing CVAT annotations.
+Ceiling without new models: ~35-40% present. Primary blocker: detection
+under-segmentation (one box covering two grappling people). See CP7 investigation.
 
 **CP20:** YOLOv8n-pose model, isolation gate, HSV color histograms, Tier 3 histogram
 cross-camera evidence. Stage A outputs 3 new sidecars: keypoints.parquet,
@@ -436,27 +435,62 @@ in D1 graph construction, not penalty tuning.
 1. The old "Stage D drops ~56% of detections / tracklet acceptance criteria suspected"
    framing is RETIRED. The mechanism is parallel-carrier displacement in D1, fully
    characterized.
-2. `present_misattributed` (18-20% per camera) is now understood as a fundamental ceiling:
-   tracklets cover MULTIPLE GT persons (J_EDEw GT persons are each fragmented across 33-53
-   tracklets), so a single tracklet's one person_id assignment is correct for only a
-   fraction of the GT persons it physically covers. This is a representation problem
-   (tracking a bbox-position != tracking a person), addressable only by ReID/pose identity,
-   not by Stage D routing.
+2. `present_misattributed` (51-61% per camera, CP-SPLIT-1 baseline) is dominantly a
+   DETECTION under-segmentation problem: one detection box covers two grappling people,
+   so whichever person_id the tracklet receives, it is wrong for the other. On FP7oJQ
+   (one 2.5-min clip): ~74% of misattribution is pair-box under-segmentation; of that,
+   55.7% is confirmed unbracketed (detection-only-recoverable), the remainder
+   indeterminate/partial pending wider-horizon and second-clip confirmation. Not a
+   representation problem and not addressable by ReID/pose at the tracking layer. See
+   CP7 investigation below.
 
 **Recovery ceiling for CP5** (from CP6 trace analysis): CP5 (parallel-carrier consolidation)
 recovers frames lost to d3_dropped. Conservative estimate: J_EDEw 4.7%->14.2% present,
 PPDmUg 6.1%->15.7%. Ideal ceiling (every rescued drop attributed correctly where a canonical
 slot is free): J_EDEw 37.5%, PPDmUg 42.1%, FP7oJQ 24.8%. All far below the >75% target.
 CP5 is a necessary stepping stone, not the destination. Reaching usable coverage requires
-subsequent ReID/identity work to attack present_misattributed.
+detection-level pair separation (see CP7 investigation below).
 
 **CP5 (completed 2026-05-21):** Parallel-carrier consolidation in D1 graph construction.
 `_consolidate_parallel_triggers` helper in `d1_graph_build.py` — deterministic N-way
 tiebreak (dist -> n_frames -> lexicographic carrier_id). Results (`docs/cp5_results.md`):
 d3_dropped collapsed (J_EDEw 49.7% -> 7.9%, PPDmUg 39.9% -> 0.0%, FP7oJQ 24.0% -> 4.6%).
 present rose modestly (J_EDEw 7.4%, PPDmUg 10.6%, FP7oJQ 6.4%). present_misattributed
-is now the dominant failure mode (59-66%), confirming the representation ceiling. Solver
-OPTIMAL, mergers stable. Next: ReID/identity work to attack misattribution.
+is now the dominant failure mode (59-66% at CP5; 51-61% after CP-SPLIT-1). Solver
+OPTIMAL, mergers stable. Next: see CP7 investigation.
+
+**CP7 investigation (completed 2026-05-25, FP7oJQ only):** Eight-checkpoint read-only
+investigation into the composition of `present_misattributed`. The arc inverted the
+project's understanding:
+- **pre-2:** 71-79% "impurity-driven" → sub-tracklet identity recommended.
+- **pre-3:** Inverted: 70-78% is detection under-segmentation (one box, two people).
+  Sub-tracklet identity targets 0.3-1.5%, not 71-79%.
+- **pre-4/pre-6:** NMS-suppressed nested boxes investigated; NMS relaxation ruled out
+  (worsened misattribution 4%→25%, fragmentation 1→4.5 tracklets/GT).
+- **pre-8:** Axis-1 failure signature — apparent 84% "Branch B" (concurrent-swap node).
+  SUPERSEDED by pre-9/pre-10.
+- **pre-9:** The 84% was ~93% pair-box under-segmentation in disguise. True concurrent-
+  swap margin: 9.9% of misattributed frames.
+- **pre-10:** Pair-box spans 0% bracketed at every horizon (30f to full clip). The second
+  person is never separately tracked anywhere in this clip → the lever is detection-level
+  pair separation, and possibly plain recall on isolated people; the two are not yet
+  separated and the separability experiment will distinguish them.
+
+On FP7oJQ (one 2.5-min clip): ~74% of misattribution is pair-box; of that, 55.7% is
+confirmed unbracketed (detection-only-recoverable), the remainder indeterminate/partial
+pending wider-horizon and second-clip confirmation. 9.9% true Branch-B, 0% bracketed at
+all horizons — single-clip, confirmation pending on the buzzer video. Stage D concurrent-
+swap node deferred as a ~10% sidecar. Detection-level pair separation is the primary lever.
+
+Integrity caveats:
+(a) Pre-10 bracket test uses pipeline-derived GT attribution (majority-vote from
+    gt_person_trace). Lean is benign (most reliable at separation points) but not
+    ground-truth-verified outside 0-300.
+(b) OPEN: the t10→t10_sN fragment map that moved pre-10 indeterminate 39%→13% is
+    unverified — spot-check a sample of remapped carriers before treating 13% as hard.
+
+Docs: `cp7_pre8_axis1_signature.md` (SUPERSEDED), `cp7_pre9_branchb_margin.md`,
+`cp7_pre10_pairbox_bracketing.md`.
 
 ### Known Issues Surfaced by Framework
 
@@ -476,7 +510,7 @@ OPTIMAL, mergers stable. Next: ReID/identity work to attack misattribution.
 
 ### Open Follow-ups
 
-- **CP7 (next):** ReID/identity work to attack present_misattributed (59-66%, new dominant mode)
+- **CP7 (next):** Detection-level pair separation is the primary lever. On FP7oJQ (one 2.5-min clip): ~74% of misattribution is pair-box under-segmentation (55.7% confirmed unbracketed, remainder indeterminate/partial); 9.9% true Branch-B, 0% bracketed at all horizons — single-clip, confirmation pending on the buzzer video. Stage D concurrent-swap node deferred as ~10% sidecar.
 - Empty frame injection for training data (reduce FP rate)
 - Bbox size tier filtering (thresholds not yet applied)
 - Stage C full implementation (beyond tag observations)
@@ -491,9 +525,10 @@ OPTIMAL, mergers stable. Next: ReID/identity work to attack misattribution.
 | CP-SWAP-1: Tracker-swap diagnostic | **Complete** | 167 GT-oracle swaps across 68/562 tracklets. Best single-feature AUC=0.663 (`bbox_aspect_change`). FP7oJQ world_accel 25.8x spike ratio, AUC=0.714. Histogram coverage 100% at swap boundaries. Module: `src/pipeline_validation/tracker_swap/`. |
 | CP-SWAP-2: Swap pattern characterization | **Complete** | 47% hop_into_unoccupied, 28% cascade, 2% exchange. 41% transient (50% single-frame flickers). 45% no kinematic spike. 81% within 0.5m. Informed CP-SPLIT-1 design. |
 | CP-SPLIT-1: Post-D0 tracklet splitter | **Active** | Tiered: speed cap 48 m/s + spike ratio 5x (min 5 m/s, isolation 3x) + Bhattacharyya 0.15 (kinematic corroboration 2x). Min dwell 5 frames. D0.5 in `d05_split.py` (fce5758). Results vs CP5: present +14.6/+4.8/+4.4pp, misattr -8.0/-7.0/-4.6pp. Config: `stage_D.d05_split`. Validator fix: af258b7. |
-| Domain-specific ReID training | **Next** | Fine-tune osnet_x0_25 using existing CVAT track_id annotations as identity-labeled crops. Zero additional annotation work. |
-| BoT-SORT parameter tuning | **Deferred** | iou_threshold, track_buffer experiments. After ReID model. |
-| GROUP node assignment reform | **Deferred** | D4 boundary fix using realized_group_pairings. ~3-5pp potential. |
+| Domain-specific ReID training | **Deferred** | Superseded by CP7 finding: on FP7oJQ (one 2.5-min clip) ~74% of misattribution is detection under-segmentation, not addressable by ReID. Detection pair separation is the primary lever. |
+| BoT-SORT parameter tuning | **Deferred** | iou_threshold, track_buffer experiments. After detection pair separation. |
+| GROUP node assignment reform | **Deferred** | D4 boundary fix using realized_group_pairings. ~3-5pp potential. Concurrent-swap node deferred as ~10% sidecar (CP7-pre-9). |
+| CP7: Misattribution decomposition | **Complete** | Eight-checkpoint investigation (pre-2→pre-10). On FP7oJQ (one 2.5-min clip): ~74% pair-box (55.7% confirmed unbracketed), 9.9% true Branch-B, 0% bracketed — single-clip, confirmation pending on buzzer video. Detection pair separation is the primary lever. See `docs/cp7_pre9_branchb_margin.md`, `docs/cp7_pre10_pairbox_bracketing.md`. |
 
 ## Never Touch
 
