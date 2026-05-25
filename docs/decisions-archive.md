@@ -71,6 +71,11 @@ bug fix history. It is NOT auto-loaded by Claude Code. Access it manually when n
 | Eval baseline preservation includes pipeline artifacts | ✅ Decided | Copy both _eval/ and _eval_gt/{cam}/{clip}/ for full-mode trace. Historical baselines (pre-CP6) are lite-mode only. |
 | CP5 parallel-carrier consolidation in D1 | ✅ Implemented | d3_dropped collapsed: J_EDEw 49.7%→7.9%, PPDmUg 39.9%→0%, FP7oJQ 24.0%→4.6%. present_misattributed now dominant (59–66%). Solver OPTIMAL, mergers stable. |
 | DetectorConfig.iou: tunable NMS threshold (CP7-pre-6) | ✅ Ratified | Optional[float]=None. Default-inert (proven by artifact-diff regression: detections `0ceee2a1…`, person_tracks `8e6383d2…` identical pre/post). Setting iou bypasses CoreML → .pt + disables end2end NMS. Runtime WARNING emitted. See entry below. |
+| CP-EVAL-1: Frozen eval instrument v1.0 | ✅ Decided | Single-path Layer 1/2 (cdf1037). Hungarian IoU 0.5. Identity mapping: per_frame_matches + person_tracks. Spec: `docs/eval_instrument_spec.md`. |
+| CP-REID-1: BoT-SORT ReID experiment | ❌ Rejected | Generic osnet_x0_25_msmt17 — negligible improvement, 2-3x runtime overhead. Domain gap too large for overhead fisheye. (84157bb) |
+| CP-SWAP-1: Tracker-swap diagnostic | ✅ Complete | 167 GT-oracle swaps, best AUC 0.663 (bbox_aspect_change). Marginal single-feature separability. Module: `pipeline_validation/tracker_swap/`. (b989832) |
+| CP-SWAP-2: Swap pattern characterization | ✅ Complete | 47% hop_into_unoccupied, 28% cascade, 2% exchange. 41% transient. 45% no kinematic spike. Informed splitter design. (3afee17) |
+| CP-SPLIT-1: Post-D0 tracklet splitter | ✅ Implemented | Tiered detection + dwell filter at D0.5. present +14.6/+4.8/+4.4pp, misattr -8/-7/-5pp vs CP5 baseline. Config-driven thresholds. (fce5758, validator fix af258b7) |
 | ROI mask union fix | 🔲 Pending | Replace band polygon with `foot_poly.union(head_poly)` in `run_phase2`. |
 | Processor service dockerization | 📋 MVP task | Pipeline runs natively now. Docker for Linux deployment. |
 | Notification channel for drift alerts | 📋 TBD | Supabase Realtime likely. |
@@ -147,3 +152,50 @@ Phase E: 000001–000008 (RLS+trigger, profiles fixes ×4, checkin source+tag se
 Cameras+recorder: 000001–000005 (cameras, log_events app_version, checkin upsert unique,
 clips collision status, claimable clips RPC, device_tokens, log_events insert policy)
 CP14e+f: 000001–000002 (clips source_video_ids, clips global_person_ids)
+
+## Identity Quality Investigation Arc (CP-EVAL-1 → CP-SPLIT-1, 2026-05-22/23)
+
+**Problem:** After CP5 (parallel-carrier consolidation), `present_misattributed` dominated
+at 59-66% across all cameras. Stage F match preview videos showed visible identity jumping
+during grappling — BoT-SORT swaps which detection it assigns to which tracklet when people
+overlap.
+
+**Investigation sequence:**
+
+1. **CP-EVAL-1** (cdf1037): Froze the evaluation instrument to ensure all subsequent
+   experiments are measured on the same yardstick. Single-path Layer 1/2, Hungarian IoU 0.5.
+
+2. **CP-REID-1** (84157bb): Tested BoT-SORT's built-in ReID (`osnet_x0_25_msmt17`).
+   Result: negligible improvement. The pedestrian ReID model trained on MSMT17 has too
+   large a domain gap from overhead fisheye BJJ footage. 2-3x runtime overhead not justified.
+
+3. **CP-SWAP-1** (b989832): Built GT-oracle swap diagnostic. Identified 167 swap events
+   across 68 tracklets. Measured GT-free signal separability: best single-feature AUC=0.663
+   (`bbox_aspect_change`). Marginal — multi-feature detector needed.
+
+4. **CP-SWAP-2** (3afee17): Characterized swap patterns. Key findings:
+   - Only 2% are clean two-body exchanges; 47% are one-sided hops, 28% cascades
+   - 41% are transient flickers that self-correct (50% last exactly 1 frame)
+   - 45% show no kinematic spike (gradual drift, not teleportation)
+   - 81% occur within 0.5m (grappling proximity confirmed)
+
+5. **CP-SPLIT-1** (fce5758): Built tiered tracklet splitter at D0.5 (post-D0, pre-D1):
+   - Tier 1: Hard speed cap (48 m/s — teleportation)
+   - Tier 2: Kinematic spike (5x median, min 5 m/s, 3x isolation ratio, ≤2 frame duration)
+   - Tier 3: Histogram Bhattacharyya (0.15 threshold, 2x kinematic corroboration)
+   - Min dwell filter: 5 frames (avoids splitting on transient flickers)
+
+**Results vs CP5 baseline:**
+
+| Camera | present | misattributed |
+|--------|---------|---------------|
+| FP7oJQ | 6.4% → 21.0% (+14.6pp) | 59.0% → 51.0% (-8.0pp) |
+| J_EDEw | 7.4% → 12.2% (+4.8pp) | 61.0% → 54.0% (-7.0pp) |
+| PPDmUg | 10.6% → 15.0% (+4.4pp) | 66.0% → 61.4% (-4.6pp) |
+
+d3_dropped unchanged across all cameras. Splitter thresholds are initial calibration.
+
+**Current ceiling:** ~35-40% present without new models. Misattributed remains dominant
+(51-61%). The fundamental blocker is IoU-only tracking — BoT-SORT cannot distinguish
+overlapping bodies. Next investment: domain-specific ReID model fine-tuned on existing
+CVAT track_id annotations (zero additional annotation work).

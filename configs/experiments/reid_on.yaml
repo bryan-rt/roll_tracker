@@ -1,0 +1,10 @@
+# CP-REID-1: BoT-SORT ReID experiment
+# Toggle with_reid=True to measure tracklet purity improvement
+# Apply via: --config configs/experiments/reid_on.yaml
+stages:
+  stage_A:
+    tracker:
+      with_reid: true
+      params:
+        reid_weights: models/osnet_x0_25_msmt17.pt
+        device: mps

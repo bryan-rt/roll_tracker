@@ -555,7 +555,11 @@ def _validate_stage_outputs(
 
         pt = pd.read_parquet(root / "stage_D" / "person_tracks.parquet")
         det = pd.read_parquet(root / "stage_A" / "detections.parquet")
-        tf = pd.read_parquet(root / "stage_A" / "tracklet_frames.parquet")
+        # Use bank_frames for FK check (D0.5 splitter may have introduced
+        # split tracklet IDs not present in Stage A's tracklet_frames)
+        bf_path = root / "stage_D" / "tracklet_bank_frames.parquet"
+        tf_path = root / "stage_A" / "tracklet_frames.parquet"
+        tf = pd.read_parquet(bf_path if bf_path.exists() else tf_path)
         v.validate_person_tracks_df(pt)
         v.validate_person_tracks_traceability(pt, det, tf)
         return
