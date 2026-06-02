@@ -1,0 +1,106 @@
+model_id: bjj-detect-all-cameras-v2
+weights_path: models/bjj-detect-all-cameras-v2.pt
+pipeline_gym_id: _eval_gt
+base_model: yolo26n.pt
+trained_at: ''
+training_config:
+  epochs: 100
+  batch: 16
+  freeze: 10
+  imgsz: 640
+  lr0: 0.001
+  platform: kaggle-t4
+training_data:
+- export: training_YOLO_track_detections_FP7oJQ_clip1_0-3000.zip
+  source_video: FP7oJQ-20260318-200014.mp4
+  camera_id: FP7oJQ
+  resolution:
+  - 1920
+  - 1080
+  annotated_range:
+    start: 0
+    stop: 300
+    stride: 1
+    count: 301
+  splits:
+    train:
+      start: 0
+      stop: 249
+      stride: 1
+      count: 250
+    val:
+      start: 250
+      stop: 300
+      stride: 1
+      count: 51
+- export: training_YOLO_track_detections_J_EDEw_clip1_0-3000.zip
+  source_video: J_EDEw-20260318-200015.mp4
+  camera_id: J_EDEw
+  resolution:
+  - 1280
+  - 720
+  annotated_range:
+    start: 0
+    stop: 3000
+    stride: 10
+    count: 301
+  splits:
+    train:
+      start: 0
+      stop: 2490
+      stride: 10
+      count: 250
+    val:
+      start: 2500
+      stop: 3000
+      stride: 10
+      count: 51
+- export: training_YOLO_track_detections_PPDmUg_clip1_0-2990.zip
+  source_video: training_PPDmUg_3000.mp4
+  source_video_path: data/raw/nest/training_samples/training_PPDmUg_3000.mp4
+  pipeline_output_clip_id: PPDmUg-20260318-training
+  camera_id: PPDmUg
+  resolution:
+  - 1280
+  - 720
+  annotated_range:
+    start: 0
+    stop: 2990
+    stride: 10
+    count: 300
+  splits:
+    train:
+      start: 0
+      stop: 2480
+      stride: 10
+      count: 249
+    val:
+      start: 2490
+      stop: 2990
+      stride: 10
+      count: 51
+- export: training_J_EDEw_bbox_video2.zip
+  source_video: J_EDEw-20260318-200246.mp4
+  source_video_path: data/raw/nest/c8a592a4-2bca-400a-80e1-fec0e5cbea77/J_EDEw/2026-03-18/20/J_EDEw-20260318-200246.mp4
+  camera_id: J_EDEw
+  resolution:
+  - 1280
+  - 720
+  annotated_range:
+    start: 0
+    stop: 4490
+    stride: 10
+    count: 450
+  splits:
+    train:
+      start: 0
+      stop: 4490
+      stride: 10
+      count: 450
+    val: null
+notes: >
+  Detection-only model v2. Base: stock yolo26n.pt.
+  1352 total frames (1199 train / 153 val). Val split identical to v1 (153 frames).
+  New data: 450 frames from J_EDEw-200246 (train only, all frames to train).
+  annotated_range is authoritative; zip contains all 4500 frames (CVAT interpolation),
+  only stride-10 subset used.

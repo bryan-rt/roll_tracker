@@ -143,6 +143,19 @@ None = production CoreML path (inert, proven by artifact-diff regression). Setti
 to any value **bypasses CoreML → .pt** and disables end2end NMS (~32fps vs ~79fps).
 See `docs/decisions-archive.md` for the end2end/CoreML double-NMS finding.
 
+*Detection dataset v2 (2026-06-02, not yet trained):*
+
+| Model | Dataset | Metrics | Status |
+|-------|---------|---------|--------|
+| bjj-detect-all-cameras-v2 | 1352 frames (902 v1 + 450 J_EDEw-200246), bbox only | — | **Pending training** |
+
+Dataset at `data/training_data/detection_all_cameras_v2/`. 1199 train / 153 val (val
+identical to v1). New 450 frames: J_EDEw-200246.mp4, frames 0–4490 stride 10, train only.
+Source: `data/raw/nest/c8a592a4-2bca-400a-80e1-fec0e5cbea77/J_EDEw/2026-03-18/20/J_EDEw-20260318-200246.mp4`.
+Manifest: `configs/models/bjj-detect-all-cameras-v2.yaml`. Raw CVAT export (with track_id):
+`data/training_data/training_J_EDEw_bbox_video2.zip` (4500 labels, stride-10 subset used).
+Package: `data/training_data/training_data_detection_all_cameras_v2.zip` (292 MB).
+
 *Dataset v2 fix (2026-05-06):* FP7oJQ frame extraction was misaligned — used
 `range(0, 3001, 10)` (every 10th frame across 3000) when annotations covered
 frames 0–300 consecutively. Fixed to `range(0, 301, 1)`. Correct source videos:
@@ -226,6 +239,7 @@ First trained model had FP7oJQ false positives from background memorization.
 | ViCoS 12K | `data/colab_package/vicos_12k.zip` | Subsampled for cloud training |
 | Background models | `data/background_models/` | Per-camera .npy median frames |
 | Detection all cameras | `data/training_data/detection_all_cameras/` | 902 frames, 3 cameras, detection only |
+| Detection all cameras v2 | `data/training_data/detection_all_cameras_v2/` | 1352 frames (902 v1 + 450 J_EDEw-200246), detection only |
 | CVAT exports | `data/training_data/training_*.zip` | Raw CVAT export zips |
 
 ## Cloud Training Setup
