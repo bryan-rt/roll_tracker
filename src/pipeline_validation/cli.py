@@ -1487,6 +1487,90 @@ def cmd_swap_characterize(args: argparse.Namespace) -> None:
     print(f"\nDone. Characterization report: {md_path}")
 
 
+def cmd_signal_trace(args: argparse.Namespace) -> None:
+    """Signal trace topology census (CP-TRACE-1)."""
+    import logging as _logging
+
+    from pipeline_validation.common.manifest import load_manifest
+    from pipeline_validation.signal_trace.stage_a_census import (
+        run_census,
+        write_census_artifacts,
+    )
+
+    _logging.basicConfig(level=_logging.INFO, format="%(levelname)s: %(message)s")
+
+    model_id = args.model
+    manifest_path = CONFIGS_DIR / "models" / f"{model_id}.yaml"
+    if not manifest_path.exists():
+        print(f"Manifest not found: {manifest_path}")
+        sys.exit(1)
+
+    manifest = load_manifest(manifest_path)
+    gym_id = args.gym_id or manifest.pipeline_gym_id or "_eval_gt"
+    iou_threshold = args.iou_threshold
+
+    # Filter to val-having exports
+    exports = [e for e in manifest.training_data if e.splits.val is not None]
+    if args.camera:
+        exports = [e for e in exports if e.camera_id == args.camera]
+    if not exports:
+        print("No matching exports found.")
+        sys.exit(1)
+
+    print(f"\nSignal trace (CP-TRACE-1): {model_id}")
+    print(f"IoU threshold: {iou_threshold}")
+    print(f"Cameras: {', '.join(e.camera_id for e in exports)}\n")
+
+    all_summaries = []
+    for export in exports:
+        cam = export.camera_id
+        print(f"--- {cam} ---")
+        try:
+            trace_df, summary = run_census(
+                manifest, export, gym_id, iou_threshold,
+            )
+            out_dir = write_census_artifacts(model_id, cam, trace_df, summary)
+            all_summaries.append(summary)
+
+            # Print inline summary
+            total = summary["total_gt_person_frames"]
+            for cls in ("tight_match", "pair_box", "split", "miss"):
+                c = summary[cls]
+                print(f"  {cls}: {c['count']} ({c['pct']:.1%})")
+            print(f"  Total GT-person-frames: {total}")
+            print(f"  Output: {out_dir}")
+
+            # Conservation check
+            per_track = summary["per_gt_track_summary"]
+            for tid, tc in per_track.items():
+                row_total = tc["tight"] + tc["pair_box"] + tc["split"] + tc["miss"]
+                track_frames = len(trace_df[trace_df.gt_track_id == int(tid.split("_")[-1])])
+                if row_total != track_frames:
+                    print(f"  WARNING: conservation violation for {tid}: "
+                          f"sum={row_total} != trace_rows={track_frames}")
+
+        except Exception as e:
+            print(f"  FAILED: {e}")
+            import traceback
+            traceback.print_exc()
+
+    if not all_summaries:
+        print("\nNo cameras processed.")
+        sys.exit(1)
+
+    # Aggregate across cameras
+    if len(all_summaries) > 1:
+        print("\n--- Aggregate ---")
+        agg_total = sum(s["total_gt_person_frames"] for s in all_summaries)
+        for cls in ("tight_match", "pair_box", "split", "miss"):
+            agg_count = sum(s[cls]["count"] for s in all_summaries)
+            pct = agg_count / agg_total if agg_total else 0
+            print(f"  {cls}: {agg_count} ({pct:.1%})")
+        print(f"  Total: {agg_total}")
+
+    print("\nDone.")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="pipeline_validation",
@@ -1537,6 +1621,17 @@ def main() -> None:
     swap_char.add_argument("--gym-id", default=None,
                            help="Gym ID for pipeline output paths")
 
+    sig_trace = sub.add_parser("signal-trace",
+                               help="Signal trace topology census (CP-TRACE-1)")
+    sig_trace.add_argument("--model", default="bjj-detect-all-cameras",
+                           help="Model ID (must have manifest at configs/models/{id}.yaml)")
+    sig_trace.add_argument("--camera", default=None,
+                           help="Restrict to one camera ID (default: all)")
+    sig_trace.add_argument("--iou-threshold", type=float, default=0.3,
+                           help="IoU threshold for greedy matching (default: 0.3)")
+    sig_trace.add_argument("--gym-id", default=None,
+                           help="Gym ID for pipeline output paths")
+
     sub.add_parser("create-manifest", help="Generate empty manifest template (future)")
 
     args = parser.parse_args()
@@ -1570,6 +1665,8 @@ def main() -> None:
         cmd_swap_diagnostic(args)
     elif args.command == "swap-characterize":
         cmd_swap_characterize(args)
+    elif args.command == "signal-trace":
+        cmd_signal_trace(args)
     elif args.command == "create-manifest":
         print(f"'{args.command}' is not yet implemented.")
         sys.exit(0)

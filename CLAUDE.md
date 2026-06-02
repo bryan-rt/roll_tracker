@@ -247,6 +247,7 @@ First trained model had FP7oJQ false positives from background memorization.
 | `python -m pipeline_validation evaluate` | Full model evaluation (pipeline + A/D/F eval) |
 | `python -m pipeline_validation swap-diagnostic` | GT-oracle swap boundary diagnostic (CP-SWAP-1) |
 | `python -m pipeline_validation swap-characterize` | Swap pattern characterization (CP-SWAP-2) |
+| `python -m pipeline_validation signal-trace` | Greedy per-GT topology census (CP-TRACE-1) |
 
 ## Training Data Locations
 
@@ -426,6 +427,31 @@ CP5 (parallel-carrier consolidation) verdict: **resume**.
 copy BOTH `outputs/_eval/` AND the relevant `outputs/_eval_gt/{camera}/{clip}/` directories.
 Pipeline artifacts are required for full-mode trace. The four historical baselines
 (penalty_15 through cp4_pre) are lite-mode only because they predate this rule.
+
+### Signal Trace (CP-TRACE-1, completed 2026-06-02)
+
+**Module:** `src/pipeline_validation/signal_trace/` — greedy per-GT matcher + Stage A
+topology census. Standalone submodule; does NOT modify the frozen instrument.
+
+**CLI:** `PYTHONPATH=src python -m pipeline_validation signal-trace --model {model_id}`
+
+Greedy matcher (IoU ≥ 0.3, many-to-one): each GT box independently claims its best
+detection. Multiple GT people CAN match the same detection (pair-box signature).
+
+**Topology classifications:** tight_match (1:1), pair_box (2+ GT share one detection),
+split (GT matched by 2+ detections), miss (no detection at IoU ≥ 0.3).
+
+**Baseline results (bjj-detect-all-cameras, all annotated frames):**
+
+| Camera | tight_match | pair_box | split | miss | total |
+|--------|-------------|----------|-------|------|-------|
+| FP7oJQ | 2795 (66.3%) | 1010 (24.0%) | 0 (0.0%) | 409 (9.7%) | 4214 |
+| J_EDEw | 2727 (64.7%) | 888 (21.1%) | 0 (0.0%) | 599 (14.2%) | 4214 |
+| PPDmUg | 1658 (70.2%) | 594 (25.2%) | 0 (0.0%) | 109 (4.6%) | 2361 |
+| **Aggregate** | **7180 (66.5%)** | **2492 (23.1%)** | **0** | **1117 (10.4%)** | **10789** |
+
+Consistent with CP7-pre-3: pair_box at 21-25% of GT-person-frames is the dominant
+under-segmentation signature. Split is zero (no over-segmentation at IoU ≥ 0.3).
 
 ## Stage D Identity Investigation (CP0-CP6, completed 2026-05-19)
 
