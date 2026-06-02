@@ -453,6 +453,40 @@ split (GT matched by 2+ detections), miss (no detection at IoU ≥ 0.3).
 Consistent with CP7-pre-3: pair_box at 21-25% of GT-person-frames is the dominant
 under-segmentation signature. Split is zero (no over-segmentation at IoU ≥ 0.3).
 
+### Signal Trace D-Stage (CP-TRACE-2, completed 2026-06-02)
+
+Extends CP-TRACE-1 through Stage D. Joins each GT-person-frame's tracklet to
+`person_tracks.parquet` (many-to-one: GROUP segments produce 2 person_ids per frame).
+Also runs GROUP falsification against `d1_segments.parquet`.
+
+**CLI:** `PYTHONPATH=src python -m pipeline_validation signal-trace --model {id} --stage d`
+(also `--stage all` for both stages sequentially)
+
+**D-trace classifications:** correct_id (dominant person_id in assigned set), wrong_id
+(person_ids assigned but dominant not present), no_id (tracklet dropped by D), no_detection
+(Stage A miss).
+
+**Baseline results (bjj-detect-all-cameras):**
+
+| Camera | correct_id | wrong_id | no_id | no_detection | collisions |
+|--------|-----------|---------|-------|-------------|------------|
+| FP7oJQ | 3102 (73.6%) | 228 (5.4%) | 475 (11.3%) | 409 (9.7%) | 1 |
+| J_EDEw | 1533 (36.4%) | 748 (17.8%) | 1334 (31.7%) | 599 (14.2%) | 3 |
+| PPDmUg | 619 (26.2%) | 318 (13.5%) | 1315 (55.7%) | 109 (4.6%) | 2 |
+| **Aggregate** | **5254 (48.7%)** | **1294 (12.0%)** | **3124 (29.0%)** | **1117 (10.4%)** | **6** |
+
+**GROUP falsification (bjj-detect-all-cameras):**
+
+| Camera | pair-box tracklets | SOLO | GROUP | not-in-graph |
+|--------|-------------------|------|-------|-------------|
+| FP7oJQ | 13 | 4 | 7 | 2 |
+| J_EDEw | 47 | 15 | 24 | 8 |
+| PPDmUg | 30 | 14 | 10 | 6 |
+
+Verdict: GROUP engagement on pair-box tracklets is coincidental — triggered by lifecycle
+events (merges/splits of other tracklets), not by the pair-box itself. Pair-boxes don't
+create lifecycle events, so GROUP cannot address the under-segmentation problem.
+
 ## Stage D Identity Investigation (CP0-CP6, completed 2026-05-19)
 
 A seven-checkpoint investigation into why Stage D coverage was 24-36% despite Stage A
