@@ -147,7 +147,7 @@ See `docs/decisions-archive.md` for the end2end/CoreML double-NMS finding.
 
 | Model | Dataset | Metrics | Status |
 |-------|---------|---------|--------|
-| bjj-detect-all-cameras-v2 | 1352 frames (902 v1 + 450 J_EDEw-200246), bbox only | — | **Pending training** |
+| bjj-detect-all-cameras-v2 | 1352 frames (902 v1 + 450 J_EDEw-200246), bbox only | agg Recall@0.5=0.882 (+0.050 vs v1) | **Evaluated** |
 
 Dataset at `data/training_data/detection_all_cameras_v2/`. 1199 train / 153 val (val
 identical to v1). New 450 frames: J_EDEw-200246.mp4, frames 0–4490 stride 10, train only.
@@ -155,6 +155,28 @@ Source: `data/raw/nest/c8a592a4-2bca-400a-80e1-fec0e5cbea77/J_EDEw/2026-03-18/20
 Manifest: `configs/models/bjj-detect-all-cameras-v2.yaml`. Raw CVAT export (with track_id):
 `data/training_data/training_J_EDEw_bbox_video2.zip` (4500 labels, stride-10 subset used).
 Package: `data/training_data/training_data_detection_all_cameras_v2.zip` (292 MB).
+
+*A/B evaluation v1 vs v2 (2026-06-02, frozen 153-frame val set):*
+Original Kaggle training artifact: `bjj-detect-all-cameras_1352.pt`, renamed to
+`bjj-detect-all-cameras-v2.pt`. CoreML sibling exported. Symmetric overlay routing
+confirmed for both models. Baselines preserved at `outputs/_eval_*_baseline_v1/` and
+`outputs/_eval_*_baseline_v2/`.
+
+| Metric | v1 (902) | v2 (1352) | Δ | Signal? |
+|--------|----------|-----------|---|---------|
+| **Agg Recall@0.5** | 0.832 | **0.882** | **+0.050** | **yes** |
+| **Agg Precision@0.5** | 0.959 | 0.935 | -0.024 | yes |
+| FP7oJQ present | 21.0% | **26.0%** | **+5.0pp** | **yes** |
+| FP7oJQ misattrib | 51.0% | 52.0% | +1.0pp | noise |
+| J_EDEw present | 12.2% | 11.3% | -0.9pp | noise |
+| J_EDEw misattrib | 54.0% | **59.0%** | **+5.0pp** | **yes (worse)** |
+| PPDmUg present | 15.0% | 15.4% | +0.4pp | noise |
+| PPDmUg misattrib | 61.4% | 62.3% | +0.9pp | noise |
+
+**Verdict:** v2 is a substantially better detector (+5pp recall), improved FP7oJQ identity
+(+5pp present), but did NOT move the misattribution blocker (52-62%, flat or worse).
+Confirms CP7: the blocker is detection under-segmentation, not recall. More data recovers
+missed people but cannot separate already-merged pairs.
 
 *Dataset v2 fix (2026-05-06):* FP7oJQ frame extraction was misaligned — used
 `range(0, 3001, 10)` (every 10th frame across 3000) when annotations covered

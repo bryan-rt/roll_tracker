@@ -104,3 +104,4 @@ notes: >
   New data: 450 frames from J_EDEw-200246 (train only, all frames to train).
   annotated_range is authoritative; zip contains all 4500 frames (CVAT interpolation),
   only stride-10 subset used.
+  Original Kaggle training artifact: bjj-detect-all-cameras_1352.pt.

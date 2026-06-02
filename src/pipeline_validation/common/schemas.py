@@ -18,7 +18,7 @@ class FrameRange(BaseModel):
 
 class SplitInfo(BaseModel):
     train: FrameRange
-    val: FrameRange
+    val: FrameRange | None = None
 
 
 class ExportEntry(BaseModel):

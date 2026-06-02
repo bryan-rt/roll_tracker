@@ -945,22 +945,121 @@ def _resolve_ingest_path(manifest, export) -> Path:
 
 
 def _run_pipeline_for_camera(manifest, export, log_dir: Path) -> bool:
-    """Run bjj_pipeline CLI for one camera. Returns True on success."""
+    """Run bjj_pipeline CLI for one camera.
+
+    Symmetric weights routing: always passes the manifest's weights_path as a
+    config overlay so every model goes through the identical code path.
+    Returns True on success. Aborts hard if the model override cannot be
+    positively confirmed.
+    """
+    import json as _json
+
     clip_path = _resolve_ingest_path(manifest, export)
+
+    # Write config overlay with manifest's weights_path
+    overlay = {
+        "stages": {
+            "stage_A": {
+                "detector": {
+                    "model_path": manifest.weights_path,
+                }
+            }
+        }
+    }
+    log_dir.mkdir(parents=True, exist_ok=True)
+    overlay_path = log_dir / f"{export.camera_id}_config_overlay.json"
+    with open(overlay_path, "w") as f:
+        _json.dump(overlay, f)
+
     cmd = [
         sys.executable, "-m", "bjj_pipeline.stages.orchestration.cli", "run",
         "--clip", str(clip_path),
         "--camera", export.camera_id,
         "--to-stage", "E",
         "--force",
+        "--config", str(overlay_path),
     ]
-    log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"{export.camera_id}_pipeline.log"
     with open(log_path, "w") as log_f:
         result = __import__("subprocess").run(
             cmd, stdout=log_f, stderr=__import__("subprocess").STDOUT,
         )
-    return result.returncode == 0
+    if result.returncode != 0:
+        return False
+
+    # --- Positive proof: verify model override via orchestration_audit.jsonl ---
+    # The pipeline writes a config_resolved event containing the full merged
+    # config. Read it and assert the resolved model_path matches expectations.
+    clip_id = export.pipeline_output_clip_id or export.source_video.replace(".mp4", "")
+    gym_id = manifest.pipeline_gym_id or "_default"
+    audit_path = _find_orchestration_audit(gym_id, export.camera_id, clip_id)
+
+    expected_weights = manifest.weights_path
+    resolved_model_path = _read_resolved_model_path(audit_path)
+
+    if resolved_model_path is not None:
+        if resolved_model_path != expected_weights:
+            print(f"  ABORT {export.camera_id}: model override mismatch! "
+                  f"Expected '{expected_weights}', got '{resolved_model_path}' "
+                  f"(from {audit_path})")
+            return False
+        print(f"  {export.camera_id}: override confirmed — "
+              f"model_path={resolved_model_path}")
+    else:
+        # Fallback: structured proof unavailable, scrape log for exact path
+        with open(log_path) as f:
+            log_text = f.read()
+        # Match the full .mlpackage or .pt path logged by the detector
+        mlpkg = str(Path(expected_weights).with_suffix(".mlpackage"))
+        if mlpkg in log_text:
+            print(f"  {export.camera_id}: override confirmed via log — "
+                  f"loaded {mlpkg}")
+        elif expected_weights in log_text:
+            print(f"  {export.camera_id}: override confirmed via log — "
+                  f"loaded {expected_weights}")
+        else:
+            print(f"  ABORT {export.camera_id}: cannot confirm model override. "
+                  f"Expected '{expected_weights}' in log. Check {log_path}")
+            return False
+
+    return True
+
+
+def _find_orchestration_audit(
+    gym_id: str, camera_id: str, clip_id: str,
+) -> Path | None:
+    """Locate orchestration_audit.jsonl for a pipeline run."""
+    # outputs/{gym_id}/{camera_id}/{date}/{hour}/{clip_id}/orchestration_audit.jsonl
+    base = REPO_ROOT / "outputs" / gym_id / camera_id
+    if not base.exists():
+        return None
+    for audit in sorted(base.rglob("orchestration_audit.jsonl"), reverse=True):
+        if clip_id in str(audit):
+            return audit
+    # Fall back to any recent audit in this camera dir
+    audits = sorted(base.rglob("orchestration_audit.jsonl"), reverse=True)
+    return audits[0] if audits else None
+
+
+def _read_resolved_model_path(audit_path: Path | None) -> str | None:
+    """Extract stages.stage_A.detector.model_path from config_resolved event."""
+    if audit_path is None or not audit_path.exists():
+        return None
+    import json as _json
+    with open(audit_path) as f:
+        for line in f:
+            try:
+                ev = _json.loads(line)
+            except _json.JSONDecodeError:
+                continue
+            if ev.get("event") == "config_resolved":
+                cfg = ev.get("resolved_config", {})
+                return (cfg
+                        .get("stages", {})
+                        .get("stage_A", {})
+                        .get("detector", {})
+                        .get("model_path"))
+    return None
 
 
 def cmd_evaluate(args: argparse.Namespace) -> None:
@@ -985,8 +1084,13 @@ def cmd_evaluate(args: argparse.Namespace) -> None:
             print(f"  - {e}")
         sys.exit(1)
 
+    # Filter to exports with val splits (train-only entries skip evaluation)
+    exports = [e for e in manifest.training_data if e.splits.val is not None]
+    if not exports:
+        print("No exports with val splits found in manifest.")
+        sys.exit(1)
+
     # Filter exports by --clip-id
-    exports = manifest.training_data
     if args.clip_id:
         exports = [e for e in exports if (
             (e.pipeline_output_clip_id or e.source_video.replace(".mp4", "")) == args.clip_id
@@ -1101,7 +1205,8 @@ def cmd_evaluate(args: argparse.Namespace) -> None:
             print("\n--- Step 2: Stage A evaluation ---")
             try:
                 from pipeline_validation.stage_a.evaluate import evaluate_all
-                evaluate_all(manifest_path, run_model=True)
+                evaluate_all(manifest_path, run_model=True,
+                             gym_id=manifest.pipeline_gym_id)
                 results["stage-a"]["ok"] = len(exports)
             except Exception as exc:
                 print(f"  Stage A failed: {exc}")

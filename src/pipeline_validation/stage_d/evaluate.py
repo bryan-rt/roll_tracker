@@ -682,7 +682,10 @@ def evaluate_all(manifest_path: Path) -> None:
 
     all_camera_results = []
 
-    for export in manifest.training_data:
+    # Filter to exports with val splits (train-only entries skip evaluation)
+    eval_exports = [e for e in manifest.training_data if e.splits.val is not None]
+
+    for export in eval_exports:
         cam = export.camera_id
         logger.info("Evaluating Stage D for %s...", cam)
 
@@ -828,7 +831,7 @@ def evaluate_all(manifest_path: Path) -> None:
 
     eval_root = EVAL_DIR.parent  # outputs/_eval/
     trace_results = []
-    for export in manifest.training_data:
+    for export in eval_exports:
         cam = export.camera_id
         try:
             paths = _resolve_pipeline_paths(manifest, export)

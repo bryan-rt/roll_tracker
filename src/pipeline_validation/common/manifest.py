@@ -26,6 +26,8 @@ def enumerate_split_frames(
 ) -> list[int]:
     """Return the exact frame indices for the given camera+split."""
     fr = getattr(export.splits, split)
+    if fr is None:
+        return []
     return list(range(fr.start, fr.stop + 1, fr.stride))
 
 
