@@ -494,28 +494,34 @@ No-ID diagnosis, E/F signal extension, and synthesis verdict.
 **CLI:** `PYTHONPATH=src python -m pipeline_validation signal-trace --model {id} --stage ef`
 (or `--stage all` for full a→d→ef sequence)
 
-**No-ID root cause (aggregate):** 3,124 no_id frames → 3,096 d4_frame_trim (99.1%),
-28 d3_solver_drop (0.9%), 0 d0_filtered, 0 d1_excluded. The no_id problem is NOT solver
-rejection — tracklets are accepted but their graph coverage ends before the annotated frame.
+**No-ID root cause (aggregate, post CP-TRIM-1 fix):** 303 no_id frames → 275 d4_frame_trim
+(90.8%), 28 d3_solver_drop (9.2%). Pre-fix 29.0% was a measurement artifact: join-key
+mismatch between detections.parquet (original tracklet_ids) and person_tracks (D0.5 split
+products). See `_trim_report.md`.
 
 **E/F extension:** All 36 GT people (across 3 cameras) appear in match sessions.
 Stage F not available (pipeline ran --to-stage E).
 
 **Synthesis verdict** (`outputs/_eval/signal_trace/bjj-detect-all-cameras/_verdict.md`):
 
-Signal flow waterfall: 10,789 → 9,672 detected → 7,180 tight → 5,254 correct_id → 36/36 in match sessions.
+Signal flow waterfall: 10,789 → 9,672 detected → 7,180 tight → 6,330 correct_id → 36/36 in match sessions.
 
-Root cause ranking by frame impact:
-1. d4_frame_trim (28.7%) — graph coverage gap, not solver rejection
+Root cause ranking by frame impact (corrected):
+1. wrong_id (28.2%) — identity misattribution (pair-box driven)
 2. pair_box (23.1%) — detection under-segmentation
-3. wrong_id (12.0%) — identity misattribution (mostly pair_box driven)
-4. miss (10.4%) — detection recall
+3. miss (10.4%) — detection recall
+4. d4_frame_trim (2.5%) — graph coverage gap (genuine residual)
 5. d3_solver_drop (0.3%) — negligible
 
 **Intervention priorities:**
-1. Graph coverage extension (d4_frame_trim) — 28.7%, biggest single lever
-2. Detection pair separation (pair_box + wrong_id) — 35.1% combined
-3. Detection recall (miss) — 10.4%, diminishing returns from data alone
+1. Detection pair separation (pair_box + wrong_id = 51.3%) — the dominant lever
+2. Detection recall (miss) — 10.4%, diminishing returns from data alone
+3. Graph coverage (d4_frame_trim) — 2.5%, low priority
+
+**CP-TRIM-1 (completed 2026-06-02):** Investigation found 97.2% of d4_frame_trim was a
+join-key mismatch artifact. Fix: split-product resolution in `stage_d_trace.py` via
+`d05_split_audit.jsonl`. Pre-fix artifacts at
+`outputs/_eval/signal_trace/bjj-detect-all-cameras_pre_fix/`.
 
 ## Stage D Identity Investigation (CP0-CP6, completed 2026-05-19)
 

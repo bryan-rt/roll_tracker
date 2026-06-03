@@ -1840,8 +1840,8 @@ def main() -> None:
                                help="Signal trace: Stage A census + D-stage trace")
     sig_trace.add_argument("--model", default="bjj-detect-all-cameras",
                            help="Model ID (must have manifest at configs/models/{id}.yaml)")
-    sig_trace.add_argument("--stage", choices=["a", "d", "ef", "all"], default="a",
-                           help="Stage to trace: a, d, ef (no-ID + E/F + verdict), all")
+    sig_trace.add_argument("--stage", choices=["a", "d", "ef", "trim", "all"], default="a",
+                           help="Stage to trace: a, d, ef, trim (investigation report), all")
     sig_trace.add_argument("--camera", default=None,
                            help="Restrict to one camera ID (default: all)")
     sig_trace.add_argument("--iou-threshold", type=float, default=0.3,

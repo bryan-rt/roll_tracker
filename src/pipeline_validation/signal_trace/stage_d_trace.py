@@ -70,14 +70,80 @@ def _lookup_node_type(
     return None
 
 
+def _build_split_resolution(
+    stage_d_dir: Path,
+) -> tuple[dict[str, list[str]], dict[str, tuple[int, int]]]:
+    """Build split-product resolution from d05_split_audit.jsonl + bank summaries.
+
+    Returns:
+        split_map: {original_tid: [product_tids]} for tracklets that were split.
+        tid_frame_range: {tid: (start_frame, end_frame)} for ALL bank tracklets.
+    """
+    # Load split audit
+    split_map: dict[str, set[str]] = defaultdict(set)
+    audit_path = stage_d_dir / "d05_split_audit.jsonl"
+    if audit_path.exists():
+        with open(audit_path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                ev = json.loads(line)
+                if ev.get("artifact_type") == "d05_split_event":
+                    split_map[ev["original_tracklet_id"]].add(ev["new_tracklet_id"])
+
+    # Load bank summaries for frame ranges
+    bank = pd.read_parquet(stage_d_dir / "tracklet_bank_summaries.parquet")
+    tid_frame_range: dict[str, tuple[int, int]] = {}
+    for _, row in bank.iterrows():
+        tid_frame_range[row.tracklet_id] = (int(row.start_frame), int(row.end_frame))
+
+    return {k: sorted(v) for k, v in split_map.items()}, tid_frame_range
+
+
+def _resolve_tracklet_id(
+    tid: str,
+    frame_index: int,
+    split_map: dict[str, list[str]],
+    tid_frame_range: dict[str, tuple[int, int]],
+) -> str:
+    """Resolve original tracklet_id to the split product covering this frame.
+
+    If tid was not split, returns tid unchanged.
+    If tid was split and a product covers this frame, returns the product tid.
+    If no product covers the frame, returns tid (will result in no_id downstream).
+    """
+    products = split_map.get(tid)
+    if not products:
+        return tid
+
+    # Check if the original still covers this frame
+    orig_range = tid_frame_range.get(tid)
+    if orig_range and orig_range[0] <= frame_index <= orig_range[1]:
+        return tid
+
+    # Check split products
+    for prod in products:
+        prod_range = tid_frame_range.get(prod)
+        if prod_range and prod_range[0] <= frame_index <= prod_range[1]:
+            return prod
+
+    return tid  # no product covers this frame
+
+
 def _compute_dominant_person_ids(
-    trace_df: pd.DataFrame, pt_df: pd.DataFrame,
+    trace_df: pd.DataFrame,
+    pt_df: pd.DataFrame,
+    split_map: dict[str, list[str]],
+    tid_frame_range: dict[str, tuple[int, int]],
 ) -> dict[int, str]:
     """Majority-vote per GT track: gt_track_id -> dominant person_id.
 
     For each GT track, collects all person_ids assigned to its matched
     tracklets across all frames, counts occurrences, returns the most
     frequent. Ties broken lexicographically.
+
+    Resolves D0.5 split products before the person_tracks lookup.
     """
     # Build (tracklet_id, frame_index) -> list of person_ids from person_tracks
     pt_grouped = pt_df.groupby(["tracklet_id", "frame_index"])["person_id"].apply(list)
@@ -91,7 +157,8 @@ def _compute_dominant_person_ids(
         gt_tid = row.gt_track_id
         if pd.isna(tid):
             continue
-        pids = pt_lookup.get((tid, fi), [])
+        resolved_tid = _resolve_tracklet_id(tid, fi, split_map, tid_frame_range)
+        pids = pt_lookup.get((resolved_tid, fi), [])
         for pid in pids:
             gt_counters[gt_tid][pid] += 1
 
@@ -134,13 +201,17 @@ def run_d_trace(
 
     # Build lookups
     seg_lookup = _build_segment_lookup(seg_df)
+    split_map, tid_frame_range = _build_split_resolution(stage_d_dir)
+    logger.info("%s: %d tracklets with split products", cam, len(split_map))
 
     # Build (tracklet_id, frame_index) -> list of person_ids
     pt_grouped = pt_df.groupby(["tracklet_id", "frame_index"])["person_id"].apply(list)
     pt_lookup = pt_grouped.to_dict()
 
-    # Compute dominant person_ids
-    dominant_map = _compute_dominant_person_ids(trace_df, pt_df)
+    # Compute dominant person_ids (with split resolution)
+    dominant_map = _compute_dominant_person_ids(
+        trace_df, pt_df, split_map, tid_frame_range,
+    )
 
     # Extend trace with D-stage columns
     records: list[dict] = []
@@ -161,8 +232,9 @@ def run_d_trace(
             })
             continue
 
-        pids = pt_lookup.get((tid, fi), [])
-        node_type = _lookup_node_type(seg_lookup, tid, fi)
+        resolved_tid = _resolve_tracklet_id(tid, fi, split_map, tid_frame_range)
+        pids = pt_lookup.get((resolved_tid, fi), [])
+        node_type = _lookup_node_type(seg_lookup, resolved_tid, fi)
 
         if not pids:
             d_class = "no_id"
