@@ -1516,6 +1516,7 @@ def cmd_signal_trace(args: argparse.Namespace) -> None:
 
     run_a = stage in ("a", "all")
     run_d = stage in ("d", "all")
+    run_ef = stage in ("ef", "all")
 
     # --- Stage A census (CP-TRACE-1) ---
     if run_a:
@@ -1677,6 +1678,111 @@ def cmd_signal_trace(args: argparse.Namespace) -> None:
                 print(f"  {cls}: {agg_count} ({pct:.1%})")
             print(f"  Total: {agg_total}")
 
+    # --- E/F extension + no-ID diagnosis + verdict (CP-TRACE-3) ---
+    if run_ef:
+        from pipeline_validation.signal_trace.no_id_diagnosis import (
+            run_no_id_diagnosis,
+        )
+        from pipeline_validation.signal_trace.stage_ef_trace import (
+            run_ef_trace,
+        )
+        from pipeline_validation.signal_trace.verdict import generate_verdict
+
+        print(f"\nSignal trace E/F + diagnosis (CP-TRACE-3): {model_id}")
+        print(f"Cameras: {', '.join(e.camera_id for e in exports)}\n")
+
+        trace_base = OUTPUTS_DIR / "_eval" / "signal_trace" / model_id
+
+        for export in exports:
+            cam = export.camera_id
+            cam_dir = trace_base / cam
+            d_trace_path = cam_dir / "gt_signal_trace_d.parquet"
+
+            if not d_trace_path.exists():
+                print(f"--- {cam}: D-trace not found. Run --stage d first. ---")
+                continue
+
+            # --- No-ID diagnosis ---
+            print(f"--- {cam} no-ID diagnosis ---")
+            try:
+                clip_id = export.pipeline_output_clip_id or export.source_video.replace(".mp4", "")
+                pattern = f"{gym_id}/{cam}/**/{clip_id}/stage_D"
+                matches = list(OUTPUTS_DIR.glob(pattern))
+                if not matches:
+                    print(f"  stage_D dir not found for {cam}")
+                    continue
+                stage_d_dir = matches[0]
+
+                detail_df, diag_summary = run_no_id_diagnosis(d_trace_path, stage_d_dir)
+
+                # Write artifacts
+                detail_df.to_parquet(cam_dir / "no_id_diagnosis_detail.parquet", index=False)
+                with open(cam_dir / "no_id_diagnosis.json", "w") as f:
+                    json.dump(diag_summary, f, indent=2)
+
+                total_noid = diag_summary["total_no_id_frames"]
+                for reason in ("d0_filtered", "d1_excluded", "d3_solver_drop", "d4_frame_trim"):
+                    c = diag_summary[reason]
+                    print(f"  {reason}: {c['count']} ({c['pct']:.1%})")
+                print(f"  Total no_id: {total_noid}")
+
+                # Conservation check
+                reason_sum = sum(diag_summary[r]["count"] for r in
+                                 ("d0_filtered", "d1_excluded", "d3_solver_drop", "d4_frame_trim"))
+                if reason_sum != total_noid:
+                    print(f"  WARNING: conservation: reasons sum {reason_sum} != {total_noid}")
+
+            except Exception as e:
+                print(f"  No-ID diagnosis FAILED: {e}")
+                import traceback
+                traceback.print_exc()
+
+            # --- E/F trace ---
+            print(f"--- {cam} E/F trace ---")
+            try:
+                # Find Stage E/F dirs
+                stage_e_dir = None
+                stage_f_dir = None
+                e_pattern = f"{gym_id}/{cam}/**/{clip_id}/stage_E"
+                e_matches = list(OUTPUTS_DIR.glob(e_pattern))
+                if e_matches:
+                    stage_e_dir = e_matches[0]
+                f_pattern = f"{gym_id}/{cam}/**/{clip_id}/stage_F"
+                f_matches = list(OUTPUTS_DIR.glob(f_pattern))
+                if f_matches:
+                    stage_f_dir = f_matches[0]
+
+                ef_df, ef_summary = run_ef_trace(d_trace_path, stage_e_dir, stage_f_dir)
+
+                # Write artifacts
+                ef_df.to_parquet(cam_dir / "gt_signal_trace_ef.parquet", index=False)
+                with open(cam_dir / "ef_summary.json", "w") as f:
+                    json.dump(ef_summary, f, indent=2)
+
+                e2e = ef_summary["e2e_classification"]
+                for cls in ("in_match_session", "no_match", "lost_at_d"):
+                    c = e2e.get(cls, {"count": 0, "pct": 0})
+                    print(f"  {cls}: {c['count']} ({c['pct']:.1%})")
+                print(f"  Total GT tracks: {ef_summary['total_gt_tracks']}")
+                if ef_summary.get("stage_f_note"):
+                    print(f"  Note: {ef_summary['stage_f_note']}")
+
+            except Exception as e:
+                print(f"  E/F trace FAILED: {e}")
+                import traceback
+                traceback.print_exc()
+
+        # --- Synthesis verdict ---
+        print("\n--- Synthesis verdict ---")
+        try:
+            cam_ids = [e.camera_id for e in exports]
+            verdict_path = generate_verdict(model_id, cam_ids)
+            print(f"  Written to: {verdict_path}")
+        except Exception as e:
+            print(f"  Verdict generation FAILED: {e}")
+            import traceback
+            traceback.print_exc()
+
     print("\nDone.")
 
 
@@ -1734,8 +1840,8 @@ def main() -> None:
                                help="Signal trace: Stage A census + D-stage trace")
     sig_trace.add_argument("--model", default="bjj-detect-all-cameras",
                            help="Model ID (must have manifest at configs/models/{id}.yaml)")
-    sig_trace.add_argument("--stage", choices=["a", "d", "all"], default="a",
-                           help="Stage to trace: a (Stage A census), d (D-stage trace), all")
+    sig_trace.add_argument("--stage", choices=["a", "d", "ef", "all"], default="a",
+                           help="Stage to trace: a, d, ef (no-ID + E/F + verdict), all")
     sig_trace.add_argument("--camera", default=None,
                            help="Restrict to one camera ID (default: all)")
     sig_trace.add_argument("--iou-threshold", type=float, default=0.3,

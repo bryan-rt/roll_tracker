@@ -487,6 +487,36 @@ Verdict: GROUP engagement on pair-box tracklets is coincidental — triggered by
 events (merges/splits of other tracklets), not by the pair-box itself. Pair-boxes don't
 create lifecycle events, so GROUP cannot address the under-segmentation problem.
 
+### Signal Trace E/F + Verdict (CP-TRACE-3, completed 2026-06-02)
+
+No-ID diagnosis, E/F signal extension, and synthesis verdict.
+
+**CLI:** `PYTHONPATH=src python -m pipeline_validation signal-trace --model {id} --stage ef`
+(or `--stage all` for full a→d→ef sequence)
+
+**No-ID root cause (aggregate):** 3,124 no_id frames → 3,096 d4_frame_trim (99.1%),
+28 d3_solver_drop (0.9%), 0 d0_filtered, 0 d1_excluded. The no_id problem is NOT solver
+rejection — tracklets are accepted but their graph coverage ends before the annotated frame.
+
+**E/F extension:** All 36 GT people (across 3 cameras) appear in match sessions.
+Stage F not available (pipeline ran --to-stage E).
+
+**Synthesis verdict** (`outputs/_eval/signal_trace/bjj-detect-all-cameras/_verdict.md`):
+
+Signal flow waterfall: 10,789 → 9,672 detected → 7,180 tight → 5,254 correct_id → 36/36 in match sessions.
+
+Root cause ranking by frame impact:
+1. d4_frame_trim (28.7%) — graph coverage gap, not solver rejection
+2. pair_box (23.1%) — detection under-segmentation
+3. wrong_id (12.0%) — identity misattribution (mostly pair_box driven)
+4. miss (10.4%) — detection recall
+5. d3_solver_drop (0.3%) — negligible
+
+**Intervention priorities:**
+1. Graph coverage extension (d4_frame_trim) — 28.7%, biggest single lever
+2. Detection pair separation (pair_box + wrong_id) — 35.1% combined
+3. Detection recall (miss) — 10.4%, diminishing returns from data alone
+
 ## Stage D Identity Investigation (CP0-CP6, completed 2026-05-19)
 
 A seven-checkpoint investigation into why Stage D coverage was 24-36% despite Stage A
