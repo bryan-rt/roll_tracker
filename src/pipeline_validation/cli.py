@@ -1517,6 +1517,20 @@ def cmd_signal_trace(args: argparse.Namespace) -> None:
     run_a = stage in ("a", "all")
     run_d = stage in ("d", "all")
     run_ef = stage in ("ef", "all")
+    run_tag = stage in ("tag", "all")
+
+    # Tag trace is self-contained — dispatch and return early
+    if stage == "tag":
+        from pipeline_validation.signal_trace.tag_trace import run_tag_trace
+
+        run_tag_trace(
+            model_id=model_id,
+            tag_id=getattr(args, "tag_id", "1"),
+            gym_id=args.gym_id,
+            camera_filter=args.camera,
+            iou_threshold=iou_threshold,
+        )
+        return
 
     # --- Stage A census (CP-TRACE-1) ---
     if run_a:
@@ -1783,6 +1797,19 @@ def cmd_signal_trace(args: argparse.Namespace) -> None:
             import traceback
             traceback.print_exc()
 
+    # --- Tag trace (CP-TAG-1) ---
+    if run_tag:
+        from pipeline_validation.signal_trace.tag_trace import run_tag_trace
+
+        print("\n--- Tag signal trace (CP-TAG-1) ---")
+        run_tag_trace(
+            model_id=model_id,
+            tag_id=getattr(args, "tag_id", "1"),
+            gym_id=args.gym_id,
+            camera_filter=args.camera,
+            iou_threshold=iou_threshold,
+        )
+
     print("\nDone.")
 
 
@@ -1840,14 +1867,16 @@ def main() -> None:
                                help="Signal trace: Stage A census + D-stage trace")
     sig_trace.add_argument("--model", default="bjj-detect-all-cameras",
                            help="Model ID (must have manifest at configs/models/{id}.yaml)")
-    sig_trace.add_argument("--stage", choices=["a", "d", "ef", "trim", "all"], default="a",
-                           help="Stage to trace: a, d, ef, trim (investigation report), all")
+    sig_trace.add_argument("--stage", choices=["a", "d", "ef", "trim", "tag", "all"], default="a",
+                           help="Stage to trace: a, d, ef, trim (investigation report), tag (CP-TAG-1), all")
     sig_trace.add_argument("--camera", default=None,
                            help="Restrict to one camera ID (default: all)")
     sig_trace.add_argument("--iou-threshold", type=float, default=0.3,
                            help="IoU threshold for greedy matching (default: 0.3)")
     sig_trace.add_argument("--gym-id", default=None,
                            help="Gym ID for pipeline output paths")
+    sig_trace.add_argument("--tag-id", default="1",
+                           help="Tag ID to trace (default: 1, for CP-TAG-1)")
 
     sub.add_parser("create-manifest", help="Generate empty manifest template (future)")
 

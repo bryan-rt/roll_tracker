@@ -248,6 +248,7 @@ First trained model had FP7oJQ false positives from background memorization.
 | `python -m pipeline_validation swap-diagnostic` | GT-oracle swap boundary diagnostic (CP-SWAP-1) |
 | `python -m pipeline_validation swap-characterize` | Swap pattern characterization (CP-SWAP-2) |
 | `python -m pipeline_validation signal-trace` | Greedy per-GT topology census (CP-TRACE-1) |
+| `python -m pipeline_validation signal-trace --stage tag` | Tag signal trace (CP-TAG-1) |
 
 ## Training Data Locations
 
@@ -523,6 +524,57 @@ join-key mismatch artifact. Fix: split-product resolution in `stage_d_trace.py` 
 `d05_split_audit.jsonl`. Pre-fix artifacts at
 `outputs/_eval/signal_trace/bjj-detect-all-cameras_pre_fix/`.
 
+### Tag Signal Trace (CP-TAG-1, completed 2026-06-03)
+
+**Module:** `src/pipeline_validation/signal_trace/tag_trace.py` — traces tag_id through
+the full pipeline (A→C→D→E) to answer: does the AprilTag signal deliver correct identity?
+
+**CLI:** `PYTHONPATH=src python -m pipeline_validation signal-trace --model {id} --stage tag [--tag-id 1]`
+
+**Key finding: tag detection is bbox-gated.** Stage C only scans padded detection bounding
+boxes from Stage A (via `decode_apriltags_in_roi` + `bbox_pad_frac`). If Stage A misses the
+person, Stage C never gets the chance to look for their tag. Detection recall directly
+limits tag visibility.
+
+**Cross-tab (Stage A × Stage D, all cameras val-split):**
+
+| Stage A \ Stage D | correct_id | wrong_id | no_id | no_detection | Total |
+|---|---|---|---|---|---|
+| tight_match | 4728 (43.8%) | 2187 (20.3%) | 265 (2.5%) | 0 | 7180 |
+| pair_box | 1602 (14.8%) | 852 (7.9%) | 38 (0.4%) | 0 | 2492 |
+| miss | 0 | 0 | 0 | 1117 (10.4%) | 1117 |
+
+Pair-box-driven misattribution: 852/3039 = 28.0% of all wrong_id. 72.0% of wrong_id
+occurs on tight_match detections (solver/tracker errors on clean detections).
+
+**Tag observation census:**
+
+| Video | Tag obs | Tracklet frames | Detection rate | Chain C→D2→D4 |
+|---|---|---|---|---|
+| FP7oJQ-200014 | 0 | 0 | N/A | No |
+| J_EDEw-200015 | 1 | 1,521 | 0.066% | Yes |
+| PPDmUg-training | 0 | 0 | N/A | No |
+| J_EDEw-200246* | 3 | 862 | 0.232% | Yes |
+
+*Train-split GT, not held-out.
+
+**Tagged person identity outcomes:**
+- J_EDEw-200015 (gt_track_id=24, tracklet t366): correct_id 25.6%, wrong_id 50.5%,
+  no_detection 22.9%. Tag signal chain complete but 1 observation in 1,521 frames.
+- J_EDEw-200246 (gt_track_id=8, tracklets t143+t99): correct_id 16.9%, no_id 58.4%.
+  Tag signal chain complete, 3 observations, but no_id dominates (no D0.5 split for this
+  clip — pipeline ran under real gym_id, not _eval_gt).
+
+**Verdict:** The tag signal mechanism (C→D2→D4) works when the tag is observed — 2/2
+videos with observations have complete propagation. But tag visibility is desperately low
+(0.07-0.23% of tracklet frames). The product cannot rely on AprilTags as the sole identity
+mechanism. Complementary identity signals are needed.
+
+**Outputs:** `outputs/_eval/signal_trace/{model_id}/cross_tab.{json,md}`,
+`_tag_signal_verdict.md`, per-camera `tag_census.json`, `identity_hint_audit.json`,
+`tagged_person_trace.parquet`, `_tagged_person_report.md`.
+200246 artifacts at `J_EDEw_200246/` (separate from val-split J_EDEw).
+
 ## Stage D Identity Investigation (CP0-CP6, completed 2026-05-19)
 
 A seven-checkpoint investigation into why Stage D coverage was 24-36% despite Stage A
@@ -661,6 +713,7 @@ Docs: `cp7_pre8_axis1_signature.md` (SUPERSEDED), `cp7_pre9_branchb_margin.md`,
 | BoT-SORT parameter tuning | **Deferred** | iou_threshold, track_buffer experiments. After detection pair separation. |
 | GROUP node assignment reform | **Deferred** | D4 boundary fix using realized_group_pairings. ~3-5pp potential. Concurrent-swap node deferred as ~10% sidecar (CP7-pre-9). |
 | CP7: Misattribution decomposition | **Complete** | Eight-checkpoint investigation (pre-2→pre-10). On FP7oJQ (one 2.5-min clip): ~74% pair-box (55.7% confirmed unbracketed), 9.9% true Branch-B, 0% bracketed — single-clip, confirmation pending on buzzer video. Detection pair separation is the primary lever. See `docs/cp7_pre9_branchb_margin.md`, `docs/cp7_pre10_pairbox_bracketing.md`. |
+| CP-TAG-1: Tag signal trace | **Complete** | Tag detection is bbox-gated (Stage C scans padded detection bboxes only). Tag visibility 0.07-0.23% of tracklet frames. Signal chain C→D2→D4 works (2/2 videos), but tags too rare for sole identity. Cross-tab: 28% of wrong_id from pair_box, 72% from tight_match. See `signal_trace/tag_trace.py`. |
 
 ## Never Touch
 
