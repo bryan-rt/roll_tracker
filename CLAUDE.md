@@ -249,6 +249,8 @@ First trained model had FP7oJQ false positives from background memorization.
 | `python -m pipeline_validation swap-characterize` | Swap pattern characterization (CP-SWAP-2) |
 | `python -m pipeline_validation signal-trace` | Greedy per-GT topology census (CP-TRACE-1) |
 | `python -m pipeline_validation signal-trace --stage tag` | Tag signal trace (CP-TAG-1) |
+| `tools/tag_fullscan.py` | Full-frame AprilTag scan (CP-TAG-2 ceiling experiment) |
+| `tools/tag_experiment.py` | Dense GT + full-scan tag comparison (CP-TAG-2) |
 
 ## Training Data Locations
 
@@ -575,6 +577,42 @@ mechanism. Complementary identity signals are needed.
 `tagged_person_trace.parquet`, `_tagged_person_report.md`.
 200246 artifacts at `J_EDEw_200246/` (separate from val-split J_EDEw).
 
+### Tag Ceiling Experiment (CP-TAG-2, completed 2026-06-04)
+
+**Module:** `tools/tag_fullscan.py` (standalone full-frame scan),
+`tools/tag_experiment.py` (dense GT orchestrator).
+
+**Full-frame scan:** Removed all pipeline restrictions (bbox gating, cadence) and scanned
+every pixel of every frame of both J_EDEw videos. Result: **identical observation count**
+to the pipeline's bbox-gated scan.
+
+| Video | Pipeline Obs | Full-scan Obs | Full-scan Frames | Detection Rate |
+|-------|-------------|--------------|-----------------|---------------|
+| J_EDEw-200015 | 1 | 1 | 4530 | 0.022% |
+| J_EDEw-200246 | 3 | 3 | 4500 | 0.067% |
+
+Full-scan recovered 1 extra frame (200246 frame 1783, pipeline had 1781–1782 only).
+
+**Verdict: Physical occlusion, not pipeline restriction.** The bbox gating and cadence
+controls are not limiting tag detection. The AprilTag is below the resolution threshold
+for reliable decode in >99.95% of frames at ceiling-mount fisheye distances (~3m).
+
+**Dense GT validation:** CVAT zips contain interpolated labels at every frame (not just
+stride-10 keyframes). Dense manifest at `configs/models/bjj-detect-all-cameras-dense.yaml`
+loads stride=1 for J_EDEw (3,001 + 4,491 frames). Results confirm stride-10 is
+representative — all percentages stable within ±0.3pp:
+
+| Metric (Video 1) | Stride-10 | Stride-1 | Delta |
+|-------------------|-----------|----------|-------|
+| tight_match | 64.7% | 64.6% | -0.1pp |
+| pair_box | 21.1% | 21.1% | 0.0pp |
+| correct_id | 45.0% | 45.0% | 0.0pp |
+| wrong_id | 37.8% | 37.5% | -0.3pp |
+
+**Outputs:** `outputs/_experiments/tag_fullscan/` (full-scan observations),
+`outputs/_eval/signal_trace/bjj-detect-all-cameras/J_EDEw/dense_gt_trace/` (dense traces),
+`_tag_experiment_report.md` (full report).
+
 ## Stage D Identity Investigation (CP0-CP6, completed 2026-05-19)
 
 A seven-checkpoint investigation into why Stage D coverage was 24-36% despite Stage A
@@ -714,6 +752,7 @@ Docs: `cp7_pre8_axis1_signature.md` (SUPERSEDED), `cp7_pre9_branchb_margin.md`,
 | GROUP node assignment reform | **Deferred** | D4 boundary fix using realized_group_pairings. ~3-5pp potential. Concurrent-swap node deferred as ~10% sidecar (CP7-pre-9). |
 | CP7: Misattribution decomposition | **Complete** | Eight-checkpoint investigation (pre-2→pre-10). On FP7oJQ (one 2.5-min clip): ~74% pair-box (55.7% confirmed unbracketed), 9.9% true Branch-B, 0% bracketed — single-clip, confirmation pending on buzzer video. Detection pair separation is the primary lever. See `docs/cp7_pre9_branchb_margin.md`, `docs/cp7_pre10_pairbox_bracketing.md`. |
 | CP-TAG-1: Tag signal trace | **Complete** | Tag detection is bbox-gated (Stage C scans padded detection bboxes only). Tag visibility 0.07-0.23% of tracklet frames. Signal chain C→D2→D4 works (2/2 videos), but tags too rare for sole identity. Cross-tab: 28% of wrong_id from pair_box, 72% from tight_match. See `signal_trace/tag_trace.py`. |
+| CP-TAG-2: Tag ceiling experiment | **Complete** | Full-frame scan (no bbox/cadence restriction) found identical tag observations to pipeline (1+3 across 9,030 frames). Bottleneck is physical occlusion at ceiling distance, not pipeline gating. Dense GT (stride-1, 10x points) confirms stride-10 is representative (±0.3pp). AprilTags cannot be sole identity mechanism. See `tools/tag_fullscan.py`, `tools/tag_experiment.py`. |
 
 ## Never Touch
 
