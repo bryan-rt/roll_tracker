@@ -131,23 +131,23 @@ All trained from stock yolo26n-pose.pt, freeze=10, 100 epochs on T4 GPU.
 
 | Model | Dataset | Metrics | Status |
 |-------|---------|---------|--------|
-| bjj-detect-all-cameras | 902 frames, 3 cameras, bbox only | mAP@0.5=0.939, mAP@0.50-95=0.669, F1=0.89@0.537 | **Active** |
+| bjj-detect-all-cameras | 902 frames, 3 cameras, bbox only | mAP@0.5=0.939, mAP@0.50-95=0.669, F1=0.89@0.537 | Superseded by v2 |
 
 Base model: stock yolo26n.pt (detection, not pose). freeze=10, 100 epochs on T4 GPU.
 Dataset: 10789 annotations across 902 frames (FP7oJQ 301 + J_EDEw 301 + PPDmUg 300).
 Train/val: 749/153 (83/17%), per-camera stratified temporal split.
-CoreML export: `models/bjj-detect-all-cameras.mlpackage` (active inference path).
+CoreML export: `models/bjj-detect-all-cameras.mlpackage`.
 Config: `conf: 0.45`, `require_keypoints: false`, `prefer_coreml: true`.
 `DetectorConfig.iou: Optional[float] = None` — NMS IoU threshold (CP7-pre-6). Default
 None = production CoreML path (inert, proven by artifact-diff regression). Setting iou
 to any value **bypasses CoreML → .pt** and disables end2end NMS (~32fps vs ~79fps).
 See `docs/decisions-archive.md` for the end2end/CoreML double-NMS finding.
 
-*Detection dataset v2 (2026-06-02, not yet trained):*
+*Detection model v2 (active in Stage A since 2026-06-06):*
 
 | Model | Dataset | Metrics | Status |
 |-------|---------|---------|--------|
-| bjj-detect-all-cameras-v2 | 1352 frames (902 v1 + 450 J_EDEw-200246), bbox only | agg Recall@0.5=0.882 (+0.050 vs v1) | **Evaluated** |
+| bjj-detect-all-cameras-v2 | 1352 frames (902 v1 + 450 J_EDEw-200246), bbox only | agg Recall@0.5=0.882 (+0.050 vs v1) | **Active** |
 
 Dataset at `data/training_data/detection_all_cameras_v2/`. 1199 train / 153 val (val
 identical to v1). New 450 frames: J_EDEw-200246.mp4, frames 0–4490 stride 10, train only.

@@ -40,7 +40,7 @@ stages:
 
     detector:
       # YOLO detection weights (required)
-      model_path: models/bjj-detect-all-cameras.pt  # Updated from yolo26n-pose.pt — domain-tuned detection-only model
+      model_path: models/bjj-detect-all-cameras-v2.pt  # v2: 1352 frames (902 v1 + 450 J_EDEw-200246), +5pp recall vs v1
       # Optional YOLO segmentation weights. If missing at runtime, Stage A will
       # fall back to deterministic bbox masks and emit an audit event.
       seg_model_path: models/yolov8s-seg.pt
