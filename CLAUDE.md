@@ -471,14 +471,15 @@ Also runs GROUP falsification against `d1_segments.parquet`.
 (person_ids assigned but dominant not present), no_id (tracklet dropped by D), no_detection
 (Stage A miss).
 
-**Baseline results (bjj-detect-all-cameras):**
+**Corrected results (bjj-detect-all-cameras, post CP-TRACE-FIX split-product resolution):**
 
-| Camera | correct_id | wrong_id | no_id | no_detection | collisions |
-|--------|-----------|---------|-------|-------------|------------|
-| FP7oJQ | 3102 (73.6%) | 228 (5.4%) | 475 (11.3%) | 409 (9.7%) | 1 |
-| J_EDEw | 1533 (36.4%) | 748 (17.8%) | 1334 (31.7%) | 599 (14.2%) | 3 |
-| PPDmUg | 619 (26.2%) | 318 (13.5%) | 1315 (55.7%) | 109 (4.6%) | 2 |
-| **Aggregate** | **5254 (48.7%)** | **1294 (12.0%)** | **3124 (29.0%)** | **1117 (10.4%)** | **6** |
+| Camera | correct_id | wrong_id | no_id | no_detection |
+|--------|-----------|---------|-------|-------------|
+| **Aggregate** | **6,330 (58.7%)** | **3,039 (28.2%)** | **303 (2.8%)** | **1,117 (10.4%)** |
+
+*(Pre-fix results showed 48.7% correct_id, 29.0% no_id — the 29% was a join-key mismatch
+artifact between detections.parquet and person_tracks due to D0.5 split-product renaming.
+See CP-TRIM-1.)*
 
 **GROUP falsification (bjj-detect-all-cameras):**
 
@@ -491,10 +492,6 @@ Also runs GROUP falsification against `d1_segments.parquet`.
 Verdict: GROUP engagement on pair-box tracklets is coincidental — triggered by lifecycle
 events (merges/splits of other tracklets), not by the pair-box itself. Pair-boxes don't
 create lifecycle events, so GROUP cannot address the under-segmentation problem.
-
-**Corrected aggregate (post CP-TRACE-FIX split-product resolution):**
-58.7% correct_id, 28.2% wrong_id, 2.8% no_id, 10.4% no_detection.
-Original 29.0% no_id was a measurement artifact (join-key mismatch, see CP-TRIM-1).
 
 ### Signal Trace E/F + Verdict (CP-TRACE-3, completed 2026-06-02)
 

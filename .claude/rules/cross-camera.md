@@ -13,9 +13,10 @@ paths:
 ## Evidence Channels
 
 ### Tag Channel (Tier 1 — active)
-Hard must_link constraints for high-confidence tag co-observations (same tag_id on 2+
-cameras). Deterministic, forces assignment. `corroboration_miss_multiplier` default 10x
-boosts MCF-2a miss penalty and MCF-3a must-link penalty.
+Soft must_link constraints (penalty-based, 2× miss_penalty) for high-confidence tag
+co-observations (same tag_id on 2+ cameras). `corroboration_miss_multiplier` default 10×
+boosts the must-link penalty, making violation very expensive but not impossible. The
+solver CAN still drop tagged tracklets if cost savings exceed the boosted penalty.
 
 ### Coordinate Channel (Tier 2 — implemented, disabled by default)
 `build_cross_camera_coordinate_evidence()` in `cross_camera_evidence.py`. Compares D4
