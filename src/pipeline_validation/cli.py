@@ -945,22 +945,121 @@ def _resolve_ingest_path(manifest, export) -> Path:
 
 
 def _run_pipeline_for_camera(manifest, export, log_dir: Path) -> bool:
-    """Run bjj_pipeline CLI for one camera. Returns True on success."""
+    """Run bjj_pipeline CLI for one camera.
+
+    Symmetric weights routing: always passes the manifest's weights_path as a
+    config overlay so every model goes through the identical code path.
+    Returns True on success. Aborts hard if the model override cannot be
+    positively confirmed.
+    """
+    import json as _json
+
     clip_path = _resolve_ingest_path(manifest, export)
+
+    # Write config overlay with manifest's weights_path
+    overlay = {
+        "stages": {
+            "stage_A": {
+                "detector": {
+                    "model_path": manifest.weights_path,
+                }
+            }
+        }
+    }
+    log_dir.mkdir(parents=True, exist_ok=True)
+    overlay_path = log_dir / f"{export.camera_id}_config_overlay.json"
+    with open(overlay_path, "w") as f:
+        _json.dump(overlay, f)
+
     cmd = [
         sys.executable, "-m", "bjj_pipeline.stages.orchestration.cli", "run",
         "--clip", str(clip_path),
         "--camera", export.camera_id,
         "--to-stage", "E",
         "--force",
+        "--config", str(overlay_path),
     ]
-    log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"{export.camera_id}_pipeline.log"
     with open(log_path, "w") as log_f:
         result = __import__("subprocess").run(
             cmd, stdout=log_f, stderr=__import__("subprocess").STDOUT,
         )
-    return result.returncode == 0
+    if result.returncode != 0:
+        return False
+
+    # --- Positive proof: verify model override via orchestration_audit.jsonl ---
+    # The pipeline writes a config_resolved event containing the full merged
+    # config. Read it and assert the resolved model_path matches expectations.
+    clip_id = export.pipeline_output_clip_id or export.source_video.replace(".mp4", "")
+    gym_id = manifest.pipeline_gym_id or "_default"
+    audit_path = _find_orchestration_audit(gym_id, export.camera_id, clip_id)
+
+    expected_weights = manifest.weights_path
+    resolved_model_path = _read_resolved_model_path(audit_path)
+
+    if resolved_model_path is not None:
+        if resolved_model_path != expected_weights:
+            print(f"  ABORT {export.camera_id}: model override mismatch! "
+                  f"Expected '{expected_weights}', got '{resolved_model_path}' "
+                  f"(from {audit_path})")
+            return False
+        print(f"  {export.camera_id}: override confirmed — "
+              f"model_path={resolved_model_path}")
+    else:
+        # Fallback: structured proof unavailable, scrape log for exact path
+        with open(log_path) as f:
+            log_text = f.read()
+        # Match the full .mlpackage or .pt path logged by the detector
+        mlpkg = str(Path(expected_weights).with_suffix(".mlpackage"))
+        if mlpkg in log_text:
+            print(f"  {export.camera_id}: override confirmed via log — "
+                  f"loaded {mlpkg}")
+        elif expected_weights in log_text:
+            print(f"  {export.camera_id}: override confirmed via log — "
+                  f"loaded {expected_weights}")
+        else:
+            print(f"  ABORT {export.camera_id}: cannot confirm model override. "
+                  f"Expected '{expected_weights}' in log. Check {log_path}")
+            return False
+
+    return True
+
+
+def _find_orchestration_audit(
+    gym_id: str, camera_id: str, clip_id: str,
+) -> Path | None:
+    """Locate orchestration_audit.jsonl for a pipeline run."""
+    # outputs/{gym_id}/{camera_id}/{date}/{hour}/{clip_id}/orchestration_audit.jsonl
+    base = REPO_ROOT / "outputs" / gym_id / camera_id
+    if not base.exists():
+        return None
+    for audit in sorted(base.rglob("orchestration_audit.jsonl"), reverse=True):
+        if clip_id in str(audit):
+            return audit
+    # Fall back to any recent audit in this camera dir
+    audits = sorted(base.rglob("orchestration_audit.jsonl"), reverse=True)
+    return audits[0] if audits else None
+
+
+def _read_resolved_model_path(audit_path: Path | None) -> str | None:
+    """Extract stages.stage_A.detector.model_path from config_resolved event."""
+    if audit_path is None or not audit_path.exists():
+        return None
+    import json as _json
+    with open(audit_path) as f:
+        for line in f:
+            try:
+                ev = _json.loads(line)
+            except _json.JSONDecodeError:
+                continue
+            if ev.get("event") == "config_resolved":
+                cfg = ev.get("resolved_config", {})
+                return (cfg
+                        .get("stages", {})
+                        .get("stage_A", {})
+                        .get("detector", {})
+                        .get("model_path"))
+    return None
 
 
 def cmd_evaluate(args: argparse.Namespace) -> None:
@@ -985,8 +1084,13 @@ def cmd_evaluate(args: argparse.Namespace) -> None:
             print(f"  - {e}")
         sys.exit(1)
 
+    # Filter to exports with val splits (train-only entries skip evaluation)
+    exports = [e for e in manifest.training_data if e.splits.val is not None]
+    if not exports:
+        print("No exports with val splits found in manifest.")
+        sys.exit(1)
+
     # Filter exports by --clip-id
-    exports = manifest.training_data
     if args.clip_id:
         exports = [e for e in exports if (
             (e.pipeline_output_clip_id or e.source_video.replace(".mp4", "")) == args.clip_id
@@ -1101,7 +1205,8 @@ def cmd_evaluate(args: argparse.Namespace) -> None:
             print("\n--- Step 2: Stage A evaluation ---")
             try:
                 from pipeline_validation.stage_a.evaluate import evaluate_all
-                evaluate_all(manifest_path, run_model=True)
+                evaluate_all(manifest_path, run_model=True,
+                             gym_id=manifest.pipeline_gym_id)
                 results["stage-a"]["ok"] = len(exports)
             except Exception as exc:
                 print(f"  Stage A failed: {exc}")
@@ -1382,6 +1487,332 @@ def cmd_swap_characterize(args: argparse.Namespace) -> None:
     print(f"\nDone. Characterization report: {md_path}")
 
 
+def cmd_signal_trace(args: argparse.Namespace) -> None:
+    """Signal trace: Stage A census (CP-TRACE-1) and/or D-stage trace (CP-TRACE-2)."""
+    import logging as _logging
+
+    from pipeline_validation.common.manifest import load_manifest
+
+    _logging.basicConfig(level=_logging.INFO, format="%(levelname)s: %(message)s")
+
+    model_id = args.model
+    manifest_path = CONFIGS_DIR / "models" / f"{model_id}.yaml"
+    if not manifest_path.exists():
+        print(f"Manifest not found: {manifest_path}")
+        sys.exit(1)
+
+    manifest = load_manifest(manifest_path)
+    gym_id = args.gym_id or manifest.pipeline_gym_id or "_eval_gt"
+    iou_threshold = args.iou_threshold
+    stage = args.stage
+
+    # Filter to val-having exports
+    exports = [e for e in manifest.training_data if e.splits.val is not None]
+    if args.camera:
+        exports = [e for e in exports if e.camera_id == args.camera]
+    if not exports:
+        print("No matching exports found.")
+        sys.exit(1)
+
+    run_a = stage in ("a", "all")
+    run_d = stage in ("d", "all")
+    run_ef = stage in ("ef", "all")
+    run_tag = stage in ("tag", "all")
+
+    # Tag trace is self-contained — dispatch and return early
+    if stage == "tag":
+        from pipeline_validation.signal_trace.tag_trace import run_tag_trace
+
+        run_tag_trace(
+            model_id=model_id,
+            tag_id=getattr(args, "tag_id", "1"),
+            gym_id=args.gym_id,
+            camera_filter=args.camera,
+            iou_threshold=iou_threshold,
+        )
+        return
+
+    # --- Stage A census (CP-TRACE-1) ---
+    if run_a:
+        from pipeline_validation.signal_trace.stage_a_census import (
+            run_census,
+            write_census_artifacts,
+        )
+
+        print(f"\nSignal trace Stage A (CP-TRACE-1): {model_id}")
+        print(f"IoU threshold: {iou_threshold}")
+        print(f"Cameras: {', '.join(e.camera_id for e in exports)}\n")
+
+        all_a_summaries = []
+        for export in exports:
+            cam = export.camera_id
+            print(f"--- {cam} ---")
+            try:
+                trace_df, summary = run_census(
+                    manifest, export, gym_id, iou_threshold,
+                )
+                write_census_artifacts(model_id, cam, trace_df, summary)
+                all_a_summaries.append(summary)
+
+                total = summary["total_gt_person_frames"]
+                for cls in ("tight_match", "pair_box", "split", "miss"):
+                    c = summary[cls]
+                    print(f"  {cls}: {c['count']} ({c['pct']:.1%})")
+                print(f"  Total GT-person-frames: {total}")
+
+                per_track = summary["per_gt_track_summary"]
+                for tid, tc in per_track.items():
+                    row_total = tc["tight"] + tc["pair_box"] + tc["split"] + tc["miss"]
+                    track_frames = len(trace_df[trace_df.gt_track_id == int(tid.split("_")[-1])])
+                    if row_total != track_frames:
+                        print(f"  WARNING: conservation violation for {tid}: "
+                              f"sum={row_total} != trace_rows={track_frames}")
+            except Exception as e:
+                print(f"  FAILED: {e}")
+                import traceback
+                traceback.print_exc()
+
+        if all_a_summaries and len(all_a_summaries) > 1:
+            print("\n--- Stage A Aggregate ---")
+            agg_total = sum(s["total_gt_person_frames"] for s in all_a_summaries)
+            for cls in ("tight_match", "pair_box", "split", "miss"):
+                agg_count = sum(s[cls]["count"] for s in all_a_summaries)
+                pct = agg_count / agg_total if agg_total else 0
+                print(f"  {cls}: {agg_count} ({pct:.1%})")
+            print(f"  Total: {agg_total}")
+
+    # --- D-stage trace (CP-TRACE-2) ---
+    if run_d:
+        import pandas as pd
+
+        from pipeline_validation.signal_trace.group_falsification import (
+            run_group_falsification,
+        )
+        from pipeline_validation.signal_trace.stage_d_trace import (
+            run_d_trace,
+            write_d_trace_artifacts,
+        )
+
+        print(f"\nSignal trace Stage D (CP-TRACE-2): {model_id}")
+        print(f"Cameras: {', '.join(e.camera_id for e in exports)}\n")
+
+        trace_base = OUTPUTS_DIR / "_eval" / "signal_trace" / model_id
+        all_d_summaries = []
+        all_group_results = []
+
+        for export in exports:
+            cam = export.camera_id
+            stage_a_path = trace_base / cam / "gt_signal_trace_stage_a.parquet"
+            if not stage_a_path.exists():
+                print(f"--- {cam}: Stage A trace not found. Run --stage a first. ---")
+                continue
+
+            print(f"--- {cam} D-trace ---")
+            try:
+                d_trace_df, d_summary = run_d_trace(
+                    manifest, export, gym_id, stage_a_path,
+                )
+                out_dir = write_d_trace_artifacts(model_id, cam, d_trace_df, d_summary)
+                all_d_summaries.append(d_summary)
+
+                total = d_summary["total_gt_person_frames"]
+                for cls in ("correct_id", "wrong_id", "no_id", "no_detection"):
+                    c = d_summary[cls]
+                    print(f"  {cls}: {c['count']} ({c['pct']:.1%})")
+                print(f"  n_person_ids dist: {d_summary['n_person_ids_distribution']}")
+                if d_summary["identity_collisions"]:
+                    print(f"  Identity collisions: {len(d_summary['identity_collisions'])}")
+                    for col in d_summary["identity_collisions"]:
+                        print(f"    {col['dominant_person_id']}: "
+                              f"{', '.join(col['gt_tracks'])}")
+
+                # Conservation check
+                per_track = d_summary["per_gt_track"]
+                for tid, tc in per_track.items():
+                    row_total = tc["correct"] + tc["wrong"] + tc["no_id"] + tc["no_det"]
+                    gt_id = int(tid.split("_")[-1])
+                    track_rows = len(d_trace_df[d_trace_df.gt_track_id == gt_id])
+                    if row_total != track_rows:
+                        print(f"  WARNING: D-trace conservation violation for {tid}: "
+                              f"sum={row_total} != rows={track_rows}")
+
+                # Consistency: no_detection should match Stage A miss count
+                a_trace = pd.read_parquet(stage_a_path)
+                a_miss = len(a_trace[a_trace.classification == "miss"])
+                d_nodet = d_summary["no_detection"]["count"]
+                if a_miss != d_nodet:
+                    print(f"  WARNING: no_detection ({d_nodet}) != Stage A miss ({a_miss})")
+
+            except Exception as e:
+                print(f"  D-trace FAILED: {e}")
+                import traceback
+                traceback.print_exc()
+                continue
+
+            # GROUP falsification
+            print(f"--- {cam} GROUP falsification ---")
+            try:
+                stage_d_dir = None
+                clip_id = export.pipeline_output_clip_id or export.source_video.replace(".mp4", "")
+                pattern = f"{gym_id}/{cam}/**/{clip_id}/stage_D/d1_segments.parquet"
+                matches = list(OUTPUTS_DIR.glob(pattern))
+                if matches:
+                    d1_seg_path = matches[0]
+                    group_result = run_group_falsification(stage_a_path, d1_seg_path)
+                    all_group_results.append(group_result)
+
+                    with open(out_dir / "group_falsification.json", "w") as f:
+                        json.dump(group_result, f, indent=2)
+
+                    print(f"  Total pair-box tracklets: {group_result['total_pair_box_tracklets']}")
+                    print(f"  In SOLO: {group_result['in_solo_node']}")
+                    print(f"  In GROUP: {group_result['in_group_node']}")
+                    print(f"  Not in graph: {group_result['not_in_graph']}")
+                    print(f"  Verdict: {group_result['verdict']}")
+
+                    # Conservation check
+                    g = group_result
+                    g_total = g["in_solo_node"] + g["in_group_node"] + g["not_in_graph"]
+                    if g_total != g["total_pair_box_tracklets"]:
+                        print(f"  WARNING: GROUP conservation: "
+                              f"{g_total} != {g['total_pair_box_tracklets']}")
+                else:
+                    print(f"  d1_segments.parquet not found for {cam}")
+            except Exception as e:
+                print(f"  GROUP falsification FAILED: {e}")
+                import traceback
+                traceback.print_exc()
+
+        if all_d_summaries and len(all_d_summaries) > 1:
+            print("\n--- D-trace Aggregate ---")
+            agg_total = sum(s["total_gt_person_frames"] for s in all_d_summaries)
+            for cls in ("correct_id", "wrong_id", "no_id", "no_detection"):
+                agg_count = sum(s[cls]["count"] for s in all_d_summaries)
+                pct = agg_count / agg_total if agg_total else 0
+                print(f"  {cls}: {agg_count} ({pct:.1%})")
+            print(f"  Total: {agg_total}")
+
+    # --- E/F extension + no-ID diagnosis + verdict (CP-TRACE-3) ---
+    if run_ef:
+        from pipeline_validation.signal_trace.no_id_diagnosis import (
+            run_no_id_diagnosis,
+        )
+        from pipeline_validation.signal_trace.stage_ef_trace import (
+            run_ef_trace,
+        )
+        from pipeline_validation.signal_trace.verdict import generate_verdict
+
+        print(f"\nSignal trace E/F + diagnosis (CP-TRACE-3): {model_id}")
+        print(f"Cameras: {', '.join(e.camera_id for e in exports)}\n")
+
+        trace_base = OUTPUTS_DIR / "_eval" / "signal_trace" / model_id
+
+        for export in exports:
+            cam = export.camera_id
+            cam_dir = trace_base / cam
+            d_trace_path = cam_dir / "gt_signal_trace_d.parquet"
+
+            if not d_trace_path.exists():
+                print(f"--- {cam}: D-trace not found. Run --stage d first. ---")
+                continue
+
+            # --- No-ID diagnosis ---
+            print(f"--- {cam} no-ID diagnosis ---")
+            try:
+                clip_id = export.pipeline_output_clip_id or export.source_video.replace(".mp4", "")
+                pattern = f"{gym_id}/{cam}/**/{clip_id}/stage_D"
+                matches = list(OUTPUTS_DIR.glob(pattern))
+                if not matches:
+                    print(f"  stage_D dir not found for {cam}")
+                    continue
+                stage_d_dir = matches[0]
+
+                detail_df, diag_summary = run_no_id_diagnosis(d_trace_path, stage_d_dir)
+
+                # Write artifacts
+                detail_df.to_parquet(cam_dir / "no_id_diagnosis_detail.parquet", index=False)
+                with open(cam_dir / "no_id_diagnosis.json", "w") as f:
+                    json.dump(diag_summary, f, indent=2)
+
+                total_noid = diag_summary["total_no_id_frames"]
+                for reason in ("d0_filtered", "d1_excluded", "d3_solver_drop", "d4_frame_trim"):
+                    c = diag_summary[reason]
+                    print(f"  {reason}: {c['count']} ({c['pct']:.1%})")
+                print(f"  Total no_id: {total_noid}")
+
+                # Conservation check
+                reason_sum = sum(diag_summary[r]["count"] for r in
+                                 ("d0_filtered", "d1_excluded", "d3_solver_drop", "d4_frame_trim"))
+                if reason_sum != total_noid:
+                    print(f"  WARNING: conservation: reasons sum {reason_sum} != {total_noid}")
+
+            except Exception as e:
+                print(f"  No-ID diagnosis FAILED: {e}")
+                import traceback
+                traceback.print_exc()
+
+            # --- E/F trace ---
+            print(f"--- {cam} E/F trace ---")
+            try:
+                # Find Stage E/F dirs
+                stage_e_dir = None
+                stage_f_dir = None
+                e_pattern = f"{gym_id}/{cam}/**/{clip_id}/stage_E"
+                e_matches = list(OUTPUTS_DIR.glob(e_pattern))
+                if e_matches:
+                    stage_e_dir = e_matches[0]
+                f_pattern = f"{gym_id}/{cam}/**/{clip_id}/stage_F"
+                f_matches = list(OUTPUTS_DIR.glob(f_pattern))
+                if f_matches:
+                    stage_f_dir = f_matches[0]
+
+                ef_df, ef_summary = run_ef_trace(d_trace_path, stage_e_dir, stage_f_dir)
+
+                # Write artifacts
+                ef_df.to_parquet(cam_dir / "gt_signal_trace_ef.parquet", index=False)
+                with open(cam_dir / "ef_summary.json", "w") as f:
+                    json.dump(ef_summary, f, indent=2)
+
+                e2e = ef_summary["e2e_classification"]
+                for cls in ("in_match_session", "no_match", "lost_at_d"):
+                    c = e2e.get(cls, {"count": 0, "pct": 0})
+                    print(f"  {cls}: {c['count']} ({c['pct']:.1%})")
+                print(f"  Total GT tracks: {ef_summary['total_gt_tracks']}")
+                if ef_summary.get("stage_f_note"):
+                    print(f"  Note: {ef_summary['stage_f_note']}")
+
+            except Exception as e:
+                print(f"  E/F trace FAILED: {e}")
+                import traceback
+                traceback.print_exc()
+
+        # --- Synthesis verdict ---
+        print("\n--- Synthesis verdict ---")
+        try:
+            cam_ids = [e.camera_id for e in exports]
+            verdict_path = generate_verdict(model_id, cam_ids)
+            print(f"  Written to: {verdict_path}")
+        except Exception as e:
+            print(f"  Verdict generation FAILED: {e}")
+            import traceback
+            traceback.print_exc()
+
+    # --- Tag trace (CP-TAG-1) ---
+    if run_tag:
+        from pipeline_validation.signal_trace.tag_trace import run_tag_trace
+
+        print("\n--- Tag signal trace (CP-TAG-1) ---")
+        run_tag_trace(
+            model_id=model_id,
+            tag_id=getattr(args, "tag_id", "1"),
+            gym_id=args.gym_id,
+            camera_filter=args.camera,
+            iou_threshold=iou_threshold,
+        )
+
+    print("\nDone.")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="pipeline_validation",
@@ -1432,6 +1863,21 @@ def main() -> None:
     swap_char.add_argument("--gym-id", default=None,
                            help="Gym ID for pipeline output paths")
 
+    sig_trace = sub.add_parser("signal-trace",
+                               help="Signal trace: Stage A census + D-stage trace")
+    sig_trace.add_argument("--model", default="bjj-detect-all-cameras",
+                           help="Model ID (must have manifest at configs/models/{id}.yaml)")
+    sig_trace.add_argument("--stage", choices=["a", "d", "ef", "trim", "tag", "all"], default="a",
+                           help="Stage to trace: a, d, ef, trim (investigation report), tag (CP-TAG-1), all")
+    sig_trace.add_argument("--camera", default=None,
+                           help="Restrict to one camera ID (default: all)")
+    sig_trace.add_argument("--iou-threshold", type=float, default=0.3,
+                           help="IoU threshold for greedy matching (default: 0.3)")
+    sig_trace.add_argument("--gym-id", default=None,
+                           help="Gym ID for pipeline output paths")
+    sig_trace.add_argument("--tag-id", default="1",
+                           help="Tag ID to trace (default: 1, for CP-TAG-1)")
+
     sub.add_parser("create-manifest", help="Generate empty manifest template (future)")
 
     args = parser.parse_args()
@@ -1465,6 +1911,8 @@ def main() -> None:
         cmd_swap_diagnostic(args)
     elif args.command == "swap-characterize":
         cmd_swap_characterize(args)
+    elif args.command == "signal-trace":
+        cmd_signal_trace(args)
     elif args.command == "create-manifest":
         print(f"'{args.command}' is not yet implemented.")
         sys.exit(0)

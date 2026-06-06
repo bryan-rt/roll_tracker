@@ -958,8 +958,11 @@ def evaluate_all(
 
     eval_base = EVAL_DIR / model_id
 
+    # Filter to exports with val splits (train-only entries skip evaluation)
+    eval_exports = [e for e in manifest.training_data if e.splits.val is not None]
+
     # FP7oJQ cross-validation gate
-    fp7_export = next(e for e in manifest.training_data if e.camera_id == "FP7oJQ")
+    fp7_export = next(e for e in eval_exports if e.camera_id == "FP7oJQ")
     logger.info("Running FP7oJQ cross-validation gate...")
     gate = _cross_validate_fp7(manifest, fp7_export, resolved_gym_id)
 
@@ -980,7 +983,7 @@ def evaluate_all(
     all_train_metrics = []
     all_val_metrics = []
 
-    for export in manifest.training_data:
+    for export in eval_exports:
         cam = export.camera_id
         logger.info("Evaluating %s...", cam)
 

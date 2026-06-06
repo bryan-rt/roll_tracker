@@ -457,7 +457,10 @@ def render_all(manifest_path: Path) -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     manifest = load_manifest(manifest_path)
 
-    for export in manifest.training_data:
+    # Filter to exports with val splits (train-only entries skip evaluation)
+    eval_exports = [e for e in manifest.training_data if e.splits.val is not None]
+
+    for export in eval_exports:
         try:
             result = render_clip(manifest, export)
             if result:

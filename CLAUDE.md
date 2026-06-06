@@ -76,9 +76,8 @@ Pipeline A→F verified E2E. Session pipeline validated (3-camera, 35/36 clips).
 | J_EDEw | 12.2% | 54.0% | 11.7% | 13.5% | 7.9% |
 | PPDmUg | 15.0% | 61.4% | 13.4% | 8.1% | 0.0% |
 
-Ceiling without new models: ~35-40% present. Primary blocker: IoU-only tracking
-cannot distinguish overlapping bodies during grappling. Next: domain-specific ReID
-from existing CVAT annotations.
+Ceiling without new models: ~35-40% present. Primary blocker: detection
+under-segmentation (one box covering two grappling people). See CP7 investigation.
 
 **CP20:** YOLOv8n-pose model, isolation gate, HSV color histograms, Tier 3 histogram
 cross-camera evidence. Stage A outputs 3 new sidecars: keypoints.parquet,
@@ -143,6 +142,41 @@ Config: `conf: 0.45`, `require_keypoints: false`, `prefer_coreml: true`.
 None = production CoreML path (inert, proven by artifact-diff regression). Setting iou
 to any value **bypasses CoreML → .pt** and disables end2end NMS (~32fps vs ~79fps).
 See `docs/decisions-archive.md` for the end2end/CoreML double-NMS finding.
+
+*Detection dataset v2 (2026-06-02, not yet trained):*
+
+| Model | Dataset | Metrics | Status |
+|-------|---------|---------|--------|
+| bjj-detect-all-cameras-v2 | 1352 frames (902 v1 + 450 J_EDEw-200246), bbox only | agg Recall@0.5=0.882 (+0.050 vs v1) | **Evaluated** |
+
+Dataset at `data/training_data/detection_all_cameras_v2/`. 1199 train / 153 val (val
+identical to v1). New 450 frames: J_EDEw-200246.mp4, frames 0–4490 stride 10, train only.
+Source: `data/raw/nest/c8a592a4-2bca-400a-80e1-fec0e5cbea77/J_EDEw/2026-03-18/20/J_EDEw-20260318-200246.mp4`.
+Manifest: `configs/models/bjj-detect-all-cameras-v2.yaml`. Raw CVAT export (with track_id):
+`data/training_data/training_J_EDEw_bbox_video2.zip` (4500 labels, stride-10 subset used).
+Package: `data/training_data/training_data_detection_all_cameras_v2.zip` (292 MB).
+
+*A/B evaluation v1 vs v2 (2026-06-02, frozen 153-frame val set):*
+Original Kaggle training artifact: `bjj-detect-all-cameras_1352.pt`, renamed to
+`bjj-detect-all-cameras-v2.pt`. CoreML sibling exported. Symmetric overlay routing
+confirmed for both models. Baselines preserved at `outputs/_eval_*_baseline_v1/` and
+`outputs/_eval_*_baseline_v2/`.
+
+| Metric | v1 (902) | v2 (1352) | Δ | Signal? |
+|--------|----------|-----------|---|---------|
+| **Agg Recall@0.5** | 0.832 | **0.882** | **+0.050** | **yes** |
+| **Agg Precision@0.5** | 0.959 | 0.935 | -0.024 | yes |
+| FP7oJQ present | 21.0% | **26.0%** | **+5.0pp** | **yes** |
+| FP7oJQ misattrib | 51.0% | 52.0% | +1.0pp | noise |
+| J_EDEw present | 12.2% | 11.3% | -0.9pp | noise |
+| J_EDEw misattrib | 54.0% | **59.0%** | **+5.0pp** | **yes (worse)** |
+| PPDmUg present | 15.0% | 15.4% | +0.4pp | noise |
+| PPDmUg misattrib | 61.4% | 62.3% | +0.9pp | noise |
+
+**Verdict:** v2 is a substantially better detector (+5pp recall), improved FP7oJQ identity
+(+5pp present), but did NOT move the misattribution blocker (52-62%, flat or worse).
+Confirms CP7: the blocker is detection under-segmentation, not recall. More data recovers
+missed people but cannot separate already-merged pairs.
 
 *Dataset v2 fix (2026-05-06):* FP7oJQ frame extraction was misaligned — used
 `range(0, 3001, 10)` (every 10th frame across 3000) when annotations covered
@@ -213,6 +247,10 @@ First trained model had FP7oJQ false positives from background memorization.
 | `python -m pipeline_validation evaluate` | Full model evaluation (pipeline + A/D/F eval) |
 | `python -m pipeline_validation swap-diagnostic` | GT-oracle swap boundary diagnostic (CP-SWAP-1) |
 | `python -m pipeline_validation swap-characterize` | Swap pattern characterization (CP-SWAP-2) |
+| `python -m pipeline_validation signal-trace` | Greedy per-GT topology census (CP-TRACE-1) |
+| `python -m pipeline_validation signal-trace --stage tag` | Tag signal trace (CP-TAG-1) |
+| `tools/tag_fullscan.py` | Full-frame AprilTag scan (CP-TAG-2 ceiling experiment) |
+| `tools/tag_experiment.py` | Dense GT + full-scan tag comparison (CP-TAG-2) |
 
 ## Training Data Locations
 
@@ -227,6 +265,7 @@ First trained model had FP7oJQ false positives from background memorization.
 | ViCoS 12K | `data/colab_package/vicos_12k.zip` | Subsampled for cloud training |
 | Background models | `data/background_models/` | Per-camera .npy median frames |
 | Detection all cameras | `data/training_data/detection_all_cameras/` | 902 frames, 3 cameras, detection only |
+| Detection all cameras v2 | `data/training_data/detection_all_cameras_v2/` | 1352 frames (902 v1 + 450 J_EDEw-200246), detection only |
 | CVAT exports | `data/training_data/training_*.zip` | Raw CVAT export zips |
 
 ## Cloud Training Setup
@@ -249,6 +288,8 @@ First trained model had FP7oJQ false positives from background memorization.
 | `model-training.md` | `models/**`, dataset/training tools |
 | `cvat-workflow.md` | CVAT integration, annotation workflow |
 | `evaluation.md` | `src/pipeline_validation/**` |
+| `signal-trace.md` | `src/pipeline_validation/signal_trace/**` |
+| `tag-identity.md` | `src/bjj_pipeline/stages/tags/**`, `signal_trace/tag_trace.py` |
 | `services.md` | `services/**` |
 | `commands.md` | Common dev commands |
 | `apps.md` | `app_mobile/**`, `app_web/**` |
@@ -392,6 +433,218 @@ copy BOTH `outputs/_eval/` AND the relevant `outputs/_eval_gt/{camera}/{clip}/` 
 Pipeline artifacts are required for full-mode trace. The four historical baselines
 (penalty_15 through cp4_pre) are lite-mode only because they predate this rule.
 
+### Signal Trace (CP-TRACE-1, completed 2026-06-02)
+
+**Module:** `src/pipeline_validation/signal_trace/` — greedy per-GT matcher + Stage A
+topology census. Standalone submodule; does NOT modify the frozen instrument.
+
+**CLI:** `PYTHONPATH=src python -m pipeline_validation signal-trace --model {model_id}`
+
+Greedy matcher (IoU ≥ 0.3, many-to-one): each GT box independently claims its best
+detection. Multiple GT people CAN match the same detection (pair-box signature).
+
+**Topology classifications:** tight_match (1:1), pair_box (2+ GT share one detection),
+split (GT matched by 2+ detections), miss (no detection at IoU ≥ 0.3).
+
+**Baseline results (bjj-detect-all-cameras, all annotated frames):**
+
+| Camera | tight_match | pair_box | split | miss | total |
+|--------|-------------|----------|-------|------|-------|
+| FP7oJQ | 2795 (66.3%) | 1010 (24.0%) | 0 (0.0%) | 409 (9.7%) | 4214 |
+| J_EDEw | 2727 (64.7%) | 888 (21.1%) | 0 (0.0%) | 599 (14.2%) | 4214 |
+| PPDmUg | 1658 (70.2%) | 594 (25.2%) | 0 (0.0%) | 109 (4.6%) | 2361 |
+| **Aggregate** | **7180 (66.5%)** | **2492 (23.1%)** | **0** | **1117 (10.4%)** | **10789** |
+
+Consistent with CP7-pre-3: pair_box at 21-25% of GT-person-frames is the dominant
+under-segmentation signature. Split is zero (no over-segmentation at IoU ≥ 0.3).
+
+### Signal Trace D-Stage (CP-TRACE-2, completed 2026-06-02)
+
+Extends CP-TRACE-1 through Stage D. Joins each GT-person-frame's tracklet to
+`person_tracks.parquet` (many-to-one: GROUP segments produce 2 person_ids per frame).
+Also runs GROUP falsification against `d1_segments.parquet`.
+
+**CLI:** `PYTHONPATH=src python -m pipeline_validation signal-trace --model {id} --stage d`
+(also `--stage all` for both stages sequentially)
+
+**D-trace classifications:** correct_id (dominant person_id in assigned set), wrong_id
+(person_ids assigned but dominant not present), no_id (tracklet dropped by D), no_detection
+(Stage A miss).
+
+**Baseline results (bjj-detect-all-cameras):**
+
+| Camera | correct_id | wrong_id | no_id | no_detection | collisions |
+|--------|-----------|---------|-------|-------------|------------|
+| FP7oJQ | 3102 (73.6%) | 228 (5.4%) | 475 (11.3%) | 409 (9.7%) | 1 |
+| J_EDEw | 1533 (36.4%) | 748 (17.8%) | 1334 (31.7%) | 599 (14.2%) | 3 |
+| PPDmUg | 619 (26.2%) | 318 (13.5%) | 1315 (55.7%) | 109 (4.6%) | 2 |
+| **Aggregate** | **5254 (48.7%)** | **1294 (12.0%)** | **3124 (29.0%)** | **1117 (10.4%)** | **6** |
+
+**GROUP falsification (bjj-detect-all-cameras):**
+
+| Camera | pair-box tracklets | SOLO | GROUP | not-in-graph |
+|--------|-------------------|------|-------|-------------|
+| FP7oJQ | 13 | 4 | 7 | 2 |
+| J_EDEw | 47 | 15 | 24 | 8 |
+| PPDmUg | 30 | 14 | 10 | 6 |
+
+Verdict: GROUP engagement on pair-box tracklets is coincidental — triggered by lifecycle
+events (merges/splits of other tracklets), not by the pair-box itself. Pair-boxes don't
+create lifecycle events, so GROUP cannot address the under-segmentation problem.
+
+**Corrected aggregate (post CP-TRACE-FIX split-product resolution):**
+58.7% correct_id, 28.2% wrong_id, 2.8% no_id, 10.4% no_detection.
+Original 29.0% no_id was a measurement artifact (join-key mismatch, see CP-TRIM-1).
+
+### Signal Trace E/F + Verdict (CP-TRACE-3, completed 2026-06-02)
+
+No-ID diagnosis, E/F signal extension, and synthesis verdict.
+
+**CLI:** `PYTHONPATH=src python -m pipeline_validation signal-trace --model {id} --stage ef`
+(or `--stage all` for full a→d→ef sequence)
+
+**No-ID root cause (aggregate, post CP-TRIM-1 fix):** 303 no_id frames → 275 d4_frame_trim
+(90.8%), 28 d3_solver_drop (9.2%). Pre-fix 29.0% was a measurement artifact: join-key
+mismatch between detections.parquet (original tracklet_ids) and person_tracks (D0.5 split
+products). See `_trim_report.md`.
+
+**E/F extension:** All 36 GT people (across 3 cameras) appear in match sessions.
+Stage F not available (pipeline ran --to-stage E).
+
+**Synthesis verdict** (`outputs/_eval/signal_trace/bjj-detect-all-cameras/_verdict.md`):
+
+Signal flow waterfall: 10,789 → 9,672 detected → 7,180 tight → 6,330 correct_id → 36/36 in match sessions.
+
+Root cause ranking by frame impact (corrected):
+1. wrong_id (28.2%) — identity misattribution (pair-box driven)
+2. pair_box (23.1%) — detection under-segmentation
+3. miss (10.4%) — detection recall
+4. d4_frame_trim (2.5%) — graph coverage gap (genuine residual)
+5. d3_solver_drop (0.3%) — negligible
+
+**Intervention priorities:**
+1. Detection pair separation (pair_box + wrong_id = 51.3%) — the dominant lever
+2. Detection recall (miss) — 10.4%, diminishing returns from data alone
+3. Graph coverage (d4_frame_trim) — 2.5%, low priority
+
+**CP-TRIM-1 (completed 2026-06-02):** Investigation found 97.2% of d4_frame_trim was a
+join-key mismatch artifact. Fix: split-product resolution in `stage_d_trace.py` via
+`d05_split_audit.jsonl`. Pre-fix artifacts at
+`outputs/_eval/signal_trace/bjj-detect-all-cameras_pre_fix/`.
+
+### Tag Signal Trace (CP-TAG-1, completed 2026-06-03)
+
+**Module:** `src/pipeline_validation/signal_trace/tag_trace.py` — traces tag_id through
+the full pipeline (A→C→D→E) to answer: does the AprilTag signal deliver correct identity?
+
+**CLI:** `PYTHONPATH=src python -m pipeline_validation signal-trace --model {id} --stage tag [--tag-id 1]`
+
+**Key finding: tag detection is bbox-gated.** Stage C only scans padded detection bounding
+boxes from Stage A (via `decode_apriltags_in_roi` + `bbox_pad_frac`). If Stage A misses the
+person, Stage C never gets the chance to look for their tag. Detection recall directly
+limits tag visibility.
+
+**Cross-tab (Stage A × Stage D, all cameras val-split):**
+
+| Stage A \ Stage D | correct_id | wrong_id | no_id | no_detection | Total |
+|---|---|---|---|---|---|
+| tight_match | 4728 (43.8%) | 2187 (20.3%) | 265 (2.5%) | 0 | 7180 |
+| pair_box | 1602 (14.8%) | 852 (7.9%) | 38 (0.4%) | 0 | 2492 |
+| miss | 0 | 0 | 0 | 1117 (10.4%) | 1117 |
+
+Pair-box-driven misattribution: 852/3039 = 28.0% of all wrong_id. 72.0% of wrong_id
+occurs on tight_match detections (solver/tracker errors on clean detections).
+
+**Tag observation census:**
+
+| Video | Tag obs | Tracklet frames | Detection rate | Chain C→D2→D4 |
+|---|---|---|---|---|
+| FP7oJQ-200014 | 0 | 0 | N/A | No |
+| J_EDEw-200015 | 1 | 1,521 | 0.066% | Yes |
+| PPDmUg-training | 0 | 0 | N/A | No |
+| J_EDEw-200246* | 3 | 862 | 0.232% | Yes |
+
+*Train-split GT, not held-out.
+
+**Tagged person identity outcomes:**
+- J_EDEw-200015 (gt_track_id=24, tracklet t366): correct_id 25.6%, wrong_id 50.5%,
+  no_detection 22.9%. Tag signal chain complete but 1 observation in 1,521 frames.
+- J_EDEw-200246 (gt_track_id=8, tracklets t143+t99): correct_id 16.9%, no_id 58.4%.
+  Tag signal chain complete, 3 observations, but no_id dominates (no D0.5 split for this
+  clip — pipeline ran under real gym_id, not _eval_gt).
+
+**Verdict:** The tag signal mechanism (C→D2→D4) works when the tag is observed — 2/2
+videos with observations have complete propagation. But tag visibility is desperately low
+(0.07-0.23% of tracklet frames). The product cannot rely on AprilTags as the sole identity
+mechanism. Complementary identity signals are needed.
+
+**Outputs:** `outputs/_eval/signal_trace/{model_id}/cross_tab.{json,md}`,
+`_tag_signal_verdict.md`, per-camera `tag_census.json`, `identity_hint_audit.json`,
+`tagged_person_trace.parquet`, `_tagged_person_report.md`.
+200246 artifacts at `J_EDEw_200246/` (separate from val-split J_EDEw).
+
+### Tag Ceiling Experiment (CP-TAG-2, completed 2026-06-04)
+
+**Module:** `tools/tag_fullscan.py` (standalone full-frame scan),
+`tools/tag_experiment.py` (dense GT orchestrator).
+
+**Full-frame scan:** Removed all pipeline restrictions (bbox gating, cadence) and scanned
+every pixel of every frame of both J_EDEw videos. Result: **identical observation count**
+to the pipeline's bbox-gated scan.
+
+| Video | Pipeline Obs | Full-scan Obs | Full-scan Frames | Detection Rate |
+|-------|-------------|--------------|-----------------|---------------|
+| J_EDEw-200015 | 1 | 1 | 4530 | 0.022% |
+| J_EDEw-200246 | 3 | 3 | 4500 | 0.067% |
+
+Full-scan recovered 1 extra frame (200246 frame 1783, pipeline had 1781–1782 only).
+
+**Verdict: Physical occlusion, not pipeline restriction.** The bbox gating and cadence
+controls are not limiting tag detection. The AprilTag is below the resolution threshold
+for reliable decode in >99.95% of frames at ceiling-mount fisheye distances (~3m).
+
+**Dense GT validation:** CVAT zips contain interpolated labels at every frame (not just
+stride-10 keyframes). Dense manifest at `configs/models/bjj-detect-all-cameras-dense.yaml`
+loads stride=1 for J_EDEw (3,001 + 4,491 frames). Results confirm stride-10 is
+representative — all percentages stable within ±0.3pp:
+
+| Metric (Video 1) | Stride-10 | Stride-1 | Delta |
+|-------------------|-----------|----------|-------|
+| tight_match | 64.7% | 64.6% | -0.1pp |
+| pair_box | 21.1% | 21.1% | 0.0pp |
+| correct_id | 45.0% | 45.0% | 0.0pp |
+| wrong_id | 37.8% | 37.5% | -0.3pp |
+
+**Outputs:** `outputs/_experiments/tag_fullscan/` (full-scan observations),
+`outputs/_eval/signal_trace/bjj-detect-all-cameras/J_EDEw/dense_gt_trace/` (dense traces),
+`_tag_experiment_report.md` (full report).
+
+### Cross-Tracklet Identity Diagnostic (completed 2026-06-05)
+
+Deep diagnostic of tag identity propagation for tag_id=1 across both J_EDEw videos.
+Verified code path (D2→D3→D4) and traced actual data.
+
+**Architecture:** Must_link constraints are **SOFT** (2× miss_penalty, not hard ILP).
+Tag identity does NOT propagate across tracklet boundaries — only must_link group
+tracklets carry the tag binding. D4 assigns sequential person_ids (p0001...); tag mapping
+is post-hoc via frame overlap scoring. GROUP segments cause multi-person assignment per
+tracklet per frame.
+
+**Video 1 (J_EDEw-200015, GT person 24):** 29 tracklets, **17 person_ids** for 1 GT
+person. Tagged tracklet t366 has 167 person_id transitions (GROUP dilution — alternates
+frame-by-frame between p0028/p0032/p0019). D4 emits 3 separate identity_assignments for
+tag:1. Tag covers only last 5% of clip (frames 2759–2906).
+
+**Video 2 (J_EDEw-200246, GT person 8):** 30 tracklets, **12 person_ids** + 11 tracklets
+dropped. Tagged tracklet t99 (862 frames) **DROPPED** by solver — must_link penalty
+insufficient. Tag observation captured by nested detection t143 (17 frames, bbox inside
+t99), which survived on p0003 — a different person's path entirely.
+
+**Three architectural gaps:**
+1. Must_link too soft — solver can drop tagged tracklets (penalty < cost savings)
+2. No path propagation — non-tagged tracklets on same path don't inherit tag anchor
+3. GROUP dilution — D4 assigns multiple person_ids to tagged tracklet via GROUP nodes
+
 ## Stage D Identity Investigation (CP0-CP6, completed 2026-05-19)
 
 A seven-checkpoint investigation into why Stage D coverage was 24-36% despite Stage A
@@ -436,27 +689,62 @@ in D1 graph construction, not penalty tuning.
 1. The old "Stage D drops ~56% of detections / tracklet acceptance criteria suspected"
    framing is RETIRED. The mechanism is parallel-carrier displacement in D1, fully
    characterized.
-2. `present_misattributed` (18-20% per camera) is now understood as a fundamental ceiling:
-   tracklets cover MULTIPLE GT persons (J_EDEw GT persons are each fragmented across 33-53
-   tracklets), so a single tracklet's one person_id assignment is correct for only a
-   fraction of the GT persons it physically covers. This is a representation problem
-   (tracking a bbox-position != tracking a person), addressable only by ReID/pose identity,
-   not by Stage D routing.
+2. `present_misattributed` (51-61% per camera, CP-SPLIT-1 baseline) is dominantly a
+   DETECTION under-segmentation problem: one detection box covers two grappling people,
+   so whichever person_id the tracklet receives, it is wrong for the other. On FP7oJQ
+   (one 2.5-min clip): ~74% of misattribution is pair-box under-segmentation; of that,
+   55.7% is confirmed unbracketed (detection-only-recoverable), the remainder
+   indeterminate/partial pending wider-horizon and second-clip confirmation. Not a
+   representation problem and not addressable by ReID/pose at the tracking layer. See
+   CP7 investigation below.
 
 **Recovery ceiling for CP5** (from CP6 trace analysis): CP5 (parallel-carrier consolidation)
 recovers frames lost to d3_dropped. Conservative estimate: J_EDEw 4.7%->14.2% present,
 PPDmUg 6.1%->15.7%. Ideal ceiling (every rescued drop attributed correctly where a canonical
 slot is free): J_EDEw 37.5%, PPDmUg 42.1%, FP7oJQ 24.8%. All far below the >75% target.
 CP5 is a necessary stepping stone, not the destination. Reaching usable coverage requires
-subsequent ReID/identity work to attack present_misattributed.
+detection-level pair separation (see CP7 investigation below).
 
 **CP5 (completed 2026-05-21):** Parallel-carrier consolidation in D1 graph construction.
 `_consolidate_parallel_triggers` helper in `d1_graph_build.py` — deterministic N-way
 tiebreak (dist -> n_frames -> lexicographic carrier_id). Results (`docs/cp5_results.md`):
 d3_dropped collapsed (J_EDEw 49.7% -> 7.9%, PPDmUg 39.9% -> 0.0%, FP7oJQ 24.0% -> 4.6%).
 present rose modestly (J_EDEw 7.4%, PPDmUg 10.6%, FP7oJQ 6.4%). present_misattributed
-is now the dominant failure mode (59-66%), confirming the representation ceiling. Solver
-OPTIMAL, mergers stable. Next: ReID/identity work to attack misattribution.
+is now the dominant failure mode (59-66% at CP5; 51-61% after CP-SPLIT-1). Solver
+OPTIMAL, mergers stable. Next: see CP7 investigation.
+
+**CP7 investigation (completed 2026-05-25, FP7oJQ only):** Eight-checkpoint read-only
+investigation into the composition of `present_misattributed`. The arc inverted the
+project's understanding:
+- **pre-2:** 71-79% "impurity-driven" → sub-tracklet identity recommended.
+- **pre-3:** Inverted: 70-78% is detection under-segmentation (one box, two people).
+  Sub-tracklet identity targets 0.3-1.5%, not 71-79%.
+- **pre-4/pre-6:** NMS-suppressed nested boxes investigated; NMS relaxation ruled out
+  (worsened misattribution 4%→25%, fragmentation 1→4.5 tracklets/GT).
+- **pre-8:** Axis-1 failure signature — apparent 84% "Branch B" (concurrent-swap node).
+  SUPERSEDED by pre-9/pre-10.
+- **pre-9:** The 84% was ~93% pair-box under-segmentation in disguise. True concurrent-
+  swap margin: 9.9% of misattributed frames.
+- **pre-10:** Pair-box spans 0% bracketed at every horizon (30f to full clip). The second
+  person is never separately tracked anywhere in this clip → the lever is detection-level
+  pair separation, and possibly plain recall on isolated people; the two are not yet
+  separated and the separability experiment will distinguish them.
+
+On FP7oJQ (one 2.5-min clip): ~74% of misattribution is pair-box; of that, 55.7% is
+confirmed unbracketed (detection-only-recoverable), the remainder indeterminate/partial
+pending wider-horizon and second-clip confirmation. 9.9% true Branch-B, 0% bracketed at
+all horizons — single-clip, confirmation pending on the buzzer video. Stage D concurrent-
+swap node deferred as a ~10% sidecar. Detection-level pair separation is the primary lever.
+
+Integrity caveats:
+(a) Pre-10 bracket test uses pipeline-derived GT attribution (majority-vote from
+    gt_person_trace). Lean is benign (most reliable at separation points) but not
+    ground-truth-verified outside 0-300.
+(b) OPEN: the t10→t10_sN fragment map that moved pre-10 indeterminate 39%→13% is
+    unverified — spot-check a sample of remapped carriers before treating 13% as hard.
+
+Docs: `cp7_pre8_axis1_signature.md` (SUPERSEDED), `cp7_pre9_branchb_margin.md`,
+`cp7_pre10_pairbox_bracketing.md`.
 
 ### Known Issues Surfaced by Framework
 
@@ -476,7 +764,7 @@ OPTIMAL, mergers stable. Next: ReID/identity work to attack misattribution.
 
 ### Open Follow-ups
 
-- **CP7 (next):** ReID/identity work to attack present_misattributed (59-66%, new dominant mode)
+- **CP7 (next):** Detection-level pair separation is the primary lever. On FP7oJQ (one 2.5-min clip): ~74% of misattribution is pair-box under-segmentation (55.7% confirmed unbracketed, remainder indeterminate/partial); 9.9% true Branch-B, 0% bracketed at all horizons — single-clip, confirmation pending on the buzzer video. Stage D concurrent-swap node deferred as ~10% sidecar.
 - Empty frame injection for training data (reduce FP rate)
 - Bbox size tier filtering (thresholds not yet applied)
 - Stage C full implementation (beyond tag observations)
@@ -491,9 +779,16 @@ OPTIMAL, mergers stable. Next: ReID/identity work to attack misattribution.
 | CP-SWAP-1: Tracker-swap diagnostic | **Complete** | 167 GT-oracle swaps across 68/562 tracklets. Best single-feature AUC=0.663 (`bbox_aspect_change`). FP7oJQ world_accel 25.8x spike ratio, AUC=0.714. Histogram coverage 100% at swap boundaries. Module: `src/pipeline_validation/tracker_swap/`. |
 | CP-SWAP-2: Swap pattern characterization | **Complete** | 47% hop_into_unoccupied, 28% cascade, 2% exchange. 41% transient (50% single-frame flickers). 45% no kinematic spike. 81% within 0.5m. Informed CP-SPLIT-1 design. |
 | CP-SPLIT-1: Post-D0 tracklet splitter | **Active** | Tiered: speed cap 48 m/s + spike ratio 5x (min 5 m/s, isolation 3x) + Bhattacharyya 0.15 (kinematic corroboration 2x). Min dwell 5 frames. D0.5 in `d05_split.py` (fce5758). Results vs CP5: present +14.6/+4.8/+4.4pp, misattr -8.0/-7.0/-4.6pp. Config: `stage_D.d05_split`. Validator fix: af258b7. |
-| Domain-specific ReID training | **Next** | Fine-tune osnet_x0_25 using existing CVAT track_id annotations as identity-labeled crops. Zero additional annotation work. |
-| BoT-SORT parameter tuning | **Deferred** | iou_threshold, track_buffer experiments. After ReID model. |
-| GROUP node assignment reform | **Deferred** | D4 boundary fix using realized_group_pairings. ~3-5pp potential. |
+| Domain-specific ReID training | **Deferred** | Superseded by CP7 finding: on FP7oJQ (one 2.5-min clip) ~74% of misattribution is detection under-segmentation, not addressable by ReID. Detection pair separation is the primary lever. |
+| BoT-SORT parameter tuning | **Deferred** | iou_threshold, track_buffer experiments. After detection pair separation. |
+| GROUP node assignment reform | **Deferred** | D4 boundary fix using realized_group_pairings. ~3-5pp potential. Concurrent-swap node deferred as ~10% sidecar (CP7-pre-9). |
+| CP7: Misattribution decomposition | **Complete** | Eight-checkpoint investigation (pre-2→pre-10). On FP7oJQ (one 2.5-min clip): ~74% pair-box (55.7% confirmed unbracketed), 9.9% true Branch-B, 0% bracketed — single-clip, confirmation pending on buzzer video. Detection pair separation is the primary lever. See `docs/cp7_pre9_branchb_margin.md`, `docs/cp7_pre10_pairbox_bracketing.md`. |
+| CP-TAG-1: Tag signal trace | **Complete** | Tag detection is bbox-gated (Stage C scans padded detection bboxes only). Tag visibility 0.07-0.23% of tracklet frames. Signal chain C→D2→D4 works (2/2 videos), but tags too rare for sole identity. Cross-tab: 28% of wrong_id from pair_box, 72% from tight_match. See `signal_trace/tag_trace.py`. |
+| CP-TAG-2: Tag ceiling experiment | **Complete** | Full-frame scan (no bbox/cadence restriction) found identical tag observations to pipeline (1+3 across 9,030 frames). Bottleneck is physical occlusion at ceiling distance, not pipeline gating. Dense GT (stride-1, 10x points) confirms stride-10 is representative (±0.3pp). AprilTags cannot be sole identity mechanism. See `tools/tag_fullscan.py`, `tools/tag_experiment.py`. |
+| Cross-tracklet identity diagnostic | **Complete** | Must_link is soft (2× penalty), identity doesn't propagate across tracklets, GROUP dilutes tag identity. Video 1: 17 person_ids for 1 GT person, 167 intra-tracklet transitions. Video 2: tagged tracklet (862f) dropped, tag assigned to wrong person via nested detection. Three architectural gaps: soft must_link, no path propagation, GROUP dilution. |
+| Must_link hardening for tagged tracklets | **Planned** | Make must_link a hard ILP constraint for tag-observed tracklets. Prevents solver from dropping tagged tracklets (video 2 t99 failure). |
+| Tag identity propagation along solver paths | **Planned** | Non-tagged tracklets on same solver path should inherit tag anchor from tagged tracklet. Currently confined to must_link group only. |
+| GROUP dilution of tag identity | **Planned** | Tagged tracklet t366 has 3 person_ids due to GROUP segments. May resolve if must_link hardening + path propagation are implemented. |
 
 ## Never Touch
 

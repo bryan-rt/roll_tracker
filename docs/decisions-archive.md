@@ -196,6 +196,148 @@ overlap.
 d3_dropped unchanged across all cameras. Splitter thresholds are initial calibration.
 
 **Current ceiling:** ~35-40% present without new models. Misattributed remains dominant
-(51-61%). The fundamental blocker is IoU-only tracking — BoT-SORT cannot distinguish
-overlapping bodies. Next investment: domain-specific ReID model fine-tuned on existing
-CVAT track_id annotations (zero additional annotation work).
+(51-61%). The fundamental blocker is detection under-segmentation — see CP7 investigation
+below.
+
+## CP7 Misattribution Decomposition (pre-8 → pre-10, 2026-05-25)
+
+**Problem:** After CP-SPLIT-1, `present_misattributed` remained dominant (51-61%).
+CP7-pre-3 had established ~70% was detection under-segmentation, but the pre-8
+Axis-1/Axis-2 investigation attempted to measure the recoverable share for a
+Stage D concurrent-swap node vs detection separation.
+
+**Investigation sequence:**
+
+1. **CP7-pre-8** (Axis-1 signature characterization): Classified misattributed frames
+   as Branch A (GROUP routing failure) vs Branch B (concurrent-alive tracklet swap).
+   Result: apparent 84.3% Branch B, 6.9% Branch A, 33.9% ambiguous. Recommended
+   concurrent-swap node class. **SUPERSEDED** — the 84.3% was not measured against
+   detection geometry.
+
+2. **CP7-pre-9** (Branch-B margin disambiguation): Applied CP7-pre-3's containment test
+   to the two suspect buckets (ambiguous_a_b + branch_b_persistent, 1,811 frames).
+   Result: 92.8% of those frames are pair-box (one detection covering two GT people).
+   True concurrent-swap margin: 9.9% (223/2,259). Zero concurrent_role (genuine A/B
+   co-causation). The "concurrent tracklet holding canonical identity" was a consequence
+   of pair-box under-segmentation, not an independent swap failure.
+
+   Tau sweep stability: pair_box share 77.9% (tau=0.9) to 94.7% (tau=0.3). Robust.
+
+3. **CP7-pre-10** (pair-box bracketing): Tested whether pair-box spans ever resolve into
+   two separately-tracked boxes elsewhere in the clip (which would enable offline identity
+   propagation through the merged span). Horizon sweep: 30/90/300/full-clip frames.
+   Result: **0% bracketed at every horizon.** The second person is never separately
+   tracked anywhere in this clip → the lever is detection-level pair separation, and
+   possibly plain recall on isolated people; the two are not yet separated and the
+   separability experiment will distinguish them.
+
+   Fragment-map fix: original run showed 39% indeterminate due to D0.5 split tracklet ID
+   mismatch (gt_person_trace uses pre-split IDs, bank_frames uses post-split). Fragment
+   resolution (t10→t10_sN) reduced indeterminate to 13%. OPEN: spot-check remapped
+   carriers before treating 13% as hard.
+
+**Corrected misattribution hierarchy (FP7oJQ, one 2.5-min clip):**
+
+| Cause | Frames | % of 2,259 | Fix path |
+|-------|--------|------------|----------|
+| Pair-box, unbracketed | 1,259 | 55.7% | Detection separation |
+| Pair-box, indeterminate | 262 | 11.6% | Likely detection |
+| Pair-box, half-bracket/short | 160 | 7.1% | Mixed |
+| True Branch B (Axis-1) | 223 | 9.9% | Concurrent-swap node (~10% sidecar) |
+| Pure Branch A | 157 | 6.9% | GROUP routing |
+| Other | 198 | 8.8% | Unknown |
+
+**Conclusion:** Detection-level pair separation is the primary lever (~74% of
+misattribution, of which 55.7% is confirmed unbracketed). Stage D concurrent-swap node
+deferred as ~10% sidecar. Single-clip finding; confirmation pending on buzzer video
+(which forces separations).
+
+Pipeline-attribution caveat: bracket test uses majority-vote GT attribution from
+gt_person_trace, most reliable at separation points (benign lean, not ground-truth-
+verified outside 0-300).
+
+---
+
+## CP-TRACE Series (CP-TRACE-1 through CP-TRACE-FIX, completed 2026-06-02)
+
+Signal trace investigation: greedy per-GT matcher + topology census + D-stage preservation
+trace + E/F extension. Standalone submodule at `src/pipeline_validation/signal_trace/`.
+
+**Corrected root cause ranking (post CP-TRACE-FIX, aggregate all cameras):**
+
+| Root cause | Frame impact | Notes |
+|-----------|-------------|-------|
+| wrong_id | 28.2% | Identity misattribution. 72% from tight_match frames, 28% from pair_box. |
+| pair_box | 23.1% | Detection under-segmentation (one box, two people) |
+| miss | 10.4% | Detection recall failure |
+| d4_frame_trim | 2.5% | Genuine graph coverage gap (residual after fix) |
+| d3_solver_drop | 0.3% | Negligible |
+
+**Key correction:** Original 29% no_id (CP-TRACE-2) was a measurement artifact. The
+join-key mismatch between detections.parquet (original tracklet_ids) and person_tracks
+(D0.5 split products) caused false negatives. CP-TRIM-1 diagnosed this; CP-TRACE-FIX
+implemented split-product resolution via d05_split_audit.jsonl in stage_d_trace.py.
+Pre-fix artifacts preserved at `outputs/_eval/signal_trace/bjj-detect-all-cameras_pre_fix/`.
+
+**Cross-tab (Stage A × Stage D):** 72% of wrong_id occurs on tight_match frames (solver/
+tracker errors on clean detections). 28% from pair_box frames (detection under-segmentation
+directly causing misattribution). Causality note: a tracklet may be tight_match at frame N
+but influenced by pair_box at earlier frames in its lifecycle.
+
+**GROUP falsification:** Confirmed irrelevant to pair-boxes. GROUP engagement on pair-box
+tracklets is coincidental — triggered by lifecycle events (merges/splits of OTHER tracklets),
+not by the pair-box itself. Pair-boxes don't create lifecycle events.
+
+**E/F extension:** All 36 GT people (across 3 cameras) appear in match sessions. Signal
+reaches Stage E despite identity fragmentation.
+
+---
+
+## CP-TAG Series (CP-TAG-1, CP-TAG-2, completed 2026-06-04)
+
+Tag signal investigation: does AprilTag identity reach the correct person?
+
+**CP-TAG-1 findings:**
+- Tag detection is bbox-gated (Stage C scans padded detection bboxes only via c0_gating.py)
+- Tag detection is cadence-gated (C0Scheduler 3-state: SEEKING every frame, VERIFIED every 10th)
+- Tag visibility: 4 observations across ~7,500 frames on 2 J_EDEw videos (0.05%)
+- Signal chain C→D2→D4 works when tags are detected (2/2 videos with observations)
+- Cross-tab: 28% of wrong_id from pair_box, 72% from tight_match
+
+**CP-TAG-2 findings (full-frame scan experiment):**
+- Full-frame every-frame scan (no restrictions) found IDENTICAL observations to pipeline
+- Physical occlusion is the bottleneck, not pipeline gating
+- AprilTag 36h11 at rashguard size is below decode threshold (~25px vs ~40px minimum)
+  at ceiling-mount Nest camera distance (~3m)
+- Dense GT (stride-1, 10x evaluation points) confirms stride-10 is representative (±0.3pp)
+
+---
+
+## Cross-Tracklet Identity Diagnostic (completed 2026-06-05)
+
+Deep diagnostic of tag identity propagation for the tag_id=1 person across both J_EDEw
+videos. Explored: D2 constraints, D3 solver behavior, D4 emit logic, D0.5 split routing.
+
+**Architecture findings:**
+- Must_link constraints are SOFT (penalty = 2× miss_penalty), not hard ILP constraints
+- Tag identity does NOT propagate across tracklet boundaries — only tracklets explicitly
+  in the must_link group carry the tag binding
+- D4 assigns sequential person_ids (p0001...), NOT tag-derived. Tag mapping is post-hoc.
+- GROUP segments cause multiple person_ids per tracklet per frame → tag identity dilutes
+
+**Data findings:**
+
+| Video | GT | Tracklets | Person_ids | Tag outcome |
+|-------|-----|-----------|-----------|-------------|
+| J_EDEw-200015 | gt_24 | 29 | 17 | 3 tag person_ids (GROUP dilution); tag covers last 5% of clip |
+| J_EDEw-200246 | gt_8 | 30 | 12 (+11 dropped) | Tagged tracklet DROPPED; tag assigned to wrong person via nested detection |
+
+**Three architectural gaps identified:**
+1. **Must_link too soft:** Tagged tracklet t99 (862 frames) dropped — penalty insufficient
+2. **No path propagation:** Non-tagged tracklets on same path don't inherit tag anchor
+3. **GROUP dilution:** Tagged tracklet has 167 person_id transitions (3 separate identity_assignments emitted)
+
+**Planned fixes:**
+- Hard must_link for tag-observed tracklets (prevent solver from dropping them)
+- Path-based tag propagation (non-tagged tracklets on same path inherit tag anchor)
+- GROUP dilution mitigation (may resolve with above two fixes)
