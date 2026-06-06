@@ -255,3 +255,89 @@ deferred as ~10% sidecar. Single-clip finding; confirmation pending on buzzer vi
 Pipeline-attribution caveat: bracket test uses majority-vote GT attribution from
 gt_person_trace, most reliable at separation points (benign lean, not ground-truth-
 verified outside 0-300).
+
+---
+
+## CP-TRACE Series (CP-TRACE-1 through CP-TRACE-FIX, completed 2026-06-02)
+
+Signal trace investigation: greedy per-GT matcher + topology census + D-stage preservation
+trace + E/F extension. Standalone submodule at `src/pipeline_validation/signal_trace/`.
+
+**Corrected root cause ranking (post CP-TRACE-FIX, aggregate all cameras):**
+
+| Root cause | Frame impact | Notes |
+|-----------|-------------|-------|
+| wrong_id | 28.2% | Identity misattribution. 72% from tight_match frames, 28% from pair_box. |
+| pair_box | 23.1% | Detection under-segmentation (one box, two people) |
+| miss | 10.4% | Detection recall failure |
+| d4_frame_trim | 2.5% | Genuine graph coverage gap (residual after fix) |
+| d3_solver_drop | 0.3% | Negligible |
+
+**Key correction:** Original 29% no_id (CP-TRACE-2) was a measurement artifact. The
+join-key mismatch between detections.parquet (original tracklet_ids) and person_tracks
+(D0.5 split products) caused false negatives. CP-TRIM-1 diagnosed this; CP-TRACE-FIX
+implemented split-product resolution via d05_split_audit.jsonl in stage_d_trace.py.
+Pre-fix artifacts preserved at `outputs/_eval/signal_trace/bjj-detect-all-cameras_pre_fix/`.
+
+**Cross-tab (Stage A × Stage D):** 72% of wrong_id occurs on tight_match frames (solver/
+tracker errors on clean detections). 28% from pair_box frames (detection under-segmentation
+directly causing misattribution). Causality note: a tracklet may be tight_match at frame N
+but influenced by pair_box at earlier frames in its lifecycle.
+
+**GROUP falsification:** Confirmed irrelevant to pair-boxes. GROUP engagement on pair-box
+tracklets is coincidental — triggered by lifecycle events (merges/splits of OTHER tracklets),
+not by the pair-box itself. Pair-boxes don't create lifecycle events.
+
+**E/F extension:** All 36 GT people (across 3 cameras) appear in match sessions. Signal
+reaches Stage E despite identity fragmentation.
+
+---
+
+## CP-TAG Series (CP-TAG-1, CP-TAG-2, completed 2026-06-04)
+
+Tag signal investigation: does AprilTag identity reach the correct person?
+
+**CP-TAG-1 findings:**
+- Tag detection is bbox-gated (Stage C scans padded detection bboxes only via c0_gating.py)
+- Tag detection is cadence-gated (C0Scheduler 3-state: SEEKING every frame, VERIFIED every 10th)
+- Tag visibility: 4 observations across ~7,500 frames on 2 J_EDEw videos (0.05%)
+- Signal chain C→D2→D4 works when tags are detected (2/2 videos with observations)
+- Cross-tab: 28% of wrong_id from pair_box, 72% from tight_match
+
+**CP-TAG-2 findings (full-frame scan experiment):**
+- Full-frame every-frame scan (no restrictions) found IDENTICAL observations to pipeline
+- Physical occlusion is the bottleneck, not pipeline gating
+- AprilTag 36h11 at rashguard size is below decode threshold (~25px vs ~40px minimum)
+  at ceiling-mount Nest camera distance (~3m)
+- Dense GT (stride-1, 10x evaluation points) confirms stride-10 is representative (±0.3pp)
+
+---
+
+## Cross-Tracklet Identity Diagnostic (completed 2026-06-05)
+
+Deep diagnostic of tag identity propagation for the tag_id=1 person across both J_EDEw
+videos. Explored: D2 constraints, D3 solver behavior, D4 emit logic, D0.5 split routing.
+
+**Architecture findings:**
+- Must_link constraints are SOFT (penalty = 2× miss_penalty), not hard ILP constraints
+- Tag identity does NOT propagate across tracklet boundaries — only tracklets explicitly
+  in the must_link group carry the tag binding
+- D4 assigns sequential person_ids (p0001...), NOT tag-derived. Tag mapping is post-hoc.
+- GROUP segments cause multiple person_ids per tracklet per frame → tag identity dilutes
+
+**Data findings:**
+
+| Video | GT | Tracklets | Person_ids | Tag outcome |
+|-------|-----|-----------|-----------|-------------|
+| J_EDEw-200015 | gt_24 | 29 | 17 | 3 tag person_ids (GROUP dilution); tag covers last 5% of clip |
+| J_EDEw-200246 | gt_8 | 30 | 12 (+11 dropped) | Tagged tracklet DROPPED; tag assigned to wrong person via nested detection |
+
+**Three architectural gaps identified:**
+1. **Must_link too soft:** Tagged tracklet t99 (862 frames) dropped — penalty insufficient
+2. **No path propagation:** Non-tagged tracklets on same path don't inherit tag anchor
+3. **GROUP dilution:** Tagged tracklet has 167 person_id transitions (3 separate identity_assignments emitted)
+
+**Planned fixes:**
+- Hard must_link for tag-observed tracklets (prevent solver from dropping them)
+- Path-based tag propagation (non-tagged tracklets on same path inherit tag anchor)
+- GROUP dilution mitigation (may resolve with above two fixes)

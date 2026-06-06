@@ -288,6 +288,8 @@ First trained model had FP7oJQ false positives from background memorization.
 | `model-training.md` | `models/**`, dataset/training tools |
 | `cvat-workflow.md` | CVAT integration, annotation workflow |
 | `evaluation.md` | `src/pipeline_validation/**` |
+| `signal-trace.md` | `src/pipeline_validation/signal_trace/**` |
+| `tag-identity.md` | `src/bjj_pipeline/stages/tags/**`, `signal_trace/tag_trace.py` |
 | `services.md` | `services/**` |
 | `commands.md` | Common dev commands |
 | `apps.md` | `app_mobile/**`, `app_web/**` |
@@ -490,6 +492,10 @@ Verdict: GROUP engagement on pair-box tracklets is coincidental — triggered by
 events (merges/splits of other tracklets), not by the pair-box itself. Pair-boxes don't
 create lifecycle events, so GROUP cannot address the under-segmentation problem.
 
+**Corrected aggregate (post CP-TRACE-FIX split-product resolution):**
+58.7% correct_id, 28.2% wrong_id, 2.8% no_id, 10.4% no_detection.
+Original 29.0% no_id was a measurement artifact (join-key mismatch, see CP-TRIM-1).
+
 ### Signal Trace E/F + Verdict (CP-TRACE-3, completed 2026-06-02)
 
 No-ID diagnosis, E/F signal extension, and synthesis verdict.
@@ -612,6 +618,32 @@ representative — all percentages stable within ±0.3pp:
 **Outputs:** `outputs/_experiments/tag_fullscan/` (full-scan observations),
 `outputs/_eval/signal_trace/bjj-detect-all-cameras/J_EDEw/dense_gt_trace/` (dense traces),
 `_tag_experiment_report.md` (full report).
+
+### Cross-Tracklet Identity Diagnostic (completed 2026-06-05)
+
+Deep diagnostic of tag identity propagation for tag_id=1 across both J_EDEw videos.
+Verified code path (D2→D3→D4) and traced actual data.
+
+**Architecture:** Must_link constraints are **SOFT** (2× miss_penalty, not hard ILP).
+Tag identity does NOT propagate across tracklet boundaries — only must_link group
+tracklets carry the tag binding. D4 assigns sequential person_ids (p0001...); tag mapping
+is post-hoc via frame overlap scoring. GROUP segments cause multi-person assignment per
+tracklet per frame.
+
+**Video 1 (J_EDEw-200015, GT person 24):** 29 tracklets, **17 person_ids** for 1 GT
+person. Tagged tracklet t366 has 167 person_id transitions (GROUP dilution — alternates
+frame-by-frame between p0028/p0032/p0019). D4 emits 3 separate identity_assignments for
+tag:1. Tag covers only last 5% of clip (frames 2759–2906).
+
+**Video 2 (J_EDEw-200246, GT person 8):** 30 tracklets, **12 person_ids** + 11 tracklets
+dropped. Tagged tracklet t99 (862 frames) **DROPPED** by solver — must_link penalty
+insufficient. Tag observation captured by nested detection t143 (17 frames, bbox inside
+t99), which survived on p0003 — a different person's path entirely.
+
+**Three architectural gaps:**
+1. Must_link too soft — solver can drop tagged tracklets (penalty < cost savings)
+2. No path propagation — non-tagged tracklets on same path don't inherit tag anchor
+3. GROUP dilution — D4 assigns multiple person_ids to tagged tracklet via GROUP nodes
 
 ## Stage D Identity Investigation (CP0-CP6, completed 2026-05-19)
 
@@ -753,6 +785,10 @@ Docs: `cp7_pre8_axis1_signature.md` (SUPERSEDED), `cp7_pre9_branchb_margin.md`,
 | CP7: Misattribution decomposition | **Complete** | Eight-checkpoint investigation (pre-2→pre-10). On FP7oJQ (one 2.5-min clip): ~74% pair-box (55.7% confirmed unbracketed), 9.9% true Branch-B, 0% bracketed — single-clip, confirmation pending on buzzer video. Detection pair separation is the primary lever. See `docs/cp7_pre9_branchb_margin.md`, `docs/cp7_pre10_pairbox_bracketing.md`. |
 | CP-TAG-1: Tag signal trace | **Complete** | Tag detection is bbox-gated (Stage C scans padded detection bboxes only). Tag visibility 0.07-0.23% of tracklet frames. Signal chain C→D2→D4 works (2/2 videos), but tags too rare for sole identity. Cross-tab: 28% of wrong_id from pair_box, 72% from tight_match. See `signal_trace/tag_trace.py`. |
 | CP-TAG-2: Tag ceiling experiment | **Complete** | Full-frame scan (no bbox/cadence restriction) found identical tag observations to pipeline (1+3 across 9,030 frames). Bottleneck is physical occlusion at ceiling distance, not pipeline gating. Dense GT (stride-1, 10x points) confirms stride-10 is representative (±0.3pp). AprilTags cannot be sole identity mechanism. See `tools/tag_fullscan.py`, `tools/tag_experiment.py`. |
+| Cross-tracklet identity diagnostic | **Complete** | Must_link is soft (2× penalty), identity doesn't propagate across tracklets, GROUP dilutes tag identity. Video 1: 17 person_ids for 1 GT person, 167 intra-tracklet transitions. Video 2: tagged tracklet (862f) dropped, tag assigned to wrong person via nested detection. Three architectural gaps: soft must_link, no path propagation, GROUP dilution. |
+| Must_link hardening for tagged tracklets | **Planned** | Make must_link a hard ILP constraint for tag-observed tracklets. Prevents solver from dropping tagged tracklets (video 2 t99 failure). |
+| Tag identity propagation along solver paths | **Planned** | Non-tagged tracklets on same solver path should inherit tag anchor from tagged tracklet. Currently confined to must_link group only. |
+| GROUP dilution of tag identity | **Planned** | Tagged tracklet t366 has 3 person_ids due to GROUP segments. May resolve if must_link hardening + path propagation are implemented. |
 
 ## Never Touch
 
