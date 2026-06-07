@@ -1,0 +1,187 @@
+{
+  "session_tagged_tracklets": [
+    "J_EDEw-20260318-200015:t366",
+    "J_EDEw-20260318-200246:t139"
+  ],
+  "tagged_J_EDEw-20260318-200015:t366_dropped": false,
+  "tagged_J_EDEw-20260318-200015:t366_rows": 2221,
+  "tagged_J_EDEw-20260318-200246:t139_dropped": false,
+  "tagged_J_EDEw-20260318-200246:t139_rows": 4428,
+  "legacy_t99_exists": false,
+  "legacy_t366_exists": true,
+  "tag1_identity_assignments": [
+    {
+      "artifact_type": "identity_assignment",
+      "assignment_confidence": 1.0,
+      "camera_id": "J_EDEw",
+      "clip_id": "cp_tag_3_baseline",
+      "created_at_ms": 1780796233649,
+      "evidence": {
+        "anchor_key": "tag:1",
+        "dominant_score": 65,
+        "tag_scores": {
+          "tag:1": 65
+        },
+        "total_tag_frames": 65
+      },
+      "person_id": "p0015",
+      "pipeline_version": "dev",
+      "schema_version": "0.4.0",
+      "tag_id": "1",
+      "frame_range": [
+        22,
+        8758
+      ],
+      "spans_clip_boundary": true
+    },
+    {
+      "artifact_type": "identity_assignment",
+      "assignment_confidence": 1.0,
+      "camera_id": "J_EDEw",
+      "clip_id": "cp_tag_3_baseline",
+      "created_at_ms": 1780796233649,
+      "evidence": {
+        "anchor_key": "tag:1",
+        "dominant_score": 149,
+        "tag_scores": {
+          "tag:1": 149
+        },
+        "total_tag_frames": 149
+      },
+      "person_id": "p0024",
+      "pipeline_version": "dev",
+      "schema_version": "0.4.0",
+      "tag_id": "1",
+      "frame_range": [
+        724,
+        9029
+      ],
+      "spans_clip_boundary": true
+    },
+    {
+      "artifact_type": "identity_assignment",
+      "assignment_confidence": 1.0,
+      "camera_id": "J_EDEw",
+      "clip_id": "cp_tag_3_baseline",
+      "created_at_ms": 1780796233649,
+      "evidence": {
+        "anchor_key": "tag:1",
+        "dominant_score": 126,
+        "tag_scores": {
+          "tag:1": 126
+        },
+        "total_tag_frames": 126
+      },
+      "person_id": "p0031",
+      "pipeline_version": "dev",
+      "schema_version": "0.4.0",
+      "tag_id": "1",
+      "frame_range": [
+        2638,
+        9029
+      ],
+      "spans_clip_boundary": true
+    },
+    {
+      "artifact_type": "identity_assignment",
+      "assignment_confidence": 1.0,
+      "camera_id": "J_EDEw",
+      "clip_id": "cp_tag_3_baseline",
+      "created_at_ms": 1780796233649,
+      "evidence": {
+        "anchor_key": "tag:1",
+        "dominant_score": 51,
+        "tag_scores": {
+          "tag:1": 51
+        },
+        "total_tag_frames": 51
+      },
+      "person_id": "p0032",
+      "pipeline_version": "dev",
+      "schema_version": "0.4.0",
+      "tag_id": "1",
+      "frame_range": [
+        2692,
+        9029
+      ],
+      "spans_clip_boundary": true
+    }
+  ],
+  "frame_offsets": {
+    "vid1": 0,
+    "vid2": 4530
+  },
+  "tag1_assignment_count": 4,
+  "tagged_tracklet_transitions": {
+    "J_EDEw-20260318-200015:t366": {
+      "dropped": false,
+      "transitions": 1125,
+      "person_ids": [
+        "p0003",
+        "p0005",
+        "p0008",
+        "p0011",
+        "p0015",
+        "p0018",
+        "p0023",
+        "p0024",
+        "p0025",
+        "p0026",
+        "p0028",
+        "p0029",
+        "p0031",
+        "p0032"
+      ],
+      "pid_counts": {
+        "p0032": 147,
+        "p0031": 126,
+        "p0015": 453,
+        "p0025": 15,
+        "p0024": 57,
+        "p0023": 38,
+        "p0026": 116,
+        "p0003": 584,
+        "p0005": 116,
+        "p0008": 44,
+        "p0011": 6,
+        "p0028": 170,
+        "p0029": 216,
+        "p0018": 133
+      },
+      "n_rows": 2221
+    },
+    "J_EDEw-20260318-200246:t139": {
+      "dropped": false,
+      "transitions": 2680,
+      "person_ids": [
+        "p0003",
+        "p0005",
+        "p0013",
+        "p0014",
+        "p0017",
+        "p0023",
+        "p0024",
+        "p0025",
+        "p0034",
+        "p0037",
+        "p0039",
+        "p0045"
+      ],
+      "pid_counts": {
+        "p0024": 857,
+        "p0023": 308,
+        "p0025": 598,
+        "p0037": 801,
+        "p0039": 176,
+        "p0017": 127,
+        "p0003": 211,
+        "p0034": 21,
+        "p0013": 331,
+        "p0005": 11,
+        "p0014": 478,
+        "p0045": 509
+      },
+      "n_rows": 4428
+    }
+  }
+}

@@ -23,7 +23,7 @@ Does NOT modify the frozen evaluation instrument (CP-EVAL-1).
 ## CLI
 
 ```bash
-PYTHONPATH=src python -m pipeline_validation signal-trace --model {id} --stage {a|d|ef|tag|all}
+PYTHONPATH=src python -m pipeline_validation signal-trace --model {id} --stage {a|d|ef|trim|tag|all}
 ```
 
 Flags: `--camera`, `--gym-id`, `--iou-threshold`, `--tag-id`

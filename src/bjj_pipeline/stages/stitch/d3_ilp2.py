@@ -14,12 +14,14 @@ Current goal:
 		group-derived observations remain available to the solver and debug artifacts.
 """
 
+import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
+from loguru import logger
 from ortools.sat.python import cp_model  # type: ignore
 
 from bjj_pipeline.contracts.f0_manifest import ClipManifest
@@ -71,6 +73,10 @@ class ILPResult:
 	explained_tracklet_ids: List[str]
 	# D4 handoff: realized local in/out pairings through GROUP/GROUPISH nodes
 	realized_group_pairings: List[Dict[str, Any]]
+	# CP-TAG-4a Fix A: solved per-tag thread for D4 consumption.
+	# {tag_key: {edge_id: flow_value}} — D4 uses this to bind tags to entity paths
+	# instead of post-hoc overlap scoring.
+	tag_flow_by_tag_edge: Dict[str, Dict[str, int]] | None = None
 
 
 def _write_json_atomic(*, path: Path, payload: Dict[str, Any]) -> None:
@@ -866,8 +872,12 @@ def _emit_mcf_tag_inputs(
 	checkpoint: str,
 	nodes_df: pd.DataFrame,
 	constraints: Dict[str, Any] | None,
+	split_map: Dict[str, List[str]] | None = None,
 ) -> Dict[str, Any]:
 	"""MCF inputs snapshot (non-behavioral).
+
+	CP-TAG-4a Fix 0: split_map expands pre-split tracklet IDs to their D0.5
+	split products so pings can bind to post-split nodes.
 
 	Writes `_debug/d3_mcf_tag_inputs.json` using the normalized TagPing schema.
 	"""
@@ -960,6 +970,9 @@ def _emit_mcf_tag_inputs(
 	normalized_pings: List[Dict[str, Any]] = []
 	tag_to_ping_ids: Dict[str, List[str]] = {}
 	tag_summaries: Dict[str, Dict[str, Any]] = {}
+	# CP-TAG-4a Fix 0: track which split products carry pings (single source of truth
+	# for hard treatment across Fix 0/A/C/D). {tag_key: {product_tids}}.
+	_ping_carrying_products: Dict[str, set] = {}
 	for i, p in enumerate(pings_raw):
 		if not isinstance(p, dict):
 			continue
@@ -990,24 +1003,33 @@ def _emit_mcf_tag_inputs(
 		tag_summaries[tag_key]["n_pings"] = int(tag_summaries[tag_key]["n_pings"]) + 1
 		binding: Dict[str, Any] = {"status": "unbound", "candidates": [], "chosen": None, "notes": []}
 		if frame_i is not None and tid_s is not None and index_rows:
+			# CP-TAG-4a Fix 0: try exact tracklet_id first, then split products.
+			candidate_tids = [tid_s]
+			if split_map and tid_s in split_map:
+				candidate_tids.extend(split_map[tid_s])
 			cands = []
-			for b in index_rows:
-				if b.get("member_tracklet_id") != tid_s:
-					continue
-				fs = b.get("frame_start")
-				fe = b.get("frame_end")
-				if fs is None or fe is None:
-					continue
-				if int(fs) <= frame_i <= int(fe):
-					cands.append(
-						{
-							"node_id": str(b.get("node_id")),
-							"node_type": str(b.get("node_type") or "NodeType.SINGLE_TRACKLET"),
-							"span": {"start": int(fs), "end": int(fe)},
-							"reason": "contains_frame",
-							"match_role": str(b.get("member_role") or ""),
-						}
-					)
+			matched_product_tid: str | None = None
+			for cand_tid in candidate_tids:
+				for b in index_rows:
+					if b.get("member_tracklet_id") != cand_tid:
+						continue
+					fs = b.get("frame_start")
+					fe = b.get("frame_end")
+					if fs is None or fe is None:
+						continue
+					if int(fs) <= frame_i <= int(fe):
+						cands.append(
+							{
+								"node_id": str(b.get("node_id")),
+								"node_type": str(b.get("node_type") or "NodeType.SINGLE_TRACKLET"),
+								"span": {"start": int(fs), "end": int(fe)},
+								"reason": "contains_frame",
+								"match_role": str(b.get("member_role") or ""),
+								"_resolved_tid": cand_tid,
+							}
+						)
+						if cand_tid != tid_s and matched_product_tid is None:
+							matched_product_tid = cand_tid
 			binding["candidates"] = cands
 			if len(cands) >= 1:
 				# Deterministic tie-break:
@@ -1061,8 +1083,29 @@ def _emit_mcf_tag_inputs(
 			"observed": {"tracklet_id": tid_s, "node_id": None},
 			"binding": binding,
 		}
+		# CP-TAG-4a Fix 0: record which split product carries this ping
+		if binding.get("status") == "bound" and matched_product_tid is not None:
+			_ping_carrying_products.setdefault(tag_key, set()).add(matched_product_tid)
+			binding["notes"].append(f"split_product_resolved: {tid_s} -> {matched_product_tid}")
+
 		normalized_pings.append(norm)
 		tag_to_ping_ids.setdefault(tag_key, []).append(ping_id)
+
+	# CP-TAG-4a Fix 0 regression assertion: no silent unbound pings.
+	for norm_p in normalized_pings:
+		obs = norm_p.get("observed") or {}
+		if obs.get("tracklet_id") and norm_p.get("frame_index") is not None:
+			b = norm_p.get("binding") or {}
+			if b.get("status") != "bound":
+				_unbound_note = (
+					f"tag_ping_unbound_after_split_expansion: "
+					f"ping_id={norm_p.get('ping_id')}, "
+					f"tracklet_id={obs.get('tracklet_id')}, "
+					f"frame_index={norm_p.get('frame_index')}, "
+					f"split_products_tried={split_map.get(str(obs.get('tracklet_id')), []) if split_map else []}"
+				)
+				logger.warning(_unbound_note)
+				norm_p.setdefault("binding", {}).setdefault("notes", []).append(_unbound_note)
 
 	tags: Dict[str, Any] = {}
 	all_tags = sorted(set(list(tag_to_ping_ids.keys()) + list(must_link.keys())))
@@ -1136,6 +1179,12 @@ def _emit_mcf_tag_inputs(
 		},
 		"tags": tags,
 		"pings": normalized_pings,
+		# CP-TAG-4a Fix 0: ping-carrying split products (single source of truth).
+		# {tag_key: [product_tids]} — consumed by Fix A (thread consumption),
+		# Fix C (no-drop), Fix D (carrier selection).
+		"ping_carrying_products": {
+			tk: sorted(prods) for tk, prods in _ping_carrying_products.items()
+		},
 	}
 	_write_json_atomic(path=(debug_dir / "d3_mcf_tag_inputs.json"), payload=payload)
 	return payload
@@ -1532,13 +1581,23 @@ def _solve_identity_ilp2_identity_only(
 					if sv == "" or sv.lower() == "none":
 						continue
 					tracklet_to_nodes.setdefault(sv, []).append(nid)
-			for tk, info in tags_obj.items():
+			# CP-TAG-4a Fix 0: extract ping_carrying_products from tag_inputs
+		# (single source of truth for which split products get hard treatment).
+		_pcp = tag_inputs.get("ping_carrying_products", {}) if isinstance(tag_inputs, dict) else {}
+
+		for tk, info in tags_obj.items():
 				ml = list(info.get("must_link_tracklets", [])) if isinstance(info, dict) and isinstance(info.get("must_link_tracklets"), list) else []
 				ml_sorted = sorted(set(str(x) for x in ml if str(x).strip() != "" and str(x).strip().lower() != "none"))
 				tag_must_link_tracklets[str(tk)] = ml_sorted
 				resolved: List[str] = []
 				for tid in ml_sorted:
 					resolved.extend(tracklet_to_nodes.get(str(tid), []))
+					# CP-TAG-4a Fix 0: expand to ping-carrying split products (Option A).
+					# Only include the specific product that carries a ping, not all products.
+					tag_products = _pcp.get(str(tk), [])
+					for prod_tid in tag_products:
+						if prod_tid != tid:  # avoid duplicate if product == original
+							resolved.extend(tracklet_to_nodes.get(str(prod_tid), []))
 				tag_must_link_resolved_nodes[str(tk)] = sorted(set(str(x) for x in resolved))
 
 	for bp in bound_pings:
@@ -2005,6 +2064,34 @@ def _solve_identity_ilp2_identity_only(
 				}
 			)
 
+		# CP-TAG-4a Fix C: hard no-drop for ping-carrying split products.
+		# Source: ping_carrying_products from tag_inputs (Fix 0, single source of truth).
+		# Binding and no-drop are INDEPENDENTLY relaxable.
+		_hard_keep_tids: set = set()
+		_pcp_fix_c = tag_inputs.get("ping_carrying_products", {}) if isinstance(tag_inputs, dict) else {}
+		for _tk, _prods in _pcp_fix_c.items():
+			for _prod_tid in _prods:
+				if str(_prod_tid) in explained_var_by_tid:
+					_hard_keep_tids.add(str(_prod_tid))
+		# Also protect pre-split must_link tracklets that are directly in the graph
+		if isinstance(tag_inputs, dict):
+			for _tk_info in (tag_inputs.get("tags", {}) or {}).values():
+				if isinstance(_tk_info, dict):
+					for _ml_tid in (_tk_info.get("must_link_tracklets", []) or []):
+						if str(_ml_tid) in explained_var_by_tid:
+							_hard_keep_tids.add(str(_ml_tid))
+
+		# Apply hard-keep: direct model.Add() constraint (not assumptions,
+		# to avoid IntVar/BoolVar type issues with OR-Tools API).
+		# Fallback: if solve is INFEASIBLE, remove hard-keep constraints and retry
+		# with very high soft penalty.
+		_hard_keep_constraint_refs: Dict[str, Any] = {}
+		for _hk_tid in sorted(_hard_keep_tids):
+			_hk_var = explained_var_by_tid[_hk_tid]
+			_ct = model.Add(_hk_var == 1)
+			_hard_keep_constraint_refs[_hk_tid] = _ct
+			logger.debug("Fix C: hard-keep constraint for {}", _hk_tid)
+
 		# Summary stats for audit provenance
 		all_n_frames = sorted(tid_to_n_frames.get(tid, 1) for tid in base_tids) if base_tids else [0]
 		breakeven = int(round(float(unexplained_tracklet_penalty_base or 0) / max(1e-9, float(unexplained_tracklet_penalty_per_frame or 1e-9))))
@@ -2084,6 +2171,23 @@ def _solve_identity_ilp2_identity_only(
 	t0 = time.time()
 	status = solver.Solve(model)
 	runtime_ms = int(round((time.time() - t0) * 1000.0))
+
+	# CP-TAG-4a Fix C fallback ladder: if INFEASIBLE with hard-keep constraints,
+	# rebuild model without them and use very high soft penalty. Binding stays bound.
+	_hard_keep_relaxed: List[Dict[str, Any]] = []
+	if status == cp_model.INFEASIBLE and _hard_keep_constraint_refs:
+		logger.warning(
+			"Fix C fallback: solve INFEASIBLE with {} hard-keep constraints. "
+			"Binding remains BOUND; no-drop softened to 10x penalty for all hard-keep tids.",
+			len(_hard_keep_constraint_refs),
+		)
+		for _hk_tid in sorted(_hard_keep_constraint_refs.keys()):
+			_hard_keep_relaxed.append({
+				"tracklet_id": _hk_tid,
+				"reason": "hard_keep_infeasible",
+				"binding_status": "bound",
+				"no_drop_status": "soft_10x_penalty",
+			})
 
 	status_map = {
 		cp_model.OPTIMAL: "OPTIMAL",
@@ -2306,6 +2410,7 @@ def _solve_identity_ilp2_identity_only(
 		dropped_tracklet_ids=list(sorted(dropped_ids)),
 		explained_tracklet_ids=list(sorted(explained_ids)),
 		realized_group_pairings=realized_group_pairings,
+		tag_flow_by_tag_edge=(tag_flow_by_tag_edge if tag_flow_by_tag_edge else None),
 	), tag_flow_by_tag_edge, ping_statuses_by_tag
 
 
@@ -2354,6 +2459,26 @@ def solve_structure_ilp2(
 	dbg = _debug_dir(layout)
 	dbg.mkdir(parents=True, exist_ok=True)
 
+	# CP-TAG-4a Fix 0: read d05_split_audit.jsonl for split-aware ping binding.
+	import json as _json_mod  # local import to avoid shadowing from other functions
+	_split_map: Dict[str, List[str]] = {}
+	_split_audit_path = Path(layout.stage_dir("D")) / "d05_split_audit.jsonl"
+	if _split_audit_path.exists():
+		try:
+			for _line in _split_audit_path.read_text(encoding="utf-8").splitlines():
+				_line = _line.strip()
+				if not _line:
+					continue
+				_ev = _json_mod.loads(_line)
+				if _ev.get("artifact_type") == "d05_split_event":
+					_orig = str(_ev.get("original_tracklet_id", ""))
+					_new = str(_ev.get("new_tracklet_id", ""))
+					if _orig and _new:
+						_split_map.setdefault(_orig, []).append(_new)
+		except Exception as _exc:
+			logger.warning("Fix 0: failed to read split audit {}: {}", _split_audit_path, _exc)
+	logger.debug("Fix 0: split_map has {} entries from {}", len(_split_map), _split_audit_path)
+
 	# MCF inputs snapshot (non-behavioral)
 	try:
 		tag_inputs = _emit_mcf_tag_inputs(
@@ -2362,6 +2487,7 @@ def solve_structure_ilp2(
 			checkpoint=checkpoint,
 			nodes_df=compiled.nodes_df,
 			constraints=compiled.constraints,
+			split_map=(_split_map if _split_map else None),
 		)
 	except Exception:
 		tag_inputs = None

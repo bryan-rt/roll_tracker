@@ -131,23 +131,23 @@ All trained from stock yolo26n-pose.pt, freeze=10, 100 epochs on T4 GPU.
 
 | Model | Dataset | Metrics | Status |
 |-------|---------|---------|--------|
-| bjj-detect-all-cameras | 902 frames, 3 cameras, bbox only | mAP@0.5=0.939, mAP@0.50-95=0.669, F1=0.89@0.537 | **Active** |
+| bjj-detect-all-cameras | 902 frames, 3 cameras, bbox only | mAP@0.5=0.939, mAP@0.50-95=0.669, F1=0.89@0.537 | Superseded by v2 |
 
 Base model: stock yolo26n.pt (detection, not pose). freeze=10, 100 epochs on T4 GPU.
 Dataset: 10789 annotations across 902 frames (FP7oJQ 301 + J_EDEw 301 + PPDmUg 300).
 Train/val: 749/153 (83/17%), per-camera stratified temporal split.
-CoreML export: `models/bjj-detect-all-cameras.mlpackage` (active inference path).
+CoreML export: `models/bjj-detect-all-cameras.mlpackage`.
 Config: `conf: 0.45`, `require_keypoints: false`, `prefer_coreml: true`.
 `DetectorConfig.iou: Optional[float] = None` — NMS IoU threshold (CP7-pre-6). Default
 None = production CoreML path (inert, proven by artifact-diff regression). Setting iou
 to any value **bypasses CoreML → .pt** and disables end2end NMS (~32fps vs ~79fps).
 See `docs/decisions-archive.md` for the end2end/CoreML double-NMS finding.
 
-*Detection dataset v2 (2026-06-02, not yet trained):*
+*Detection model v2 (active in Stage A since 2026-06-06):*
 
 | Model | Dataset | Metrics | Status |
 |-------|---------|---------|--------|
-| bjj-detect-all-cameras-v2 | 1352 frames (902 v1 + 450 J_EDEw-200246), bbox only | agg Recall@0.5=0.882 (+0.050 vs v1) | **Evaluated** |
+| bjj-detect-all-cameras-v2 | 1352 frames (902 v1 + 450 J_EDEw-200246), bbox only | agg Recall@0.5=0.882 (+0.050 vs v1) | **Active** |
 
 Dataset at `data/training_data/detection_all_cameras_v2/`. 1199 train / 153 val (val
 identical to v1). New 450 frames: J_EDEw-200246.mp4, frames 0–4490 stride 10, train only.
@@ -251,6 +251,7 @@ First trained model had FP7oJQ false positives from background memorization.
 | `python -m pipeline_validation signal-trace --stage tag` | Tag signal trace (CP-TAG-1) |
 | `tools/tag_fullscan.py` | Full-frame AprilTag scan (CP-TAG-2 ceiling experiment) |
 | `tools/tag_experiment.py` | Dense GT + full-scan tag comparison (CP-TAG-2) |
+| `tools/cp_tag_3_evidence.py` | CP-TAG-3 baseline evidence: tag-trace, session, carrier subcommands |
 
 ## Training Data Locations
 
@@ -471,14 +472,15 @@ Also runs GROUP falsification against `d1_segments.parquet`.
 (person_ids assigned but dominant not present), no_id (tracklet dropped by D), no_detection
 (Stage A miss).
 
-**Baseline results (bjj-detect-all-cameras):**
+**Corrected results (bjj-detect-all-cameras, post CP-TRACE-FIX split-product resolution):**
 
-| Camera | correct_id | wrong_id | no_id | no_detection | collisions |
-|--------|-----------|---------|-------|-------------|------------|
-| FP7oJQ | 3102 (73.6%) | 228 (5.4%) | 475 (11.3%) | 409 (9.7%) | 1 |
-| J_EDEw | 1533 (36.4%) | 748 (17.8%) | 1334 (31.7%) | 599 (14.2%) | 3 |
-| PPDmUg | 619 (26.2%) | 318 (13.5%) | 1315 (55.7%) | 109 (4.6%) | 2 |
-| **Aggregate** | **5254 (48.7%)** | **1294 (12.0%)** | **3124 (29.0%)** | **1117 (10.4%)** | **6** |
+| Camera | correct_id | wrong_id | no_id | no_detection |
+|--------|-----------|---------|-------|-------------|
+| **Aggregate** | **6,330 (58.7%)** | **3,039 (28.2%)** | **303 (2.8%)** | **1,117 (10.4%)** |
+
+*(Pre-fix results showed 48.7% correct_id, 29.0% no_id — the 29% was a join-key mismatch
+artifact between detections.parquet and person_tracks due to D0.5 split-product renaming.
+See CP-TRIM-1.)*
 
 **GROUP falsification (bjj-detect-all-cameras):**
 
@@ -491,10 +493,6 @@ Also runs GROUP falsification against `d1_segments.parquet`.
 Verdict: GROUP engagement on pair-box tracklets is coincidental — triggered by lifecycle
 events (merges/splits of other tracklets), not by the pair-box itself. Pair-boxes don't
 create lifecycle events, so GROUP cannot address the under-segmentation problem.
-
-**Corrected aggregate (post CP-TRACE-FIX split-product resolution):**
-58.7% correct_id, 28.2% wrong_id, 2.8% no_id, 10.4% no_detection.
-Original 29.0% no_id was a measurement artifact (join-key mismatch, see CP-TRIM-1).
 
 ### Signal Trace E/F + Verdict (CP-TRACE-3, completed 2026-06-02)
 
@@ -786,9 +784,10 @@ Docs: `cp7_pre8_axis1_signature.md` (SUPERSEDED), `cp7_pre9_branchb_margin.md`,
 | CP-TAG-1: Tag signal trace | **Complete** | Tag detection is bbox-gated (Stage C scans padded detection bboxes only). Tag visibility 0.07-0.23% of tracklet frames. Signal chain C→D2→D4 works (2/2 videos), but tags too rare for sole identity. Cross-tab: 28% of wrong_id from pair_box, 72% from tight_match. See `signal_trace/tag_trace.py`. |
 | CP-TAG-2: Tag ceiling experiment | **Complete** | Full-frame scan (no bbox/cadence restriction) found identical tag observations to pipeline (1+3 across 9,030 frames). Bottleneck is physical occlusion at ceiling distance, not pipeline gating. Dense GT (stride-1, 10x points) confirms stride-10 is representative (±0.3pp). AprilTags cannot be sole identity mechanism. See `tools/tag_fullscan.py`, `tools/tag_experiment.py`. |
 | Cross-tracklet identity diagnostic | **Complete** | Must_link is soft (2× penalty), identity doesn't propagate across tracklets, GROUP dilutes tag identity. Video 1: 17 person_ids for 1 GT person, 167 intra-tracklet transitions. Video 2: tagged tracklet (862f) dropped, tag assigned to wrong person via nested detection. Three architectural gaps: soft must_link, no path propagation, GROUP dilution. |
-| Must_link hardening for tagged tracklets | **Planned** | Make must_link a hard ILP constraint for tag-observed tracklets. Prevents solver from dropping tagged tracklets (video 2 t99 failure). |
-| Tag identity propagation along solver paths | **Planned** | Non-tagged tracklets on same solver path should inherit tag anchor from tagged tracklet. Currently confined to must_link group only. |
-| GROUP dilution of tag identity | **Planned** | Tagged tracklet t366 has 3 person_ids due to GROUP segments. May resolve if must_link hardening + path propagation are implemented. |
+| CP-TAG-3: Two-clip harness + tag identity baseline | **Complete** | Two-clip J_EDEw harness under `_eval_gt`. Baseline: vid1 25.6% correct_id (t366, 1125 session transitions), vid2 22.2% correct_id (t139, 2680 session transitions). Both tagged tracklets KEPT at session level, 4 identity_assignments for tag:1 all spanning clip boundary. GROUP dilution is dominant corruption (14/12 person_ids per tagged tracklet). Prior 16.9% vid2 number was stale (pre-CP5). tag_trace.py:1181 hardcode footgun documented. Session-level trace mode gap noted — likely its own checkpoint before post-CP-TAG-4 gate. Evidence: `docs/evidence/cp_tag_3_baseline/`. Harness: `tools/cp_tag_3_evidence.py`. |
+| CP-TAG-4a: Tag-anchored identity (Fix 0+A+C+D) | **Complete** | Split-aware ping binding (Fix 0: d05_split_audit expansion in d3_ilp2.py + session aggregation). D4 thread consumption (Fix A: tag_flow_by_tag_edge on ILPResult, exactly 1 identity_assignment per tag via solver_tag_thread). Hard no-drop for ping-carrying products (Fix C: explained==1 with fallback ladder). Carrier selection unit tests (Fix D: tests/test_carrier_selection.py). Results: vid2 ping now BOUND (was unbound), tag:1→1 assignment at session level (was 4), p0022 spans clip boundary. Correct_id decreased (vid1 17.6% from 25.6%, vid2 19.1% from 22.2%) due to Fix C changing solver optimum — expected low-coverage outcome, clean handoff to CP-TAG-4b. Evidence: `docs/evidence/cp_tag_4_post/`. |
+| CP-TAG-4b: Hard ping connectivity | **Deferred** | Forces tag thread through both pings. Gated on CP-TAG-4a results + CP21 appearance costs. Currently the soft thread visits the correct tracklet (t139_s3) but drifts afterward — hard connectivity would force the thread to stay connected, but without appearance costs risks misrouting. |
+| GROUP dilution of tag identity | **Diagnosed** | CP-TAG-3/4a: root cause is D0.5 split products creating GROUP nodes (t139 → 15 products, 10 GROUP carrier nodes). Fix A gives exactly 1 tag→person mapping; GROUP dilution of the ENTITY path remains. Fix B (connectivity) + CP21 (appearance) are the levers for coverage improvement. |
 
 ## Never Touch
 

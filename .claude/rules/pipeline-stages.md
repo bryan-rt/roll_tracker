@@ -6,8 +6,8 @@ paths:
 # CV Pipeline Stages
 
 ## Phase 1 — Online (parallel, per-clip via multiplex_AC)
-- **Stage A** `detect_track`: `bjj-detect-all-cameras.pt` detection-only model (CP23b,
-  domain-tuned yolo26n, 902 frames 3 cameras) + BoT-SORT on raw frames. Detection-only:
+- **Stage A** `detect_track`: `bjj-detect-all-cameras-v2.pt` detection-only model (CP23b,
+  domain-tuned yolo26n, 1352 frames 3 cameras) + BoT-SORT on raw frames. Detection-only:
   no pose head, `require_keypoints: false`, `conf: 0.45`. CoreML `.mlpackage` is the
   active inference path (`prefer_coreml: true`). Keypoints sidecar writes NaN columns
   when model has no pose head — this is expected behavior.

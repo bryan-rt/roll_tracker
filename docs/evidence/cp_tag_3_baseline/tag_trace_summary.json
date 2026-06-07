@@ -1,0 +1,69 @@
+{
+  "vid1_faithfulness_check": {
+    "passed": true,
+    "ours": {
+      "correct_id": 77,
+      "wrong_id": 152,
+      "no_id": 3,
+      "no_detection": 69
+    },
+    "official": {
+      "correct_id": 77,
+      "wrong_id": 152,
+      "no_id": 3,
+      "no_detection": 69
+    }
+  },
+  "vid2_baseline": {
+    "gt_track_id": 8,
+    "tracklet_ids": [
+      "t139"
+    ],
+    "n_tag_observations": 1,
+    "tag_detection_rate": 0.00036403349108117945,
+    "chain_complete": true,
+    "failure_analysis": {
+      "correct_id": 100,
+      "wrong_id": 229,
+      "no_id": 50,
+      "no_detection": 71
+    },
+    "total_frames": 450
+  },
+  "stage_a_summary": {
+    "tight_match": {
+      "count": 4295,
+      "pct": 0.7448
+    },
+    "pair_box": {
+      "count": 726,
+      "pct": 0.1259
+    },
+    "split": {
+      "count": 0,
+      "pct": 0.0
+    },
+    "miss": {
+      "count": 746,
+      "pct": 0.1294
+    }
+  },
+  "stage_d_summary": {
+    "correct_id": {
+      "count": 1922,
+      "pct": 0.3333
+    },
+    "wrong_id": {
+      "count": 2833,
+      "pct": 0.4912
+    },
+    "no_id": {
+      "count": 266,
+      "pct": 0.0461
+    },
+    "no_detection": {
+      "count": 746,
+      "pct": 0.1294
+    }
+  }
+}

@@ -210,6 +210,9 @@ calibration_test/output/
 # CoreML exports (large derived artifacts, reproducible via ultralytics export)
 models/*.mlpackage
 
+# ReID weights (auto-downloaded by boxmot)
+models/osnet_*.pt
+
 services/uploader/.env
 services/processor/.env
 services/nest_recorder/.env
