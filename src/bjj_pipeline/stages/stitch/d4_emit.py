@@ -325,6 +325,42 @@ def run_d4_emit(
             )
 
     # ------------------------------------------------------------------
+    # 2b) CP-TAG-4a Fix A: map tags to person_ids via the solved tag thread.
+    # ------------------------------------------------------------------
+    tag_to_person_id: Dict[str, str] = {}
+    _tag_flow = getattr(res, "tag_flow_by_tag_edge", None)
+    if _tag_flow and isinstance(_tag_flow, dict):
+        # Build entity_index → set of edge_ids for each entity
+        entity_edge_sets: List[tuple[str, set]] = []
+        _ent_person_idx = 1
+        for ent in entities:
+            _ent_pid = f"p{_ent_person_idx:04d}"
+            _ent_person_idx += 1
+            _ent_edges: set = set()
+            for step in ent.get("steps", []):
+                _eid = step.get("edge_id") or (step.get("edge", {}) or {}).get("edge_id")
+                if _eid:
+                    _ent_edges.add(str(_eid))
+            entity_edge_sets.append((_ent_pid, _ent_edges))
+
+        for tk, tf_edges in _tag_flow.items():
+            if not tf_edges:
+                continue
+            tag_edge_set = set(str(e) for e, v in tf_edges.items() if v > 0)
+            if not tag_edge_set:
+                continue
+            # Find which entity carries the most tag-flow edges
+            best_pid = None
+            best_count = 0
+            for _ent_pid, _ent_edges in entity_edge_sets:
+                overlap = len(tag_edge_set & _ent_edges)
+                if overlap > best_count:
+                    best_count = overlap
+                    best_pid = _ent_pid
+            if best_pid:
+                tag_to_person_id[str(tk)] = best_pid
+
+    # ------------------------------------------------------------------
     # 3) Emit person_spans.parquet (helper artifact)
     # ------------------------------------------------------------------
     if person_spans:
@@ -474,18 +510,51 @@ def run_d4_emit(
         identity_assignment_reason = "no_tracklet_overlap_between_tags_and_tracks"
 
     if identity_assignment_reason == "emitted":
+        created_at_ms = int(time.time() * 1000)
+
+        # CP-TAG-4a Fix A: for tags with a solved thread, emit exactly ONE
+        # identity_assignment from the thread mapping. Bypass overlap scoring.
+        _thread_assigned_tags: set = set()
+        for anchor_key_raw, thread_pid in tag_to_person_id.items():
+            tag_id_str = (
+                anchor_key_raw.split("tag:", 1)[1]
+                if "tag:" in anchor_key_raw
+                else anchor_key_raw
+            )
+            identity_records.append(
+                {
+                    "schema_version": SCHEMA_VERSION_DEFAULT,
+                    "artifact_type": "identity_assignment",
+                    "clip_id": manifest.clip_id,
+                    "camera_id": manifest.camera_id,
+                    "pipeline_version": manifest.pipeline_version,
+                    "created_at_ms": created_at_ms,
+                    "person_id": str(thread_pid),
+                    "tag_id": str(tag_id_str),
+                    "assignment_confidence": 1.0,
+                    "evidence": {
+                        "method": "solver_tag_thread",
+                        "anchor_key": str(anchor_key_raw),
+                        "thread_person_id": str(thread_pid),
+                    },
+                }
+            )
+            _thread_assigned_tags.add(str(anchor_key_raw))
+
+        # Fallback: overlap scoring for tags NOT covered by the thread mapping
+        # (untagged person_ids or tags without a solved thread).
         frame_counts = (
             person_tracks_df.groupby(["person_id", "tracklet_id"])
             .size()
             .to_dict()
         )
 
-        created_at_ms = int(time.time() * 1000)
-
         for person_id in person_tracks_df["person_id"].unique():
             tag_scores: Dict[str, int] = {}
             for g in tag_groups:
                 anchor_key = g["anchor_key"]  # e.g. "tag:1"
+                if anchor_key in _thread_assigned_tags:
+                    continue  # already assigned via thread
                 overlap = set(g.get("tracklet_ids", []) or [])
                 score = 0
                 for (pid, tid), cnt in frame_counts.items():
@@ -505,7 +574,6 @@ def run_d4_emit(
             dominant_anchor_key, dominant_score = sorted_tags[0]
             total = sum(tag_scores.values())
 
-            # anchor_key="tag:1" -> tag_id="1" (string)
             tag_id = (
                 dominant_anchor_key.split("tag:", 1)[1]
                 if "tag:" in dominant_anchor_key
@@ -513,6 +581,7 @@ def run_d4_emit(
             )
 
             evidence: Dict[str, Any] = {
+                "method": "frame_overlap",
                 "anchor_key": dominant_anchor_key,
                 "tag_scores": tag_scores,
                 "dominant_score": int(dominant_score),
@@ -573,6 +642,9 @@ def run_d4_emit(
         "person_tracks_tracklet_ids_sample": person_tracklet_sample,
         "n_overlap_tracklet_ids": len(overlap_tracklet_ids),
         "overlap_tracklet_ids_sample": overlap_sample,
+        # CP-TAG-4a Fix A: thread-based identity assignments
+        "n_thread_assigned_tags": len(tag_to_person_id),
+        "thread_assigned_tags": {str(k): str(v) for k, v in tag_to_person_id.items()},
     }
     # append_audit_event in this repo is keyword-only; support the common signatures.
     try:

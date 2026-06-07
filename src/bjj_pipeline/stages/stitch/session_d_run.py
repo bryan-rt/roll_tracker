@@ -361,6 +361,30 @@ def aggregate_session_bank(
                     except json.JSONDecodeError:
                         pass
 
+    # --- D0.5 split audit aggregation (CP-TAG-4a Fix 0) ---
+    # D3 needs split lineage to bind tag pings to post-split product nodes.
+    # Per-clip d05_split_audit.jsonl is namespaced with clip_id prefix.
+    all_split_events: List[dict] = []
+    for mp4_path, clip_dt in cam_clips:
+        clip_layout = _get_clip_layout(mp4_path, cam_id, output_root)
+        if clip_layout is None:
+            continue
+        clip_prefix = mp4_path.stem
+        split_audit_path = Path(clip_layout.stage_dir("D")) / "d05_split_audit.jsonl"
+        if split_audit_path.exists():
+            try:
+                for line in split_audit_path.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    ev = json.loads(line)
+                    if ev.get("artifact_type") == "d05_split_event":
+                        ev["original_tracklet_id"] = f"{clip_prefix}:{ev['original_tracklet_id']}"
+                        ev["new_tracklet_id"] = f"{clip_prefix}:{ev['new_tracklet_id']}"
+                        all_split_events.append(ev)
+            except Exception as exc:
+                logger.warning("session_bank: failed to read split audit {}: {}", split_audit_path, exc)
+
     if not all_frames:
         raise PipelineError("no valid frames for session bank aggregation")
 
@@ -394,6 +418,14 @@ def aggregate_session_bank(
     with open(hints_out, "w", encoding="utf-8") as f:
         for hint in all_hints:
             f.write(json.dumps(hint) + "\n")
+
+    # Split audit (CP-TAG-4a)
+    split_audit_out = adapter.stage_dir("D") / "d05_split_audit.jsonl"
+    with open(split_audit_out, "w", encoding="utf-8") as f:
+        for ev in all_split_events:
+            f.write(json.dumps(ev) + "\n")
+    if all_split_events:
+        logger.info("session_bank: wrote {} split events → {}", len(all_split_events), split_audit_out.name)
 
     return frames_out, summaries_out, detections_out, hints_out
 
