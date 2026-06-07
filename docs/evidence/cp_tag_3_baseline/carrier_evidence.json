@@ -1,0 +1,196 @@
+{
+  "tagged_tracklets": [
+    "t139"
+  ],
+  "observation_frames": [
+    1781
+  ],
+  "frames": {
+    "1781": {
+      "frame_index": 1781,
+      "detections": {
+        "t103": {
+          "x1": 1.0,
+          "y1": 282.0,
+          "x2": 74.0,
+          "y2": 425.0,
+          "width": 73.0,
+          "height": 143.0,
+          "area": 10439.0,
+          "center_x": 37.5,
+          "center_y": 353.5
+        },
+        "t126": {
+          "x1": 2.0,
+          "y1": 265.0,
+          "x2": 68.0,
+          "y2": 358.0,
+          "width": 66.0,
+          "height": 93.0,
+          "area": 6138.0,
+          "center_x": 35.0,
+          "center_y": 311.5
+        },
+        "t134": {
+          "x1": 985.0,
+          "y1": 158.0,
+          "x2": 1040.0,
+          "y2": 235.0,
+          "width": 55.0,
+          "height": 77.0,
+          "area": 4235.0,
+          "center_x": 1012.5,
+          "center_y": 196.5
+        },
+        "t107": {
+          "x1": 22.0,
+          "y1": 255.0,
+          "x2": 86.0,
+          "y2": 376.0,
+          "width": 64.0,
+          "height": 121.0,
+          "area": 7744.0,
+          "center_x": 54.0,
+          "center_y": 315.5
+        },
+        "t88": {
+          "x1": 354.0,
+          "y1": 236.0,
+          "x2": 410.0,
+          "y2": 312.0,
+          "width": 56.0,
+          "height": 76.0,
+          "area": 4256.0,
+          "center_x": 382.0,
+          "center_y": 274.0
+        },
+        "t85": {
+          "x1": 409.0,
+          "y1": 225.0,
+          "x2": 484.0,
+          "y2": 297.0,
+          "width": 75.0,
+          "height": 72.0,
+          "area": 5400.0,
+          "center_x": 446.5,
+          "center_y": 261.0
+        },
+        "t117": {
+          "x1": 467.0,
+          "y1": 109.0,
+          "x2": 520.0,
+          "y2": 228.0,
+          "width": 53.0,
+          "height": 119.0,
+          "area": 6307.0,
+          "center_x": 493.5,
+          "center_y": 168.5
+        },
+        "t139": {
+          "x1": 617.0,
+          "y1": 124.0,
+          "x2": 678.0,
+          "y2": 295.0,
+          "width": 61.0,
+          "height": 171.0,
+          "area": 10431.0,
+          "center_x": 647.5,
+          "center_y": 209.5
+        },
+        "t156": {
+          "x1": 679.0,
+          "y1": 282.0,
+          "x2": 720.0,
+          "y2": 605.0,
+          "width": 41.0,
+          "height": 323.0,
+          "area": 13243.0,
+          "center_x": 699.5,
+          "center_y": 443.5
+        },
+        "t5": {
+          "x1": 703.0,
+          "y1": 99.0,
+          "x2": 760.0,
+          "y2": 243.0,
+          "width": 57.0,
+          "height": 144.0,
+          "area": 8208.0,
+          "center_x": 731.5,
+          "center_y": 171.0
+        },
+        "t148": {
+          "x1": 941.0,
+          "y1": 276.0,
+          "x2": 1094.0,
+          "y2": 600.0,
+          "width": 153.0,
+          "height": 324.0,
+          "area": 49572.0,
+          "center_x": 1017.5,
+          "center_y": 438.0
+        }
+      },
+      "tag_observations": [
+        {
+          "tracklet_id": "t139",
+          "tag_id": "1",
+          "tag_center": {
+            "x": 647.5,
+            "y": 209.5
+          },
+          "roi_xyxy": [
+            608,
+            98,
+            687,
+            321
+          ]
+        }
+      ],
+      "overlaps": []
+    }
+  },
+  "t139_length": {
+    "n_frames": 2747,
+    "min_frame": 1571,
+    "max_frame": 4458
+  },
+  "t139_segments": {
+    "group_count": 0,
+    "solo_count": 1,
+    "group_nodes": []
+  },
+  "t139_person_ids": [
+    "p0001",
+    "p0004",
+    "p0005",
+    "p0008",
+    "p0010",
+    "p0012",
+    "p0013",
+    "p0015",
+    "p0016",
+    "p0018",
+    "p0019",
+    "p0020",
+    "p0021",
+    "p0022",
+    "p0033"
+  ],
+  "t139_person_id_transitions": 2277,
+  "comparison_with_prior": {
+    "prior_tagged_tracklets": [
+      "t99",
+      "t143"
+    ],
+    "prior_nesting": true,
+    "prior_t99_length": 862,
+    "prior_t143_length": 17,
+    "prior_t99_dropped": true,
+    "current_tagged_tracklets": [
+      "t139"
+    ],
+    "current_nesting": false,
+    "note": "The v2-model _eval_gt run produces different tracklet IDs and topology from the stale real-gym-id run. The old t99/t143 nested detection (where the tag observation was captured by the short nested tracklet and routed to the wrong person when t99 was dropped) no longer occurs. The carrier-selection rule question from the task brief may need reframing for the current pipeline state."
+  }
+}

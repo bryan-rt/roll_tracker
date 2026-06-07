@@ -251,6 +251,7 @@ First trained model had FP7oJQ false positives from background memorization.
 | `python -m pipeline_validation signal-trace --stage tag` | Tag signal trace (CP-TAG-1) |
 | `tools/tag_fullscan.py` | Full-frame AprilTag scan (CP-TAG-2 ceiling experiment) |
 | `tools/tag_experiment.py` | Dense GT + full-scan tag comparison (CP-TAG-2) |
+| `tools/cp_tag_3_evidence.py` | CP-TAG-3 baseline evidence: tag-trace, session, carrier subcommands |
 
 ## Training Data Locations
 
@@ -783,9 +784,10 @@ Docs: `cp7_pre8_axis1_signature.md` (SUPERSEDED), `cp7_pre9_branchb_margin.md`,
 | CP-TAG-1: Tag signal trace | **Complete** | Tag detection is bbox-gated (Stage C scans padded detection bboxes only). Tag visibility 0.07-0.23% of tracklet frames. Signal chain C→D2→D4 works (2/2 videos), but tags too rare for sole identity. Cross-tab: 28% of wrong_id from pair_box, 72% from tight_match. See `signal_trace/tag_trace.py`. |
 | CP-TAG-2: Tag ceiling experiment | **Complete** | Full-frame scan (no bbox/cadence restriction) found identical tag observations to pipeline (1+3 across 9,030 frames). Bottleneck is physical occlusion at ceiling distance, not pipeline gating. Dense GT (stride-1, 10x points) confirms stride-10 is representative (±0.3pp). AprilTags cannot be sole identity mechanism. See `tools/tag_fullscan.py`, `tools/tag_experiment.py`. |
 | Cross-tracklet identity diagnostic | **Complete** | Must_link is soft (2× penalty), identity doesn't propagate across tracklets, GROUP dilutes tag identity. Video 1: 17 person_ids for 1 GT person, 167 intra-tracklet transitions. Video 2: tagged tracklet (862f) dropped, tag assigned to wrong person via nested detection. Three architectural gaps: soft must_link, no path propagation, GROUP dilution. |
-| Must_link hardening for tagged tracklets | **Planned** | Make must_link a hard ILP constraint for tag-observed tracklets. Prevents solver from dropping tagged tracklets (video 2 t99 failure). |
+| CP-TAG-3: Two-clip harness + tag identity baseline | **Complete** | Two-clip J_EDEw harness under `_eval_gt`. Baseline: vid1 25.6% correct_id (t366, 1125 session transitions), vid2 22.2% correct_id (t139, 2680 session transitions). Both tagged tracklets KEPT at session level, 4 identity_assignments for tag:1 all spanning clip boundary. GROUP dilution is dominant corruption (14/12 person_ids per tagged tracklet). Prior 16.9% vid2 number was stale (pre-CP5). tag_trace.py:1181 hardcode footgun documented. Session-level trace mode gap noted — likely its own checkpoint before post-CP-TAG-4 gate. Evidence: `docs/evidence/cp_tag_3_baseline/`. Harness: `tools/cp_tag_3_evidence.py`. |
+| Must_link hardening for tagged tracklets | **Planned** | Make must_link a hard ILP constraint for tag-observed tracklets. CP-TAG-3 shows tagged tracklets are KEPT with current soft penalty (no drops in two-clip session), but GROUP dilution assigns 12-14 person_ids. Priority may shift from drop prevention to GROUP dilution. |
 | Tag identity propagation along solver paths | **Planned** | Non-tagged tracklets on same solver path should inherit tag anchor from tagged tracklet. Currently confined to must_link group only. |
-| GROUP dilution of tag identity | **Planned** | Tagged tracklet t366 has 3 person_ids due to GROUP segments. May resolve if must_link hardening + path propagation are implemented. |
+| GROUP dilution of tag identity | **Planned** | CP-TAG-3 baseline: t366 has 14 person_ids (1125 transitions), t139 has 12 person_ids (2680 transitions) at session level. This is the dominant tag identity corruption mechanism — worse than prior diagnostic (was 3 person_ids for t366 in per-clip run). Session-level GROUP segments amplify the problem. |
 
 ## Never Touch
 
