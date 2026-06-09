@@ -276,7 +276,7 @@ def compute_frame_features(
 
             bhatt_map: dict[tuple[str, int], float] = {}
             for tid_h, hgrp in hist_data.groupby("tracklet_id"):
-                hvals = hgrp[hist_bin_cols].values  # (n_frames, 144)
+                hvals = hgrp[hist_bin_cols].values  # (n_frames, n_hist_bins)
                 hframes = hgrp["frame_index"].values
                 for i in range(1, len(hframes)):
                     h1 = hvals[i - 1]

@@ -33,6 +33,7 @@ from bjj_pipeline.stages.detect_track.histogram import (
     HIST_H_BINS,
     HIST_S_BINS,
     HIST_SIZE,
+    HIST_V_BINS,
     _center_crop_from_bbox,
     bhattacharyya_distance,
     compute_hsv_histogram,
@@ -316,14 +317,14 @@ def _compute_foreground_mask(
 def _compute_masked_histogram(
     crop_bgr: np.ndarray, mask: np.ndarray,
 ) -> Optional[np.ndarray]:
-    """Compute 144-dim HSV histogram using foreground mask."""
+    """Compute HIST_SIZE-dim HSV histogram using foreground mask."""
     if mask.sum() == 0:
         return None
     hsv = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2HSV)
     hist = cv2.calcHist(
-        [hsv], [0, 1], mask,
-        [HIST_H_BINS, HIST_S_BINS],
-        [0, 180, 0, 256],
+        [hsv], [0, 1, 2], mask,
+        [HIST_H_BINS, HIST_S_BINS, HIST_V_BINS],
+        [0, 180, 0, 256, 0, 256],
     )
     total = hist.sum()
     if total > 0:
@@ -331,9 +332,14 @@ def _compute_masked_histogram(
     return hist.flatten().astype(np.float32)
 
 
-def _estimate_dominant_hue_sat(hist_144: np.ndarray) -> Tuple[int, int]:
-    """Estimate dominant H and S bin from a 144-dim histogram."""
-    hist_2d = hist_144.reshape(HIST_H_BINS, HIST_S_BINS)
+def _estimate_dominant_hue_sat(hist_flat: np.ndarray) -> Tuple[int, int]:
+    """Estimate dominant H and S bin from a histogram (projects out V if 3D)."""
+    # Project out V by summing over the V axis, then find dominant H/S bin
+    if hist_flat.size == HIST_H_BINS * HIST_S_BINS * HIST_V_BINS:
+        hist_3d = hist_flat.reshape(HIST_H_BINS, HIST_S_BINS, HIST_V_BINS)
+        hist_2d = hist_3d.sum(axis=2)
+    else:
+        hist_2d = hist_flat.reshape(HIST_H_BINS, HIST_S_BINS)
     idx = np.unravel_index(np.argmax(hist_2d), hist_2d.shape)
     h_bin, s_bin = idx
     # Convert to approximate HSV values

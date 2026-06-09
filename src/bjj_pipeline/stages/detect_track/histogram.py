@@ -1,7 +1,8 @@
 """CP20 Part C: Color histogram extraction from torso crops.
 
 Extracts a coarse HSV histogram per detection for cross-camera appearance matching.
-H channel (18 bins) × S channel (8 bins) = 144-element normalized vector.
+H channel (18 bins) × S channel (8 bins) × V channel (6 bins) = 864-element normalized
+vector. V-channel added by CP-HSV-V (was H+S only / 144-dim prior to 2026-06-09).
 """
 
 from __future__ import annotations
@@ -20,7 +21,8 @@ _TORSO_INDICES = [_TORSO_SHOULDER_L, _TORSO_SHOULDER_R, _TORSO_HIP_L, _TORSO_HIP
 
 HIST_H_BINS = 18
 HIST_S_BINS = 8
-HIST_SIZE = HIST_H_BINS * HIST_S_BINS  # 144
+HIST_V_BINS = 6
+HIST_SIZE = HIST_H_BINS * HIST_S_BINS * HIST_V_BINS  # 864
 
 
 def _torso_crop_from_keypoints(
@@ -89,12 +91,12 @@ def _center_crop_from_bbox(
 
 
 def compute_hsv_histogram(crop_bgr: np.ndarray) -> np.ndarray:
-    """Compute normalized 2D HSV histogram (H×S). Returns flat float32 vector of length 144."""
+    """Compute normalized 3D HSV histogram (H×S×V). Returns flat float32 vector of length HIST_SIZE."""
     hsv = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2HSV)
     hist = cv2.calcHist(
-        [hsv], [0, 1], None,
-        [HIST_H_BINS, HIST_S_BINS],
-        [0, 180, 0, 256],
+        [hsv], [0, 1, 2], None,
+        [HIST_H_BINS, HIST_S_BINS, HIST_V_BINS],
+        [0, 180, 0, 256, 0, 256],
     )
     total = hist.sum()
     if total > 0:
@@ -112,7 +114,7 @@ def extract_histogram(
     """Extract HSV histogram for a single detection.
 
     Returns:
-        (histogram_144, crop_method) where crop_method is one of:
+        (histogram, crop_method) where crop_method is one of:
         "torso_pose", "center_bbox", "not_isolated"
     """
     if not is_isolated:
@@ -139,7 +141,7 @@ def compute_tracklet_histogram_summary(
     """Average isolated-frame histograms for a tracklet.
 
     Returns:
-        (avg_histogram_144, n_isolated_frames, crop_method_distribution)
+        (avg_histogram, n_isolated_frames, crop_method_distribution)
     """
     if not histograms:
         return None, 0, {}
@@ -159,9 +161,13 @@ def compute_tracklet_histogram_summary(
 
 
 def bhattacharyya_distance(hist_a: np.ndarray, hist_b: np.ndarray) -> float:
-    """Bhattacharyya distance between two normalized histograms. Range [0, 1]."""
+    """Bhattacharyya distance between two normalized histograms. Range [0, 1].
+
+    Shape-invariant: works on any dimensionality (H×S, H×S×V, flat).
+    cv2.compareHist gives identical results regardless of input shape.
+    """
     return float(cv2.compareHist(
-        hist_a.reshape(HIST_H_BINS, HIST_S_BINS).astype(np.float32),
-        hist_b.reshape(HIST_H_BINS, HIST_S_BINS).astype(np.float32),
+        hist_a.astype(np.float32).ravel(),
+        hist_b.astype(np.float32).ravel(),
         cv2.HISTCMP_BHATTACHARYYA,
     ))

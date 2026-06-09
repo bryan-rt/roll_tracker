@@ -88,13 +88,14 @@ color_histograms.parquet, tracklet_histogram_summaries.parquet.
 - Calibration wizard re-run for all 3 cameras with updated lens cal
 - Cross-camera agreement verified (sub-cm, 9mm worst-case)
 - ROI mask union fix: brief written, not yet applied (parked)
-- **V-channel gap (CP-RASTER-PLATE-2):** Production histogram is H+S only
-  (`histogram.py:95`, channels 0+1). V excluded → black/white/gray gis
-  IDENTICAL in feature space. Measured: H+S+V AUC=0.907 vs H+S=0.815
-  (+9.2%). V-only AUC=0.894 (V carries nearly all the missing signal).
-  Intrinsic floor halves (28.2%→14.6%). Same-color AUC ~0.69 (appearance
-  strong on different-color, weak within same-color clusters). V-extension
-  is the next production change. Evidence: `docs/evidence/cp_raster_plate_2/`.
+- **V-channel FIXED (CP-HSV-V):** Production histogram extended from H+S (144-dim)
+  to H+S+V (864-dim, 18×8×6). `histogram.py` now uses channels [0,1,2] with
+  `HIST_V_BINS=6`. `bhattacharyya_distance` compares flat (shape-invariant).
+  Black vs white now separable (was distance ~0, now ~1.0). D0.5 Tier 3 split
+  count increases (25→149 vid1, 46→260 vid2) — expected from richer signal.
+  Tier 1/2 counts: T1 identical, T2 slightly down (dwell filter interaction).
+  All non-histogram artifacts unchanged (detection/tracking/graph).
+  Evidence: `docs/evidence/cp_raster_plate_2/`.
 
 **CP22 (completed):** Default detection model updated to yolo26n-pose (STAL loss, better
 small-object detection). ultralytics upgraded 8.3.252 → 8.4.33 (`--no-deps`).
@@ -307,10 +308,9 @@ First trained model had FP7oJQ false positives from background memorization.
 
 **Appearance arc (decided sequence, gated on CP-RASTER-PLATE-2 GO):**
 1. ~~Measure separability~~ — DONE (CP-RASTER-PLATE-2, GO verdict)
-2. **V-channel histogram extension [NEXT, production]** — extend `histogram.py`
-   from H+S (144-dim) to H+S+V (864-dim, 18×8×6). Non-breaking: new `hist_` columns;
-   downstream reads by prefix. This is a production fix independent of masking.
-3. **H+S+V temporal discontinuity as D0.5 Tier 3 trigger** — a WITHIN-tracklet
+2. ~~V-channel histogram extension~~ — DONE (CP-HSV-V). `histogram.py` now
+   H+S+V (864-dim, 18×8×6). All consumers verified safe (dynamic column discovery).
+3. **H+S+V temporal discontinuity as D0.5 Tier 3 trigger [NEXT]** — a WITHIN-tracklet
    across-time test (histogram similarity between consecutive windows), distinct from
    the across-people separability already measured. May replace or supplement the
    current Bhattacharyya Tier 3 (which uses H+S only, threshold 0.15).
