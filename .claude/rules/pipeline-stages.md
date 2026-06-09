@@ -18,6 +18,9 @@ paths:
   `require_keypoints` config controls whether H4 torso keypoint check is applied — set
   false for detect-only models), HSV color histogram extraction (torso-crop with
   center-bbox fallback, falls back to center-bbox when no keypoints available).
+  **V-channel gap:** histogram is H+S only (18×8=144-dim, `histogram.py:95` channels
+  0+1). V excluded → black/white/gray identical in feature space. H+S+V extension is
+  the next production change (CP-RASTER-PLATE-2 GO verdict, AUC +9.2%).
   Outputs: detections, tracklet_frames, tracklet_summaries, contact_points (all .parquet),
   keypoints.parquet, color_histograms.parquet, tracklet_histogram_summaries.parquet,
   audit.jsonl.

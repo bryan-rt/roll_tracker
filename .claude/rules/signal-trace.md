@@ -66,3 +66,13 @@ Pre-fix artifacts preserved at `outputs/_eval/signal_trace/bjj-detect-all-camera
 **Stage D:** 58.7% correct_id, 28.2% wrong_id, 2.8% no_id, 10.4% no_detection
 
 Root cause ranking: wrong_id (28.2%) > pair_box (23.1%) > miss (10.4%) > d4_frame_trim (2.5%) > d3_solver_drop (0.3%)
+
+**NOTE:** The 58.7% is a THREE-CAMERA aggregate. Single-camera J_EDEw baseline is ~40.5%.
+These numbers are NOT comparable without stating the basis (camera set, frame range,
+person_tracks level). Canonical: clip-level, val-split, greedy IoU>=0.3.
+
+**CP-PURITY-3 finding (2026-06-09):** GT→D oracle (perfect detections through real D1)
+produced 0 GROUP nodes with 0 logic gaps. 100% of the "group-formation defect"
+(CP-PURITY-2: 29.9%/11.6%) is detection under-segmentation, not D1 logic.
+D1 forms GROUPs from lifecycle events, not proximity — structurally unnecessary when
+detection is perfect. Evidence: `docs/evidence/cp_purity_3/`.

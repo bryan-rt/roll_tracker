@@ -1,0 +1,14 @@
+{
+  "verdict": "GO",
+  "reason": "H+S+V separates meaningfully better than H+S: AUC 0.9068 vs 0.8147 (delta +0.0921). Distinct-color AUC: H+S+V=None, baseline=None. Intrinsic floor: 14.6% (was 28.2% under H+S). V-channel is a PRODUCTION FIX independent of masking. Mask adds +0.0594 on top of V. Skin-inclusive vs torso-only: AUC 0.9068 vs 0.8854 (delta +0.0214). Skin helps. Promote H+S+V histogram to src/bjj_pipeline and note V-extension is non-breaking (new hist_ columns; downstream reads by prefix).",
+  "auc_baseline_hs": 0.8147,
+  "auc_masked_hs": 0.8741,
+  "auc_masked_hsv": 0.9068,
+  "auc_v_only": 0.8942,
+  "v_delta": 0.0921,
+  "mask_delta": 0.0594,
+  "floor_baseline": 0.2824,
+  "floor_hsv": 0.1457,
+  "degen_frac": 0.013,
+  "skin_note": "Skin-inclusive vs torso-only: AUC 0.9068 vs 0.8854 (delta +0.0214). Skin helps."
+}

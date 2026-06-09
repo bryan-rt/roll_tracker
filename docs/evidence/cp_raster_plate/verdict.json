@@ -1,0 +1,6 @@
+{
+  "verdict": "NO_GO",
+  "reason": "Mask does not meaningfully improve separability: aggregate AUC delta=+0.012, same-color AUC delta=+0.015. Intrinsic-color floor: 35.4% inseparable. WARNING: This session has only 2 distinct gi color(s) (heavily white-gi). Distinct-color AUC is non-evaluable (0 same-person pairs in the distinct group). Results reflect worst-case color diversity. A session with more color variety may show different results. On this white-gi-heavy session, the bottleneck is intrinsic color similarity, not the extraction ROI.",
+  "degenerate_frac": 0.013,
+  "mask_quality_gate": "PASS"
+}

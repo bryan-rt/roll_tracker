@@ -1,0 +1,18 @@
+{
+  "J_EDEw-20260318-200015": {
+    "n_defect_frames": 853,
+    "detection_underseg": 853,
+    "detection_underseg_pct": 100.0,
+    "d1_logic_gap": 0,
+    "d1_logic_gap_pct": 0.0,
+    "upstream_noise": 0
+  },
+  "J_EDEw-20260318-200246": {
+    "n_defect_frames": 514,
+    "detection_underseg": 514,
+    "detection_underseg_pct": 100.0,
+    "d1_logic_gap": 0,
+    "d1_logic_gap_pct": 0.0,
+    "upstream_noise": 0
+  }
+}

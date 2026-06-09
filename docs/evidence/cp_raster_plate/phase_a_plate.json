@@ -1,0 +1,76 @@
+{
+  "n_clips": 12,
+  "n_frames_sampled": 396,
+  "low_occupancy_clips": [
+    "J_EDEw-20260318-202016.mp4",
+    "J_EDEw-20260318-200517.mp4",
+    "J_EDEw-20260318-201246.mp4",
+    "J_EDEw-20260318-201016.mp4"
+  ],
+  "clip_activity_ranking": [
+    {
+      "clip": "J_EDEw-20260318-202016.mp4",
+      "center_activity": 14310.8
+    },
+    {
+      "clip": "J_EDEw-20260318-200517.mp4",
+      "center_activity": 14853.5
+    },
+    {
+      "clip": "J_EDEw-20260318-201246.mp4",
+      "center_activity": 15348.2
+    },
+    {
+      "clip": "J_EDEw-20260318-201016.mp4",
+      "center_activity": 15480.4
+    },
+    {
+      "clip": "J_EDEw-20260318-201747.mp4",
+      "center_activity": 15662.3
+    },
+    {
+      "clip": "J_EDEw-20260318-201516.mp4",
+      "center_activity": 16375.9
+    },
+    {
+      "clip": "J_EDEw-20260318-200746.mp4",
+      "center_activity": 16491.2
+    },
+    {
+      "clip": "J_EDEw-20260318-202247.mp4",
+      "center_activity": 17370.7
+    },
+    {
+      "clip": "J_EDEw-20260318-200015.mp4",
+      "center_activity": 18683.7
+    },
+    {
+      "clip": "J_EDEw-20260318-200246.mp4",
+      "center_activity": 19239.4
+    },
+    {
+      "clip": "J_EDEw-20260318-202517.mp4",
+      "center_activity": 19386.0
+    },
+    {
+      "clip": "J_EDEw-20260318-202746.mp4",
+      "center_activity": 24790.5
+    }
+  ],
+  "ghost_pixels_before": 717,
+  "ghost_frac_before": 0.0031,
+  "ghost_pixels_after": 0,
+  "ghost_frac_after": 0.0,
+  "center_region": {
+    "r1": 180,
+    "r2": 540,
+    "c1": 320,
+    "c2": 960
+  },
+  "plate_shape": [
+    720,
+    1280,
+    3
+  ],
+  "note": "Plate built from SAME footage we measure on. Fine for measurement but a production path needs held-out/rolling background."
+}

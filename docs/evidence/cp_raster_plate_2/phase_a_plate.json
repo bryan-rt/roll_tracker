@@ -1,0 +1,20 @@
+{
+  "n_frames": 1080,
+  "stride": 50,
+  "n_clips": 12,
+  "per_clip": {
+    "J_EDEw-20260318-200015.mp4": 91,
+    "J_EDEw-20260318-200246.mp4": 90,
+    "J_EDEw-20260318-200517.mp4": 90,
+    "J_EDEw-20260318-200746.mp4": 90,
+    "J_EDEw-20260318-201016.mp4": 90,
+    "J_EDEw-20260318-201246.mp4": 90,
+    "J_EDEw-20260318-201516.mp4": 90,
+    "J_EDEw-20260318-201747.mp4": 90,
+    "J_EDEw-20260318-202016.mp4": 90,
+    "J_EDEw-20260318-202247.mp4": 90,
+    "J_EDEw-20260318-202517.mp4": 90,
+    "J_EDEw-20260318-202746.mp4": 89
+  },
+  "compute_note": "Every 50th frame from all 12 clips. 8 GB RAM constraint prevents holding all 54000 frames. 1080 samples drive per-pixel person-occupancy well below 50%."
+}

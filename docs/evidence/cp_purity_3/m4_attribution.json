@@ -1,0 +1,32 @@
+{
+  "J_EDEw-20260318-200015": {
+    "original_defect_count": 853,
+    "original_defect_label": "CP-PURITY-2 M2 mishandled (engage, 1.5m)",
+    "gt_oracle_recovered": 0,
+    "gt_oracle_not_recovered": 853,
+    "attribution": {
+      "detection_undersegmentation": 853,
+      "detection_undersegmentation_pct": 100.0,
+      "d1_logic_gap": 0,
+      "d1_logic_gap_pct": 0.0,
+      "gt_oracle_not_recovered_residual": 853,
+      "gt_oracle_not_recovered_pct": 100.0
+    },
+    "step_by_step": "Start: 853 mishandled frames (should-group but no GROUP in A&C\u2192D). GT\u2192D oracle recovers 0 (0.0%). Of the 853 total: 853 are detection under-segmentation (pair-box with no second tracklet in real run), 0 are genuine D1 logic gaps (two real detections existed, D1 still didn't group), 853 not recovered by GT\u2192D oracle."
+  },
+  "J_EDEw-20260318-200246": {
+    "original_defect_count": 514,
+    "original_defect_label": "CP-PURITY-2 M2 mishandled (engage, 1.5m)",
+    "gt_oracle_recovered": 0,
+    "gt_oracle_not_recovered": 514,
+    "attribution": {
+      "detection_undersegmentation": 514,
+      "detection_undersegmentation_pct": 100.0,
+      "d1_logic_gap": 0,
+      "d1_logic_gap_pct": 0.0,
+      "gt_oracle_not_recovered_residual": 514,
+      "gt_oracle_not_recovered_pct": 100.0
+    },
+    "step_by_step": "Start: 514 mishandled frames (should-group but no GROUP in A&C\u2192D). GT\u2192D oracle recovers 0 (0.0%). Of the 514 total: 514 are detection under-segmentation (pair-box with no second tracklet in real run), 0 are genuine D1 logic gaps (two real detections existed, D1 still didn't group), 514 not recovered by GT\u2192D oracle."
+  }
+}

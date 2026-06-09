@@ -337,7 +337,124 @@ videos. Explored: D2 constraints, D3 solver behavior, D4 emit logic, D0.5 split 
 2. **No path propagation:** Non-tagged tracklets on same path don't inherit tag anchor
 3. **GROUP dilution:** Tagged tracklet has 167 person_id transitions (3 separate identity_assignments emitted)
 
-**Planned fixes:**
-- Hard must_link for tag-observed tracklets (prevent solver from dropping them)
-- Path-based tag propagation (non-tagged tracklets on same path inherit tag anchor)
-- GROUP dilution mitigation (may resolve with above two fixes)
+**Planned fixes (updated post-CP-TAG-4a):**
+- ~~Hard must_link~~ — FIXED by CP-TAG-4a Fix C (hard no-drop for ping-carrying products)
+- Path-based tag propagation — still open
+- GROUP dilution mitigation — partially addressed by Fix A (thread consumption)
+
+---
+
+## CP-TAG-4a: Tag-Anchored Identity (COMPLETED 2026-06-07, CORRECTED 2026-06-08)
+
+Fix 0: split-aware ping binding. Fix A: D4 thread consumption. Fix C: hard no-drop.
+Fix D: carrier selection tests.
+
+**CORRECTED:** The initial "correct_id decreased (vid1 25.6%→17.6%, vid2 22.2%→19.1%)"
+verdict was a METRIC-BASIS ARTIFACT. It compared session-full-range coverage against a
+clip-level val-split baseline. CP-PURITY-2 Measurement 1 reconciled: J_EDEw val-split
+clip-level correct_id went 40.5% (baseline) → 63.2% (post-CP-TAG-4a) = **+22.7pp
+improvement**. CP-TAG-4a helped non-tagged identities.
+Evidence: `docs/evidence/cp_purity_2/`, `docs/evidence/cp_tag_4_post/`.
+
+---
+
+## CP-PURITY-1: Through-line Decomposition (2026-06-07)
+
+Tagged athlete's entity (p0022) follows the WRONG person — majority GT track is 7, not
+the tagged 8. 100% attributed to ILP stitch routing, NOT D4 emission, NOT detection-
+tracking. Tracklet-level purity is healthy (0.88-0.92). The corruption enters at the
+solver layer. Evidence: `docs/evidence/cp_purity_1/`.
+
+---
+
+## CP-PURITY-2: Aggregate Reconciliation + Floor (2026-06-08)
+
+Reconciled CP-TAG-4a as +22.7pp improvement (see above). Pair-box 72-84% mishandled
+(no GROUP node despite proximity). Addressable ceiling: tight_match 35.9%/70.4%.
+Evidence: `docs/evidence/cp_purity_2/`.
+
+---
+
+## CP-PURITY-3: GT-through-Stage-D Oracle (2026-06-09)
+
+Ran real D1 code on perfect GT detections (one clean tracklet per GT person).
+**Oracle produced 0 GROUP nodes** — structurally correct: D1 forms GROUPs from tracklet
+LIFECYCLE EVENTS (merge/split), not proximity. With continuous GT tracklets, no
+lifecycle events occur, so no GROUPs form.
+
+**Key findings:**
+- 100% of the former "group-formation defect" (CP-PURITY-2: 29.9%/11.6%) is detection
+  under-segmentation wearing a D1 costume. D1 has 0 genuine logic gaps.
+- GROUPs are structurally unnecessary when detection is perfect.
+- Capacity=2 is D3 metadata (d1_graph_build.py:1179), NOT enforced in D1.
+- D0.5 produced 0 splits on clean GT (no false positives).
+Evidence: `docs/evidence/cp_purity_3/`.
+
+**Identity-corruption lever journey (re-pointed 4 times):**
+1. D4 emission — falsified (CP-PURITY-1)
+2. ILP stitch — confirmed as mechanism
+3. D1 group-formation — falsified (CP-PURITY-3: 0 logic gaps)
+4. Detection under-segmentation — confirmed as root cause
+
+---
+
+## CP-RASTER-PLATE: Median-background Masking (2026-06-09)
+
+Clean plate mechanics: 0% ghosts, 72% mask coverage, 0/158 self-absorption.
+But measured in V-blind H+S feature space → NO_GO verdict was INVALID.
+Evidence: `docs/evidence/cp_raster_plate/`.
+
+---
+
+## CP-RASTER-PLATE-2: V-Channel Separability (2026-06-09) — **GO**
+
+Corrected the crippled H+S feature space with H+S+V. Results:
+
+| Feature Space | AUC (all) | Same-color AUC | Floor |
+|---|---|---|---|
+| Baseline H+S (production) | 0.815 | 0.690 | 28.2% |
+| Masked H+S+V | **0.907** | 0.693 | **14.6%** |
+| V-only | 0.894 | **0.719** | 16.9% |
+
+**V-channel is a production fix independent of masking** (+9.2% AUC). V alone carries
+nearly all the missing signal (AUC 0.894). Mask halves intrinsic floor (28.2%→14.6%).
+Skin-inclusive beats torso-only (+2.1%). Same-color AUC ~0.69 (appearance strong on
+different-color, weak within same-color clusters — value scales with gym color diversity).
+
+**Honest ceiling:** appearance is NOT a blanket solution. It helps when people wear
+different colors; it is weak within same-color clusters.
+Evidence: `docs/evidence/cp_raster_plate_2/`.
+
+---
+
+## Metric-Basis Discipline (recorded 2026-06-09)
+
+This burned us 3 times during the CP-TAG → CP-PURITY arc. No correct_id number is
+comparable without its basis stated:
+- Camera set: single vs 3-camera (58.7% is 3-camera, ~40.5% is single J_EDEw)
+- Frame range: val-split vs full annotated
+- person_tracks level: clip vs session
+Canonical definition: clip-level person_tracks, val-split, greedy IoU>=0.3.
+
+---
+
+## CP-REID-1 Rejection Clarified (2026-06-09)
+
+Rejected generic osnet_x0_25_msmt17 for DOMAIN GAP (street pedestrian model vs overhead
+fisheye grappling), NOT for color-blindness. The V-histogram win does NOT reopen deep
+ReID — the domain gap remains. A future cheap-HSV-tracker-embedding is a SEPARATE,
+lower-priority question (tracker purity 0.9, low headroom).
+
+---
+
+## Forward Plan: Appearance Arc (decided 2026-06-09)
+
+1. ~~Measure separability~~ — DONE (CP-RASTER-PLATE-2, GO verdict)
+2. **V-channel histogram extension [NEXT]** — H+S→H+S+V in histogram.py. Non-breaking.
+3. **H+S+V temporal discontinuity as D0.5 Tier 3** — WITHIN-tracklet across-time test
+   (distinct from across-people separability already measured).
+4. **Mask + V-aware appearance into D0.5 + ILP cost layer** — CP21 scope.
+5. **Cheap-HSV-ReID** — low priority (tracker purity 0.9).
+
+Evidence-economy principle: tags = hard constraint; appearance = cost/veto, never hard;
+distinctiveness-weighted; only one tier may be hard.

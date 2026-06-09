@@ -64,7 +64,7 @@ docs/                     # Calibration guide, decisions archive, audits
 
 ## Current Status
 
-*Last updated 2026-05-23.*
+*Last updated 2026-06-09.*
 
 Pipeline A→F verified E2E. Session pipeline validated (3-camera, 35/36 clips).
 
@@ -88,6 +88,13 @@ color_histograms.parquet, tracklet_histogram_summaries.parquet.
 - Calibration wizard re-run for all 3 cameras with updated lens cal
 - Cross-camera agreement verified (sub-cm, 9mm worst-case)
 - ROI mask union fix: brief written, not yet applied (parked)
+- **V-channel gap (CP-RASTER-PLATE-2):** Production histogram is H+S only
+  (`histogram.py:95`, channels 0+1). V excluded → black/white/gray gis
+  IDENTICAL in feature space. Measured: H+S+V AUC=0.907 vs H+S=0.815
+  (+9.2%). V-only AUC=0.894 (V carries nearly all the missing signal).
+  Intrinsic floor halves (28.2%→14.6%). Same-color AUC ~0.69 (appearance
+  strong on different-color, weak within same-color clusters). V-extension
+  is the next production change. Evidence: `docs/evidence/cp_raster_plate_2/`.
 
 **CP22 (completed):** Default detection model updated to yolo26n-pose (STAL loss, better
 small-object detection). ultralytics upgraded 8.3.252 → 8.4.33 (`--no-deps`).
@@ -298,6 +305,23 @@ First trained model had FP7oJQ false positives from background memorization.
 
 ## Planned Work
 
+**Appearance arc (decided sequence, gated on CP-RASTER-PLATE-2 GO):**
+1. ~~Measure separability~~ — DONE (CP-RASTER-PLATE-2, GO verdict)
+2. **V-channel histogram extension [NEXT, production]** — extend `histogram.py`
+   from H+S (144-dim) to H+S+V (864-dim, 18×8×6). Non-breaking: new `hist_` columns;
+   downstream reads by prefix. This is a production fix independent of masking.
+3. **H+S+V temporal discontinuity as D0.5 Tier 3 trigger** — a WITHIN-tracklet
+   across-time test (histogram similarity between consecutive windows), distinct from
+   the across-people separability already measured. May replace or supplement the
+   current Bhattacharyya Tier 3 (which uses H+S only, threshold 0.15).
+4. **Mask + V-aware appearance into D0.5 Tier 3 + ILP cost layer** — absorbs the
+   is_isolated pixel-occlusion gate refinement. Deferred to CP21.
+5. **Tracker-level cheap-HSV-ReID** — low priority (tracker purity 0.9, low headroom).
+   Stage A runs `with_reid: false` (BoT-SORT on motion+IoU only, no color).
+
+**Evidence-economy principle (from this arc):** tags = hard constraint; clean appearance
+= cost/veto, never hard; distinctiveness-weighted; only one tier may be hard.
+
 **CP23b remaining:**
 - Empty frame injection (~30-50 per camera) to reduce false positives, then retrain
 - Bbox size tier filtering review (outputs from `tools/visualize_bbox_tiers.py`)
@@ -309,15 +333,17 @@ First trained model had FP7oJQ false positives from background memorization.
 - Cross-camera pseudo-labeling for training data enrichment
 - Active learning loop: model pre-fills → human corrects → retrain
 
-**CP23d (position classification):**
-- ViCoS 120K position-labeled frames (18 classes) at `data/vicos_bjj/position_labels.json`
-- Level 2 classifier on match crop images
-
 **Other pending:**
-- CP21: Ankle-based world coordinates (needs better keypoints first)
 - CP22c: ROI mask geometry fix (parked)
 - Camera temporal jitter investigation
 - CVAT XML import debugging (IndexError server-side)
+
+**Metric-basis discipline (MANDATORY — this burned us 3 times):**
+No correct_id number is comparable without its basis stated: camera set (single vs
+3-camera), frame range (val-split vs full annotated), and person_tracks level (clip vs
+session). The 58.7% figure (CP-TRACE-2) is THREE-CAMERA aggregate and NOT comparable
+to single-camera J_EDEw (~40.5% baseline). Canonical definition: clip-level
+person_tracks, val-split, greedy IoU>=0.3.
 
 ## Pipeline Validation Framework (TB-EVAL series, completed 2026-05-12)
 
@@ -762,18 +788,35 @@ Docs: `cp7_pre8_axis1_signature.md` (SUPERSEDED), `cp7_pre9_branchb_margin.md`,
 
 ### Open Follow-ups
 
-- **CP7 (next):** Detection-level pair separation is the primary lever. On FP7oJQ (one 2.5-min clip): ~74% of misattribution is pair-box under-segmentation (55.7% confirmed unbracketed, remainder indeterminate/partial); 9.9% true Branch-B, 0% bracketed at all horizons — single-clip, confirmation pending on the buzzer video. Stage D concurrent-swap node deferred as ~10% sidecar.
+- **V-channel histogram extension (NEXT):** Production fix. H+S→H+S+V in
+  `histogram.py`. Gated on CP-RASTER-PLATE-2 GO verdict.
+- **Detection pair separation:** Primary lever for misattribution. CP7 showed ~74%
+  of misattribution is pair-box under-segmentation. CP-PURITY-3 confirmed: 100% of the
+  former "D1 group-formation defect" is detection under-segmentation (0 D1 logic gaps).
 - Empty frame injection for training data (reduce FP rate)
-- Bbox size tier filtering (thresholds not yet applied)
 - Stage C full implementation (beyond tag observations)
 - PPDmUg training sample provenance
+
+### Identity-corruption lever journey (CP-PURITY arc summary)
+
+The lever was re-pointed by evidence FOUR times:
+1. **D4 emission** — falsified (CP-PURITY-1: corruption is ILP stitch, not emission)
+2. **ILP stitch** — confirmed as mechanism (p0022 follows wrong GT person)
+3. **D1 group-formation** — falsified (CP-PURITY-3: GT→D oracle shows 0 D1 logic gaps;
+   GROUPs are a compensation mechanism for imperfect detection, structurally unnecessary
+   when detection is perfect)
+4. **Detection under-segmentation** — confirmed as root cause (100% of the former
+   "group-formation defect" is pair-box with no second tracklet)
+
+Tracklet purity is healthy (0.88-0.92). The corruption enters at the solver layer
+because detection under-segmentation gives it wrong input.
 
 ## Active Decisions Log
 
 | Decision | Status | Notes |
 |----------|--------|-------|
 | CP-EVAL-1: Eval instrument freeze — single-path Layer 1/2 | **Active** | Frozen 2026-05-22 (cdf1037). Hungarian IoU 0.5. Identity mapping derived from `per_frame_matches.parquet` + `person_tracks.parquet` inside `gt_person_trace.py`. Spec: `docs/eval_instrument_spec.md` v1.0. |
-| CP-REID-1: BoT-SORT ReID experiment | **Rejected** | Generic `osnet_x0_25_msmt17` — negligible improvement, 2-3x runtime. FP7oJQ: zero delta. J_EDEw: +1.5pp present but +5.1pp misattr. PPDmUg: -3.3pp misattr but +2.2pp drops. Config remains `with_reid: false`. |
+| CP-REID-1: BoT-SORT ReID experiment | **Rejected — DOMAIN GAP** | Generic `osnet_x0_25_msmt17` rejected for domain gap (street pedestrian vs overhead fisheye grappling), NOT color-blindness. V-histogram win does NOT reopen deep ReID. See updated row below. |
 | CP-SWAP-1: Tracker-swap diagnostic | **Complete** | 167 GT-oracle swaps across 68/562 tracklets. Best single-feature AUC=0.663 (`bbox_aspect_change`). FP7oJQ world_accel 25.8x spike ratio, AUC=0.714. Histogram coverage 100% at swap boundaries. Module: `src/pipeline_validation/tracker_swap/`. |
 | CP-SWAP-2: Swap pattern characterization | **Complete** | 47% hop_into_unoccupied, 28% cascade, 2% exchange. 41% transient (50% single-frame flickers). 45% no kinematic spike. 81% within 0.5m. Informed CP-SPLIT-1 design. |
 | CP-SPLIT-1: Post-D0 tracklet splitter | **Active** | Tiered: speed cap 48 m/s + spike ratio 5x (min 5 m/s, isolation 3x) + Bhattacharyya 0.15 (kinematic corroboration 2x). Min dwell 5 frames. D0.5 in `d05_split.py` (fce5758). Results vs CP5: present +14.6/+4.8/+4.4pp, misattr -8.0/-7.0/-4.6pp. Config: `stage_D.d05_split`. Validator fix: af258b7. |
@@ -785,9 +828,15 @@ Docs: `cp7_pre8_axis1_signature.md` (SUPERSEDED), `cp7_pre9_branchb_margin.md`,
 | CP-TAG-2: Tag ceiling experiment | **Complete** | Full-frame scan (no bbox/cadence restriction) found identical tag observations to pipeline (1+3 across 9,030 frames). Bottleneck is physical occlusion at ceiling distance, not pipeline gating. Dense GT (stride-1, 10x points) confirms stride-10 is representative (±0.3pp). AprilTags cannot be sole identity mechanism. See `tools/tag_fullscan.py`, `tools/tag_experiment.py`. |
 | Cross-tracklet identity diagnostic | **Complete** | Must_link is soft (2× penalty), identity doesn't propagate across tracklets, GROUP dilutes tag identity. Video 1: 17 person_ids for 1 GT person, 167 intra-tracklet transitions. Video 2: tagged tracklet (862f) dropped, tag assigned to wrong person via nested detection. Three architectural gaps: soft must_link, no path propagation, GROUP dilution. |
 | CP-TAG-3: Two-clip harness + tag identity baseline | **Complete** | Two-clip J_EDEw harness under `_eval_gt`. Baseline: vid1 25.6% correct_id (t366, 1125 session transitions), vid2 22.2% correct_id (t139, 2680 session transitions). Both tagged tracklets KEPT at session level, 4 identity_assignments for tag:1 all spanning clip boundary. GROUP dilution is dominant corruption (14/12 person_ids per tagged tracklet). Prior 16.9% vid2 number was stale (pre-CP5). tag_trace.py:1181 hardcode footgun documented. Session-level trace mode gap noted — likely its own checkpoint before post-CP-TAG-4 gate. Evidence: `docs/evidence/cp_tag_3_baseline/`. Harness: `tools/cp_tag_3_evidence.py`. |
-| CP-TAG-4a: Tag-anchored identity (Fix 0+A+C+D) | **Complete** | Split-aware ping binding (Fix 0: d05_split_audit expansion in d3_ilp2.py + session aggregation). D4 thread consumption (Fix A: tag_flow_by_tag_edge on ILPResult, exactly 1 identity_assignment per tag via solver_tag_thread). Hard no-drop for ping-carrying products (Fix C: explained==1 with fallback ladder). Carrier selection unit tests (Fix D: tests/test_carrier_selection.py). Results: vid2 ping now BOUND (was unbound), tag:1→1 assignment at session level (was 4), p0022 spans clip boundary. Correct_id decreased (vid1 17.6% from 25.6%, vid2 19.1% from 22.2%) due to Fix C changing solver optimum — expected low-coverage outcome, clean handoff to CP-TAG-4b. Evidence: `docs/evidence/cp_tag_4_post/`. |
-| CP-TAG-4b: Hard ping connectivity | **Deferred** | Forces tag thread through both pings. Gated on CP-TAG-4a results + CP21 appearance costs. Currently the soft thread visits the correct tracklet (t139_s3) but drifts afterward — hard connectivity would force the thread to stay connected, but without appearance costs risks misrouting. |
-| GROUP dilution of tag identity | **Diagnosed** | CP-TAG-3/4a: root cause is D0.5 split products creating GROUP nodes (t139 → 15 products, 10 GROUP carrier nodes). Fix A gives exactly 1 tag→person mapping; GROUP dilution of the ENTITY path remains. Fix B (connectivity) + CP21 (appearance) are the levers for coverage improvement. |
+| CP-TAG-4a: Tag-anchored identity (Fix 0+A+C+D) | **Complete — CONFIRMED IMPROVEMENT** | Split-aware ping binding (Fix 0), D4 thread consumption (Fix A), hard no-drop (Fix C), carrier tests (Fix D). **CORRECTED (CP-PURITY-2):** The initial "correct_id decreased" verdict was a metric-basis artifact (session-full-range vs clip-level val-split). Reconciled: J_EDEw val-split clip-level correct_id 40.5% → 63.2% = **+22.7pp improvement**. CP-TAG-4a helped non-tagged identities. Evidence: `docs/evidence/cp_purity_2/`, `docs/evidence/cp_tag_4_post/`. |
+| CP-TAG-4b: Hard ping connectivity | **Deferred** | Forces tag thread through both pings. Gated on CP21 appearance costs. Soft thread visits the correct tracklet but drifts — hard connectivity without appearance costs risks misrouting. |
+| GROUP dilution of tag identity | **Diagnosed** | D0.5 split products create GROUP nodes. Fix A gives exactly 1 tag→person mapping; GROUP dilution of the ENTITY path remains. **CP-PURITY-3 finding:** D1 forms GROUPs from tracklet LIFECYCLE EVENTS (merge/split), not proximity. Capacity=2 is D3 metadata, not D1-enforced. GROUPs are structurally unnecessary when detection is perfect (GT→D oracle produced 0 GROUPs with 0 logic gaps). Evidence: `docs/evidence/cp_purity_3/`. |
+| CP-PURITY-1: Through-line decomposition | **Complete** | Tagged athlete's entity (p0022) follows the WRONG person — majority GT track is 7, not tagged 8. 100% attributed to ILP stitch routing, NOT D4 emission, NOT detection-tracking. Tracklet-level purity is healthy (0.88-0.92). Evidence: `docs/evidence/cp_purity_1/`. |
+| CP-PURITY-2: Aggregate reconciliation + floor | **Complete** | Reconciled CP-TAG-4a as +22.7pp improvement (see above). Pair-box 72-84% mishandled (no GROUP despite proximity). Addressable ceiling: tight_match 35.9%/70.4%. Evidence: `docs/evidence/cp_purity_2/`. |
+| CP-PURITY-3: GT-through-D oracle | **Complete** | Ran real D1 on perfect GT detections (one clean tracklet per person). Oracle produced 0 GROUP nodes — structurally correct (no lifecycle events with continuous tracklets). 100% of the former "group-formation defect" (29.9%/11.6%) is detection under-segmentation wearing a D1 costume. D1 has 0 genuine logic gaps. The lever is detection pair separation, not D1 graph logic. Evidence: `docs/evidence/cp_purity_3/`. |
+| CP-RASTER-PLATE: Median-background masking | **Complete** | Clean plate (0% ghosts, 72% mask coverage, 0/158 absorbed). But measured in V-blind H+S space → NO_GO was INVALID (see CP-RASTER-PLATE-2). Evidence: `docs/evidence/cp_raster_plate/`. |
+| CP-RASTER-PLATE-2: V-channel separability | **Complete — GO** | H+S+V AUC=0.907 vs H+S=0.815 (+9.2%). V-only AUC=0.894. Mask halves intrinsic floor (28.2%→14.6%). Same-color AUC ~0.69 (appearance strong on different-color, weak within same-color). V-extension is a production fix independent of masking. Evidence: `docs/evidence/cp_raster_plate_2/`. |
+| CP-REID-1: BoT-SORT ReID experiment | **Rejected — DOMAIN GAP** | Generic `osnet_x0_25_msmt17` rejected for DOMAIN GAP (street pedestrian model vs overhead fisheye grappling), NOT for color-blindness. The V-histogram win does NOT reopen deep ReID. A cheap-HSV-tracker-embedding is a separate, lower-priority question (tracker purity 0.9, low headroom). Config: `with_reid: false`. |
 
 ## Never Touch
 

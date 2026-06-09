@@ -1,0 +1,146 @@
+{
+  "aggregate": {
+    "baseline_auc": 0.7576,
+    "masked_auc": 0.7697,
+    "auc_improvement": 0.0121,
+    "same_person_baseline": {
+      "n": 406,
+      "mean": 0.3757,
+      "median": 0.3704,
+      "std": 0.1378,
+      "p10": 0.1995,
+      "p90": 0.5587
+    },
+    "diff_person_baseline": {
+      "n": 4265,
+      "mean": 0.5093,
+      "median": 0.5016,
+      "std": 0.1331,
+      "p10": 0.3461,
+      "p90": 0.6909
+    },
+    "same_person_masked": {
+      "n": 406,
+      "mean": 0.2893,
+      "median": 0.2801,
+      "std": 0.1131,
+      "p10": 0.152,
+      "p90": 0.4331
+    },
+    "diff_person_masked": {
+      "n": 4265,
+      "mean": 0.398,
+      "median": 0.3951,
+      "std": 0.1062,
+      "p10": 0.2653,
+      "p90": 0.5414
+    }
+  },
+  "distinct_color": {
+    "note": "Color distinctiveness from GT-grounded gi-color labels (method-independent: assigned from union of both methods, majority-voted per GT person). Distinct = different gi color.",
+    "evaluable": false,
+    "non_evaluable_reason": "Only 2 distinct gi colors in this session. Need >=2 people with the SAME distinctive color to form same-person pairs for AUC.",
+    "baseline_auc": null,
+    "masked_auc": null,
+    "auc_improvement": null,
+    "same_person": {
+      "n": 0
+    },
+    "diff_person_baseline": {
+      "n": 262,
+      "mean": 0.6667,
+      "median": 0.6849,
+      "std": 0.1217,
+      "p10": 0.4933,
+      "p90": 0.8098
+    },
+    "diff_person_masked": {
+      "n": 262,
+      "mean": 0.4743,
+      "median": 0.4716,
+      "std": 0.0936,
+      "p10": 0.3636,
+      "p90": 0.5816
+    }
+  },
+  "same_color": {
+    "baseline_auc": 0.746,
+    "masked_auc": 0.7615,
+    "auc_improvement": 0.0154,
+    "same_person": {
+      "n": 406,
+      "mean": 0.3757,
+      "median": 0.3704,
+      "std": 0.1378,
+      "p10": 0.1995,
+      "p90": 0.5587
+    },
+    "diff_person_baseline": {
+      "n": 4003,
+      "mean": 0.499,
+      "median": 0.4934,
+      "std": 0.1272,
+      "p10": 0.3423,
+      "p90": 0.6685
+    },
+    "diff_person_masked": {
+      "n": 4003,
+      "mean": 0.3931,
+      "median": 0.3894,
+      "std": 0.105,
+      "p10": 0.2625,
+      "p90": 0.5329
+    }
+  },
+  "intrinsic_color_floor": {
+    "inseparable_pairs_under_mask": 1509,
+    "total_diff_pairs": 4265,
+    "floor_frac": 0.3538,
+    "threshold_used": 0.3576,
+    "definition": "Fraction of different-person pairs with masked Bhattacharyya distance <= 75th percentile of same-person distances. These pairs are inseparable even under the best mask."
+  },
+  "per_clip": {
+    "J_EDEw-20260318-200015": {
+      "n_valid_tracklets": 54,
+      "n_same_pairs": 105,
+      "n_diff_pairs": 1326,
+      "gt_gi_colors": {
+        "14": "white_gray",
+        "16": "white_gray",
+        "21": "red",
+        "22": "white_gray",
+        "20": "white_gray",
+        "27": "white_gray",
+        "17": "white_gray",
+        "19": "white_gray",
+        "15": "white_gray",
+        "26": "white_gray",
+        "25": "white_gray",
+        "24": "white_gray",
+        "23": "white_gray",
+        "18": "white_gray"
+      }
+    },
+    "J_EDEw-20260318-200246": {
+      "n_valid_tracklets": 81,
+      "n_same_pairs": 301,
+      "n_diff_pairs": 2939,
+      "gt_gi_colors": {
+        "9": "white_gray",
+        "12": "white_gray",
+        "0": "white_gray",
+        "1": "white_gray",
+        "4": "white_gray",
+        "10": "white_gray",
+        "8": "white_gray",
+        "5": "red",
+        "6": "white_gray",
+        "3": "white_gray",
+        "2": "white_gray",
+        "7": "white_gray",
+        "13": "white_gray",
+        "11": "white_gray"
+      }
+    }
+  }
+}

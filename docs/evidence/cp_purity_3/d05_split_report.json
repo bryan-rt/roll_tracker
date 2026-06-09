@@ -1,0 +1,16 @@
+[
+  {
+    "clip_id": "J_EDEw-20260318-200015",
+    "d05_split_count": 0,
+    "d05_split_tiers": {},
+    "d05_disabled": false,
+    "oracle_root": "/Users/bryanthomas/Desktop/Professional/Projects/roll_tracker/outputs/_eval_gt_oracle/J_EDEw/2026-03-18/20/J_EDEw-20260318-200015"
+  },
+  {
+    "clip_id": "J_EDEw-20260318-200246",
+    "d05_split_count": 0,
+    "d05_split_tiers": {},
+    "d05_disabled": false,
+    "oracle_root": "/Users/bryanthomas/Desktop/Professional/Projects/roll_tracker/outputs/_eval_gt_oracle/J_EDEw/2026-03-18/20/J_EDEw-20260318-200246"
+  }
+]

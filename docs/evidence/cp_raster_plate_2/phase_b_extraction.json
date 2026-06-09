@@ -1,0 +1,14 @@
+{
+  "J_EDEw-20260318-200015": {
+    "n_det": 1952,
+    "n_tracklets": 76,
+    "coverage_median": 0.724,
+    "degen_frac": 0.017
+  },
+  "J_EDEw-20260318-200246": {
+    "n_det": 2289,
+    "n_tracklets": 82,
+    "coverage_median": 0.718,
+    "degen_frac": 0.01
+  }
+}

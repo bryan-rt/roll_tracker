@@ -1,0 +1,24 @@
+{
+  "J_EDEw-20260318-200015": {
+    "n_pair_box_total": 1187,
+    "n_in_scope": 1187,
+    "n_out_of_scope": 0,
+    "n_was_not_defect": 334,
+    "n_defect_in_scope": 853,
+    "n_recovered": 0,
+    "n_not_recovered": 853,
+    "recovery_pct": 0.0,
+    "not_recovered_pct": 100.0
+  },
+  "J_EDEw-20260318-200246": {
+    "n_pair_box_total": 620,
+    "n_in_scope": 620,
+    "n_out_of_scope": 0,
+    "n_was_not_defect": 106,
+    "n_defect_in_scope": 514,
+    "n_recovered": 0,
+    "n_not_recovered": 514,
+    "recovery_pct": 0.0,
+    "not_recovered_pct": 100.0
+  }
+}

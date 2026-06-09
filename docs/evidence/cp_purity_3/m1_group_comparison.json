@@ -1,0 +1,22 @@
+{
+  "J_EDEw-20260318-200015": {
+    "real_group_count": 332,
+    "oracle_group_count": 0,
+    "real_group_frame_coverage": 2985,
+    "oracle_group_frame_coverage": 0,
+    "both_have_group_frames": 0,
+    "oracle_only_frames": 0,
+    "real_only_frames": 2985,
+    "annotated_range_frames": 3001
+  },
+  "J_EDEw-20260318-200246": {
+    "real_group_count": 192,
+    "oracle_group_count": 0,
+    "real_group_frame_coverage": 4486,
+    "oracle_group_frame_coverage": 0,
+    "both_have_group_frames": 0,
+    "oracle_only_frames": 0,
+    "real_only_frames": 4486,
+    "annotated_range_frames": 4491
+  }
+}

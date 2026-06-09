@@ -42,23 +42,37 @@ Stage C (observations) → identity_hints.jsonl → D2 (must_link_groups)
 - **Physical visibility is the primary bottleneck** — full-frame scan found identical
   observations to pipeline (CP-TAG-2). Tag is ~25px at ceiling distance vs ~40px decode minimum.
 
-## Known Issues (from cross-tracklet diagnostic)
+## Known Issues (from cross-tracklet diagnostic + CP-TAG-4a + CP-PURITY arc)
 
-1. **Must_link too soft:** Tagged tracklet t99 (862 frames) dropped in J_EDEw-200246.
-   Penalty insufficient to force solver to keep it.
+1. **Must_link too soft:** FIXED by CP-TAG-4a Fix C (hard no-drop for ping-carrying
+   products via explained==1 + fallback ladder).
 2. **No path propagation:** Non-tagged tracklets on same solver path do NOT inherit tag.
    Tag confined to must_link group tracklets only.
-3. **GROUP dilution:** Video 1 tagged tracklet t366 has 167 person_id transitions
-   (alternates frame-by-frame between 3 person_ids due to GROUP segments).
-   D4 emits 3 separate identity_assignments for same tag.
-4. **Nested detection capture:** At frame 1781, both t99 and t143 (nested bbox inside
-   t99) captured the tag. When t99 was dropped, tag flowed to wrong person via t143.
+3. **GROUP dilution:** D0.5 split products create GROUP nodes; tagged tracklet gets
+   multiple person_ids. CP-TAG-4a Fix A (thread consumption) gives exactly 1 tag→person
+   mapping, but GROUP dilution of the entity path remains.
+4. **Nested detection capture:** FIXED by CP-TAG-4a Fix 0 (split-aware ping binding via
+   d05_split_audit expansion).
 
-## Planned Fixes
+**CP-TAG-4a is a confirmed +22.7pp improvement** (CP-PURITY-2 reconciliation). The
+initial "correct_id decreased" verdict was a metric-basis artifact. Evidence:
+`docs/evidence/cp_purity_2/`.
 
-- Hard must_link for tag-observed tracklets (prevent solver from dropping them)
+## D1 GROUP Formation (architectural understanding from CP-PURITY-3)
+
+- D1 forms GROUPs from tracklet **LIFECYCLE EVENTS** (merge/split), NOT proximity.
+  A GROUP needs a second tracklet born/dying near a carrier, persisting >=
+  min_group_duration_frames (10). Sustained proximity alone does NOT create a group.
+- **Capacity=2 is D3 metadata**, NOT enforced in D1 (d1_graph_build.py:1179). D1 stamps
+  it on nodes; the solver uses it. Any capacity reasoning belongs to D3.
+- **GROUPs are structurally unnecessary when detection is perfect.** GT→D oracle with
+  one clean tracklet per person produced 0 GROUP nodes with 0 logic gaps (CP-PURITY-3).
+  GROUPs compensate for detection under-segmentation.
+
+## Remaining Fixes
+
 - Path-based tag propagation (non-tagged tracklets on same path inherit tag anchor)
-- GROUP dilution mitigation (unclear mechanism — may resolve with above two fixes)
+- CP-TAG-4b: Hard ping connectivity (gated on CP21 appearance costs)
 
 ## Tools
 

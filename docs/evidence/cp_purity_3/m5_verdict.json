@@ -1,0 +1,16 @@
+{
+  "aggregate": {
+    "total_defect_frames": 1367,
+    "detection_undersegmentation": 1367,
+    "detection_undersegmentation_pct": 100.0,
+    "d1_logic_gap": 0,
+    "d1_logic_gap_pct": 0.0,
+    "gt_oracle_not_recovered_as_group": 1367,
+    "gt_oracle_not_recovered_pct": 100.0,
+    "note_on_not_recovered": "not_recovered counts frames where the oracle did NOT form a GROUP. This is expected and correct \u2014 with separate tracklets per person, GROUPs are unnecessary. The 'recovery' metric measures GROUP formation, not identity correctness."
+  },
+  "dominant_arc": "detection (CP23 / detection model improvement)",
+  "oracle_zero_group_explanation": "The GT\u2192D oracle produced 0 GROUP nodes despite providing separate tracklets per person. This is structurally correct: D1 forms GROUPs from tracklet LIFECYCLE EVENTS (one tracklet ending near another). GT tracklets are continuous across the full annotated range \u2014 no tracklet ends during a grapple, so no merge/split trigger fires. This means GROUPs are structurally unnecessary when detection is correct: each person has their own tracklet, so the solver assigns separate person_ids without needing a GROUP capacity hint. The former 'group-formation defect' was not a D1 logic failure \u2014 it was the absence of a second tracklet (detection under-segmentation) making GROUP formation structurally impossible.",
+  "lever_ordering_change": "Yes \u2014 detection under-segmentation confirmed as the dominant share of the former 'D1 group-formation defect.' The 29.9%/11.6% was detection wearing a D1 costume. Fixing detection eliminates the NEED for GROUPs at these frames (separate tracklets per person). D1's GROUP logic is not broken \u2014 it is structurally irrelevant for this failure mode.",
+  "scope_disclaimer": "GT->D with empty identity_hints measures GROUP STRUCTURE only. It does NOT speak to D3/D4 through-line/identity routing. A clean group result must NOT be over-read as 'through-line is fine.'"
+}

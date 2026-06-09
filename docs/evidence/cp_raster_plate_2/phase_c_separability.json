@@ -1,0 +1,276 @@
+{
+  "per_space": {
+    "baseline_hs": {
+      "description": "Baseline H+S (144-dim, production)",
+      "auc_all": 0.8147,
+      "auc_distinct_color": null,
+      "auc_same_color": 0.6904,
+      "same_person": {
+        "n": 40,
+        "mean": 0.3341,
+        "median": 0.3417,
+        "std": 0.1073
+      },
+      "diff_person": {
+        "n": 556,
+        "mean": 0.5041,
+        "median": 0.4882,
+        "std": 0.1499
+      },
+      "distinct_color_diff": {
+        "n": 517,
+        "mean": 0.511,
+        "median": 0.4982,
+        "std": 0.1501
+      },
+      "same_color_diff": {
+        "n": 39,
+        "mean": 0.4131,
+        "median": 0.4124,
+        "std": 0.1117
+      },
+      "intrinsic_floor": 0.2824,
+      "n_distinct_same_pairs": 0,
+      "n_distinct_diff_pairs": 517,
+      "n_same_color_same_pairs": 40,
+      "n_same_color_diff_pairs": 39
+    },
+    "hs_full": {
+      "description": "Masked H+S full-body (144-dim)",
+      "auc_all": 0.8741,
+      "auc_distinct_color": null,
+      "auc_same_color": 0.6821,
+      "same_person": {
+        "n": 40,
+        "mean": 0.2383,
+        "median": 0.2291,
+        "std": 0.0771
+      },
+      "diff_person": {
+        "n": 556,
+        "mean": 0.3906,
+        "median": 0.3941,
+        "std": 0.1052
+      },
+      "distinct_color_diff": {
+        "n": 517,
+        "mean": 0.3971,
+        "median": 0.4012,
+        "std": 0.1019
+      },
+      "same_color_diff": {
+        "n": 39,
+        "mean": 0.3034,
+        "median": 0.2885,
+        "std": 0.1095
+      },
+      "intrinsic_floor": 0.1403,
+      "n_distinct_same_pairs": 0,
+      "n_distinct_diff_pairs": 517,
+      "n_same_color_same_pairs": 40,
+      "n_same_color_diff_pairs": 39
+    },
+    "hsv_full": {
+      "description": "Masked H+S+V full-body (864-dim)",
+      "auc_all": 0.9068,
+      "auc_distinct_color": null,
+      "auc_same_color": 0.6929,
+      "same_person": {
+        "n": 40,
+        "mean": 0.3382,
+        "median": 0.3401,
+        "std": 0.0926
+      },
+      "diff_person": {
+        "n": 556,
+        "mean": 0.5427,
+        "median": 0.5462,
+        "std": 0.1183
+      },
+      "distinct_color_diff": {
+        "n": 517,
+        "mean": 0.5516,
+        "median": 0.5545,
+        "std": 0.1123
+      },
+      "same_color_diff": {
+        "n": 39,
+        "mean": 0.4249,
+        "median": 0.4273,
+        "std": 0.133
+      },
+      "intrinsic_floor": 0.1457,
+      "n_distinct_same_pairs": 0,
+      "n_distinct_diff_pairs": 517,
+      "n_same_color_same_pairs": 40,
+      "n_same_color_diff_pairs": 39
+    },
+    "v_full": {
+      "description": "Masked V-only full-body (6-dim)",
+      "auc_all": 0.8942,
+      "auc_distinct_color": null,
+      "auc_same_color": 0.7192,
+      "same_person": {
+        "n": 40,
+        "mean": 0.1296,
+        "median": 0.123,
+        "std": 0.0609
+      },
+      "diff_person": {
+        "n": 556,
+        "mean": 0.2991,
+        "median": 0.2772,
+        "std": 0.1285
+      },
+      "distinct_color_diff": {
+        "n": 517,
+        "mean": 0.3069,
+        "median": 0.2829,
+        "std": 0.1276
+      },
+      "same_color_diff": {
+        "n": 39,
+        "mean": 0.1957,
+        "median": 0.2238,
+        "std": 0.0897
+      },
+      "intrinsic_floor": 0.1691,
+      "n_distinct_same_pairs": 0,
+      "n_distinct_diff_pairs": 517,
+      "n_same_color_same_pairs": 40,
+      "n_same_color_diff_pairs": 39
+    },
+    "hs_torso": {
+      "description": "Masked H+S torso-only (144-dim)",
+      "auc_all": 0.8503,
+      "auc_distinct_color": null,
+      "auc_same_color": 0.7147,
+      "same_person": {
+        "n": 40,
+        "mean": 0.3131,
+        "median": 0.3089,
+        "std": 0.0985
+      },
+      "diff_person": {
+        "n": 556,
+        "mean": 0.4932,
+        "median": 0.4906,
+        "std": 0.1396
+      },
+      "distinct_color_diff": {
+        "n": 517,
+        "mean": 0.4998,
+        "median": 0.4933,
+        "std": 0.1388
+      },
+      "same_color_diff": {
+        "n": 39,
+        "mean": 0.4051,
+        "median": 0.3806,
+        "std": 0.1176
+      },
+      "intrinsic_floor": 0.2374,
+      "n_distinct_same_pairs": 0,
+      "n_distinct_diff_pairs": 517,
+      "n_same_color_same_pairs": 40,
+      "n_same_color_diff_pairs": 39
+    },
+    "hsv_torso": {
+      "description": "Masked H+S+V torso-only (864-dim)",
+      "auc_all": 0.8854,
+      "auc_distinct_color": null,
+      "auc_same_color": 0.7154,
+      "same_person": {
+        "n": 40,
+        "mean": 0.4203,
+        "median": 0.4249,
+        "std": 0.1109
+      },
+      "diff_person": {
+        "n": 556,
+        "mean": 0.6318,
+        "median": 0.6405,
+        "std": 0.1306
+      },
+      "distinct_color_diff": {
+        "n": 517,
+        "mean": 0.6401,
+        "median": 0.6498,
+        "std": 0.1271
+      },
+      "same_color_diff": {
+        "n": 39,
+        "mean": 0.5219,
+        "median": 0.5308,
+        "std": 0.1268
+      },
+      "intrinsic_floor": 0.1727,
+      "n_distinct_same_pairs": 0,
+      "n_distinct_diff_pairs": 517,
+      "n_same_color_same_pairs": 40,
+      "n_same_color_diff_pairs": 39
+    },
+    "v_torso": {
+      "description": "Masked V-only torso-only (6-dim)",
+      "auc_all": 0.842,
+      "auc_distinct_color": null,
+      "auc_same_color": 0.7173,
+      "same_person": {
+        "n": 40,
+        "mean": 0.1708,
+        "median": 0.163,
+        "std": 0.0837
+      },
+      "diff_person": {
+        "n": 556,
+        "mean": 0.3352,
+        "median": 0.3317,
+        "std": 0.142
+      },
+      "distinct_color_diff": {
+        "n": 517,
+        "mean": 0.3422,
+        "median": 0.3355,
+        "std": 0.1424
+      },
+      "same_color_diff": {
+        "n": 39,
+        "mean": 0.2427,
+        "median": 0.2395,
+        "std": 0.0964
+      },
+      "intrinsic_floor": 0.2104,
+      "n_distinct_same_pairs": 0,
+      "n_distinct_diff_pairs": 517,
+      "n_same_color_same_pairs": 40,
+      "n_same_color_diff_pairs": 39
+    }
+  },
+  "per_clip": {
+    "J_EDEw-20260318-200015": {
+      "n_valid": 29,
+      "color_distribution": {
+        "white": 6,
+        "skin": 3,
+        "gray": 3,
+        "dark_blue": 6,
+        "charcoal": 5,
+        "red": 2,
+        "medium_blue": 2,
+        "light_blue": 2
+      }
+    },
+    "J_EDEw-20260318-200246": {
+      "n_valid": 20,
+      "color_distribution": {
+        "light_blue": 1,
+        "blue": 2,
+        "gray": 3,
+        "skin": 6,
+        "white": 5,
+        "medium_blue": 2,
+        "red": 1
+      }
+    }
+  }
+}
