@@ -1,0 +1,20 @@
+{
+  "J_EDEw-20260318-200015": {
+    "n_probed": 54,
+    "n_pure_clean_signal": 7,
+    "n_pure_total": 13,
+    "n_impure_segmentable": 10,
+    "n_impure_not_segmentable": 31,
+    "n_impure_total": 41,
+    "verdict": "Mixed \u2014 some impure tracklets not segmentable from clean points alone"
+  },
+  "J_EDEw-20260318-200246": {
+    "n_probed": 81,
+    "n_pure_clean_signal": 23,
+    "n_pure_total": 45,
+    "n_impure_segmentable": 13,
+    "n_impure_not_segmentable": 23,
+    "n_impure_total": 36,
+    "verdict": "Mixed \u2014 some impure tracklets not segmentable from clean points alone"
+  }
+}

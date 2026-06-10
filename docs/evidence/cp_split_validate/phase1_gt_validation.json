@@ -1,0 +1,106 @@
+{
+  "pre_v": {
+    "J_EDEw-20260318-200015": {
+      "tier1_speed_cap": {
+        "correct": 0,
+        "spurious": 0,
+        "undecidable": 1,
+        "total": 1,
+        "precision": 0
+      },
+      "tier2_kinematic_spike": {
+        "correct": 19,
+        "spurious": 74,
+        "undecidable": 72,
+        "total": 165,
+        "precision": 0.204
+      },
+      "tier3_histogram": {
+        "correct": 3,
+        "spurious": 12,
+        "undecidable": 10,
+        "total": 25,
+        "precision": 0.2
+      }
+    },
+    "J_EDEw-20260318-200246": {
+      "tier1_speed_cap": {
+        "correct": 1,
+        "spurious": 0,
+        "undecidable": 1,
+        "total": 2,
+        "precision": 1.0
+      },
+      "tier2_kinematic_spike": {
+        "correct": 6,
+        "spurious": 95,
+        "undecidable": 3,
+        "total": 104,
+        "precision": 0.059
+      },
+      "tier3_histogram": {
+        "correct": 2,
+        "spurious": 43,
+        "undecidable": 1,
+        "total": 46,
+        "precision": 0.044
+      }
+    }
+  },
+  "post_v": {
+    "J_EDEw-20260318-200015": {
+      "tier1_speed_cap": {
+        "correct": 0,
+        "spurious": 0,
+        "undecidable": 1,
+        "total": 1,
+        "precision": 0
+      },
+      "tier2_kinematic_spike": {
+        "correct": 19,
+        "spurious": 68,
+        "undecidable": 71,
+        "total": 158,
+        "precision": 0.218
+      },
+      "tier3_histogram": {
+        "correct": 4,
+        "spurious": 71,
+        "undecidable": 74,
+        "total": 149,
+        "precision": 0.053
+      }
+    },
+    "J_EDEw-20260318-200246": {
+      "tier1_speed_cap": {
+        "correct": 1,
+        "spurious": 0,
+        "undecidable": 1,
+        "total": 2,
+        "precision": 1.0
+      },
+      "tier2_kinematic_spike": {
+        "correct": 6,
+        "spurious": 83,
+        "undecidable": 3,
+        "total": 92,
+        "precision": 0.067
+      },
+      "tier3_histogram": {
+        "correct": 9,
+        "spurious": 246,
+        "undecidable": 5,
+        "total": 260,
+        "precision": 0.035
+      }
+    }
+  },
+  "new_t3_headline": {
+    "correct": 8,
+    "spurious": 262,
+    "undecidable": 68,
+    "total": 338,
+    "correct_frac": 0.024,
+    "spurious_frac": 0.775
+  }
+}

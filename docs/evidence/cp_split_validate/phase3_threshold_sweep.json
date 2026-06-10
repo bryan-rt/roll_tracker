@@ -1,0 +1,34 @@
+{
+  "0.15": {
+    "threshold": 0.15,
+    "surviving": 409,
+    "correct": 13,
+    "spurious": 317,
+    "undecidable": 79,
+    "precision": 0.039
+  },
+  "0.18": {
+    "threshold": 0.18,
+    "surviving": 220,
+    "correct": 8,
+    "spurious": 166,
+    "undecidable": 46,
+    "precision": 0.046
+  },
+  "0.22": {
+    "threshold": 0.22,
+    "surviving": 94,
+    "correct": 5,
+    "spurious": 70,
+    "undecidable": 19,
+    "precision": 0.067
+  },
+  "0.25": {
+    "threshold": 0.25,
+    "surviving": 55,
+    "correct": 4,
+    "spurious": 41,
+    "undecidable": 10,
+    "precision": 0.089
+  }
+}

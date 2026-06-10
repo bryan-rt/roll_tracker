@@ -1,0 +1,20 @@
+{
+  "J_EDEw-20260318-200015": {
+    "n_spurious_t3": 71,
+    "shapes": {
+      "motion_shadow_pose": 36,
+      "single_point_blip": 5,
+      "sustained_same_person": 30
+    },
+    "note": "All T3 splits cleared the 2x-speed kinematic gate \u2192 all are MOTION-correlated color jumps, not stationary noise. Shape classification: single_point_blip = one side <10 frames; motion_shadow_pose = barely above 0.15 threshold (transient); sustained_same_person = persistent color change on same GT person."
+  },
+  "J_EDEw-20260318-200246": {
+    "n_spurious_t3": 246,
+    "shapes": {
+      "motion_shadow_pose": 157,
+      "single_point_blip": 31,
+      "sustained_same_person": 58
+    },
+    "note": "All T3 splits cleared the 2x-speed kinematic gate \u2192 all are MOTION-correlated color jumps, not stationary noise. Shape classification: single_point_blip = one side <10 frames; motion_shadow_pose = barely above 0.15 threshold (transient); sustained_same_person = persistent color change on same GT person."
+  }
+}

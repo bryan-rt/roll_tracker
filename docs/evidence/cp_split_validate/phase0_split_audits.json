@@ -1,0 +1,34 @@
+{
+  "pre_v": {
+    "J_EDEw-20260318-200015": {
+      "tiers": {
+        "tier3_histogram": 25,
+        "tier2_kinematic_spike": 165,
+        "tier1_speed_cap": 1
+      }
+    },
+    "J_EDEw-20260318-200246": {
+      "tiers": {
+        "tier3_histogram": 46,
+        "tier2_kinematic_spike": 104,
+        "tier1_speed_cap": 2
+      }
+    }
+  },
+  "post_v": {
+    "J_EDEw-20260318-200015": {
+      "tiers": {
+        "tier3_histogram": 149,
+        "tier2_kinematic_spike": 158,
+        "tier1_speed_cap": 1
+      }
+    },
+    "J_EDEw-20260318-200246": {
+      "tiers": {
+        "tier3_histogram": 260,
+        "tier2_kinematic_spike": 92,
+        "tier1_speed_cap": 2
+      }
+    }
+  }
+}
