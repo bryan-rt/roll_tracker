@@ -1,0 +1,232 @@
+{
+  "vid2 (authoritative)": {
+    "stage_attribution": {
+      "label": "vid2 (authoritative)",
+      "total_jumps": 915,
+      "by_type": {
+        "ilp_misstitch": 234,
+        "tracklet_drift": 379,
+        "group_boundary_jump": 116,
+        "group_membership_drift": 184,
+        "false_split": 2
+      },
+      "by_stage": {
+        "Solver (D3)": 234,
+        "Stage A (tracker)": 379,
+        "Group handling (D1/solver)": 300,
+        "D0.5 (splitter)": 2
+      },
+      "upstream_of_solver": 381,
+      "upstream_pct": 41.63934426229508,
+      "solver_pct": 25.573770491803277,
+      "group_pct": 32.78688524590164
+    },
+    "signal_shapes": {
+      "label": "vid2 (authoritative)",
+      "populations": {
+        "real_swaps": {
+          "n_events": 379
+        },
+        "false_split_window": {
+          "n_frames": 10950,
+          "n_split_events": 215
+        },
+        "correct_split_window": {
+          "n_frames": 1764,
+          "n_split_events": 35
+        },
+        "calm": {
+          "n_frames": 17511
+        }
+      },
+      "speed": {
+        "real_swaps": {
+          "n": 361,
+          "mean": 3.427497735976044,
+          "median": 0.7706696392565239,
+          "p75": 4.268783084323166,
+          "p95": 19.206785114288785,
+          "max": 61.997136990238516
+        },
+        "false_split_window": {
+          "n": 10912,
+          "mean": 0.9125152117875868,
+          "median": 0.08841001902836108,
+          "p75": 0.8969335841651022,
+          "p95": 3.505017135738892,
+          "max": 154.94757331301986
+        },
+        "correct_split_window": {
+          "n": 1757,
+          "mean": 1.3403972502622177,
+          "median": 0.28220650804139197,
+          "p75": 1.3978302412103267,
+          "p95": 5.872047864912217,
+          "max": 61.997136990238516
+        },
+        "calm": {
+          "n": 17503,
+          "mean": 0.3116118432527273,
+          "median": 0.0,
+          "p75": 0.143019437368781,
+          "p95": 1.6952308646116876,
+          "max": 46.8489117556289
+        }
+      },
+      "isolation_rate": {
+        "real_swaps": {
+          "n": 379,
+          "isolated_pct": 49.340369393139845
+        },
+        "false_split_window": {
+          "n": 10950,
+          "isolated_pct": 82.10045662100457
+        },
+        "correct_split_window": {
+          "n": 1764,
+          "isolated_pct": 79.98866213151928
+        },
+        "calm": {
+          "n": 17511,
+          "isolated_pct": 91.82799383244817
+        }
+      },
+      "hist_pre_post": {
+        "false_split": {
+          "n": 215,
+          "mean_bhatt_dist": 0.0354266355053584,
+          "median_bhatt_dist": 0.031440985628748856
+        },
+        "correct_split": {
+          "n": 35,
+          "mean_bhatt_dist": 0.040324547606419126,
+          "median_bhatt_dist": 0.03051036545188225
+        }
+      }
+    },
+    "appearance_in_solver": {
+      "label": "vid2 (authoritative)",
+      "n_false_splits": 317,
+      "n_with_boundary_frames": 317,
+      "mean_iso_rate_at_boundary": 0.8510098139296955,
+      "median_iso_rate_at_boundary": 0.9080459770114943,
+      "n_with_histogram_at_boundary": 317,
+      "hist_available_pct": 100.0
+    }
+  },
+  "vid1 (corroboration)": {
+    "stage_attribution": {
+      "label": "vid1 (corroboration)",
+      "total_jumps": 1775,
+      "by_type": {
+        "tracklet_drift": 619,
+        "group_membership_drift": 679,
+        "group_boundary_jump": 162,
+        "ilp_misstitch": 311,
+        "false_split": 4
+      },
+      "by_stage": {
+        "Stage A (tracker)": 619,
+        "Group handling (D1/solver)": 841,
+        "Solver (D3)": 311,
+        "D0.5 (splitter)": 4
+      },
+      "upstream_of_solver": 623,
+      "upstream_pct": 35.098591549295776,
+      "solver_pct": 17.52112676056338,
+      "group_pct": 47.38028169014085
+    },
+    "signal_shapes": {
+      "label": "vid1 (corroboration)",
+      "populations": {
+        "real_swaps": {
+          "n_events": 619
+        },
+        "false_split_window": {
+          "n_frames": 6141,
+          "n_split_events": 106
+        },
+        "correct_split_window": {
+          "n_frames": 2325,
+          "n_split_events": 42
+        },
+        "calm": {
+          "n_frames": 16295
+        }
+      },
+      "speed": {
+        "real_swaps": {
+          "n": 582,
+          "mean": 2.416525010454619,
+          "median": 0.6182792351061199,
+          "p75": 2.366015787479952,
+          "p95": 12.224184109343582,
+          "max": 35.87453615532907
+        },
+        "false_split_window": {
+          "n": 6111,
+          "mean": 0.7314767739787136,
+          "median": 0.17961756271644408,
+          "p75": 0.7996608026175763,
+          "p95": 2.738763660896363,
+          "max": 25.88694679736123
+        },
+        "correct_split_window": {
+          "n": 2312,
+          "mean": 0.7975271724592363,
+          "median": 0.19002743508360992,
+          "p75": 0.7886954459121887,
+          "p95": 3.244850586625081,
+          "max": 35.87453615532907
+        },
+        "calm": {
+          "n": 16287,
+          "mean": 0.40536902367511174,
+          "median": 0.0,
+          "p75": 0.4209330526339189,
+          "p95": 1.6485411110644093,
+          "max": 29.089365134301335
+        }
+      },
+      "isolation_rate": {
+        "real_swaps": {
+          "n": 619,
+          "isolated_pct": 33.117932148626814
+        },
+        "false_split_window": {
+          "n": 6141,
+          "isolated_pct": 50.56179775280899
+        },
+        "correct_split_window": {
+          "n": 2325,
+          "isolated_pct": 47.655913978494624
+        },
+        "calm": {
+          "n": 16295,
+          "isolated_pct": 47.08806382325867
+        }
+      },
+      "hist_pre_post": {
+        "false_split": {
+          "n": 106,
+          "mean_bhatt_dist": 0.08295838649218294,
+          "median_bhatt_dist": 0.0632506306107717
+        },
+        "correct_split": {
+          "n": 42,
+          "mean_bhatt_dist": 0.10083242596160409,
+          "median_bhatt_dist": 0.06026362112400405
+        }
+      }
+    },
+    "appearance_in_solver": {
+      "label": "vid1 (corroboration)",
+      "n_false_splits": 124,
+      "n_with_boundary_frames": 124,
+      "mean_iso_rate_at_boundary": 0.5132518102092086,
+      "median_iso_rate_at_boundary": 0.5149210903873744,
+      "n_with_histogram_at_boundary": 124,
+      "hist_available_pct": 100.0
+    }
+  }
+}
