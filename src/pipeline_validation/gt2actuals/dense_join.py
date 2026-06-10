@@ -38,7 +38,7 @@ from pipeline_validation.common.manifest import (
     load_manifest,
 )
 from pipeline_validation.common.schemas import ExportEntry, ModelManifest
-from pipeline_validation.signal_trace.greedy_matcher import greedy_match
+from pipeline_validation.signal_trace.greedy_matcher import greedy_match, _iou
 
 logger = logging.getLogger(__name__)
 
@@ -246,9 +246,19 @@ def _build_one_camera(
     )
     split_map, tid_frame_range = _build_split_resolution(stage_d_dir)
 
-    # Person tracks index: (resolved_tracklet_id, frame_index) -> [person_ids]
+    # Person tracks index: (tracklet_id, frame_index) -> [person_ids]
     pt_grouped = pt_df.groupby(["tracklet_id", "frame_index"])["person_id"].apply(list)
     pt_lookup = pt_grouped.to_dict()
+
+    # Split-family map: tid -> {tid, all products, original}
+    # person_tracks may list a DIFFERENT split product at a frame than
+    # _resolve_tracklet_id predicts (solver re-stitches products).
+    # The family-aware lookup tries all members.
+    split_family: dict[str, set[str]] = defaultdict(set)
+    for orig, prods in split_map.items():
+        all_members = {orig} | set(prods)
+        for m in all_members:
+            split_family[m].update(all_members)
 
     # D1 lookup: (tracklet_id, frame_index) -> [node_info]
     from pipeline_validation.gt_person_trace import _build_d1_lookup
@@ -297,10 +307,22 @@ def _build_one_camera(
             gt_tid_val = gt_track_ids[gi]
 
             if gi not in gt_best_det:
-                match_rows.append(_make_row_miss(
+                # Compute candidate dets even for misses (5c analysis)
+                gt_tuple = (gt_box.x1, gt_box.y1, gt_box.x2, gt_box.y2)
+                n_cand_miss = 0
+                cand_ids_miss: list[str] = []
+                for di_m, det_m in enumerate(frame_dets):
+                    iou_m = _iou(gt_tuple, (det_m[0], det_m[1], det_m[2], det_m[3]))
+                    if iou_m >= 0.1:
+                        n_cand_miss += 1
+                        cand_ids_miss.append(det_m[4])
+                miss_row = _make_row_miss(
                     cam, clip_id, fi, gt_tid_val, gt_box,
                     manifest_path_str, stride, hist_cols,
-                ))
+                )
+                miss_row["n_candidate_dets"] = n_cand_miss
+                miss_row["candidate_det_ids"] = json.dumps(cand_ids_miss)
+                match_rows.append(miss_row)
                 continue
 
             best_di, best_iou = gt_best_det[gi]
@@ -325,8 +347,13 @@ def _build_one_camera(
             # Record for node_gt_set inversion (resolved tracklet)
             frame_gt_tracklets[(fi, resolved_tid)].add(gt_tid_val)
 
-            # Person IDs for this detection (via resolved tracklet)
-            pids = pt_lookup.get((resolved_tid, fi), [])
+            # Person IDs for this detection (family-aware fallback).
+            # Try resolved first, then raw, then all split-family members.
+            # Solver re-stitches D0.5 products, so person_tracks may use a
+            # different product ID than _resolve_tracklet_id predicts.
+            pids = _lookup_person_ids_family(
+                pt_lookup, resolved_tid, raw_tid, fi, split_family,
+            )
             if pids:
                 canonical_votes.append((gt_tid_val, pids))
 
@@ -386,6 +413,13 @@ def _build_one_camera(
                 for hc in hist_cols:
                     hist_vals[hc] = None
 
+            # Candidate detections (double-detection analysis)
+            gt_tuple = (gt_box.x1, gt_box.y1, gt_box.x2, gt_box.y2)
+            n_cand, cand_ids, unmatched_pids = _compute_candidate_dets(
+                gt_tuple, frame_dets, best_di,
+                pt_lookup, split_family, split_map, tid_frame_range, fi,
+            )
+
             # Tag observation
             tag_key = (fi, det_id)
             has_tag = tag_key in tag_obs_by_frame_det
@@ -428,6 +462,9 @@ def _build_one_camera(
                 **hist_vals,
                 "has_tag_obs": has_tag,
                 "tag_id": tag_id,
+                "n_candidate_dets": n_cand,
+                "candidate_det_ids": json.dumps(cand_ids),
+                "unmatched_candidate_person_ids": json.dumps(unmatched_pids),
                 "state": None,  # filled after canonical derivation
                 "is_group_ambiguous": False,
                 "d3_status": d3_st,
@@ -520,6 +557,78 @@ def _output_dir(camera_id: str, export: ExportEntry) -> Path:
     return EVAL_DIR / camera_id / clip_id
 
 
+def _lookup_person_ids_family(
+    pt_lookup: dict[tuple[str, int], list[str]],
+    resolved_tid: str,
+    raw_tid: str,
+    frame_index: int,
+    split_family: dict[str, set[str]],
+) -> list[str]:
+    """Family-aware person_tracks lookup.
+
+    Tries: resolved tracklet → raw tracklet → all split-family members.
+    The solver re-stitches D0.5 products, so person_tracks may list a
+    different product ID at a frame than _resolve_tracklet_id predicts.
+    """
+    # 1. Resolved (most specific)
+    pids = pt_lookup.get((resolved_tid, frame_index), [])
+    if pids:
+        return pids
+    # 2. Raw (pre-split)
+    if raw_tid != resolved_tid:
+        pids = pt_lookup.get((raw_tid, frame_index), [])
+        if pids:
+            return pids
+    # 3. Any family member
+    for member in sorted(split_family.get(raw_tid, set())):
+        if member == resolved_tid or member == raw_tid:
+            continue
+        pids = pt_lookup.get((member, frame_index), [])
+        if pids:
+            return pids
+    return []
+
+
+def _compute_candidate_dets(
+    gt_box: tuple[float, float, float, float],
+    frame_dets: list[tuple],
+    best_di: int,
+    pt_lookup: dict,
+    split_family: dict[str, set[str]],
+    split_map: dict[str, list[str]],
+    tid_frame_range: dict[str, tuple[int, int]],
+    fi: int,
+    iou_floor: float = 0.1,
+) -> tuple[int, list[str], list[str]]:
+    """Compute all candidate detections overlapping a GT box.
+
+    Returns:
+        (n_candidate_dets, candidate_det_ids, unmatched_candidate_person_ids)
+    """
+    from pipeline_validation.signal_trace.stage_d_trace import _resolve_tracklet_id
+
+    candidate_ids: list[str] = []
+    unmatched_pids: list[str] = []
+
+    for di, det in enumerate(frame_dets):
+        det_box = (det[0], det[1], det[2], det[3])
+        iou = _iou(gt_box, det_box)
+        if iou >= iou_floor:
+            candidate_ids.append(det[4])  # detection_id
+            if di != best_di:
+                # Non-winning candidate: collect its person_ids
+                raw_tid = det[5]
+                resolved = _resolve_tracklet_id(
+                    raw_tid, fi, split_map, tid_frame_range,
+                )
+                pids = _lookup_person_ids_family(
+                    pt_lookup, resolved, raw_tid, fi, split_family,
+                )
+                unmatched_pids.extend(pids)
+
+    return len(candidate_ids), candidate_ids, sorted(set(unmatched_pids))
+
+
 def _safe_float(v) -> float | None:
     if v is None:
         return None
@@ -570,6 +679,9 @@ def _make_row_miss(
         "crop_method": None,
         "has_tag_obs": False,
         "tag_id": None,
+        "n_candidate_dets": 0,
+        "candidate_det_ids": "[]",
+        "unmatched_candidate_person_ids": "[]",
         "state": "miss",
         "is_group_ambiguous": False,
         "d3_status": None,
