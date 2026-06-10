@@ -500,9 +500,21 @@ def _build_one_camera(
         # State classification (priority order)
         row["state"] = _classify_state(row)
 
-    # --- Phase 3: Write output ---
+    # --- Phase 3: Jump detection ---
     df = pd.DataFrame(match_rows)
 
+    from pipeline_validation.gt2actuals.jumps import (
+        classify_split_events,
+        compute_d05_net_effect,
+        detect_jumps,
+        load_split_events,
+    )
+    split_events = load_split_events(stage_d_dir)
+    split_classifications = classify_split_events(split_events, df, split_map)
+    d05_net = compute_d05_net_effect(split_classifications)
+    detect_jumps(df, split_events, split_map)
+
+    # --- Phase 4: Write output ---
     out_dir = _output_dir(cam, export)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -535,6 +547,10 @@ def _build_one_camera(
             "PPDmUg has no dense manifest variant. Cross-camera validation "
             "at stride-10 only."
         ),
+        "n_jumps": int(df["jump_type"].notna().sum()),
+        "jump_counts": {k: int(v) for k, v in df["jump_type"].value_counts(dropna=True).to_dict().items()},
+        "d05_net_effect": json.loads(json.dumps(d05_net, default=int)),
+        "d05_split_events": len(split_events),
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }
     with open(out_dir / "metadata.json", "w") as f:
