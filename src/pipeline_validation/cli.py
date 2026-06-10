@@ -1878,6 +1878,15 @@ def main() -> None:
     sig_trace.add_argument("--tag-id", default="1",
                            help="Tag ID to trace (default: 1, for CP-TAG-1)")
 
+    gt2act = sub.add_parser("gt2actuals",
+                            help="Build dense GT-to-actuals join artifact (CP-GT2ACTUALS-2)")
+    gt2act.add_argument("--manifest-path", required=True,
+                        help="Explicit path to manifest YAML (not model_id)")
+    gt2act.add_argument("--camera", default=None,
+                        help="Restrict to one camera ID (default: all)")
+    gt2act.add_argument("--gym-id", default=None,
+                        help="Gym ID for pipeline output paths (default: from manifest)")
+
     sub.add_parser("create-manifest", help="Generate empty manifest template (future)")
 
     args = parser.parse_args()
@@ -1913,6 +1922,24 @@ def main() -> None:
         cmd_swap_characterize(args)
     elif args.command == "signal-trace":
         cmd_signal_trace(args)
+    elif args.command == "gt2actuals":
+        from pipeline_validation.gt2actuals.dense_join import run_dense_join
+        manifest_path = Path(args.manifest_path)
+        if not manifest_path.exists():
+            print(f"Manifest not found: {manifest_path}")
+            sys.exit(1)
+        results = run_dense_join(
+            manifest_path=manifest_path,
+            gym_id=args.gym_id,
+            camera_filter=args.camera,
+        )
+        if results:
+            print(f"Wrote {len(results)} artifact(s):")
+            for p in results:
+                print(f"  {p}")
+        else:
+            print("No artifacts written.")
+            sys.exit(1)
     elif args.command == "create-manifest":
         print(f"'{args.command}' is not yet implemented.")
         sys.exit(0)
