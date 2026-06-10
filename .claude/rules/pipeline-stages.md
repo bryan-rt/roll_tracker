@@ -39,12 +39,14 @@ paths:
     Config: `stage_D.d05_split` (Optional[dict], defaults enabled). Runs inside D1+ guard
     in `run.py`. D4 join safety: bank_frames↔detections join on (clip_id, camera_id,
     frame_index, detection_id), not tracklet_id. Split IDs use `{tid}_s{N}` suffix.
-    **PRECISION CRISIS (CP-SPLIT-VALIDATE):** GT-validation showed T3 (histogram) is
-    2.4-20% precision, T2 (kinematic) 6-22%. Tier 3 is a memoryless single-adjacent-frame
-    Bhattacharyya comparison against flat 0.15 threshold — no window, no trend. Spurious
-    splits are 61% motion-correlated shadow/pose (V noisy during motion), not stationary
-    noise. The 2× speed kinematic corroboration gate CANNOT catch this because the person
-    IS moving. Redesign needed: motion-aware channel weighting or windowed approach.
+    **NET-NEGATIVE (CP-GT2ACTUALS-4+5):** D0.5 is net-negative on ALL cameras.
+    vid2 (authoritative, 99.4% classified): 35 correct / 317 false (net -282).
+    Tier 3 owns 79% of damage (-222 of -282). CP-GT2ACTUALS-6 signal analysis:
+    NO per-frame signal separates false from correct splits (HSV Bhattacharyya
+    0.035 vs 0.040 — indistinguishable). False splits are 82% isolated (color
+    available but not discriminative). Disabling Tier 3 removes 241 false splits
+    at cost of 19 correct (5.4%). **Interim recommendation: disable Tier 3.**
+    FP7oJQ/PPDmUg thin-classification (coverage artifact, 5.8%/33.3%).
 - **Stage E** `matches`: Two-layer engagement. E0 input validation → E1 cap2 GROUP seeds →
   E2 proximity hysteresis → E3 union+buffer → E4 buzzer gate (optional) → E5 min duration →
   E6 identity enrichment. Zero matches is valid (no exception).

@@ -32,6 +32,7 @@ outputs/_eval/
   stage_d/{model_id}/     # TB-EVAL-2 identity + GT person trace
   stage_f/{model_id}/     # TB-EVAL-3 match preview mp4s
   tracker_swap/{model_id}/ # CP-SWAP-1/2 swap diagnostics
+  gt2actuals/{camera}/{clip}/  # CP-GT2ACTUALS dense error map
   experiments/             # Named experiment results (e.g., cp_reid_1/)
 ```
 
@@ -41,4 +42,20 @@ outputs/_eval/
 python -m pipeline_validation evaluate --model {id}           # Full eval (A+D+F)
 python -m pipeline_validation swap-diagnostic --model {id}    # CP-SWAP-1
 python -m pipeline_validation swap-characterize --model {id}  # CP-SWAP-2
+python -m pipeline_validation gt2actuals --manifest-path <path>  # Dense error map
 ```
+
+## Dense Error Map (CP-GT2ACTUALS)
+
+Module: `src/pipeline_validation/gt2actuals/` (dense_join, node_gt_set, jumps).
+Uses `--manifest-path` (explicit, not model_id) for metric-basis discipline.
+Dense manifest: `configs/models/bjj-detect-all-cameras-dense.yaml`.
+
+**Split-family lookup:** person_tracks join uses family-aware fallback
+(resolved → raw → any split-family member) because D4 re-stitches D0.5
+products. The same bug exists in `signal_trace/stage_d_trace.py` but does
+NOT affect locked canonical numbers (computed pre-split). Fixing signal_trace
+is a separate gated decision.
+
+**Jump types:** tracklet_drift (Stage A), false_split (D0.5), ilp_misstitch
+(solver), group_boundary_jump, group_membership_drift. GT-derived only.

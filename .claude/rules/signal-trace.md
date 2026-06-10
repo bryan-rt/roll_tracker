@@ -67,9 +67,18 @@ Pre-fix artifacts preserved at `outputs/_eval/signal_trace/bjj-detect-all-camera
 
 Root cause ranking: wrong_id (28.2%) > pair_box (23.1%) > miss (10.4%) > d4_frame_trim (2.5%) > d3_solver_drop (0.3%)
 
-**NOTE:** The 58.7% is a THREE-CAMERA aggregate. Single-camera J_EDEw baseline is ~40.5%.
+**NOTE:** The 58.7% is a THREE-CAMERA aggregate. Single-camera J_EDEw baseline is ~40.5%
+(measured PRE-split, Jun 7). Current post-split state: 33.9% (CP-GT2ACTUALS-3.5).
 These numbers are NOT comparable without stating the basis (camera set, frame range,
-person_tracks level). Canonical: clip-level, val-split, greedy IoU>=0.3.
+person_tracks level, pipeline state). Canonical: clip-level, val-split, greedy IoU>=0.3.
+
+**KNOWN BUG (CP-GT2ACTUALS-3.5):** `stage_d_trace.py`'s `_compute_dominant_person_ids`
+and `run_d_trace` use single-resolution `_resolve_tracklet_id` without the family-aware
+fallback. If D0.5 splits exist, this produces inflated no_id (vid2: 58% → 6.9% with
+fix). The locked canonical numbers (40.5%/63.2%) are NOT biased because they were
+computed before D0.5 splits existed (Jun 7 vs Jun 9). But re-running signal_trace
+today would produce the bug. The fix is in `gt2actuals/dense_join.py`
+(`_lookup_person_ids_family`); applying it to signal_trace is a separate gated decision.
 
 **CP-PURITY-3 finding (2026-06-09):** GT→D oracle (perfect detections through real D1)
 produced 0 GROUP nodes with 0 logic gaps. 100% of the "group-formation defect"

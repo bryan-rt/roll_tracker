@@ -64,7 +64,7 @@ docs/                     # Calibration guide, decisions archive, audits
 
 ## Current Status
 
-*Last updated 2026-06-09.*
+*Last updated 2026-06-10.*
 
 Pipeline A→F verified E2E. Session pipeline validated (3-camera, 35/36 clips).
 
@@ -113,6 +113,29 @@ color_histograms.parquet, tracklet_histogram_summaries.parquet.
     bump. Motion-aware channel weighting (reduce V weight when speed is high)
     is the leading design hypothesis.
   Evidence: `docs/evidence/cp_split_validate/`.
+
+**CP-GT2ACTUALS (completed 2026-06-10):** Dense GT-to-actuals error map with
+GT-grounded jump detection + D0.5 net-effect reconciliation.
+- Module: `src/pipeline_validation/gt2actuals/` (dense_join, node_gt_set, jumps)
+- CLI: `python -m pipeline_validation gt2actuals --manifest-path <path>`
+- Dense manifest (stride-1): J_EDEw vid1 3,001 frames, vid2 4,491 frames
+- **Split-family lookup fix (CP-3):** 88% of vid2 no_id was a join artifact —
+  `_resolve_tracklet_id` pointed to wrong D0.5 products because the solver
+  re-stitches them. Fixed with family-aware fallback. Vid2 no_id: 58% → 6.9%.
+- **Signal_trace has the SAME bug (CP-3.5):** but locked canonical numbers
+  (40.5%/63.2%) are NOT biased — computed Jun 7 before D0.5 splits existed (Jun 9).
+  Current pipeline state with splits: 33.9% correct (family-aware). The -6.6pp
+  drop is from D0.5 Tier 3 fragmentation, not a regression.
+- **D0.5 net-negative on ALL cameras (CP-4+5):** vid2 (authoritative, 99.4%
+  classified): 35 correct / 317 false splits (net -282). Tier 3 owns 79% of
+  damage. FP7oJQ/PPDmUg thin-classification (5.8%/33.3%) — direction only.
+- **Stage attribution (CP-6):** Stage A (tracklet_drift) is the #1 damage
+  source at 41% of vid2 jumps. Group handling 33%, solver misstitch 26%, D0.5
+  false_split jumps 0% (damage is indirect via fragmentation). HSV cannot
+  discriminate false from correct splits (Bhattacharyya 0.035 vs 0.040).
+  False splits are 82% isolated (color available but not discriminative).
+  Disabling Tier 3 removes 79% of D0.5 damage at cost of 19 correct splits.
+- Evidence: `docs/evidence/cp_gt2actuals_{1,3,3_5,4_5,5_5,6}/`
 
 **CP22 (completed):** Default detection model updated to yolo26n-pose (STAL loss, better
 small-object detection). ultralytics upgraded 8.3.252 → 8.4.33 (`--no-deps`).
@@ -274,6 +297,8 @@ First trained model had FP7oJQ false positives from background memorization.
 | `python -m pipeline_validation swap-characterize` | Swap pattern characterization (CP-SWAP-2) |
 | `python -m pipeline_validation signal-trace` | Greedy per-GT topology census (CP-TRACE-1) |
 | `python -m pipeline_validation signal-trace --stage tag` | Tag signal trace (CP-TAG-1) |
+| `python -m pipeline_validation gt2actuals --manifest-path <path>` | Dense GT-to-actuals error map (CP-GT2ACTUALS) |
+| `tools/cp_gt2actuals_6_analysis.py` | Stage-attribution + signal-shape analysis (CP-6) |
 | `tools/tag_fullscan.py` | Full-frame AprilTag scan (CP-TAG-2 ceiling experiment) |
 | `tools/tag_experiment.py` | Dense GT + full-scan tag comparison (CP-TAG-2) |
 | `tools/cp_tag_3_evidence.py` | CP-TAG-3 baseline evidence: tag-trace, session, carrier subcommands |
@@ -327,16 +352,21 @@ First trained model had FP7oJQ false positives from background memorization.
 1. ~~Measure separability~~ — DONE (CP-RASTER-PLATE-2, GO verdict)
 2. ~~V-channel histogram extension~~ — DONE (CP-HSV-V). `histogram.py` now
    H+S+V (864-dim, 18×8×6). All consumers verified safe (dynamic column discovery).
-3. **D0.5 Tier 3 redesign [NEXT]** — CP-SPLIT-VALIDATE showed current Tier 3 is
-   2.4% precision (77.5% spurious). The memoryless single-adjacent-frame comparison
-   against flat 0.15 threshold is fundamentally broken. Threshold sweep rules out
-   simple recalibration (overlapping distributions). Leading design hypothesis:
-   motion-aware channel weighting (reduce V weight when speed is high, since 61%
-   of spurious splits are V-channel shadow/pose artifacts during motion). Also:
-   Tier 2 kinematic is 6-22% precision — may need parallel rethink.
-4. **Mask + V-aware appearance into D0.5 Tier 3 + ILP cost layer** — absorbs the
-   is_isolated pixel-occlusion gate refinement. Deferred to CP21.
-5. **Tracker-level cheap-HSV-ReID** — low priority (tracker purity 0.9, low headroom).
+3. **D0.5 Tier 3: DISABLE (interim) or REDESIGN** — CP-GT2ACTUALS-6 confirmed
+   Tier 3 owns 79% of D0.5 net damage (-222 of -282 on vid2). Disabling T3
+   removes 241 false splits at cost of 19 correct (5.4%). CP-6 signal analysis
+   found NO per-frame signal separates false from correct splits (HSV Bhattacharyya
+   0.035 vs 0.040 — indistinguishable; speed overlaps at P95). Redesign needs
+   temporal/structural approach, not threshold tuning. **Interim option: disable
+   Tier 3 entirely to recover the -6.6pp D0.5 regression.**
+4. **Mask + V-aware appearance into ILP cost layer** — CP-GT2ACTUALS-6 found
+   appearance-in-solver addresses 26% of jumps (solver misstitch) and can help
+   absorb D0.5 fragments. BUT color CANNOT discriminate false from correct splits
+   (both have similar HSV distance at boundary). Needs structural complement.
+5. **Stage A tracking/detection quality [DOMINANT LEVER]** — CP-GT2ACTUALS-6 found
+   Stage A (tracklet_drift) is the #1 through-line damage source at 41% of jumps.
+   Upstream of the solver — not addressable by appearance or D0.5 fixes.
+6. **Tracker-level cheap-HSV-ReID** — low priority (tracker purity 0.9, low headroom).
    Stage A runs `with_reid: false` (BoT-SORT on motion+IoU only, no color).
 
 **Evidence-economy principle (from this arc):** tags = hard constraint; clean appearance
@@ -358,12 +388,14 @@ First trained model had FP7oJQ false positives from background memorization.
 - Camera temporal jitter investigation
 - CVAT XML import debugging (IndexError server-side)
 
-**Metric-basis discipline (MANDATORY — this burned us 3 times):**
+**Metric-basis discipline (MANDATORY — this burned us 4 times):**
 No correct_id number is comparable without its basis stated: camera set (single vs
-3-camera), frame range (val-split vs full annotated), and person_tracks level (clip vs
-session). The 58.7% figure (CP-TRACE-2) is THREE-CAMERA aggregate and NOT comparable
-to single-camera J_EDEw (~40.5% baseline). Canonical definition: clip-level
-person_tracks, val-split, greedy IoU>=0.3.
+3-camera), frame range (val-split vs full annotated), person_tracks level (clip vs
+session), AND **pipeline state** (pre-split vs post-D0.5-split). The 58.7% figure
+(CP-TRACE-2) is THREE-CAMERA aggregate. The 40.5% locked baseline was measured
+PRE-split (Jun 7); current post-split state is 33.9% (CP-GT2ACTUALS-3.5). The
+-6.6pp drop is D0.5 Tier 3 fragmentation, not a regression. Canonical definition:
+clip-level person_tracks, val-split, greedy IoU>=0.3, with pipeline state noted.
 
 ## Pipeline Validation Framework (TB-EVAL series, completed 2026-05-12)
 
@@ -689,6 +721,41 @@ t99), which survived on p0003 — a different person's path entirely.
 2. No path propagation — non-tagged tracklets on same path don't inherit tag anchor
 3. GROUP dilution — D4 assigns multiple person_ids to tagged tracklet via GROUP nodes
 
+### Dense GT-to-Actuals Error Map (CP-GT2ACTUALS, completed 2026-06-10)
+
+**Module:** `src/pipeline_validation/gt2actuals/` — dense per-(frame, gt_track_id)
+error map joining GT annotations against all pipeline signals.
+
+**CLI:** `PYTHONPATH=src python -m pipeline_validation gt2actuals --manifest-path <path> [--camera <cam>]`
+
+Uses `--manifest-path` (NOT `--model`) for explicit dense-manifest selection
+(metric-basis discipline: per-row `manifest_path` + `manifest_stride` stamps).
+
+**Schema:** One row per (frame_index, gt_track_id). Columns: identity state, match
+topology, D1 node info, node_gt_set (GT-identity SET per D1 node), world coords
+(x_m_eff = repaired-where-flagged), velocity, is_isolated + nullable HSV histogram
+(NULL = entangled, never interpolated), tag observations, candidate detections
+(n_candidate_dets, unmatched_candidate_person_ids), jump_type, jump_from_person_ids.
+
+**State column:** no_canonical → miss → untracked → no_id → wrong_id → correct.
+`is_group_ambiguous` boolean (GROUP node with node_gt_set_size >= 2).
+
+**Jump types (GT-derived, inline):** tracklet_drift (Stage A), false_split (D0.5),
+ilp_misstitch (solver), group_boundary_jump, group_membership_drift.
+
+**Split-family lookup (CP-3 fix):** person_tracks lookup uses family-aware fallback
+(resolved → raw → any split-family member) because the solver re-stitches D0.5
+products under different IDs than bank_summaries predicts. The same bug exists in
+`signal_trace/stage_d_trace.py` but does NOT affect locked canonical numbers
+(computed pre-split, Jun 7). Fixing signal_trace is a separate gated decision.
+
+**D0.5 net-effect (CP-4+5, per split-event):** net-negative on ALL cameras.
+vid2 (authoritative, 99.4% classified): 35 correct / 317 false (net -282).
+Tier 3 owns 79% of damage. FP7oJQ/PPDmUg are thin-classification (coverage artifact).
+
+**Outputs:** `outputs/_eval/gt2actuals/{camera}/{clip}/gt2actuals_dense.parquet` +
+`metadata.json`.
+
 ## Stage D Identity Investigation (CP0-CP6, completed 2026-05-19)
 
 A seven-checkpoint investigation into why Stage D coverage was 24-36% despite Stage A
@@ -858,7 +925,8 @@ because detection under-segmentation gives it wrong input.
 | CP-RASTER-PLATE-2: V-channel separability | **Complete — GO** | H+S+V AUC=0.907 vs H+S=0.815 (+9.2%). V-only AUC=0.894. Mask halves intrinsic floor (28.2%→14.6%). Same-color AUC ~0.69 (appearance strong on different-color, weak within same-color). V-extension is a production fix independent of masking. Evidence: `docs/evidence/cp_raster_plate_2/`. |
 | CP-REID-1: BoT-SORT ReID experiment | **Rejected — DOMAIN GAP** | Generic `osnet_x0_25_msmt17` rejected for DOMAIN GAP (street pedestrian model vs overhead fisheye grappling), NOT for color-blindness. The V-histogram win does NOT reopen deep ReID. A cheap-HSV-tracker-embedding is a separate, lower-priority question (tracker purity 0.9, low headroom). Config: `with_reid: false`. |
 | CP-SPLIT-VALIDATE: GT-validate D0.5 splits | **Complete** | GT-validated ALL D0.5 splits (pre-V and post-V, all tiers). New T3 splits: 2.4% correct, 77.5% spurious. Pre-V T3 also low (4-20%). T2 kinematic: 6-22%. Spurious shape: 61% motion-shadow/pose (V noisy during motion), 28% sustained-same, 11% blip. Threshold sweep: no single cutoff fixes (overlapping distributions). k=2 swaps dominate (27%), k≥3 rare (4%). Change-point feasibility: mixed (30% impure segmentable). Design finding: V unreliable during motion → motion-aware channel weighting needed. Evidence: `docs/evidence/cp_split_validate/`. |
-| CP-SPLIT-1: Post-D0 tracklet splitter | **Active — PRECISION CRISIS** | D0.5 Tier 3 (histogram) is 2.4-20% precision (CP-SPLIT-VALIDATE). Tier 2 (kinematic) is 6-22%. The mechanism detects real discontinuities but is dominated by false positives. Redesign needed: the memoryless single-frame comparison + flat threshold is fundamentally insufficient. Current config: `stage_D.d05_split`, threshold 0.15, corroboration 2×, min_dwell 5. |
+| CP-SPLIT-1: Post-D0 tracklet splitter | **Active — NET-NEGATIVE, TIER 3 DISABLE RECOMMENDED** | D0.5 net-negative on ALL cameras (CP-GT2ACTUALS-4+5). vid2: 35 correct / 317 false (net -282). Tier 3 owns 79% of damage (-222). CP-GT2ACTUALS-6 signal analysis: NO per-frame signal separates false from correct splits (HSV Bhatt 0.035 vs 0.040). Disabling Tier 3 removes 241 false splits at cost of 19 correct (5.4%). **Interim recommendation: disable Tier 3.** Current config: `stage_D.d05_split`, threshold 0.15, corroboration 2×, min_dwell 5. |
+| CP-GT2ACTUALS: Dense error map | **Complete** | Dense per-(frame, gt_track_id) error map with jump detection + D0.5 reconciliation. Family-aware split lookup fix (CP-3). Signal_trace has same bug but locked numbers safe (CP-3.5). Stage A (tracklet_drift) is #1 damage source at 41% of vid2 jumps (CP-6). Module: `src/pipeline_validation/gt2actuals/`. Evidence: `docs/evidence/cp_gt2actuals_*/`. |
 
 ## Never Touch
 
