@@ -39,6 +39,12 @@ paths:
     Config: `stage_D.d05_split` (Optional[dict], defaults enabled). Runs inside D1+ guard
     in `run.py`. D4 join safety: bank_frames↔detections join on (clip_id, camera_id,
     frame_index, detection_id), not tracklet_id. Split IDs use `{tid}_s{N}` suffix.
+    **PRECISION CRISIS (CP-SPLIT-VALIDATE):** GT-validation showed T3 (histogram) is
+    2.4-20% precision, T2 (kinematic) 6-22%. Tier 3 is a memoryless single-adjacent-frame
+    Bhattacharyya comparison against flat 0.15 threshold — no window, no trend. Spurious
+    splits are 61% motion-correlated shadow/pose (V noisy during motion), not stationary
+    noise. The 2× speed kinematic corroboration gate CANNOT catch this because the person
+    IS moving. Redesign needed: motion-aware channel weighting or windowed approach.
 - **Stage E** `matches`: Two-layer engagement. E0 input validation → E1 cap2 GROUP seeds →
   E2 proximity hysteresis → E3 union+buffer → E4 buzzer gate (optional) → E5 min duration →
   E6 identity enrichment. Zero matches is valid (no exception).

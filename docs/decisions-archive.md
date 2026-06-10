@@ -447,14 +447,65 @@ lower-priority question (tracker purity 0.9, low headroom).
 
 ---
 
-## Forward Plan: Appearance Arc (decided 2026-06-09)
+## Forward Plan: Appearance Arc (decided 2026-06-09, updated 2026-06-10)
 
 1. ~~Measure separability~~ — DONE (CP-RASTER-PLATE-2, GO verdict)
-2. **V-channel histogram extension [NEXT]** — H+S→H+S+V in histogram.py. Non-breaking.
-3. **H+S+V temporal discontinuity as D0.5 Tier 3** — WITHIN-tracklet across-time test
-   (distinct from across-people separability already measured).
+2. ~~V-channel histogram extension~~ — DONE (CP-HSV-V, commit 753061b)
+3. **D0.5 Tier 3 redesign [NEXT]** — CP-SPLIT-VALIDATE showed current mechanism is
+   2.4% precision. Memoryless single-frame comparison + flat threshold is broken.
+   Motion-aware channel weighting is the leading hypothesis (V noisy during motion).
+   Tier 2 also low-precision (6-22%) — may need parallel rethink.
 4. **Mask + V-aware appearance into D0.5 + ILP cost layer** — CP21 scope.
 5. **Cheap-HSV-ReID** — low priority (tracker purity 0.9).
 
 Evidence-economy principle: tags = hard constraint; appearance = cost/veto, never hard;
 distinctiveness-weighted; only one tier may be hard.
+
+---
+
+## CP-HSV-V: V-Channel Histogram Extension (COMPLETED 2026-06-09)
+
+Production histogram extended from H+S (144-dim) to H+S+V (864-dim, 18×8×6).
+V_bins=6 validated by AUC sweep (same-color AUC drops at V=4, V=8 adds nothing).
+All 58 consumers verified safe (dynamic column discovery). Non-histogram artifacts
+unchanged (detection/tracking/graph hashes identical). Commit 753061b.
+
+---
+
+## CP-SPLIT-VALIDATE: GT-Validate D0.5 Splits (COMPLETED 2026-06-10)
+
+GT-validated ALL D0.5 splits (pre-V 144-dim and post-V 864-dim, both tiers, both clips).
+
+**Headline:** New post-V Tier-3 splits are 2.4% correct / 77.5% spurious. But pre-V T3
+was ALSO low (4-20%). Tier 2 kinematic is 6-22%. The precision crisis is systemic.
+
+**Spurious T3 shape (the key design finding):**
+- 61% motion-correlated shadow/pose artifacts — V (brightness) is noisy during motion.
+  Person rotates through shadow while moving. The 2× speed kinematic corroboration gate
+  CANNOT catch this because the person IS moving — noise and gate fire on the same
+  condition. **This is a strong argument that V should be DOWN-WEIGHTED during high-motion
+  frames, not trusted equally.**
+- 28% sustained-same-person — genuine persistent appearance shift on one GT person
+  (different lighting zones on mat). Change-point detection would also fire here →
+  the redesign needs lighting invariance, not just windowing.
+- 11% single-point blips — a larger min_dwell alone would suppress these, but they're
+  only 11% of the problem.
+
+**Threshold sweep:** {0.15: 3.9%, 0.18: 4.6%, 0.22: 6.7%, 0.25: 8.9%} precision.
+Correct and spurious distributions overlap — no single threshold separates them.
+Rules out simple recalibration for 864-dim.
+
+**k-distribution:** k=2 swaps dominate (27%), k≥3 rare (4%). The segmenter must handle
+k≥2 but k>3 is uncommon.
+
+**Change-point feasibility:** Mixed. 30% of impure tracklets show segmentable clean-point
+structure. Appearance alone is insufficient for reliable segmentation.
+
+**Redesign options (no fix chosen):**
+(a) min_dwell alone: insufficient (only 11% blips)
+(b) Full change-point: premature (30% feasibility)
+(c) Threshold recalibration: insufficient (overlapping distributions)
+(d) Motion-aware channel weighting: leading hypothesis (61% motion-shadow)
+(e) Tier 2 also needs attention (6-22% precision)
+
+Evidence: `docs/evidence/cp_split_validate/`.

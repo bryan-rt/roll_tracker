@@ -91,11 +91,28 @@ color_histograms.parquet, tracklet_histogram_summaries.parquet.
 - **V-channel FIXED (CP-HSV-V):** Production histogram extended from H+S (144-dim)
   to H+S+V (864-dim, 18×8×6). `histogram.py` now uses channels [0,1,2] with
   `HIST_V_BINS=6`. `bhattacharyya_distance` compares flat (shape-invariant).
-  Black vs white now separable (was distance ~0, now ~1.0). D0.5 Tier 3 split
-  count increases (25→149 vid1, 46→260 vid2) — expected from richer signal.
-  Tier 1/2 counts: T1 identical, T2 slightly down (dwell filter interaction).
-  All non-histogram artifacts unchanged (detection/tracking/graph).
+  Black vs white now separable (was distance ~0, now ~1.0).
   Evidence: `docs/evidence/cp_raster_plate_2/`.
+- **D0.5 split precision crisis (CP-SPLIT-VALIDATE):** GT-validation of ALL D0.5
+  splits revealed systemic low precision across all tiers:
+  - Tier 3 (histogram): post-V new splits are 2.4% correct / 77.5% spurious.
+    Pre-V T3 was also low (4-20%). Threshold sweep shows no single cutoff
+    separates correct from spurious (overlapping distributions).
+  - Tier 2 (kinematic): 6-22% precision — also mostly spurious.
+  - Tier 1 (speed cap): too few to characterize.
+  - **Spurious T3 shape:** 61% motion-correlated shadow/pose artifacts (V is
+    noisy during motion — person rotates through shadow while moving), 28%
+    sustained-same-person, 11% single-point blips.
+  - **Design finding:** V (brightness) is unreliable during high-motion frames.
+    The 2× speed kinematic corroboration gate CANNOT catch this because the
+    person IS moving — the noise and the gate fire on the same condition.
+  - **k-distribution:** k=2 swaps dominate (27% of tracklets), k≥3 rare (4%).
+  - **Change-point feasibility:** mixed — 30% of impure tracklets show
+    segmentable clean-point structure. Appearance alone is insufficient.
+  - **Implication:** D0.5 Tier 3 needs a fundamental redesign, not a threshold
+    bump. Motion-aware channel weighting (reduce V weight when speed is high)
+    is the leading design hypothesis.
+  Evidence: `docs/evidence/cp_split_validate/`.
 
 **CP22 (completed):** Default detection model updated to yolo26n-pose (STAL loss, better
 small-object detection). ultralytics upgraded 8.3.252 → 8.4.33 (`--no-deps`).
@@ -310,10 +327,13 @@ First trained model had FP7oJQ false positives from background memorization.
 1. ~~Measure separability~~ — DONE (CP-RASTER-PLATE-2, GO verdict)
 2. ~~V-channel histogram extension~~ — DONE (CP-HSV-V). `histogram.py` now
    H+S+V (864-dim, 18×8×6). All consumers verified safe (dynamic column discovery).
-3. **H+S+V temporal discontinuity as D0.5 Tier 3 trigger [NEXT]** — a WITHIN-tracklet
-   across-time test (histogram similarity between consecutive windows), distinct from
-   the across-people separability already measured. May replace or supplement the
-   current Bhattacharyya Tier 3 (which uses H+S only, threshold 0.15).
+3. **D0.5 Tier 3 redesign [NEXT]** — CP-SPLIT-VALIDATE showed current Tier 3 is
+   2.4% precision (77.5% spurious). The memoryless single-adjacent-frame comparison
+   against flat 0.15 threshold is fundamentally broken. Threshold sweep rules out
+   simple recalibration (overlapping distributions). Leading design hypothesis:
+   motion-aware channel weighting (reduce V weight when speed is high, since 61%
+   of spurious splits are V-channel shadow/pose artifacts during motion). Also:
+   Tier 2 kinematic is 6-22% precision — may need parallel rethink.
 4. **Mask + V-aware appearance into D0.5 Tier 3 + ILP cost layer** — absorbs the
    is_isolated pixel-occlusion gate refinement. Deferred to CP21.
 5. **Tracker-level cheap-HSV-ReID** — low priority (tracker purity 0.9, low headroom).
@@ -819,7 +839,7 @@ because detection under-segmentation gives it wrong input.
 | CP-REID-1: BoT-SORT ReID experiment | **Rejected — DOMAIN GAP** | Generic `osnet_x0_25_msmt17` rejected for domain gap (street pedestrian vs overhead fisheye grappling), NOT color-blindness. V-histogram win does NOT reopen deep ReID. See updated row below. |
 | CP-SWAP-1: Tracker-swap diagnostic | **Complete** | 167 GT-oracle swaps across 68/562 tracklets. Best single-feature AUC=0.663 (`bbox_aspect_change`). FP7oJQ world_accel 25.8x spike ratio, AUC=0.714. Histogram coverage 100% at swap boundaries. Module: `src/pipeline_validation/tracker_swap/`. |
 | CP-SWAP-2: Swap pattern characterization | **Complete** | 47% hop_into_unoccupied, 28% cascade, 2% exchange. 41% transient (50% single-frame flickers). 45% no kinematic spike. 81% within 0.5m. Informed CP-SPLIT-1 design. |
-| CP-SPLIT-1: Post-D0 tracklet splitter | **Active** | Tiered: speed cap 48 m/s + spike ratio 5x (min 5 m/s, isolation 3x) + Bhattacharyya 0.15 (kinematic corroboration 2x). Min dwell 5 frames. D0.5 in `d05_split.py` (fce5758). Results vs CP5: present +14.6/+4.8/+4.4pp, misattr -8.0/-7.0/-4.6pp. Config: `stage_D.d05_split`. Validator fix: af258b7. |
+| CP-SPLIT-1: Post-D0 tracklet splitter | **Active — PRECISION CRISIS (CP-SPLIT-VALIDATE)** | Tiered: speed cap 48 m/s + spike ratio 5x + Bhattacharyya 0.15 (corroboration 2x). Min dwell 5f. GT-validation (CP-SPLIT-VALIDATE): T3 2.4-20% precision, T2 6-22%. Spurious T3 dominated by motion-shadow (61%). Redesign needed — see CP-SPLIT-VALIDATE row below. |
 | Domain-specific ReID training | **Deferred** | Superseded by CP7 finding: on FP7oJQ (one 2.5-min clip) ~74% of misattribution is detection under-segmentation, not addressable by ReID. Detection pair separation is the primary lever. |
 | BoT-SORT parameter tuning | **Deferred** | iou_threshold, track_buffer experiments. After detection pair separation. |
 | GROUP node assignment reform | **Deferred** | D4 boundary fix using realized_group_pairings. ~3-5pp potential. Concurrent-swap node deferred as ~10% sidecar (CP7-pre-9). |
@@ -837,6 +857,8 @@ because detection under-segmentation gives it wrong input.
 | CP-RASTER-PLATE: Median-background masking | **Complete** | Clean plate (0% ghosts, 72% mask coverage, 0/158 absorbed). But measured in V-blind H+S space → NO_GO was INVALID (see CP-RASTER-PLATE-2). Evidence: `docs/evidence/cp_raster_plate/`. |
 | CP-RASTER-PLATE-2: V-channel separability | **Complete — GO** | H+S+V AUC=0.907 vs H+S=0.815 (+9.2%). V-only AUC=0.894. Mask halves intrinsic floor (28.2%→14.6%). Same-color AUC ~0.69 (appearance strong on different-color, weak within same-color). V-extension is a production fix independent of masking. Evidence: `docs/evidence/cp_raster_plate_2/`. |
 | CP-REID-1: BoT-SORT ReID experiment | **Rejected — DOMAIN GAP** | Generic `osnet_x0_25_msmt17` rejected for DOMAIN GAP (street pedestrian model vs overhead fisheye grappling), NOT for color-blindness. The V-histogram win does NOT reopen deep ReID. A cheap-HSV-tracker-embedding is a separate, lower-priority question (tracker purity 0.9, low headroom). Config: `with_reid: false`. |
+| CP-SPLIT-VALIDATE: GT-validate D0.5 splits | **Complete** | GT-validated ALL D0.5 splits (pre-V and post-V, all tiers). New T3 splits: 2.4% correct, 77.5% spurious. Pre-V T3 also low (4-20%). T2 kinematic: 6-22%. Spurious shape: 61% motion-shadow/pose (V noisy during motion), 28% sustained-same, 11% blip. Threshold sweep: no single cutoff fixes (overlapping distributions). k=2 swaps dominate (27%), k≥3 rare (4%). Change-point feasibility: mixed (30% impure segmentable). Design finding: V unreliable during motion → motion-aware channel weighting needed. Evidence: `docs/evidence/cp_split_validate/`. |
+| CP-SPLIT-1: Post-D0 tracklet splitter | **Active — PRECISION CRISIS** | D0.5 Tier 3 (histogram) is 2.4-20% precision (CP-SPLIT-VALIDATE). Tier 2 (kinematic) is 6-22%. The mechanism detects real discontinuities but is dominated by false positives. Redesign needed: the memoryless single-frame comparison + flat threshold is fundamentally insufficient. Current config: `stage_D.d05_split`, threshold 0.15, corroboration 2×, min_dwell 5. |
 
 ## Never Touch
 
