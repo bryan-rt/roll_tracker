@@ -137,6 +137,13 @@ GT-grounded jump detection + D0.5 net-effect reconciliation.
   Disabling Tier 3 removes 79% of D0.5 damage at cost of 19 correct splits.
 - Evidence: `docs/evidence/cp_gt2actuals_{1,3,3_5,4_5,5_5,6}/`
 
+**Stage A Tuning Sweep (active):** BoT-SORT tracker param sweep harness built.
+Detection cache at `outputs/_sweep/detection_cache/` (J_EDEw vid1+vid2). Replay
+harness at `tools/sweep/replay_tracker.py` — deterministic, ~20s/clip on CPU.
+Confirmed baseline: `outputs/_sweep/baseline.json` (vid1 40.3%, vid2 30.6%,
+combined 34.7% correct_id from gt2actuals parquets). Stock BoT-SORT defaults
+have never been tuned for this domain.
+
 **CP22 (completed):** Default detection model updated to yolo26n-pose (STAL loss, better
 small-object detection). ultralytics upgraded 8.3.252 → 8.4.33 (`--no-deps`).
 CoreML is now the default inference path (`prefer_coreml: true`). Detector auto-loads
@@ -302,6 +309,9 @@ First trained model had FP7oJQ false positives from background memorization.
 | `tools/tag_fullscan.py` | Full-frame AprilTag scan (CP-TAG-2 ceiling experiment) |
 | `tools/tag_experiment.py` | Dense GT + full-scan tag comparison (CP-TAG-2) |
 | `tools/cp_tag_3_evidence.py` | CP-TAG-3 baseline evidence: tag-trace, session, carrier subcommands |
+| `tools/sweep/baseline_check.py` | Reproduce baseline correct_id from gt2actuals parquets |
+| `tools/sweep/cache_detections.py` | Cache Stage A detections for tracker param sweep |
+| `tools/sweep/replay_tracker.py` | Replay cached detections through BotSort with custom params |
 
 ## Training Data Locations
 
