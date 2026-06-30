@@ -153,6 +153,9 @@ Results append to `outputs/_sweep/results.jsonl`.
   and current replay — see `tools/sweep/diagnostics/gap_explanation.md`).
   98.9% structural agreement in tracklet transitions; gap is fixed offset, not
   parameter-dependent. All sweep deltas are internally consistent.
+  **Comparison rule:** sweep results must be compared against the 30.7% sweep
+  baseline only (same harness path). Never compare sweep deltas against the
+  32.5% freshened eval_gt baseline (different measurement path).
 - Deterministic (verified: identical parquets across runs).
 - ~7min/clip (replay ~20s + Stage D ~5-6min + GT2ACTUALS ~30s).
 - Tag hint handling: identity_hints.jsonl tracklet_ids remapped via detection_id
