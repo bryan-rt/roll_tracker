@@ -45,32 +45,28 @@ def measure(run_id: str, clip_id: str, camera_id: str, baseline_path: str) -> di
     orig_eval_dir = dense_join.EVAL_DIR
     try:
         # _resolve_clip_dir globs: OUTPUTS_DIR / f"{gym_id}/{cam}/**/{clip_id}"
-        # We set OUTPUTS_DIR so that gym_id="_sweep" + cam + path finds our sweep clip.
-        # Sweep clip is at: SWEEP_BASE / run_id / clip_id
-        # = REPO_ROOT / outputs / _sweep / runs / <run_id> / <clip_id>
-        # So we need OUTPUTS_DIR / "_sweep" / "J_EDEw" / ... / clip_id to match.
-        # Instead, create a symlink: outputs/_sweep/_gt2a_gym/<cam>/<run_id>/<clip_id>/
-        # pointing to the sweep clip directory.
-        gt2a_gym_dir = REPO_ROOT / "outputs" / "_sweep" / "_gt2a_gym" / camera_id / run_id
-        gt2a_gym_dir.mkdir(parents=True, exist_ok=True)
-        link_path = gt2a_gym_dir / clip_id
+        # We use a run_id-scoped gym_id so the glob matches ONLY this run's clip,
+        # not other sweep runs' clips (glob collision bug discovered in SWEEP-3).
+        # Directory: outputs/_sweep/_gt2a/<run_id>/<cam>/<clip_id>/ -> sweep clip
+        import os
+        gt2a_base = REPO_ROOT / "outputs" / "_sweep" / "_gt2a"
+        gt2a_run_dir = gt2a_base / run_id / camera_id
+        gt2a_run_dir.mkdir(parents=True, exist_ok=True)
+        link_path = gt2a_run_dir / clip_id
         if link_path.exists() or link_path.is_symlink():
             link_path.unlink()
-        # Use relative symlink to avoid absolute path issues
-        import os
         link_target = os.path.relpath(sweep_clip_dir, link_path.parent)
         link_path.symlink_to(link_target)
 
-        # Now OUTPUTS_DIR / "_sweep/_gt2a_gym" / cam / run_id / clip_id -> sweep clip
-        dense_join.OUTPUTS_DIR = REPO_ROOT / "outputs" / "_sweep"
+        # OUTPUTS_DIR scoped to _gt2a base; gym_id = run_id so glob is unique
+        dense_join.OUTPUTS_DIR = gt2a_base
 
         # _output_dir writes to EVAL_DIR / camera_id / clip_id
-        # Override to write inside the sweep clip dir
         sweep_gt2a_dir = sweep_clip_dir / "gt2actuals"
         dense_join.EVAL_DIR = sweep_gt2a_dir
 
-        # Verify the glob resolves BEFORE calling _build_one_camera
-        gym_id = "_gt2a_gym"
+        # gym_id = run_id ensures glob only matches this run
+        gym_id = run_id
         manifest = load_manifest(MANIFEST_PATH)
 
         # Find the matching export entry for this clip

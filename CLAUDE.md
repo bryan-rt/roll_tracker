@@ -122,10 +122,11 @@ GT-grounded jump detection + D0.5 net-effect reconciliation.
 - **Split-family lookup fix (CP-3):** 88% of vid2 no_id was a join artifact —
   `_resolve_tracklet_id` pointed to wrong D0.5 products because the solver
   re-stitches them. Fixed with family-aware fallback. Vid2 no_id: 58% → 6.9%.
-- **Signal_trace has the SAME bug (CP-3.5):** but locked canonical numbers
-  (40.5%/63.2%) are NOT biased — computed Jun 7 before D0.5 splits existed (Jun 9).
-  Current pipeline state with splits: 33.9% correct (family-aware). The -6.6pp
-  drop is from D0.5 Tier 3 fragmentation, not a regression.
+- **Signal_trace has the SAME bug (CP-3.5):** ~~locked canonical numbers
+  (40.5%/63.2%) are NOT biased~~ **RETRACTED (SWEEP-3b):** both 40.5% and 63.2%
+  were computed from pre-CP-TAG-4a `person_tracks` (Jun 7 13:05); 63.2% is a
+  frame-selection artifact, not a code-change effect. Freshened eval_gt baseline
+  is 32.5% combined. See `tools/sweep/diagnostics/blast_radius_check.md`.
 - **D0.5 net-negative on ALL cameras (CP-4+5):** vid2 (authoritative, 99.4%
   classified): 35 correct / 317 false splits (net -282). Tier 3 owns 79% of
   damage. FP7oJQ/PPDmUg thin-classification (5.8%/33.3%) — direction only.
@@ -141,18 +142,21 @@ GT-grounded jump detection + D0.5 net-effect reconciliation.
 Detection cache → tracker replay → Stage D rerun → GT2ACTUALS measurement.
 Tools at `tools/sweep/`. Detection cache at `outputs/_sweep/detection_cache/`.
 Results append to `outputs/_sweep/results.jsonl`.
-- **Pre-existing baseline:** `outputs/_sweep/baseline.json` — 34.7% combined
-  correct_id from gt2actuals parquets (vid1 40.3%, vid2 30.6%). This is the
-  measurement of the ORIGINAL pipeline's Stage A output.
+- **Freshened eval_gt baseline:** 32.5% combined correct_id (vid1 39.3%, vid2 27.5%).
+  D0→D4 re-run on current code against original Stage A tracklets. Confirmed by
+  both standard gt2actuals CLI and sweep harness. The former 34.7% was stale
+  (mixed-provenance D2-D4 artifacts from Jun 7 pre-CP-TAG-4a code). See
+  `tools/sweep/diagnostics/blast_radius_check.md`.
 - **Sweep baseline:** Stock params through replay path gives 30.7% combined
-  (vid1 34.1%, vid2 28.2%). The ~4pp gap vs pre-existing baseline is because
-  the replay produces different tracklet assignments than the original pipeline
-  (BoT-SORT tracklet IDs are sequential and depend on detection ordering).
+  (vid1 34.1%, vid2 28.2%). The 1.8pp gap vs freshened baseline is because
+  the replay produces different tracklet assignments than the original pipeline.
   All sweep points are compared against this sweep baseline for valid deltas.
 - Deterministic (verified: identical parquets across runs).
 - ~7min/clip (replay ~20s + Stage D ~5-6min + GT2ACTUALS ~30s).
 - Tag hint handling: identity_hints.jsonl tracklet_ids remapped via detection_id
   join; `tag_hint_dropped` flag surfaced in sweep summary when tag anchor lost.
+- **Glob collision bug fix (SWEEP-3b):** `run_gt2actuals.py` symlink directory
+  scoped to `_gt2a/<run_id>/` to prevent cross-run glob matches.
 
 **CP22 (completed):** Default detection model updated to yolo26n-pose (STAL loss, better
 small-object detection). ultralytics upgraded 8.3.252 → 8.4.33 (`--no-deps`).
@@ -938,11 +942,11 @@ because detection under-segmentation gives it wrong input.
 | CP-TAG-2: Tag ceiling experiment | **Complete** | Full-frame scan (no bbox/cadence restriction) found identical tag observations to pipeline (1+3 across 9,030 frames). Bottleneck is physical occlusion at ceiling distance, not pipeline gating. Dense GT (stride-1, 10x points) confirms stride-10 is representative (±0.3pp). AprilTags cannot be sole identity mechanism. See `tools/tag_fullscan.py`, `tools/tag_experiment.py`. |
 | Cross-tracklet identity diagnostic | **Complete** | Must_link is soft (2× penalty), identity doesn't propagate across tracklets, GROUP dilutes tag identity. Video 1: 17 person_ids for 1 GT person, 167 intra-tracklet transitions. Video 2: tagged tracklet (862f) dropped, tag assigned to wrong person via nested detection. Three architectural gaps: soft must_link, no path propagation, GROUP dilution. |
 | CP-TAG-3: Two-clip harness + tag identity baseline | **Complete** | Two-clip J_EDEw harness under `_eval_gt`. Baseline: vid1 25.6% correct_id (t366, 1125 session transitions), vid2 22.2% correct_id (t139, 2680 session transitions). Both tagged tracklets KEPT at session level, 4 identity_assignments for tag:1 all spanning clip boundary. GROUP dilution is dominant corruption (14/12 person_ids per tagged tracklet). Prior 16.9% vid2 number was stale (pre-CP5). tag_trace.py:1181 hardcode footgun documented. Session-level trace mode gap noted — likely its own checkpoint before post-CP-TAG-4 gate. Evidence: `docs/evidence/cp_tag_3_baseline/`. Harness: `tools/cp_tag_3_evidence.py`. |
-| CP-TAG-4a: Tag-anchored identity (Fix 0+A+C+D) | **Complete — CONFIRMED IMPROVEMENT** | Split-aware ping binding (Fix 0), D4 thread consumption (Fix A), hard no-drop (Fix C), carrier tests (Fix D). **CORRECTED (CP-PURITY-2):** The initial "correct_id decreased" verdict was a metric-basis artifact (session-full-range vs clip-level val-split). Reconciled: J_EDEw val-split clip-level correct_id 40.5% → 63.2% = **+22.7pp improvement**. CP-TAG-4a helped non-tagged identities. Evidence: `docs/evidence/cp_purity_2/`, `docs/evidence/cp_tag_4_post/`. |
+| CP-TAG-4a: Tag-anchored identity (Fix 0+A+C+D) | **Evidence RETRACTED — effect UNKNOWN** | Split-aware ping binding (Fix 0), D4 thread consumption (Fix A), hard no-drop (Fix C), carrier tests (Fix D). Code changes remain in codebase. **RETRACTED (SWEEP-3b):** The "+22.7pp improvement" claim (40.5% → 63.2%) is INVALID — both figures were computed from the same `person_tracks.parquet` (mtime Jun 7 13:05, 37 min BEFORE the CP-TAG-4a commit at 13:42). The 40.5% is full-range; 63.2% is val-split (frames 2500-3000) — a frame-selection effect, not a code-change effect. CP-TAG-4a's actual effect on correct_id is UNKNOWN. Fresh A/B measurement is a prerequisite before CP-TAG-4a's code can be trusted as net-positive; until that measurement exists, treat Fix 0+A+C+D as unvalidated, not proven harmful — do not revert based on this finding alone, and do not cite it as a win in any future planning. Downstream conclusions that treated CP-TAG-4a as a confirmed win (including "helped non-tagged identities") are unsupported. See `tools/sweep/diagnostics/blast_radius_check.md`. |
 | CP-TAG-4b: Hard ping connectivity | **Deferred** | Forces tag thread through both pings. Gated on CP21 appearance costs. Soft thread visits the correct tracklet but drifts — hard connectivity without appearance costs risks misrouting. |
 | GROUP dilution of tag identity | **Diagnosed** | D0.5 split products create GROUP nodes. Fix A gives exactly 1 tag→person mapping; GROUP dilution of the ENTITY path remains. **CP-PURITY-3 finding:** D1 forms GROUPs from tracklet LIFECYCLE EVENTS (merge/split), not proximity. Capacity=2 is D3 metadata, not D1-enforced. GROUPs are structurally unnecessary when detection is perfect (GT→D oracle produced 0 GROUPs with 0 logic gaps). Evidence: `docs/evidence/cp_purity_3/`. |
-| CP-PURITY-1: Through-line decomposition | **Complete** | Tagged athlete's entity (p0022) follows the WRONG person — majority GT track is 7, not tagged 8. 100% attributed to ILP stitch routing, NOT D4 emission, NOT detection-tracking. Tracklet-level purity is healthy (0.88-0.92). Evidence: `docs/evidence/cp_purity_1/`. |
-| CP-PURITY-2: Aggregate reconciliation + floor | **Complete** | Reconciled CP-TAG-4a as +22.7pp improvement (see above). Pair-box 72-84% mishandled (no GROUP despite proximity). Addressable ceiling: tight_match 35.9%/70.4%. Evidence: `docs/evidence/cp_purity_2/`. |
+| CP-PURITY-1: Through-line decomposition | **Complete — numbers unverified (SWEEP-3b)** | Tagged athlete's entity (p0022) follows the WRONG person — majority GT track is 7, not tagged 8. 100% attributed to ILP stitch routing, NOT D4 emission, NOT detection-tracking. Tracklet-level purity is healthy (0.88-0.92). **Staleness exposure:** measured against pre-CP-TAG-4a `person_tracks` (mtime Jun 7 13:30). Structural finding (corruption enters at solver layer) is an architecture claim likely sound regardless of specific person_ids. Quantitative breakdown should be re-verified against freshened artifacts. Evidence: `docs/evidence/cp_purity_1/`. |
+| CP-PURITY-2: Aggregate reconciliation + floor | **Complete — reconciliation RETRACTED (SWEEP-3b)** | The "+22.7pp" reconciliation that this checkpoint produced is INVALID (see CP-TAG-4a retraction above). The pair-box decomposition (72-84% mishandled) and addressable ceiling (35.9%/70.4%) were also computed from the same pre-CP-TAG-4a `person_tracks` and should be treated as unverified. Evidence: `docs/evidence/cp_purity_2/`. |
 | CP-PURITY-3: GT-through-D oracle | **Complete** | Ran real D1 on perfect GT detections (one clean tracklet per person). Oracle produced 0 GROUP nodes — structurally correct (no lifecycle events with continuous tracklets). 100% of the former "group-formation defect" (29.9%/11.6%) is detection under-segmentation wearing a D1 costume. D1 has 0 genuine logic gaps. The lever is detection pair separation, not D1 graph logic. Evidence: `docs/evidence/cp_purity_3/`. |
 | CP-RASTER-PLATE: Median-background masking | **Complete** | Clean plate (0% ghosts, 72% mask coverage, 0/158 absorbed). But measured in V-blind H+S space → NO_GO was INVALID (see CP-RASTER-PLATE-2). Evidence: `docs/evidence/cp_raster_plate/`. |
 | CP-RASTER-PLATE-2: V-channel separability | **Complete — GO** | H+S+V AUC=0.907 vs H+S=0.815 (+9.2%). V-only AUC=0.894. Mask halves intrinsic floor (28.2%→14.6%). Same-color AUC ~0.69 (appearance strong on different-color, weak within same-color). V-extension is a production fix independent of masking. Evidence: `docs/evidence/cp_raster_plate_2/`. |
