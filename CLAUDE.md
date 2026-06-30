@@ -148,9 +148,11 @@ Results append to `outputs/_sweep/results.jsonl`.
   (mixed-provenance D2-D4 artifacts from Jun 7 pre-CP-TAG-4a code). See
   `tools/sweep/diagnostics/blast_radius_check.md`.
 - **Sweep baseline:** Stock params through replay path gives 30.7% combined
-  (vid1 34.1%, vid2 28.2%). The 1.8pp gap vs freshened baseline is because
-  the replay produces different tracklet assignments than the original pipeline.
-  All sweep points are compared against this sweep baseline for valid deltas.
+  (vid1 34.1%, vid2 28.2%). The ~2pp gap vs freshened 32.5% is an environment
+  artifact (likely boxmot/OpenCV version drift between Jun 9 Stage A production
+  and current replay — see `tools/sweep/diagnostics/gap_explanation.md`).
+  98.9% structural agreement in tracklet transitions; gap is fixed offset, not
+  parameter-dependent. All sweep deltas are internally consistent.
 - Deterministic (verified: identical parquets across runs).
 - ~7min/clip (replay ~20s + Stage D ~5-6min + GT2ACTUALS ~30s).
 - Tag hint handling: identity_hints.jsonl tracklet_ids remapped via detection_id
