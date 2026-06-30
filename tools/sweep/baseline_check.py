@@ -2,14 +2,18 @@
 """Reproduce baseline correct_id from gt2actuals parquets.
 
 Reads existing gt2actuals_dense.parquet for J_EDEw vid1+vid2 and computes:
-- pct_correct (state == "correct" / total rows)
+- pct_correct (state == "correct" / total rows, no exclusions)
 - jump counts by type
-Writes outputs/_sweep/baseline.json with exact numbers + provenance stamps.
+- parquet provenance check vs git HEAD
+
+Writes outputs/_sweep/baseline.json with exact numbers, provenance, and
+explicit basis field for metric-basis discipline.
 """
 
 import json
 import os
 import subprocess
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -39,6 +43,17 @@ def get_git_sha() -> str:
         ).strip()
     except Exception:
         return "unknown"
+
+
+def get_git_head_timestamp() -> float:
+    """Return the commit timestamp of HEAD as epoch seconds."""
+    try:
+        ts = subprocess.check_output(
+            ["git", "log", "-1", "--format=%ct"], cwd=REPO_ROOT, text=True
+        ).strip()
+        return float(ts)
+    except Exception:
+        return 0.0
 
 
 def compute_clip_stats(clip_id: str) -> dict:
@@ -71,9 +86,23 @@ def compute_clip_stats(clip_id: str) -> dict:
 
 
 def main():
+    git_sha = get_git_sha()
+    head_ts = get_git_head_timestamp()
+
     results = {}
     combined_correct = 0
     combined_total = 0
+
+    # Provenance check: warn if parquets are older than HEAD
+    for clip_id in CLIPS:
+        pq_path = GT2ACTUALS_DIR / clip_id / "gt2actuals_dense.parquet"
+        if pq_path.exists():
+            mtime = os.path.getmtime(pq_path)
+            if head_ts > 0 and mtime < head_ts:
+                age_hours = (head_ts - mtime) / 3600
+                print(f"  WARNING: {clip_id} parquet is {age_hours:.0f}h older than HEAD ({git_sha[:8]})")
+                print(f"           mtime={time.strftime('%Y-%m-%d %H:%M', time.localtime(mtime))}")
+                print(f"           Baseline may not reflect current pipeline state.")
 
     for clip_id in CLIPS:
         stats = compute_clip_stats(clip_id)
@@ -102,12 +131,12 @@ def main():
     print(f"  Total rows:  {combined_total:,}")
     print(f"  Correct:     {combined_correct:,} ({combined_pct*100:.1f}%)")
 
-    # Gate check
-    if combined_pct < 0.10 or combined_pct > 0.50:
-        print(f"\n  *** GATE FAILED: combined pct_correct={combined_pct:.3f} outside [0.10, 0.50] ***")
+    # Gate check (25-50% per brief)
+    if combined_pct < 0.25 or combined_pct > 0.50:
+        print(f"\n  *** BASELINE GATE FAILED: combined pct_correct={combined_pct:.3f} outside [0.25, 0.50] ***")
         exit(1)
     else:
-        print(f"\n  Gate: PASS (within expected 10-50% range)")
+        print(f"\n  Gate: PASS (within expected 25-50% range)")
 
     combined_jumps = {}
     for jt in JUMP_TYPES:
@@ -117,7 +146,14 @@ def main():
         print(f"    {jt:30s} {combined_jumps[jt]:>5}")
 
     output = {
-        "git_sha": get_git_sha(),
+        "git_sha": git_sha,
+        "basis": {
+            "instrument": "gt2actuals_dense",
+            "denominator": "all_rows",
+            "frame_range": "full_annotated_dense_stride1",
+            "clips": CLIPS,
+            "note": "34.7% is the sweep baseline. 33.9% in CLAUDE.md is a different instrument/state.",
+        },
         "clips": results,
         "combined": {
             "total_rows": combined_total,

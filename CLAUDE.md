@@ -137,12 +137,22 @@ GT-grounded jump detection + D0.5 net-effect reconciliation.
   Disabling Tier 3 removes 79% of D0.5 damage at cost of 19 correct splits.
 - Evidence: `docs/evidence/cp_gt2actuals_{1,3,3_5,4_5,5_5,6}/`
 
-**Stage A Tuning Sweep (active):** BoT-SORT tracker param sweep harness built.
-Detection cache at `outputs/_sweep/detection_cache/` (J_EDEw vid1+vid2). Replay
-harness at `tools/sweep/replay_tracker.py` — deterministic, ~20s/clip on CPU.
-Confirmed baseline: `outputs/_sweep/baseline.json` (vid1 40.3%, vid2 30.6%,
-combined 34.7% correct_id from gt2actuals parquets). Stock BoT-SORT defaults
-have never been tuned for this domain.
+**Stage A Tuning Sweep (active):** End-to-end BoT-SORT tracker param sweep harness.
+Detection cache → tracker replay → Stage D rerun → GT2ACTUALS measurement.
+Tools at `tools/sweep/`. Detection cache at `outputs/_sweep/detection_cache/`.
+Results append to `outputs/_sweep/results.jsonl`.
+- **Pre-existing baseline:** `outputs/_sweep/baseline.json` — 34.7% combined
+  correct_id from gt2actuals parquets (vid1 40.3%, vid2 30.6%). This is the
+  measurement of the ORIGINAL pipeline's Stage A output.
+- **Sweep baseline:** Stock params through replay path gives 30.7% combined
+  (vid1 34.1%, vid2 28.2%). The ~4pp gap vs pre-existing baseline is because
+  the replay produces different tracklet assignments than the original pipeline
+  (BoT-SORT tracklet IDs are sequential and depend on detection ordering).
+  All sweep points are compared against this sweep baseline for valid deltas.
+- Deterministic (verified: identical parquets across runs).
+- ~7min/clip (replay ~20s + Stage D ~5-6min + GT2ACTUALS ~30s).
+- Tag hint handling: identity_hints.jsonl tracklet_ids remapped via detection_id
+  join; `tag_hint_dropped` flag surfaced in sweep summary when tag anchor lost.
 
 **CP22 (completed):** Default detection model updated to yolo26n-pose (STAL loss, better
 small-object detection). ultralytics upgraded 8.3.252 → 8.4.33 (`--no-deps`).
@@ -311,7 +321,10 @@ First trained model had FP7oJQ false positives from background memorization.
 | `tools/cp_tag_3_evidence.py` | CP-TAG-3 baseline evidence: tag-trace, session, carrier subcommands |
 | `tools/sweep/baseline_check.py` | Reproduce baseline correct_id from gt2actuals parquets |
 | `tools/sweep/cache_detections.py` | Cache Stage A detections for tracker param sweep |
-| `tools/sweep/replay_tracker.py` | Replay cached detections through BotSort with custom params |
+| `tools/sweep/replay_tracker.py` | Replay detections through BotSort, produce remapped Stage A artifacts |
+| `tools/sweep/run_stage_d.py` | Re-run Stage D (D0-D4) on sweep tracklet artifacts |
+| `tools/sweep/run_gt2actuals.py` | Measure sweep run via GT2ACTUALS dense join (subprocess) |
+| `tools/sweep/sweep_runner.py` | End-to-end sweep orchestrator: replay → D → GT2ACTUALS → metrics |
 
 ## Training Data Locations
 
