@@ -160,6 +160,12 @@ Results append to `outputs/_sweep/results.jsonl`.
 - ~7min/clip (replay ~20s + Stage D ~5-6min + GT2ACTUALS ~30s).
 - Tag hint handling: identity_hints.jsonl tracklet_ids remapped via detection_id
   join; `tag_hint_dropped` flag surfaced in sweep summary when tag anchor lost.
+- **OFAT track_buffer screen (complete):** Screened tb={5,10,15,20,30,45,60}.
+  Stock default (tb30) is the best value in the grid — every deviation degrades
+  correct_id. Lower values (-3 to -5pp) fragment tracklets without helping the
+  solver. Higher values degrade gently (-0.4 to -1.5pp) as misstitch rises. No
+  flags fired. Initial "break, don't guess" hypothesis for track_buffer was
+  refuted. See `tools/sweep/diagnostics/ofat_track_buffer_results.md`.
 - **Glob collision bug fix (SWEEP-3b):** `run_gt2actuals.py` symlink directory
   scoped to `_gt2a/<run_id>/` to prevent cross-run glob matches.
 
