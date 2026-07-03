@@ -1,0 +1,54 @@
+{
+  "clip": "/Users/bryanthomas/Desktop/Professional/Projects/roll_tracker/data/raw/nest/diag/timing_cfr_sidecar/J_EDEw-20260703-151143.mp4",
+  "mode": "cfr-sidecar",
+  "container_pts": {
+    "label": "container_pts (cfr-sidecar)",
+    "frame_count": 3021,
+    "min_delta_ms": 48.979,
+    "max_delta_ms": 48.98,
+    "mean_delta_ms": 48.979592,
+    "median_delta_ms": 48.98,
+    "stdev_delta_ms": 0.000492,
+    "unique_deltas_count": 2,
+    "anomaly_count": 0,
+    "anomaly_pct": 0.0,
+    "anomaly_windows": []
+  },
+  "stream_info": {
+    "r_frame_rate": "245/12",
+    "avg_frame_rate": "245/12",
+    "time_base": "1/15680",
+    "nb_frames": "3021"
+  },
+  "stage_a_compat": {
+    "clip": "/Users/bryanthomas/Desktop/Professional/Projects/roll_tracker/data/raw/nest/diag/timing_cfr_sidecar/J_EDEw-20260703-151143.mp4",
+    "cap_prop_frame_count": 3021,
+    "actual_iterated_count": 3021,
+    "frame_count_match": true,
+    "cap_prop_fps": 20.4167,
+    "decode_errors": 0,
+    "contiguous_index": true,
+    "stage_a_compatible": true
+  },
+  "timing_varies": false,
+  "showinfo_sidecar": {
+    "label": "showinfo_sidecar",
+    "frame_count": 2238,
+    "min_delta_ms": -2.6888,
+    "max_delta_ms": 798.122,
+    "mean_delta_ms": 66.179074,
+    "median_delta_ms": 0.067,
+    "stdev_delta_ms": 119.00123,
+    "unique_deltas_count": 773,
+    "anomaly_count": 1596,
+    "anomaly_pct": 71.35,
+    "anomaly_windows": [
+      {
+        "start": 1,
+        "end": 2246,
+        "frames": 2246
+      }
+    ]
+  },
+  "showinfo_timing_varies": true
+}

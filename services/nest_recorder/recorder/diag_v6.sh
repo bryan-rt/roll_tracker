@@ -140,13 +140,178 @@ build_ffmpeg_opts() {
     echo "[v6] segment muxer lacks -reset_timestamps; proceeding" | tee -a "$LOG"
   fi
 
-  # Video path
-  if [ "$REENCODE" = "1" ]; then
-    echo "[v6] REENCODE=1 → libx264 veryfast" | tee -a "$LOG"
+  # Defaults — overridden per mode below
+  VF_OPTS=()
+  FPS_MODE_OPTS=()
+  INPUT_FFLAGS="+genpts+igndts"
+
+  # Video path: REENCODE=1|2 (CFR + timing sidecar), 0 (VFR passthrough)
+  # Mode 1 and 2 are now identical: CFR re-encode with -vf showinfo for timing
+  # sidecar extraction. Video output is byte-identical with and without showinfo
+  # (confirmed via MD5 comparison in RECORDER-TIMING-2).
+  if [ "$REENCODE" = "1" ] || [ "$REENCODE" = "2" ]; then
+    echo "[v6] REENCODE=$REENCODE → libx264 veryfast + timing sidecar (CFR)" | tee -a "$LOG"
     V_OPTS=(-c:v libx264 -preset veryfast -crf 23 -g 30 -keyint_min 30)
-  else
+    VF_OPTS=(-vf showinfo)
+  elif [ "$REENCODE" = "0" ]; then
+    echo "[v6] REENCODE=0 → stream copy (VFR passthrough)" | tee -a "$LOG"
     V_OPTS=(-c:v copy)
+    INPUT_FFLAGS="+igndts"
+    FPS_MODE_OPTS=(-fps_mode passthrough)
+  else
+    echo "[v6] REENCODE=$REENCODE unknown, falling back to CFR + timing sidecar" | tee -a "$LOG"
+    V_OPTS=(-c:v libx264 -preset veryfast -crf 23 -g 30 -keyint_min 30)
+    VF_OPTS=(-vf showinfo)
   fi
+}
+
+extract_timing_sidecars() {
+  # Post-process ffmpeg stderr to produce per-segment .timing.jsonl sidecars.
+  # Each sidecar has one row per OUTPUT frame (keyed on frame_index matching
+  # FrameIterator's cap.read() counter), with the real INPUT arrival PTS
+  # mapped via nearest-neighbor two-pointer.
+  local stderr="$DIAG_DIR/ffmpeg.stderr"
+  [ ! -f "$stderr" ] && return 0
+  grep -q 'Parsed_showinfo.*pts_time:' "$stderr" || return 0
+
+  # Step 1: Find segment mp4s and their opening-line positions in stderr
+  local -a seg_paths seg_lines seg_epochs
+  while IFS= read -r gline; do
+    local lineno path base ymd_hms epoch=0
+    lineno="${gline%%:*}"
+    path=$(echo "$gline" | sed "s/.*Opening '//;s/' for writing.*//")
+    base=$(basename "$path" .mp4)
+    ymd_hms=$(echo "$base" | grep -oE '[0-9]{8}-[0-9]{6}')
+    if [ -n "$ymd_hms" ]; then
+      epoch=$(date -d "${ymd_hms:0:4}-${ymd_hms:4:2}-${ymd_hms:6:2} ${ymd_hms:9:2}:${ymd_hms:11:2}:${ymd_hms:13:2}" +%s 2>/dev/null || echo 0)
+    fi
+    seg_paths+=("$path")
+    seg_lines+=("$lineno")
+    seg_epochs+=("$epoch")
+  done < <(grep -n "Opening.*\.mp4.*for writing" "$stderr")
+
+  [ "${#seg_paths[@]}" -eq 0 ] && return 0
+  local total_stderr_lines
+  total_stderr_lines=$(wc -l < "$stderr")
+
+  # Step 2: For each segment, extract showinfo PTS, get output info, build sidecar
+  for (( si=0; si<${#seg_paths[@]}; si++ )); do
+    local seg_path="${seg_paths[$si]}"
+    local from_line="${seg_lines[$si]}"
+    local epoch="${seg_epochs[$si]}"
+    local to_line="$total_stderr_lines"
+    if (( si + 1 < ${#seg_lines[@]} )); then
+      to_line="${seg_lines[$((si+1))]}"
+    fi
+
+    local sidecar="${seg_path%.mp4}.timing.jsonl"
+    local pts_tmp="$DIAG_DIR/_pts_${si}.tmp"
+
+    # Extract showinfo pts_time values for this segment's stderr range, sort by PTS
+    sed -n "${from_line},${to_line}p" "$stderr" \
+      | grep 'Parsed_showinfo.*pts_time:' \
+      | sed -n 's/.*pts_time:\([0-9.eE+-]*\).*/\1/p' \
+      | sort -g \
+      > "$pts_tmp"
+
+    local input_count
+    input_count=$(wc -l < "$pts_tmp" | tr -d ' ')
+
+    if [ "$input_count" -eq 0 ]; then
+      log "[v6] ⚠ sidecar: $(basename "$seg_path") — no showinfo data, skipping"
+      rm -f "$pts_tmp"
+      continue
+    fi
+
+    # Get output frame count and fps from the segment mp4
+    local output_count=0 output_fps=0
+    if [ -f "$seg_path" ]; then
+      output_count=$(ffprobe -hide_banner -select_streams v:0 \
+        -show_entries stream=nb_frames -of csv=p=0 "$seg_path" 2>/dev/null | tr -d ' ')
+      output_fps=$(ffprobe -hide_banner -select_streams v:0 \
+        -show_entries stream=r_frame_rate -of csv=p=0 "$seg_path" 2>/dev/null | tr -d ' ')
+    fi
+    [ -z "$output_count" ] || [ "$output_count" = "N/A" ] && output_count=0
+    [ -z "$output_fps" ] && output_fps="0/1"
+
+    if [ "$output_count" -eq 0 ]; then
+      log "[v6] ⚠ sidecar: $(basename "$seg_path") — cannot read output frame count, skipping"
+      rm -f "$pts_tmp"
+      continue
+    fi
+
+    # Mismatch detection
+    local mismatch="false"
+    if [ "$input_count" -ne "$output_count" ]; then
+      mismatch="true"
+    fi
+
+    # Two-pointer mapping: for each output frame, find nearest input PTS.
+    # Writes one JSONL row per OUTPUT frame (frame_index = join key to Stage A).
+    # pts_time_s = the REAL input arrival time (bursty, NOT uniform CFR).
+    awk -v output_count="$output_count" \
+        -v output_fps="$output_fps" \
+        -v epoch="$epoch" \
+        -v input_count="$input_count" \
+        -v mismatch="$mismatch" \
+        -v pts_file="$pts_tmp" \
+    '
+    BEGIN {
+      # Read sorted input PTS into array
+      ni = 0
+      while ((getline line < pts_file) > 0) {
+        input_pts[ni] = line + 0.0
+        ni++
+      }
+      close(pts_file)
+
+      # Normalize PTS: subtract first value so segment-relative starts at ~0
+      base_pts = (ni > 0) ? input_pts[0] : 0
+      for (k = 0; k < ni; k++) input_pts[k] -= base_pts
+
+      # Parse fractional fps (e.g. "69/4" or "30")
+      if (index(output_fps, "/") > 0) {
+        split(output_fps, fparts, "/")
+        fps_val = fparts[1] / fparts[2]
+      } else {
+        fps_val = output_fps + 0.0
+      }
+      if (fps_val <= 0) fps_val = 30.0
+      interval = 1.0 / fps_val
+
+      # Metadata line
+      printf "{\"_meta\":true,\"segment_start_epoch\":%s,\"input_frame_count\":%d,\"output_frame_count\":%d,\"output_fps\":%.4f,\"mismatch\":%s}\n", \
+        epoch, ni, output_count, fps_val, mismatch
+
+      # Two-pointer: map each output frame to nearest input PTS
+      j = 0
+      for (i = 0; i < output_count; i++) {
+        t_out = i * interval
+        # Advance j while next input PTS is closer to t_out
+        while (j + 1 < ni) {
+          d_cur = input_pts[j] - t_out
+          if (d_cur < 0) d_cur = -d_cur
+          d_next = input_pts[j+1] - t_out
+          if (d_next < 0) d_next = -d_next
+          if (d_next <= d_cur) j++
+          else break
+        }
+        printf "{\"frame_index\":%d,\"pts_time_s\":%.6f,\"input_n\":%d}\n", i, input_pts[j], j
+      }
+    }
+    ' > "$sidecar"
+
+    rm -f "$pts_tmp"
+
+    # Summary line with loud mismatch warning
+    local sidecar_lines
+    sidecar_lines=$(( $(wc -l < "$sidecar") - 1 ))  # subtract metadata line
+    if [ "$mismatch" = "true" ]; then
+      log "[v6] ⚠ MISMATCH sidecar: $(basename "$sidecar") input=$input_count output=$output_count (frame join may be inaccurate)"
+    else
+      log "[v6] sidecar: $(basename "$sidecar") $sidecar_lines/$output_count ✓ (epoch=$epoch)"
+    fi
+  done
 }
 
 start_ffmpeg() {
@@ -165,10 +330,12 @@ start_ffmpeg() {
 
   ffmpeg -hide_banner -loglevel info -nostdin -y \
     -rtsp_transport tcp \
-    -use_wallclock_as_timestamps 1 -fflags +genpts+igndts -avoid_negative_ts make_zero \
+    -use_wallclock_as_timestamps 1 -fflags "$INPUT_FFLAGS" -avoid_negative_ts make_zero \
     -analyzeduration 10M -probesize 10M \
     -i "$URL" \
     -map 0:v:0 -map 0:a:0 \
+    "${VF_OPTS[@]}" \
+    "${FPS_MODE_OPTS[@]}" \
     "${V_OPTS[@]}" \
     -c:a aac -ar 48000 -ac 1 -b:a 64k \
     -max_muxing_queue_size 1024 \
@@ -209,6 +376,9 @@ while :; do
   # stop extend loop for this attempt
   [ -n "$EXT_PID" ] && kill "$EXT_PID" 2>/dev/null || true
   EXT_PID=""
+
+  # Extract per-segment timing sidecars from showinfo data in stderr
+  extract_timing_sidecars
 
   # Done if time is up
   [ "$(date -u +%s)" -ge "$DEADLINE" ] && { log "[v6] window elapsed after attempt #$ATTEMPT"; break; }

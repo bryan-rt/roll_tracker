@@ -1,0 +1,23 @@
+{
+  "vfr": {
+    "clip": "/Users/bryanthomas/Desktop/Professional/Projects/roll_tracker/data/raw/nest/diag/timing_vfr/J_EDEw-20260703-150900.mp4",
+    "cap_prop_frame_count": 2269,
+    "actual_iterated_count": 2269,
+    "frame_count_match": true,
+    "cap_prop_fps": 15.2164,
+    "decode_errors": 0,
+    "contiguous_index": true,
+    "stage_a_compatible": true
+  },
+  "cfr": {
+    "clip": "/Users/bryanthomas/Desktop/Professional/Projects/roll_tracker/data/raw/nest/diag/timing_cfr_baseline/J_EDEw-20260703-151424.mp4",
+    "cap_prop_frame_count": 2571,
+    "actual_iterated_count": 2571,
+    "frame_count_match": true,
+    "cap_prop_fps": 17.25,
+    "decode_errors": 0,
+    "contiguous_index": true,
+    "stage_a_compatible": true
+  },
+  "frame_count_delta_cfr_minus_vfr": 302
+}

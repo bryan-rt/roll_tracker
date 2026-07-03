@@ -1,0 +1,45 @@
+{
+  "clip": "/Users/bryanthomas/Desktop/Professional/Projects/roll_tracker/data/raw/nest/diag/timing_vfr/J_EDEw-20260703-150900.mp4",
+  "mode": "vfr",
+  "container_pts": {
+    "label": "container_pts (vfr)",
+    "frame_count": 2269,
+    "min_delta_ms": 0.0,
+    "max_delta_ms": 1127.2,
+    "mean_delta_ms": 65.789579,
+    "median_delta_ms": 0.078,
+    "stdev_delta_ms": 121.329769,
+    "unique_deltas_count": 777,
+    "anomaly_count": 1574,
+    "anomaly_pct": 69.4,
+    "anomaly_windows": [
+      {
+        "start": 1,
+        "end": 51,
+        "frames": 51
+      },
+      {
+        "start": 55,
+        "end": 2268,
+        "frames": 2214
+      }
+    ]
+  },
+  "stream_info": {
+    "r_frame_rate": "30/1",
+    "avg_frame_rate": "204210000/13420363",
+    "time_base": "1/90000",
+    "nb_frames": "2269"
+  },
+  "stage_a_compat": {
+    "clip": "/Users/bryanthomas/Desktop/Professional/Projects/roll_tracker/data/raw/nest/diag/timing_vfr/J_EDEw-20260703-150900.mp4",
+    "cap_prop_frame_count": 2269,
+    "actual_iterated_count": 2269,
+    "frame_count_match": true,
+    "cap_prop_fps": 15.2164,
+    "decode_errors": 0,
+    "contiguous_index": true,
+    "stage_a_compatible": true
+  },
+  "timing_varies": true
+}

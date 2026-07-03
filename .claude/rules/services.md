@@ -6,12 +6,23 @@ paths:
 # Docker Services
 
 ## nest_recorder
-- OAuth2 → Nest API → MP4 segments.
+- OAuth2 → Nest API → MP4 segments + per-segment timing sidecars.
 - Production path: `data/raw/nest/{gym_id}/{cam_id}/{YYYY-MM-DD}/{HH}/`. Diag (no GYM_ID):
   `data/raw/nest/diag/{TS}/`. GYM_ID presence is the mode switch.
 - Auto-registers cameras to Supabase `cameras` table via REST upsert on discovery.
   `register_cameras.sh` called from `diag_v8.sh` after discovery, before recording.
 - `entrypoint.sh` delegates to `diag_v8.sh` scheduler.
+- **REENCODE modes:** `1` (default) and `2` = CFR libx264 + `-vf showinfo` timing sidecar
+  (video byte-identical with/without showinfo, confirmed via MD5). `0` = VFR stream copy.
+- **Per-segment timing sidecar (RECORDER-SIDECAR-1):** Every CFR segment mp4 gets a
+  `.timing.jsonl` sibling. One row per OUTPUT frame, keyed on `frame_index` (matches
+  FrameIterator's `cap.read()` counter — join key to Stage A). Each row carries the REAL
+  input arrival PTS (bursty, NOT uniform CFR). Mapping via nearest-neighbor two-pointer.
+  Schema: `{_meta, segment_start_epoch, input_frame_count, output_frame_count, output_fps,
+  mismatch}` header + `{frame_index, pts_time_s, input_n}` per frame.
+  **MISMATCH warning** emitted to recorder log when input != output frame count (expected
+  when CFR encoder dups/drops). Sidecar is COLLECTION ONLY — no CV pipeline stage consumes
+  it yet. Uploader is manifest-driven and ignores the sidecar file.
 
 ## processor
 - Polls `data/raw/nest/` for new MP4s, invokes bjj_pipeline A→F.
