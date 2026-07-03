@@ -17,12 +17,19 @@ paths:
 - **Per-segment timing sidecar (RECORDER-SIDECAR-1):** Every CFR segment mp4 gets a
   `.timing.jsonl` sibling. One row per OUTPUT frame, keyed on `frame_index` (matches
   FrameIterator's `cap.read()` counter — join key to Stage A). Each row carries the REAL
-  input arrival PTS (bursty, NOT uniform CFR). Mapping via nearest-neighbor two-pointer.
+  input arrival PTS (bursty, NOT uniform CFR) via nearest-neighbor two-pointer mapping.
   Schema: `{_meta, segment_start_epoch, input_frame_count, output_frame_count, output_fps,
   mismatch}` header + `{frame_index, pts_time_s, input_n}` per frame.
-  **MISMATCH warning** emitted to recorder log when input != output frame count (expected
-  when CFR encoder dups/drops). Sidecar is COLLECTION ONLY — no CV pipeline stage consumes
-  it yet. Uploader is manifest-driven and ignores the sidecar file.
+  **MISMATCH is the normal condition** (input != output frame count). The CFR encoder
+  always dups/drops when bursty input timing != uniform output spacing. When mismatched,
+  `pts_time_s` is a NEAREST-NEIGHBOR APPROXIMATION, not exact input timing per output
+  frame. Error grows with gap magnitude: mean ~80ms, P95 ~230ms, max ~500ms during lag
+  windows (precisely where accuracy matters most — multiple output frames map to the same
+  input PTS during gaps). Consumers must treat pts_time_s as approximate under mismatch;
+  the input timing SEQUENCE is reliable for lag detection (gap presence/duration), but
+  per-output-frame time attribution has ±500ms worst-case error.
+  **MISMATCH warning** emitted loudly to recorder log. Sidecar is COLLECTION ONLY — no
+  CV pipeline stage consumes it yet. Uploader is manifest-driven and ignores the sidecar.
 
 ## processor
 - Polls `data/raw/nest/` for new MP4s, invokes bjj_pipeline A→F.
