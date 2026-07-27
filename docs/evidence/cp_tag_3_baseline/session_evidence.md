@@ -19,40 +19,40 @@ for apples-to-apples comparison.
 - `J_EDEw-20260318-200015:t366`: KEPT (2221 rows)
 - `J_EDEw-20260318-200246:t139`: KEPT (4428 rows)
 
-### (b) tag:1 person_ids: 4 assignments
-- p0015: frames [22, 8758], spans_boundary=True
-- p0024: frames [724, 9029], spans_boundary=True
-- p0031: frames [2638, 9029], spans_boundary=True
-- p0032: frames [2692, 9029], spans_boundary=True
+### (b) tag:1 person_ids: 1 assignments
+- p0022: frames [632, 9029], spans_boundary=True
 
-### (c) tag:1 assignment count: 4
+### (c) tag:1 assignment count: 1
 
 ### (d) Tagged tracklet person_id transitions
-- `J_EDEw-20260318-200015:t366`: 1125 transitions, person_ids=['p0003', 'p0005', 'p0008', 'p0011', 'p0015', 'p0018', 'p0023', 'p0024', 'p0025', 'p0026', 'p0028', 'p0029', 'p0031', 'p0032']
-  - p0003: 584 frames
-  - p0015: 453 frames
-  - p0029: 216 frames
-  - p0028: 170 frames
+- `J_EDEw-20260318-200015:t366`: 1114 transitions, person_ids=['p0001', 'p0007', 'p0008', 'p0013', 'p0017', 'p0019', 'p0020', 'p0021', 'p0025', 'p0027', 'p0028', 'p0030', 'p0031', 'p0032']
+  - p0001: 584 frames
+  - p0028: 314 frames
+  - p0025: 275 frames
+  - p0017: 273 frames
+  - p0013: 170 frames
   - p0032: 147 frames
-  - p0018: 133 frames
-  - p0031: 126 frames
-  - p0026: 116 frames
-  - p0005: 116 frames
-  - p0024: 57 frames
-  - p0008: 44 frames
-  - p0023: 38 frames
-  - p0025: 15 frames
-  - p0011: 6 frames
-- `J_EDEw-20260318-200246:t139`: 2680 transitions, person_ids=['p0003', 'p0005', 'p0013', 'p0014', 'p0017', 'p0023', 'p0024', 'p0025', 'p0034', 'p0037', 'p0039', 'p0045']
-  - p0024: 857 frames
-  - p0037: 801 frames
-  - p0025: 598 frames
-  - p0045: 509 frames
-  - p0014: 478 frames
-  - p0013: 331 frames
-  - p0023: 308 frames
-  - p0003: 211 frames
-  - p0039: 176 frames
-  - p0017: 127 frames
-  - p0034: 21 frames
-  - p0005: 11 frames
+  - p0008: 141 frames
+  - p0027: 119 frames
+  - p0019: 67 frames
+  - p0031: 65 frames
+  - p0030: 33 frames
+  - p0007: 19 frames
+  - p0021: 8 frames
+  - p0020: 6 frames
+- `J_EDEw-20260318-200246:t139`: 2676 transitions, person_ids=['p0002', 'p0005', 'p0007', 'p0008', 'p0013', 'p0014', 'p0017', 'p0019', 'p0022', 'p0028', 'p0029', 'p0031', 'p0034', 'p0035', 'p0039']
+  - p0014: 676 frames
+  - p0034: 543 frames
+  - p0008: 516 frames
+  - p0039: 480 frames
+  - p0005: 425 frames
+  - p0019: 321 frames
+  - p0035: 303 frames
+  - p0031: 251 frames
+  - p0029: 194 frames
+  - p0028: 176 frames
+  - p0007: 173 frames
+  - p0017: 149 frames
+  - p0002: 148 frames
+  - p0022: 62 frames
+  - p0013: 11 frames

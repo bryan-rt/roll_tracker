@@ -61,9 +61,9 @@
 
 - **Total GT frames:** 450
 - **Stage A:** {'tight_match': 317, 'miss': 71, 'pair_box': 62}
-- **Stage D:** {'wrong_id': 229, 'correct_id': 100, 'no_detection': 71, 'no_id': 50}
+- **Stage D:** {'wrong_id': 243, 'correct_id': 86, 'no_detection': 71, 'no_id': 50}
 - **Frames with tag observed:** 0
-- **Person IDs assigned:** {'p0001': 450}
+- **Person IDs assigned:** {'p0004': 450}
 - **Frames where person_id in match session:** 0
 
 ### Key events
@@ -71,11 +71,11 @@
 
 ## Failure analysis
 
-- correct_id: 100 (22.2%)
-- wrong_id: 229 (50.9%)
+- correct_id: 86 (19.1%)
+- wrong_id: 243 (54.0%)
 - no_id: 50 (11.1%)
 - no_detection: 71 (15.8%)
 
 ### wrong_id frames detail
-- Person IDs assigned (wrong): {'p0001': 229}
-- Stage A context: {'tight_match': 220, 'pair_box': 9}
+- Person IDs assigned (wrong): {'p0004': 243}
+- Stage A context: {'tight_match': 182, 'pair_box': 61}

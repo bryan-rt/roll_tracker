@@ -1,9 +1,9 @@
 {
   "vid1_faithfulness_check": {
-    "passed": true,
+    "passed": false,
     "ours": {
-      "correct_id": 77,
-      "wrong_id": 152,
+      "correct_id": 53,
+      "wrong_id": 176,
       "no_id": 3,
       "no_detection": 69
     },
@@ -23,8 +23,8 @@
     "tag_detection_rate": 0.00036403349108117945,
     "chain_complete": true,
     "failure_analysis": {
-      "correct_id": 100,
-      "wrong_id": 229,
+      "correct_id": 86,
+      "wrong_id": 243,
       "no_id": 50,
       "no_detection": 71
     },
@@ -50,12 +50,12 @@
   },
   "stage_d_summary": {
     "correct_id": {
-      "count": 1922,
-      "pct": 0.3333
+      "count": 1773,
+      "pct": 0.3074
     },
     "wrong_id": {
-      "count": 2833,
-      "pct": 0.4912
+      "count": 2982,
+      "pct": 0.5171
     },
     "no_id": {
       "count": 266,

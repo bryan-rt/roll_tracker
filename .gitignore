@@ -187,6 +187,9 @@ cython_debug/
 *.zip
 *.ZIP
 
+# Large binary files (models)
+*.pt
+
 # Project archives (do not commit retained artifacts)
 archive/
 
