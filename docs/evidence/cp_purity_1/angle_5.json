@@ -1,0 +1,443 @@
+{
+  "total_gt_frames": 751,
+  "frames_with_detection": 611,
+  "frames_with_any_pid": 608,
+  "frames_with_tag_pid": 8,
+  "tag_pid_coverage_pct": 1.309328968903437,
+  "n_teleport_events": 91,
+  "identity_sequence_length": 92,
+  "identity_sequence": [
+    {
+      "pid": "p0010",
+      "start_frame": 0,
+      "end_frame": 20
+    },
+    {
+      "pid": "p0012",
+      "start_frame": 20,
+      "end_frame": 30
+    },
+    {
+      "pid": "p0010",
+      "start_frame": 30,
+      "end_frame": 50
+    },
+    {
+      "pid": "p0012",
+      "start_frame": 50,
+      "end_frame": 60
+    },
+    {
+      "pid": "p0010",
+      "start_frame": 60,
+      "end_frame": 110
+    },
+    {
+      "pid": "p0012",
+      "start_frame": 110,
+      "end_frame": 120
+    },
+    {
+      "pid": "p0010",
+      "start_frame": 120,
+      "end_frame": 160
+    },
+    {
+      "pid": "p0012",
+      "start_frame": 160,
+      "end_frame": 180
+    },
+    {
+      "pid": "p0010",
+      "start_frame": 180,
+      "end_frame": 200
+    },
+    {
+      "pid": "p0012",
+      "start_frame": 200,
+      "end_frame": 250
+    },
+    {
+      "pid": "p0010",
+      "start_frame": 250,
+      "end_frame": 300
+    },
+    {
+      "pid": "p0017",
+      "start_frame": 300,
+      "end_frame": 310
+    },
+    {
+      "pid": "p0010",
+      "start_frame": 310,
+      "end_frame": 420
+    },
+    {
+      "pid": "p0014",
+      "start_frame": 420,
+      "end_frame": 580
+    },
+    {
+      "pid": "p0016",
+      "start_frame": 580,
+      "end_frame": 660
+    },
+    {
+      "pid": "p0015",
+      "start_frame": 660,
+      "end_frame": 670
+    },
+    {
+      "pid": "p0010",
+      "start_frame": 670,
+      "end_frame": 700
+    },
+    {
+      "pid": "p0017",
+      "start_frame": 700,
+      "end_frame": 720
+    },
+    {
+      "pid": "p0010",
+      "start_frame": 720,
+      "end_frame": 740
+    },
+    {
+      "pid": "p0017",
+      "start_frame": 740,
+      "end_frame": 750
+    },
+    {
+      "pid": "p0010",
+      "start_frame": 750,
+      "end_frame": 760
+    },
+    {
+      "pid": "p0017",
+      "start_frame": 760,
+      "end_frame": 840
+    },
+    {
+      "pid": "p0010",
+      "start_frame": 840,
+      "end_frame": 880
+    },
+    {
+      "pid": "p0003",
+      "start_frame": 880,
+      "end_frame": 1120
+    },
+    {
+      "pid": "p0010",
+      "start_frame": 1120,
+      "end_frame": 1140
+    },
+    {
+      "pid": "p0003",
+      "start_frame": 1140,
+      "end_frame": 1330
+    },
+    {
+      "pid": "p0021",
+      "start_frame": 1330,
+      "end_frame": 1350
+    },
+    {
+      "pid": "p0001",
+      "start_frame": 1350,
+      "end_frame": 1400
+    },
+    {
+      "pid": "p0021",
+      "start_frame": 1400,
+      "end_frame": 1410
+    },
+    {
+      "pid": "p0010",
+      "start_frame": 1410,
+      "end_frame": 1470
+    }
+  ],
+  "teleport_events": [
+    {
+      "session_frame": 20,
+      "clip_id": "J_EDEw-20260318-200015",
+      "from_pid": "p0010",
+      "to_pid": "p0012",
+      "person_ids_at_frame": [
+        "p0012"
+      ]
+    },
+    {
+      "session_frame": 30,
+      "clip_id": "J_EDEw-20260318-200015",
+      "from_pid": "p0012",
+      "to_pid": "p0010",
+      "person_ids_at_frame": [
+        "p0010"
+      ]
+    },
+    {
+      "session_frame": 50,
+      "clip_id": "J_EDEw-20260318-200015",
+      "from_pid": "p0010",
+      "to_pid": "p0012",
+      "person_ids_at_frame": [
+        "p0012"
+      ]
+    },
+    {
+      "session_frame": 60,
+      "clip_id": "J_EDEw-20260318-200015",
+      "from_pid": "p0012",
+      "to_pid": "p0010",
+      "person_ids_at_frame": [
+        "p0010",
+        "p0012"
+      ]
+    },
+    {
+      "session_frame": 110,
+      "clip_id": "J_EDEw-20260318-200015",
+      "from_pid": "p0010",
+      "to_pid": "p0012",
+      "person_ids_at_frame": [
+        "p0012"
+      ]
+    },
+    {
+      "session_frame": 120,
+      "clip_id": "J_EDEw-20260318-200015",
+      "from_pid": "p0012",
+      "to_pid": "p0010",
+      "person_ids_at_frame": [
+        "p0010"
+      ]
+    },
+    {
+      "session_frame": 160,
+      "clip_id": "J_EDEw-20260318-200015",
+      "from_pid": "p0010",
+      "to_pid": "p0012",
+      "person_ids_at_frame": [
+        "p0012"
+      ]
+    },
+    {
+      "session_frame": 180,
+      "clip_id": "J_EDEw-20260318-200015",
+      "from_pid": "p0012",
+      "to_pid": "p0010",
+      "person_ids_at_frame": [
+        "p0010"
+      ]
+    },
+    {
+      "session_frame": 200,
+      "clip_id": "J_EDEw-20260318-200015",
+      "from_pid": "p0010",
+      "to_pid": "p0012",
+      "person_ids_at_frame": [
+        "p0012"
+      ]
+    },
+    {
+      "session_frame": 250,
+      "clip_id": "J_EDEw-20260318-200015",
+      "from_pid": "p0012",
+      "to_pid": "p0010",
+      "person_ids_at_frame": [
+        "p0010",
+        "p0012"
+      ]
+    },
+    {
+      "session_frame": 300,
+      "clip_id": "J_EDEw-20260318-200015",
+      "from_pid": "p0010",
+      "to_pid": "p0017",
+      "person_ids_at_frame": [
+        "p0017"
+      ]
+    },
+    {
+      "session_frame": 310,
+      "clip_id": "J_EDEw-20260318-200015",
+      "from_pid": "p0017",
+      "to_pid": "p0010",
+      "person_ids_at_frame": [
+        "p0010"
+      ]
+    },
+    {
+      "session_frame": 420,
+      "clip_id": "J_EDEw-20260318-200015",
+      "from_pid": "p0010",
+      "to_pid": "p0014",
+      "person_ids_at_frame": [
+        "p0014"
+      ]
+    },
+    {
+      "session_frame": 580,
+      "clip_id": "J_EDEw-20260318-200015",
+      "from_pid": "p0014",
+      "to_pid": "p0016",
+      "person_ids_at_frame": [
+        "p0016"
+      ]
+    },
+    {
+      "session_frame": 660,
+      "clip_id": "J_EDEw-20260318-200015",
+      "from_pid": "p0016",
+      "to_pid": "p0015",
+      "person_ids_at_frame": [
+        "p0015"
+      ]
+    },
+    {
+      "session_frame": 670,
+      "clip_id": "J_EDEw-20260318-200015",
+      "from_pid": "p0015",
+      "to_pid": "p0010",
+      "person_ids_at_frame": [
+        "p0010"
+      ]
+    },
+    {
+      "session_frame": 700,
+      "clip_id": "J_EDEw-20260318-200015",
+      "from_pid": "p0010",
+      "to_pid": "p0017",
+      "person_ids_at_frame": [
+        "p0017"
+      ]
+    },
+    {
+      "session_frame": 720,
+      "clip_id": "J_EDEw-20260318-200015",
+      "from_pid": "p0017",
+      "to_pid": "p0010",
+      "person_ids_at_frame": [
+        "p0010",
+        "p0015"
+      ]
+    },
+    {
+      "session_frame": 740,
+      "clip_id": "J_EDEw-20260318-200015",
+      "from_pid": "p0010",
+      "to_pid": "p0017",
+      "person_ids_at_frame": [
+        "p0017",
+        "p0019"
+      ]
+    },
+    {
+      "session_frame": 750,
+      "clip_id": "J_EDEw-20260318-200015",
+      "from_pid": "p0017",
+      "to_pid": "p0010",
+      "person_ids_at_frame": [
+        "p0010",
+        "p0015"
+      ]
+    },
+    {
+      "session_frame": 760,
+      "clip_id": "J_EDEw-20260318-200015",
+      "from_pid": "p0010",
+      "to_pid": "p0017",
+      "person_ids_at_frame": [
+        "p0017",
+        "p0019"
+      ]
+    },
+    {
+      "session_frame": 840,
+      "clip_id": "J_EDEw-20260318-200015",
+      "from_pid": "p0017",
+      "to_pid": "p0010",
+      "person_ids_at_frame": [
+        "p0010",
+        "p0017"
+      ]
+    },
+    {
+      "session_frame": 880,
+      "clip_id": "J_EDEw-20260318-200015",
+      "from_pid": "p0010",
+      "to_pid": "p0003",
+      "person_ids_at_frame": [
+        "p0003"
+      ]
+    },
+    {
+      "session_frame": 1120,
+      "clip_id": "J_EDEw-20260318-200015",
+      "from_pid": "p0003",
+      "to_pid": "p0010",
+      "person_ids_at_frame": [
+        "p0010"
+      ]
+    },
+    {
+      "session_frame": 1140,
+      "clip_id": "J_EDEw-20260318-200015",
+      "from_pid": "p0010",
+      "to_pid": "p0003",
+      "person_ids_at_frame": [
+        "p0003",
+        "p0010"
+      ]
+    },
+    {
+      "session_frame": 1330,
+      "clip_id": "J_EDEw-20260318-200015",
+      "from_pid": "p0003",
+      "to_pid": "p0021",
+      "person_ids_at_frame": [
+        "p0021"
+      ]
+    },
+    {
+      "session_frame": 1350,
+      "clip_id": "J_EDEw-20260318-200015",
+      "from_pid": "p0021",
+      "to_pid": "p0001",
+      "person_ids_at_frame": [
+        "p0001"
+      ]
+    },
+    {
+      "session_frame": 1400,
+      "clip_id": "J_EDEw-20260318-200015",
+      "from_pid": "p0001",
+      "to_pid": "p0021",
+      "person_ids_at_frame": [
+        "p0021"
+      ]
+    },
+    {
+      "session_frame": 1410,
+      "clip_id": "J_EDEw-20260318-200015",
+      "from_pid": "p0021",
+      "to_pid": "p0010",
+      "person_ids_at_frame": [
+        "p0010",
+        "p0021"
+      ]
+    },
+    {
+      "session_frame": 1470,
+      "clip_id": "J_EDEw-20260318-200015",
+      "from_pid": "p0010",
+      "to_pid": "p0021",
+      "person_ids_at_frame": [
+        "p0021"
+      ]
+    }
+  ],
+  "metric_definition": "Through-line: traces GT track 24 (vid1) / 8 (vid2) frame-by-frame through session person_tracks. Teleport = active person_id changes between consecutive GT frames. TAG_PERSON_ID (p0022) preferred when present in frame's pid set."
+}

@@ -1,0 +1,24 @@
+{
+  "val_split_clip_level": {
+    "correct_id_pct": 63.2,
+    "baseline_pct": 40.5,
+    "delta": 22.7,
+    "n_frames": 714,
+    "n_tracks": 14,
+    "note": "Clip-level person_tracks, val-split only (frames 2500-3000). Direct comparison to signal-trace J_EDEw baseline."
+  },
+  "full_range_clip_level_vid1": {
+    "correct_id_pct": 40.5
+  },
+  "full_range_session_level_vid1": {
+    "correct_id_pct": 41.7
+  },
+  "full_range_clip_level_vid2": {
+    "correct_id_pct": 30.7
+  },
+  "full_range_session_level_vid2": {
+    "correct_id_pct": 32.1
+  },
+  "verdict": "IMPROVEMENT: +22.7pp above baseline",
+  "canonical_definition": "Canonical aggregate correct_id: clip-level person_tracks, greedy IoU>=0.3, majority-vote dominant_pid per GT track, val-split frames only. J_EDEw baseline: 40.5% (signal-trace, bjj-detect-all-cameras). Three-camera aggregate (58.7%) is NOT comparable to single-camera numbers."
+}

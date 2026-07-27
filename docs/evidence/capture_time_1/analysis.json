@@ -1,0 +1,41 @@
+{
+  "source_pts": {
+    "frames": 1801,
+    "duration_s": 60.0,
+    "measured_fps": 30.0167,
+    "delta_mean_ms": 33.3333,
+    "delta_median_ms": 33.0,
+    "delta_stdev_ms": 1.212,
+    "delta_min_ms": 0.0,
+    "delta_max_ms": 67.0,
+    "pct_30_50ms": 99.89,
+    "pct_sub_1ms": 0.06,
+    "stream_info": {
+      "r_frame_rate": "30/1",
+      "time_base": "1/15360",
+      "duration": "59.366667",
+      "nb_frames": "1781"
+    }
+  },
+  "arrival_pts": {
+    "frames": 1783,
+    "duration_s": 60.0064,
+    "measured_fps": 29.7135,
+    "delta_mean_ms": 33.6736,
+    "delta_median_ms": 0.045,
+    "delta_stdev_ms": 98.0387,
+    "delta_min_ms": -3.9889,
+    "delta_max_ms": 1935.1,
+    "pct_30_50ms": 0.17,
+    "pct_sub_1ms": 72.17
+  },
+  "sdp_advertised_fps": 30.0,
+  "rtp_clock_rate": 90000,
+  "rtcp_absolute_time_available": false,
+  "sidecar_test_fps": [
+    15.0,
+    15.0,
+    15.0
+  ],
+  "verdict": "SOURCE_PTS_IS_CAPTURE_TIME"
+}

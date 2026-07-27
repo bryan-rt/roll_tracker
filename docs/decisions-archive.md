@@ -509,3 +509,60 @@ structure. Appearance alone is insufficient for reliable segmentation.
 (e) Tier 2 also needs attention (6-22% precision)
 
 Evidence: `docs/evidence/cp_split_validate/`.
+
+---
+
+## CP-GT2ACTUALS: Dense GT-to-Actuals Error Map (2026-06-10)
+
+Permanent per-(frame, gt_track_id) error map joining GT annotations against all pipeline
+signals. Module: `src/pipeline_validation/gt2actuals/` (dense_join, node_gt_set, jumps).
+CLI: `python -m pipeline_validation gt2actuals --manifest-path <path>`.
+
+Key findings:
+- **Split-family lookup fix (CP-3):** 88% of vid2 no_id was a join artifact. Fixed with
+  family-aware fallback. Vid2 no_id: 58% → 6.9%.
+- **D0.5 net-negative ALL cameras (CP-4+5):** vid2: 35 correct / 317 false (net -282).
+  Tier 3 owns 79% of damage.
+- **Stage attribution (CP-6):** Stage A (tracklet_drift) is #1 damage source at 41% of
+  vid2 jumps. Group handling 33%, solver misstitch 26%.
+- **No signal discriminates false from correct splits:** HSV Bhattacharyya 0.035 vs 0.040.
+Evidence: `docs/evidence/cp_gt2actuals_{1,3,3_5,4_5,5_5,6}/`.
+
+## Stage A Tuning Sweep (SWEEP-1 through SWEEP-4, 2026-06-30 to 2026-07-03)
+
+End-to-end BoT-SORT tracker param sweep: detection cache → tracker replay → Stage D rerun
+→ GT2ACTUALS measurement. Tools at `tools/sweep/`.
+
+- **Freshened eval_gt baseline (SWEEP-3b):** 32.5% combined correct_id. Former 34.7% stale.
+- **Sweep baseline:** 30.7% combined (replay path). ~2pp gap is environment artifact (boxmot
+  version drift). Sweep deltas internally consistent.
+- **CP-TAG-4a evidence RETRACTED (SWEEP-3b):** "+22.7pp" was same-artifact frame-selection
+  effect. CP-TAG-4a's actual effect UNKNOWN.
+- **OFAT track_buffer (SWEEP-4):** tb={5,10,15,20,30,45,60}. Stock tb=30 is best. Every
+  deviation degrades. "Break, don't guess" hypothesis REFUTED. Lower values fragment
+  tracklets; solver's length-proportional penalty punishes the fragments.
+Evidence: `tools/sweep/diagnostics/`.
+
+## Purity Proxy Analysis (PURITY-PROXY-1/2, 2026-07)
+
+- `max_displacement` (path discontinuity): AUC 0.82–0.85 raw / 0.75–0.82 post-D0.5.
+  Same-color robust. Best single proxy.
+- Masked appearance: +0.08–0.09 AUC over contaminated. ~0.88 different-color, ~0.73
+  same-color.
+- **CRITICAL CEILING: smooth-motion + same-color drifts = 58–94% of impurity, invisible to
+  BOTH proxies.** Measuring same-color with MASKED histograms raised fraction dramatically
+  (vid2 7.7%→69.2%).
+Evidence: `docs/evidence/purity_proxy_{1,2}/`.
+
+## Recorder Timing Arc (WALLCLOCK-1 → CAPTURE-TIME-2, 2026-07)
+
+- **WALLCLOCK-1:** Container PTS is synthetic — CFR re-encode discards wall-clock.
+- **RECORDER-SIDECAR-1:** Per-frame `.timing.jsonl` sidecar shipped to production. Under
+  arrival-PTS, pts_time_s is ±500ms NN approximation (mismatch is normal).
+- **CAPTURE-TIME-1:** RTSP stream carries TRUE capture timestamps (source PTS uniform 33ms,
+  1.21ms stdev). Recorder discards them via `-use_wallclock_as_timestamps 1`.
+- **CAPTURE-TIME-2:** RTCP definitively absent (0 sender reports, all cameras, TCP+UDP).
+  Tier-2 alignment ±14–56ms. FP7oJQ −603 ppm clock drift. **Stream fps varies per session
+  (15 and 30 both observed). SDP unreliable. Do not hardcode fps.**
+- Diagnostic module: `services/nest_recorder/recorder/diag_timing.sh`.
+Evidence: `docs/evidence/{wallclock_1,recorder_timing_1,capture_time_{1,2}}/`.

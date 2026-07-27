@@ -1,0 +1,88 @@
+{
+  "per_clip": {
+    "J_EDEw-20260318-200015": {
+      "n_pair_box": 124,
+      "proximity_sweep": {
+        "tight": {
+          "proximity_m": 0.5,
+          "n_pair_box": 124,
+          "correct_group": 28,
+          "mishandled": 87,
+          "spurious_group": 6,
+          "neither": 3,
+          "correct_group_pct": 22.6,
+          "mishandled_pct": 70.2,
+          "group_error_rate": 75.0
+        },
+        "close": {
+          "proximity_m": 1.0,
+          "n_pair_box": 124,
+          "correct_group": 34,
+          "mishandled": 90,
+          "spurious_group": 0,
+          "neither": 0,
+          "correct_group_pct": 27.4,
+          "mishandled_pct": 72.6,
+          "group_error_rate": 72.6
+        },
+        "engage": {
+          "proximity_m": 1.5,
+          "n_pair_box": 124,
+          "correct_group": 34,
+          "mishandled": 90,
+          "spurious_group": 0,
+          "neither": 0,
+          "correct_group_pct": 27.4,
+          "mishandled_pct": 72.6,
+          "group_error_rate": 72.6
+        }
+      }
+    },
+    "J_EDEw-20260318-200246": {
+      "n_pair_box": 62,
+      "proximity_sweep": {
+        "tight": {
+          "proximity_m": 0.5,
+          "n_pair_box": 62,
+          "correct_group": 3,
+          "mishandled": 30,
+          "spurious_group": 7,
+          "neither": 22,
+          "correct_group_pct": 4.8,
+          "mishandled_pct": 48.4,
+          "group_error_rate": 59.7
+        },
+        "close": {
+          "proximity_m": 1.0,
+          "n_pair_box": 62,
+          "correct_group": 10,
+          "mishandled": 50,
+          "spurious_group": 0,
+          "neither": 2,
+          "correct_group_pct": 16.1,
+          "mishandled_pct": 80.6,
+          "group_error_rate": 80.6
+        },
+        "engage": {
+          "proximity_m": 1.5,
+          "n_pair_box": 62,
+          "correct_group": 10,
+          "mishandled": 52,
+          "spurious_group": 0,
+          "neither": 0,
+          "correct_group_pct": 16.1,
+          "mishandled_pct": 83.9,
+          "group_error_rate": 83.9
+        }
+      }
+    }
+  },
+  "stability": {
+    "verdict_stable": false,
+    "mishandled_pct_range": [
+      48.4,
+      83.9
+    ]
+  },
+  "metric_definition": "Pair-box floor split: for tagged athlete's pair_box frames (shared detection, no own bbox), cross-tabulate (a) pipeline GROUP segment (from d1_segments.parquet) vs (b) GT world-distance proximity. correct-group = a AND b. mishandled = b AND NOT a. Group error rate = (mishandled + spurious) / total."
+}

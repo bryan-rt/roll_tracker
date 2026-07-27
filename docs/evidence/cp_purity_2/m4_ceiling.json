@@ -1,0 +1,83 @@
+{
+  "J_EDEw-20260318-200015": {
+    "total_gt_frames": 301,
+    "partition": {
+      "1_addressable_ceiling": {
+        "count": 108,
+        "pct": 35.9,
+        "description": "Own clean detection (tight_match). UPPER BOUND on what appearance-stitch (CP21) can address. Realized gain bounded below by ILP mis-stitch rate on these tracklets (CP-PURITY-1 showed 100% of entity corruption is ILP stitch on clean tracklets)."
+      },
+      "2_designed_group_ambiguity": {
+        "count": 34,
+        "pct": 11.3,
+        "description": "Pair-box with correct GROUP node. Designed ambiguity, recoverable via match-window delivery."
+      },
+      "3_group_formation_defect": {
+        "count": 90,
+        "pct": 29.9,
+        "description": "Pair-box that should have been grouped but wasn't. D1 graph construction arc."
+      },
+      "4_pair_box_other": {
+        "count": 0,
+        "pct": 0.0,
+        "description": "Pair-box frames not classified as correct-group or mishandled (spurious group or neither at engage threshold)."
+      },
+      "5_miss_accept_occluded": {
+        "count": 51,
+        "pct": 16.9,
+        "description": "No detection, proxy-occluded (high GT-GT overlap). Accept and move on."
+      },
+      "6_miss_edge_roi": {
+        "count": 0,
+        "pct": 0.0,
+        "description": "No detection, outside ROI mask. Geometry/config arc."
+      },
+      "7_miss_detector_fail": {
+        "count": 18,
+        "pct": 6.0,
+        "description": "No detection, visible and inside ROI. Trainable detector miss (CP23 arc)."
+      }
+    }
+  },
+  "J_EDEw-20260318-200246": {
+    "total_gt_frames": 450,
+    "partition": {
+      "1_addressable_ceiling": {
+        "count": 317,
+        "pct": 70.4,
+        "description": "Own clean detection (tight_match). UPPER BOUND on what appearance-stitch (CP21) can address. Realized gain bounded below by ILP mis-stitch rate on these tracklets (CP-PURITY-1 showed 100% of entity corruption is ILP stitch on clean tracklets)."
+      },
+      "2_designed_group_ambiguity": {
+        "count": 10,
+        "pct": 2.2,
+        "description": "Pair-box with correct GROUP node. Designed ambiguity, recoverable via match-window delivery."
+      },
+      "3_group_formation_defect": {
+        "count": 52,
+        "pct": 11.6,
+        "description": "Pair-box that should have been grouped but wasn't. D1 graph construction arc."
+      },
+      "4_pair_box_other": {
+        "count": 0,
+        "pct": 0.0,
+        "description": "Pair-box frames not classified as correct-group or mishandled (spurious group or neither at engage threshold)."
+      },
+      "5_miss_accept_occluded": {
+        "count": 12,
+        "pct": 2.7,
+        "description": "No detection, proxy-occluded (high GT-GT overlap). Accept and move on."
+      },
+      "6_miss_edge_roi": {
+        "count": 4,
+        "pct": 0.9,
+        "description": "No detection, outside ROI mask. Geometry/config arc."
+      },
+      "7_miss_detector_fail": {
+        "count": 55,
+        "pct": 12.2,
+        "description": "No detection, visible and inside ROI. Trainable detector miss (CP23 arc)."
+      }
+    }
+  },
+  "metric_definition": "Six-bucket partition of tagged athlete's GT frames. Bucket 1 (tight_match) is the UPPER BOUND on appearance-stitch addressable gap \u2014 NOT a prediction of realized gain. Pair-box split uses 'engage' (1.5m) proximity threshold. Miss split uses GT-overlap proxy for occlusion (PROXY, not ground truth)."
+}

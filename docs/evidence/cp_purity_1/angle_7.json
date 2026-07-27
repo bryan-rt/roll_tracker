@@ -1,0 +1,192 @@
+{
+  "reference_threshold": {
+    "proximity_m": 1.5,
+    "duration_frames": 15
+  },
+  "n_gt_match_windows": 5,
+  "n_stage_e_sessions_on_entity": 15,
+  "gt_recall": 0.8,
+  "gt_recovered": 4,
+  "gt_missed": 1,
+  "order_correct": false,
+  "gt_window_details": [
+    {
+      "clip_id": "J_EDEw-20260318-200015",
+      "opponent_gt": 25,
+      "start_frame": 0,
+      "end_frame": 490,
+      "recovered": false,
+      "n_overlapping_sessions": 0
+    },
+    {
+      "clip_id": "J_EDEw-20260318-200015",
+      "opponent_gt": 25,
+      "start_frame": 550,
+      "end_frame": 3000,
+      "recovered": true,
+      "n_overlapping_sessions": 7
+    },
+    {
+      "clip_id": "J_EDEw-20260318-200246",
+      "opponent_gt": 6,
+      "start_frame": 1810,
+      "end_frame": 2650,
+      "recovered": true,
+      "n_overlapping_sessions": 4
+    },
+    {
+      "clip_id": "J_EDEw-20260318-200246",
+      "opponent_gt": 6,
+      "start_frame": 3460,
+      "end_frame": 4490,
+      "recovered": true,
+      "n_overlapping_sessions": 3
+    },
+    {
+      "clip_id": "J_EDEw-20260318-200246",
+      "opponent_gt": 7,
+      "start_frame": 0,
+      "end_frame": 1440,
+      "recovered": true,
+      "n_overlapping_sessions": 1
+    }
+  ],
+  "stage_e_sessions": [
+    {
+      "clip_id": "J_EDEw-20260318-200015",
+      "match_id": "mengage_cfa2d64035c7241c",
+      "start_frame": 1100,
+      "end_frame": 2047,
+      "opponent_pid": "p0002",
+      "session_start": 1100,
+      "session_end": 2047
+    },
+    {
+      "clip_id": "J_EDEw-20260318-200015",
+      "match_id": "mengage_3da30dba63538f58",
+      "start_frame": 769,
+      "end_frame": 1857,
+      "opponent_pid": "p0009",
+      "session_start": 769,
+      "session_end": 1857
+    },
+    {
+      "clip_id": "J_EDEw-20260318-200015",
+      "match_id": "mengage_c93360c12dfd122e",
+      "start_frame": 1652,
+      "end_frame": 2058,
+      "opponent_pid": "p0015",
+      "session_start": 1652,
+      "session_end": 2058
+    },
+    {
+      "clip_id": "J_EDEw-20260318-200015",
+      "match_id": "mengage_cd214e1c4b07790e",
+      "start_frame": 1749,
+      "end_frame": 2058,
+      "opponent_pid": "p0017",
+      "session_start": 1749,
+      "session_end": 2058
+    },
+    {
+      "clip_id": "J_EDEw-20260318-200015",
+      "match_id": "mengage_2a258588131faced",
+      "start_frame": 1100,
+      "end_frame": 2058,
+      "opponent_pid": "p0019",
+      "session_start": 1100,
+      "session_end": 2058
+    },
+    {
+      "clip_id": "J_EDEw-20260318-200015",
+      "match_id": "mengage_16a7506e23efc854",
+      "start_frame": 587,
+      "end_frame": 2058,
+      "opponent_pid": "p0021",
+      "session_start": 587,
+      "session_end": 2058
+    },
+    {
+      "clip_id": "J_EDEw-20260318-200015",
+      "match_id": "mengage_7996ddc18408cf5f",
+      "start_frame": 899,
+      "end_frame": 2058,
+      "opponent_pid": "p0025",
+      "session_start": 899,
+      "session_end": 2058
+    },
+    {
+      "clip_id": "J_EDEw-20260318-200246",
+      "match_id": "mengage_c8fbbeaa755a4e5b",
+      "start_frame": 2159,
+      "end_frame": 2814,
+      "opponent_pid": "p0002",
+      "session_start": 6689,
+      "session_end": 7344
+    },
+    {
+      "clip_id": "J_EDEw-20260318-200246",
+      "match_id": "mengage_fa50da477e8902e4",
+      "start_frame": 3366,
+      "end_frame": 3970,
+      "opponent_pid": "p0004",
+      "session_start": 7896,
+      "session_end": 8500
+    },
+    {
+      "clip_id": "J_EDEw-20260318-200246",
+      "match_id": "mengage_3e5677cc0b37d31a",
+      "start_frame": 3957,
+      "end_frame": 4499,
+      "opponent_pid": "p0005",
+      "session_start": 8487,
+      "session_end": 9029
+    },
+    {
+      "clip_id": "J_EDEw-20260318-200246",
+      "match_id": "mengage_d9b2578ac8bc8b53",
+      "start_frame": 1783,
+      "end_frame": 2935,
+      "opponent_pid": "p0008",
+      "session_start": 6313,
+      "session_end": 7465
+    },
+    {
+      "clip_id": "J_EDEw-20260318-200246",
+      "match_id": "mengage_3b6efa1265f0eead",
+      "start_frame": 2159,
+      "end_frame": 3096,
+      "opponent_pid": "p0012",
+      "session_start": 6689,
+      "session_end": 7626
+    },
+    {
+      "clip_id": "J_EDEw-20260318-200246",
+      "match_id": "mengage_ee8eb39dfa708879",
+      "start_frame": 3832,
+      "end_frame": 4499,
+      "opponent_pid": "p0012",
+      "session_start": 8362,
+      "session_end": 9029
+    },
+    {
+      "clip_id": "J_EDEw-20260318-200246",
+      "match_id": "mengage_e4c372877391949e",
+      "start_frame": 1374,
+      "end_frame": 3043,
+      "opponent_pid": "p0015",
+      "session_start": 5904,
+      "session_end": 7573
+    },
+    {
+      "clip_id": "J_EDEw-20260318-200246",
+      "match_id": "mengage_f3b5df6aa44e07f0",
+      "start_frame": 2805,
+      "end_frame": 3242,
+      "opponent_pid": "p0016",
+      "session_start": 7335,
+      "session_end": 7772
+    }
+  ],
+  "metric_definition": "Recall of GT engagement windows: for each GT match the tagged athlete was in, does an overlapping Stage E session exist on her entity (p0022)? Reference threshold: engage (1.5m) x sustained (15 frames)."
+}

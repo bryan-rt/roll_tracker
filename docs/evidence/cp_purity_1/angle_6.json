@@ -1,0 +1,205 @@
+{
+  "sweep_grid": {
+    "tight_instant": {
+      "proximity_m": 0.5,
+      "duration_frames": 3,
+      "n_gt_match_windows": 8,
+      "self_frames": 8,
+      "intra_match": 7,
+      "cross_match": 447,
+      "no_detection": 11,
+      "no_pid": 0,
+      "intra_pct": 1.5418502202643172,
+      "cross_pct": 98.45814977973568
+    },
+    "tight_brief": {
+      "proximity_m": 0.5,
+      "duration_frames": 8,
+      "n_gt_match_windows": 4,
+      "self_frames": 8,
+      "intra_match": 7,
+      "cross_match": 447,
+      "no_detection": 11,
+      "no_pid": 0,
+      "intra_pct": 1.5418502202643172,
+      "cross_pct": 98.45814977973568
+    },
+    "tight_sustained": {
+      "proximity_m": 0.5,
+      "duration_frames": 15,
+      "n_gt_match_windows": 3,
+      "self_frames": 8,
+      "intra_match": 0,
+      "cross_match": 454,
+      "no_detection": 11,
+      "no_pid": 0,
+      "intra_pct": 0.0,
+      "cross_pct": 100.0
+    },
+    "tight_long": {
+      "proximity_m": 0.5,
+      "duration_frames": 30,
+      "n_gt_match_windows": 1,
+      "self_frames": 8,
+      "intra_match": 0,
+      "cross_match": 454,
+      "no_detection": 11,
+      "no_pid": 0,
+      "intra_pct": 0.0,
+      "cross_pct": 100.0
+    },
+    "close_instant": {
+      "proximity_m": 1.0,
+      "duration_frames": 3,
+      "n_gt_match_windows": 9,
+      "self_frames": 8,
+      "intra_match": 22,
+      "cross_match": 432,
+      "no_detection": 11,
+      "no_pid": 0,
+      "intra_pct": 4.845814977973569,
+      "cross_pct": 95.15418502202643
+    },
+    "close_brief": {
+      "proximity_m": 1.0,
+      "duration_frames": 8,
+      "n_gt_match_windows": 7,
+      "self_frames": 8,
+      "intra_match": 22,
+      "cross_match": 432,
+      "no_detection": 11,
+      "no_pid": 0,
+      "intra_pct": 4.845814977973569,
+      "cross_pct": 95.15418502202643
+    },
+    "close_sustained": {
+      "proximity_m": 1.0,
+      "duration_frames": 15,
+      "n_gt_match_windows": 7,
+      "self_frames": 8,
+      "intra_match": 22,
+      "cross_match": 432,
+      "no_detection": 11,
+      "no_pid": 0,
+      "intra_pct": 4.845814977973569,
+      "cross_pct": 95.15418502202643
+    },
+    "close_long": {
+      "proximity_m": 1.0,
+      "duration_frames": 30,
+      "n_gt_match_windows": 4,
+      "self_frames": 8,
+      "intra_match": 22,
+      "cross_match": 432,
+      "no_detection": 11,
+      "no_pid": 0,
+      "intra_pct": 4.845814977973569,
+      "cross_pct": 95.15418502202643
+    },
+    "engage_instant": {
+      "proximity_m": 1.5,
+      "duration_frames": 3,
+      "n_gt_match_windows": 11,
+      "self_frames": 8,
+      "intra_match": 57,
+      "cross_match": 397,
+      "no_detection": 11,
+      "no_pid": 0,
+      "intra_pct": 12.555066079295155,
+      "cross_pct": 87.44493392070484
+    },
+    "engage_brief": {
+      "proximity_m": 1.5,
+      "duration_frames": 8,
+      "n_gt_match_windows": 9,
+      "self_frames": 8,
+      "intra_match": 57,
+      "cross_match": 397,
+      "no_detection": 11,
+      "no_pid": 0,
+      "intra_pct": 12.555066079295155,
+      "cross_pct": 87.44493392070484
+    },
+    "engage_sustained": {
+      "proximity_m": 1.5,
+      "duration_frames": 15,
+      "n_gt_match_windows": 5,
+      "self_frames": 8,
+      "intra_match": 57,
+      "cross_match": 397,
+      "no_detection": 11,
+      "no_pid": 0,
+      "intra_pct": 12.555066079295155,
+      "cross_pct": 87.44493392070484
+    },
+    "engage_long": {
+      "proximity_m": 1.5,
+      "duration_frames": 30,
+      "n_gt_match_windows": 5,
+      "self_frames": 8,
+      "intra_match": 57,
+      "cross_match": 397,
+      "no_detection": 11,
+      "no_pid": 0,
+      "intra_pct": 12.555066079295155,
+      "cross_pct": 87.44493392070484
+    },
+    "loose_instant": {
+      "proximity_m": 2.0,
+      "duration_frames": 3,
+      "n_gt_match_windows": 13,
+      "self_frames": 8,
+      "intra_match": 57,
+      "cross_match": 397,
+      "no_detection": 11,
+      "no_pid": 0,
+      "intra_pct": 12.555066079295155,
+      "cross_pct": 87.44493392070484
+    },
+    "loose_brief": {
+      "proximity_m": 2.0,
+      "duration_frames": 8,
+      "n_gt_match_windows": 8,
+      "self_frames": 8,
+      "intra_match": 57,
+      "cross_match": 397,
+      "no_detection": 11,
+      "no_pid": 0,
+      "intra_pct": 12.555066079295155,
+      "cross_pct": 87.44493392070484
+    },
+    "loose_sustained": {
+      "proximity_m": 2.0,
+      "duration_frames": 15,
+      "n_gt_match_windows": 6,
+      "self_frames": 8,
+      "intra_match": 57,
+      "cross_match": 397,
+      "no_detection": 11,
+      "no_pid": 0,
+      "intra_pct": 12.555066079295155,
+      "cross_pct": 87.44493392070484
+    },
+    "loose_long": {
+      "proximity_m": 2.0,
+      "duration_frames": 30,
+      "n_gt_match_windows": 5,
+      "self_frames": 8,
+      "intra_match": 57,
+      "cross_match": 397,
+      "no_detection": 11,
+      "no_pid": 0,
+      "intra_pct": 12.555066079295155,
+      "cross_pct": 87.44493392070484
+    }
+  },
+  "stability_assessment": {
+    "verdict_stable": true,
+    "intra_pct_range": [
+      0.0,
+      12.6
+    ],
+    "note": "Stable = intra% varies <15pp across grid"
+  },
+  "metric_definition": "GT match window = sustained interval where tagged athlete's GT track and another GT track have world-distance <= threshold for >= duration consecutive annotated frames. Intra-match = non-self frame on entity where the GT person IS in a GT match window with tagged athlete. Cross-match = NOT engaged."
+}

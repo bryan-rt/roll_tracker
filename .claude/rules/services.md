@@ -30,6 +30,20 @@ paths:
   per-output-frame time attribution has ±500ms worst-case error.
   **MISMATCH warning** emitted loudly to recorder log. Sidecar is COLLECTION ONLY — no
   CV pipeline stage consumes it yet. Uploader is manifest-driven and ignores the sidecar.
+- **Source PTS discovery (CAPTURE-TIME-1/2):** The RTSP stream carries TRUE capture
+  timestamps via RTP (90kHz clock). The production recorder DISCARDS them with
+  `-use_wallclock_as_timestamps 1 +genpts`, substituting bursty arrival times. Under
+  source PTS (`-copyts`), timestamps are uniform ~33ms or ~67ms. Adoption would make the
+  sidecar EXACT (no mismatch/approximation). Not yet in production.
+- **Stream fps VARIES per session** (15fps and 30fps both observed from source PTS). SDP
+  reports 30 when delivering 15. Different cameras differ. **Do not hardcode fps.**
+- **RTCP absent** — 0 sender reports across all cameras on both TCP and UDP. Absolute
+  camera-clock unavailable. Cross-camera sync via Tier-2: source PTS + host-clock lower
+  envelope (±14–56ms).
+- **Timing diagnostic module:** `diag_timing.sh` — parallel module, does NOT modify
+  production recorder. Source PTS capture, per-frame (source_PTS, host_arrival) pairs,
+  lower-envelope offset with windowed drift check, RTCP hunt. Analysis:
+  `tools/analyze_capture_timing.py`.
 
 ## processor
 - Polls `data/raw/nest/` for new MP4s, invokes bjj_pipeline A→F.

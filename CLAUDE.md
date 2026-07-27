@@ -64,7 +64,7 @@ docs/                     # Calibration guide, decisions archive, audits
 
 ## Current Status
 
-*Last updated 2026-06-10.*
+*Last updated 2026-07-26.*
 
 Pipeline A→F verified E2E. Session pipeline validated (3-camera, 35/36 clips).
 
@@ -168,6 +168,67 @@ Results append to `outputs/_sweep/results.jsonl`.
   refuted. See `tools/sweep/diagnostics/ofat_track_buffer_results.md`.
 - **Glob collision bug fix (SWEEP-3b):** `run_gt2actuals.py` symlink directory
   scoped to `_gt2a/<run_id>/` to prevent cross-run glob matches.
+
+**Identity-corruption lever journey (5 inversions):**
+D4 emission → ILP stitch → D1 group formation → detection under-segmentation →
+**Stage A tracker drift (current, 41% of vid2 jumps)**. Each step was falsified by
+evidence. Full history in the CP-PURITY arc summary below. The current lever is
+Stage A tracking quality (BoT-SORT with stock untuned parameters).
+
+**BoT-SORT is UNTUNED:** `tracker.params` is `{}` — the tracker runs entirely on stock
+boxmot pedestrian defaults (track_buffer=30, match_thresh=0.8, new_track_thresh=0.6,
+track_high/low=0.5/0.1). Never tuned for BJJ overhead fisheye grappling.
+
+**A↔D contract mismatch:** The length-proportional `unexplained_tracklet_penalty`
+(`max(base, per_frame × n_frames)`) assumes tracklet purity that Stage A does not deliver.
+Impure tracklets are disproportionately LONG (they absorbed multiple people), so the
+current weighting is ANTI-correlated with reliability. Two candidate fixes: (i)
+reliability-DISCOUNT the penalty, (ii) use a purity proxy (`max_displacement`) as a
+high-precision D0.5 SPLIT trigger. Neither built yet.
+
+**Purity-proxy results (PURITY-PROXY-1/2):**
+- `max_displacement` (path discontinuity): AUC 0.82–0.85 raw / 0.75–0.82 post-D0.5.
+  Same-color robust.
+- Masked appearance: +0.08–0.09 AUC over contaminated, ~0.88 on different-color but
+  ~0.73 on same-color.
+- **CRITICAL CEILING: smooth-motion + same-color drifts are 58% (vid2) to 94% (vid1)
+  of impure tracklets and are invisible to BOTH proxies.** Multivariate combo lifts only
+  the smooth+different-color subset (4–12% of impurity).
+- Masked histograms raised same-color fraction dramatically (vid2 7.7%→69.2%) — unmasked
+  contamination was inflating inter-person distances.
+Evidence: `docs/evidence/purity_proxy_{1,2}/`.
+
+**Production color-signal defects (histogram.py):**
+- Crops are unmasked RECTANGLES (background + other athlete contaminate).
+- Pose-guided torso crop is DEAD CODE (detection-only model → keypoints NaN → center-bbox
+  fallback always fires).
+- Tracklet summary AVERAGES histograms, destroying multi-modality that reveals impurity.
+- Masked full-body H+S+V reached AUC 0.907 vs 0.815 unmasked (CP-RASTER-PLATE-2) —
+  masking validated but NOT productionized.
+
+**Recorder timing arc (WALLCLOCK-1 → CAPTURE-TIME-2):**
+- WALLCLOCK-1: Container PTS is synthetic (CFR re-encode discards wall-clock).
+- RECORDER-SIDECAR-1: Per-frame `.timing.jsonl` sidecar shipped to production (CFR +
+  `-vf showinfo`, video byte-identical). Under arrival-PTS, input≠output frame count
+  (mismatch is NORMAL), so `pts_time_s` is a nearest-neighbor approximation: mean ~80ms,
+  P95 ~230ms, max ~500ms error, worst in lag windows.
+- CAPTURE-TIME-1: **RTSP stream carries TRUE capture timestamps** (source PTS uniform
+  33ms / 1.21ms stdev). The recorder was DISCARDING them via
+  `-use_wallclock_as_timestamps 1` + `+genpts`, substituting bursty network-arrival times.
+- CAPTURE-TIME-2: **RTCP definitively absent** across all cameras, both TCP and UDP
+  transports. Absolute camera-clock time unavailable from stream. **Tier-2 cross-camera
+  alignment achievable at ±14–56ms** using source PTS + host-clock lower envelope.
+  FP7oJQ shows −603 ppm clock drift (~181ms over 5 min) — measurable, linearly
+  correctable.
+- **Stream fps VARIES per session** (15fps and 30fps both observed from source PTS).
+  SDP reports 30 when delivering 15. Cameras differ from each other (13.85 vs 15.00
+  measured in one session). **Do not hardcode fps anywhere — use per-clip measured fps.**
+- `frame_index` is a sequential `cap.read()` counter (frame_iterator.py), NOT PTS-derived.
+  Works for any fps.
+- Diagnostic module: `services/nest_recorder/recorder/diag_timing.sh` (parallel, does NOT
+  modify production recorder). Analysis: `tools/analyze_capture_timing.py`.
+  Evidence: `docs/evidence/capture_time_{1,2}/`, `docs/evidence/recorder_timing_1/`,
+  `docs/evidence/wallclock_1/`.
 
 **CP22 (completed):** Default detection model updated to yolo26n-pose (STAL loss, better
 small-object detection). ultralytics upgraded 8.3.252 → 8.4.33 (`--no-deps`).
@@ -340,6 +401,14 @@ First trained model had FP7oJQ false positives from background memorization.
 | `tools/sweep/run_stage_d.py` | Re-run Stage D (D0-D4) on sweep tracklet artifacts |
 | `tools/sweep/run_gt2actuals.py` | Measure sweep run via GT2ACTUALS dense join (subprocess) |
 | `tools/sweep/sweep_runner.py` | End-to-end sweep orchestrator: replay → D → GT2ACTUALS → metrics |
+| `tools/cp_gt2actuals_7_dashboard.py` | Interactive 4-coloring dashboard (person_id/tracklet/HSV/velocity) |
+| `tools/cp_purity_1_decomposition.py` | Through-line purity decomposition (CP-PURITY-1) |
+| `tools/cp_purity_2_floor.py` | Aggregate reconciliation + addressable ceiling (CP-PURITY-2) |
+| `tools/purity_proxy_1_analysis.py` | Purity proxy scores: max_displacement, kinematic features |
+| `tools/purity_proxy_2_analysis.py` | Masked-appearance purity proxy analysis |
+| `tools/analyze_recorder_timing.py` | Recorder per-frame timing extraction + analysis |
+| `tools/analyze_capture_timing.py` | Multi-camera timing diagnostic session analysis |
+| `services/nest_recorder/recorder/diag_timing.sh` | Multi-camera timing diagnostic (source PTS, RTCP hunt) |
 
 ## Training Data Locations
 
@@ -410,23 +479,33 @@ First trained model had FP7oJQ false positives from background memorization.
 **Evidence-economy principle (from this arc):** tags = hard constraint; clean appearance
 = cost/veto, never hard; distinctiveness-weighted; only one tier may be hard.
 
-**CP23b remaining:**
-- Empty frame injection (~30-50 per camera) to reduce false positives, then retrain
-- Bbox size tier filtering review (outputs from `tools/visualize_bbox_tiers.py`)
-- Tracklet deduplication strategy (baseline: ~50% short tracklets)
-- Full session run with new detection model (all 3 cameras, full clip set)
+**Immediate (ordered by impact):**
+1. **[LIVE BUG] BoT-SORT `frame_rate` = per-clip MEASURED fps.** Currently hardcoded/
+   assumed 30 while streams deliver 15–30 varying by session. `track_buffer`'s real-time
+   lifespan is wrong, directly affecting the dominant drift damage.
+2. **[NEW AUDIT] Frame-rate & cross-camera assumption audit across Stages A–F.** Enumerate
+   every place that assumes fixed/known fps, uniform frame spacing, or synchronized cameras
+   (BoT-SORT frame_rate, velocity/`speed_mps_k`, `derive_clip_frame_offset`, Stage E
+   temporal engagement windows, cross-camera evidence timing). Report where wrong.
+3. Recorder: adopt source PTS (`-copyts`, drop `-use_wallclock_as_timestamps`/`+genpts`) in
+   production → exact per-frame timing, eliminates dup/drop, makes sidecar exact.
+4. A↔D contract fix: reliability-discount the penalty OR displacement-based D0.5 split.
+5. Per-clip measured-fps denominator for motion metrics.
+6. D0.5 Tier 3: disable (interim, recovers -6.6pp regression) or redesign.
+7. Cross-camera sync via source PTS + host-clock lower envelope WITH per-camera drift
+   correction (Tier 2, ±14–56ms).
+8. Productionize masked histograms (validated +0.09 AUC, not shipped).
+9. Stage A `match_thresh` sweep — AFTER the A↔D fix, since SWEEP-4 was measured against
+   the un-fixed penalty.
 
-**CP23c (custom data flywheel):**
-- Background subtraction for missed detection discovery
-- Cross-camera pseudo-labeling for training data enrichment
-- Active learning loop: model pre-fills → human corrects → retrain
-
-**Other pending:**
+**Deferred (lower priority):**
+- CP23b remaining: empty frame injection, bbox size tier filtering, tracklet deduplication
+- CP23c: custom data flywheel (background subtraction, pseudo-labeling, active learning)
 - CP22c: ROI mask geometry fix (parked)
-- Camera temporal jitter investigation
-- CVAT XML import debugging (IndexError server-side)
+- Inter-tracklet swap detection (cross-tracklet position-continuation + masked-appearance)
+- Tracker-level cheap-HSV-ReID (low priority — tracker purity 0.9, low headroom)
 
-**Metric-basis discipline (MANDATORY — this burned us 4 times):**
+**Metric-basis discipline (MANDATORY — this burned us 5 times, SWEEP-3b was the biggest):**
 No correct_id number is comparable without its basis stated: camera set (single vs
 3-camera), frame range (val-split vs full annotated), person_tracks level (clip vs
 session), AND **pipeline state** (pre-split vs post-D0.5-split). The 58.7% figure
@@ -434,6 +513,29 @@ session), AND **pipeline state** (pre-split vs post-D0.5-split). The 58.7% figur
 PRE-split (Jun 7); current post-split state is 33.9% (CP-GT2ACTUALS-3.5). The
 -6.6pp drop is D0.5 Tier 3 fragmentation, not a regression. Canonical definition:
 clip-level person_tracks, val-split, greedy IoU>=0.3, with pipeline state noted.
+
+## Overturned Conclusions (do not re-derive killed ideas)
+
+1. **D0.5 splitting: recorded as helpful → MEASURED NET-NEGATIVE.** Per-event GT
+   accounting (CP-4+5): 35 correct / 317 false splits (net -282) on vid2. Tier 3
+   owns ~79% of damage; T3 precision 7.3%, T2 16.5%.
+2. **CP-HSV-V (H+S → H+S+V): shipped as "first production improvement" → POSSIBLY
+   NET-HARM.** Genuinely improved separability, but made Tier 3 fire 5–6× more into
+   a ~7%-precision splitter. Live canonical correct_id 33.9% vs pre-split 40.5%
+   baseline (−6.6pp). A real current-state regression.
+3. **"Appearance in the solver" as THE lever → DEMOTED.** CP-6 showed no per-frame
+   signal discriminates real vs false splits (speed P95 overlaps; HSV Bhattacharyya
+   ~identical). Stage A drift dominates. Appearance-in-solver addresses at most the
+   ~26% misstitch share.
+4. **CAPTURE-TIME-1's "the camera is really 30fps" → CORRECTED.** Source PTS rate
+   VARIES per session (15fps and 30fps both measured). SDP unreliable. Use per-clip
+   measured fps.
+5. **Sidecar "exact per-frame timing" → QUALIFIED.** Under arrival-PTS it is a
+   nearest-neighbor approximation (±500ms worst case). Under source-PTS it would be
+   exact (input==output, no dup/drop) — not yet adopted in production.
+6. **CP-TAG-4a "+22.7pp improvement" → RETRACTED (SWEEP-3b).** Both 40.5% and 63.2%
+   read the SAME pre-commit person_tracks. Difference was full-range vs val-split
+   frame selection, not a code-change effect. CP-TAG-4a's actual effect is UNKNOWN.
 
 ## Pipeline Validation Framework (TB-EVAL series, completed 2026-05-12)
 

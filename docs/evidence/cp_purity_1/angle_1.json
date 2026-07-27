@@ -1,0 +1,158 @@
+{
+  "J_EDEw-20260318-200015": {
+    "tagged_athlete": {
+      "correct_id": 78,
+      "wrong_id": 151,
+      "no_id": 3,
+      "no_detection": 69,
+      "total": 301,
+      "correct_pct": 25.91362126245847,
+      "dominant_pid": "p0010"
+    },
+    "aggregate_correct_id_pct": 41.71808258186996,
+    "aggregate_total_frames": 4214,
+    "n_gt_tracks": 14,
+    "per_track_summary": {
+      "14": {
+        "correct_pct": 16.27906976744186,
+        "dominant_pid": "p0001"
+      },
+      "15": {
+        "correct_pct": 27.57475083056478,
+        "dominant_pid": "p0001"
+      },
+      "16": {
+        "correct_pct": 32.55813953488372,
+        "dominant_pid": "p0005"
+      },
+      "17": {
+        "correct_pct": 63.12292358803987,
+        "dominant_pid": "p0005"
+      },
+      "18": {
+        "correct_pct": 28.903654485049834,
+        "dominant_pid": "p0013"
+      },
+      "19": {
+        "correct_pct": 99.33554817275747,
+        "dominant_pid": "p0007"
+      },
+      "20": {
+        "correct_pct": 82.39202657807309,
+        "dominant_pid": "p0006"
+      },
+      "21": {
+        "correct_pct": 71.09634551495017,
+        "dominant_pid": "p0016"
+      },
+      "22": {
+        "correct_pct": 22.92358803986711,
+        "dominant_pid": "p0018"
+      },
+      "23": {
+        "correct_pct": 39.8671096345515,
+        "dominant_pid": "p0003"
+      },
+      "24": {
+        "correct_pct": 25.91362126245847,
+        "dominant_pid": "p0010"
+      },
+      "25": {
+        "correct_pct": 26.578073089701,
+        "dominant_pid": "p0021"
+      },
+      "26": {
+        "correct_pct": 17.60797342192691,
+        "dominant_pid": "p0002"
+      },
+      "27": {
+        "correct_pct": 29.900332225913623,
+        "dominant_pid": "p0025"
+      }
+    }
+  },
+  "J_EDEw-20260318-200246": {
+    "tagged_athlete": {
+      "correct_id": 67,
+      "wrong_id": 312,
+      "no_id": 0,
+      "no_detection": 71,
+      "total": 450,
+      "correct_pct": 14.888888888888888,
+      "dominant_pid": "p0014"
+    },
+    "aggregate_correct_id_pct": 32.09641061210335,
+    "aggregate_total_frames": 5767,
+    "n_gt_tracks": 14,
+    "per_track_summary": {
+      "0": {
+        "correct_pct": 20.666666666666668,
+        "dominant_pid": "p0017"
+      },
+      "1": {
+        "correct_pct": 27.333333333333332,
+        "dominant_pid": "p0031"
+      },
+      "2": {
+        "correct_pct": 29.48717948717949,
+        "dominant_pid": "p0027"
+      },
+      "3": {
+        "correct_pct": 49.61636828644501,
+        "dominant_pid": "p0006"
+      },
+      "4": {
+        "correct_pct": 30.444444444444446,
+        "dominant_pid": "p0035"
+      },
+      "5": {
+        "correct_pct": 32.88888888888889,
+        "dominant_pid": "p0020"
+      },
+      "6": {
+        "correct_pct": 42.22222222222222,
+        "dominant_pid": "p0007"
+      },
+      "7": {
+        "correct_pct": 39.111111111111114,
+        "dominant_pid": "p0014"
+      },
+      "8": {
+        "correct_pct": 14.888888888888888,
+        "dominant_pid": "p0014"
+      },
+      "9": {
+        "correct_pct": 40.88888888888889,
+        "dominant_pid": "p0003"
+      },
+      "10": {
+        "correct_pct": 22.666666666666664,
+        "dominant_pid": "p0008"
+      },
+      "11": {
+        "correct_pct": 29.360465116279073,
+        "dominant_pid": "p0008"
+      },
+      "12": {
+        "correct_pct": 29.737609329446062,
+        "dominant_pid": "p0002"
+      },
+      "13": {
+        "correct_pct": 47.791164658634536,
+        "dominant_pid": "p0001"
+      }
+    }
+  },
+  "metric_definition": "correct_id = GT frames where dominant_person_id (majority-vote from session person_tracks) is present in the frame's person_id set. Matcher: greedy IoU>=0.3. Dominant computed per-GT-track from session-level person_tracks_J_EDEw.parquet.",
+  "baseline_comparison": {
+    "cp_tag_3": {
+      "vid1_gt24": 25.6,
+      "vid2_gt8": 22.2
+    },
+    "cp_tag_4a_verify": {
+      "vid1_gt24": 17.6,
+      "vid2_gt8": 19.1
+    },
+    "note": "CP-TAG-3/4a used per-clip person_tracks; this uses session-level. Expected reference: ~58.7% aggregate (signal-trace baseline)."
+  }
+}

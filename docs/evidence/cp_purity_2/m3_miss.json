@@ -1,0 +1,343 @@
+{
+  "J_EDEw-20260318-200015": {
+    "n_miss": 69,
+    "proxy_occluded": 51,
+    "edge_roi": 0,
+    "detector_fail": 18,
+    "proxy_occluded_pct": 73.9,
+    "edge_roi_pct": 0.0,
+    "detector_fail_pct": 26.1,
+    "proxy_occluded_frames": [
+      {
+        "frame": 80,
+        "max_gt_iou": 0.572
+      },
+      {
+        "frame": 130,
+        "max_gt_iou": 0.567
+      },
+      {
+        "frame": 150,
+        "max_gt_iou": 0.66
+      },
+      {
+        "frame": 260,
+        "max_gt_iou": 0.331
+      },
+      {
+        "frame": 270,
+        "max_gt_iou": 0.298
+      },
+      {
+        "frame": 340,
+        "max_gt_iou": 0.346
+      },
+      {
+        "frame": 350,
+        "max_gt_iou": 0.264
+      },
+      {
+        "frame": 360,
+        "max_gt_iou": 0.265
+      },
+      {
+        "frame": 370,
+        "max_gt_iou": 0.275
+      },
+      {
+        "frame": 390,
+        "max_gt_iou": 0.391
+      },
+      {
+        "frame": 410,
+        "max_gt_iou": 0.343
+      },
+      {
+        "frame": 430,
+        "max_gt_iou": 0.289
+      },
+      {
+        "frame": 440,
+        "max_gt_iou": 0.162
+      },
+      {
+        "frame": 850,
+        "max_gt_iou": 0.531
+      },
+      {
+        "frame": 860,
+        "max_gt_iou": 0.541
+      },
+      {
+        "frame": 910,
+        "max_gt_iou": 0.533
+      },
+      {
+        "frame": 930,
+        "max_gt_iou": 0.443
+      },
+      {
+        "frame": 950,
+        "max_gt_iou": 0.519
+      },
+      {
+        "frame": 980,
+        "max_gt_iou": 0.466
+      },
+      {
+        "frame": 990,
+        "max_gt_iou": 0.465
+      }
+    ],
+    "edge_roi_frames": [],
+    "detector_fail_frames": [
+      {
+        "frame": 490,
+        "max_gt_iou": 0.0
+      },
+      {
+        "frame": 500,
+        "max_gt_iou": 0.0
+      },
+      {
+        "frame": 510,
+        "max_gt_iou": 0.0
+      },
+      {
+        "frame": 520,
+        "max_gt_iou": 0.0
+      },
+      {
+        "frame": 530,
+        "max_gt_iou": 0.0
+      },
+      {
+        "frame": 540,
+        "max_gt_iou": 0.0
+      },
+      {
+        "frame": 550,
+        "max_gt_iou": 0.0
+      },
+      {
+        "frame": 560,
+        "max_gt_iou": 0.0
+      },
+      {
+        "frame": 570,
+        "max_gt_iou": 0.0
+      },
+      {
+        "frame": 600,
+        "max_gt_iou": 0.0
+      },
+      {
+        "frame": 610,
+        "max_gt_iou": 0.018
+      },
+      {
+        "frame": 620,
+        "max_gt_iou": 0.009
+      },
+      {
+        "frame": 630,
+        "max_gt_iou": 0.0
+      },
+      {
+        "frame": 2700,
+        "max_gt_iou": 0.0
+      },
+      {
+        "frame": 2710,
+        "max_gt_iou": 0.0
+      },
+      {
+        "frame": 2730,
+        "max_gt_iou": 0.0
+      },
+      {
+        "frame": 2740,
+        "max_gt_iou": 0.0
+      },
+      {
+        "frame": 2750,
+        "max_gt_iou": 0.0
+      }
+    ],
+    "cvat_cross_check": {
+      "status": "cross-check not established"
+    }
+  },
+  "J_EDEw-20260318-200246": {
+    "n_miss": 71,
+    "proxy_occluded": 12,
+    "edge_roi": 4,
+    "detector_fail": 55,
+    "proxy_occluded_pct": 16.9,
+    "edge_roi_pct": 5.6,
+    "detector_fail_pct": 77.5,
+    "proxy_occluded_frames": [
+      {
+        "frame": 90,
+        "max_gt_iou": 0.237
+      },
+      {
+        "frame": 130,
+        "max_gt_iou": 0.198
+      },
+      {
+        "frame": 350,
+        "max_gt_iou": 0.47
+      },
+      {
+        "frame": 690,
+        "max_gt_iou": 0.155
+      },
+      {
+        "frame": 1290,
+        "max_gt_iou": 0.201
+      },
+      {
+        "frame": 1300,
+        "max_gt_iou": 0.376
+      },
+      {
+        "frame": 1310,
+        "max_gt_iou": 0.394
+      },
+      {
+        "frame": 1320,
+        "max_gt_iou": 0.425
+      },
+      {
+        "frame": 1330,
+        "max_gt_iou": 0.407
+      },
+      {
+        "frame": 1570,
+        "max_gt_iou": 0.226
+      },
+      {
+        "frame": 2450,
+        "max_gt_iou": 0.322
+      },
+      {
+        "frame": 4190,
+        "max_gt_iou": 0.265
+      }
+    ],
+    "edge_roi_frames": [
+      {
+        "frame": 2960,
+        "bbox_center": [
+          746.6,
+          169.7
+        ]
+      },
+      {
+        "frame": 2970,
+        "bbox_center": [
+          747.3,
+          166.1
+        ]
+      },
+      {
+        "frame": 2980,
+        "bbox_center": [
+          748.0,
+          162.6
+        ]
+      },
+      {
+        "frame": 3000,
+        "bbox_center": [
+          742.1,
+          153.1
+        ]
+      }
+    ],
+    "detector_fail_frames": [
+      {
+        "frame": 700,
+        "max_gt_iou": 0.0
+      },
+      {
+        "frame": 710,
+        "max_gt_iou": 0.0
+      },
+      {
+        "frame": 720,
+        "max_gt_iou": 0.0
+      },
+      {
+        "frame": 730,
+        "max_gt_iou": 0.0
+      },
+      {
+        "frame": 750,
+        "max_gt_iou": 0.038
+      },
+      {
+        "frame": 760,
+        "max_gt_iou": 0.035
+      },
+      {
+        "frame": 770,
+        "max_gt_iou": 0.075
+      },
+      {
+        "frame": 780,
+        "max_gt_iou": 0.049
+      },
+      {
+        "frame": 790,
+        "max_gt_iou": 0.071
+      },
+      {
+        "frame": 800,
+        "max_gt_iou": 0.061
+      },
+      {
+        "frame": 820,
+        "max_gt_iou": 0.0
+      },
+      {
+        "frame": 840,
+        "max_gt_iou": 0.068
+      },
+      {
+        "frame": 850,
+        "max_gt_iou": 0.022
+      },
+      {
+        "frame": 860,
+        "max_gt_iou": 0.024
+      },
+      {
+        "frame": 870,
+        "max_gt_iou": 0.029
+      },
+      {
+        "frame": 880,
+        "max_gt_iou": 0.044
+      },
+      {
+        "frame": 890,
+        "max_gt_iou": 0.053
+      },
+      {
+        "frame": 900,
+        "max_gt_iou": 0.024
+      },
+      {
+        "frame": 910,
+        "max_gt_iou": 0.008
+      },
+      {
+        "frame": 920,
+        "max_gt_iou": 0.026
+      }
+    ]
+  },
+  "metric_definition": "Miss floor split for tagged athlete's GT frames with no detection. Proxy-occluded: max IoU with other GT boxes >= 0.15 (PROXY). Edge-ROI: GT bbox center outside roi_mask.png. Detector-fail-on-visible: not proxy-occluded AND inside ROI."
+}

@@ -1,0 +1,17 @@
+{
+  "total_non_self_frames": 454,
+  "attribution": {
+    "group_over_attribution": 0,
+    "tracklet_impurity": 0,
+    "ilp_stitch": 454,
+    "unattributed": 0
+  },
+  "attribution_pct": {
+    "group_over_attribution": 0.0,
+    "tracklet_impurity": 0.0,
+    "ilp_stitch": 100.0,
+    "unattributed": 0.0
+  },
+  "metric_definition": "APPROXIMATE stage attribution of non-self frames on p0022's entity. group_over_attribution = multiple pids at same frame (GROUP node). ilp_stitch = tracklet's majority GT is someone else (solver connected wrong tracklet). tracklet_impurity = tracklet 'belongs' to tagged but frame-level GT differs (tracker swap). This is approximate \u2014 angles 5+6 are the load-bearing discriminators.",
+  "caveat": "APPROXIMATE. Overlapping categories possible. Use angles 5+6 for decisions."
+}

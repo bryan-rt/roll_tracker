@@ -1,0 +1,25 @@
+{
+  "J_EDEw-20260318-200015": {
+    "total_gt_frames": 301,
+    "tight_match": 108,
+    "pair_box": 124,
+    "miss": 69,
+    "tight_pct": 35.880398671096344,
+    "pair_box_pct": 41.19601328903654,
+    "miss_pct": 22.92358803986711,
+    "unfixable_floor_pct": 64.11960132890366,
+    "note": "pair_box = identity ceiling (detection covers 2+ people); miss = no detection at all. Neither fixable by identity logic."
+  },
+  "J_EDEw-20260318-200246": {
+    "total_gt_frames": 450,
+    "tight_match": 317,
+    "pair_box": 62,
+    "miss": 71,
+    "tight_pct": 70.44444444444444,
+    "pair_box_pct": 13.777777777777779,
+    "miss_pct": 15.777777777777777,
+    "unfixable_floor_pct": 29.555555555555557,
+    "note": "pair_box = identity ceiling (detection covers 2+ people); miss = no detection at all. Neither fixable by identity logic."
+  },
+  "metric_definition": "Unfixable floor = GT frames where tagged athlete has no own 1:1 detection (pair_box + miss). No identity-layer fix can recover these."
+}

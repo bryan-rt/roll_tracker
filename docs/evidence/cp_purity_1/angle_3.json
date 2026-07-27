@@ -1,0 +1,650 @@
+{
+  "J_EDEw-20260318-200015": {
+    "n_splits": 62,
+    "n_measured": 34,
+    "helped": 16,
+    "hurt": 4,
+    "neutral": 14,
+    "mean_delta": 0.08864705882352941,
+    "comparisons": [
+      {
+        "original_tid": "t167",
+        "n_products": 1,
+        "original_purity": 0.833,
+        "product_purities": [
+          0.5
+        ],
+        "weighted_product_purity": 0.5,
+        "delta": -0.333,
+        "helped": false,
+        "hurt": true,
+        "orig_gt_frames": 6
+      },
+      {
+        "original_tid": "t1",
+        "n_products": 1,
+        "original_purity": 0.89,
+        "product_purities": [
+          0.859
+        ],
+        "weighted_product_purity": 0.859,
+        "delta": -0.03,
+        "helped": false,
+        "hurt": true,
+        "orig_gt_frames": 290
+      },
+      {
+        "original_tid": "t361",
+        "n_products": 3,
+        "original_purity": 0.778,
+        "product_purities": [
+          1.0,
+          1.0,
+          0.5
+        ],
+        "weighted_product_purity": 0.75,
+        "delta": -0.028,
+        "helped": false,
+        "hurt": true,
+        "orig_gt_frames": 9
+      },
+      {
+        "original_tid": "t115",
+        "n_products": 3,
+        "original_purity": 0.762,
+        "product_purities": [
+          0.5,
+          0.75,
+          0.769
+        ],
+        "weighted_product_purity": 0.737,
+        "delta": -0.025,
+        "helped": false,
+        "hurt": true,
+        "orig_gt_frames": 21
+      },
+      {
+        "original_tid": "t138",
+        "n_products": 1,
+        "original_purity": 0.518,
+        "product_purities": [
+          0.511
+        ],
+        "weighted_product_purity": 0.511,
+        "delta": -0.007,
+        "helped": false,
+        "hurt": false,
+        "orig_gt_frames": 56
+      },
+      {
+        "original_tid": "t166",
+        "n_products": 4,
+        "original_purity": 0.921,
+        "product_purities": [
+          0.778,
+          0.964
+        ],
+        "weighted_product_purity": 0.919,
+        "delta": -0.002,
+        "helped": false,
+        "hurt": false,
+        "orig_gt_frames": 38
+      },
+      {
+        "original_tid": "t2",
+        "n_products": 3,
+        "original_purity": 1.0,
+        "product_purities": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "weighted_product_purity": 1.0,
+        "delta": 0.0,
+        "helped": false,
+        "hurt": false,
+        "orig_gt_frames": 81
+      },
+      {
+        "original_tid": "t278",
+        "n_products": 1,
+        "original_purity": 1.0,
+        "product_purities": [
+          1.0
+        ],
+        "weighted_product_purity": 1.0,
+        "delta": 0.0,
+        "helped": false,
+        "hurt": false,
+        "orig_gt_frames": 15
+      },
+      {
+        "original_tid": "t291",
+        "n_products": 1,
+        "original_purity": 1.0,
+        "product_purities": [
+          1.0
+        ],
+        "weighted_product_purity": 1.0,
+        "delta": 0.0,
+        "helped": false,
+        "hurt": false,
+        "orig_gt_frames": 13
+      },
+      {
+        "original_tid": "t34",
+        "n_products": 2,
+        "original_purity": 1.0,
+        "product_purities": [
+          1.0
+        ],
+        "weighted_product_purity": 1.0,
+        "delta": 0.0,
+        "helped": false,
+        "hurt": false,
+        "orig_gt_frames": 1
+      },
+      {
+        "original_tid": "t26",
+        "n_products": 2,
+        "original_purity": 0.586,
+        "product_purities": [
+          1.0
+        ],
+        "weighted_product_purity": 1.0,
+        "delta": 0.414,
+        "helped": true,
+        "hurt": false,
+        "orig_gt_frames": 29
+      },
+      {
+        "original_tid": "t366",
+        "n_products": 17,
+        "original_purity": 0.6,
+        "product_purities": [
+          1.0,
+          1.0
+        ],
+        "weighted_product_purity": 1.0,
+        "delta": 0.4,
+        "helped": true,
+        "hurt": false,
+        "orig_gt_frames": 25
+      },
+      {
+        "original_tid": "t64",
+        "n_products": 4,
+        "original_purity": 0.5,
+        "product_purities": [
+          0.5,
+          1.0
+        ],
+        "weighted_product_purity": 0.857,
+        "delta": 0.357,
+        "helped": true,
+        "hurt": false,
+        "orig_gt_frames": 20
+      },
+      {
+        "original_tid": "t142",
+        "n_products": 16,
+        "original_purity": 0.533,
+        "product_purities": [
+          1.0,
+          1.0,
+          1.0,
+          0.944,
+          0.5,
+          1.0,
+          0.874,
+          1.0,
+          0.725
+        ],
+        "weighted_product_purity": 0.882,
+        "delta": 0.349,
+        "helped": true,
+        "hurt": false,
+        "orig_gt_frames": 212
+      },
+      {
+        "original_tid": "t186",
+        "n_products": 4,
+        "original_purity": 0.5,
+        "product_purities": [
+          0.5,
+          0.583,
+          1.0,
+          1.0
+        ],
+        "weighted_product_purity": 0.814,
+        "delta": 0.314,
+        "helped": true,
+        "hurt": false,
+        "orig_gt_frames": 132
+      },
+      {
+        "original_tid": "t122",
+        "n_products": 1,
+        "original_purity": 0.7,
+        "product_purities": [
+          1.0
+        ],
+        "weighted_product_purity": 1.0,
+        "delta": 0.3,
+        "helped": true,
+        "hurt": false,
+        "orig_gt_frames": 10
+      },
+      {
+        "original_tid": "t349",
+        "n_products": 3,
+        "original_purity": 0.714,
+        "product_purities": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "weighted_product_purity": 1.0,
+        "delta": 0.286,
+        "helped": true,
+        "hurt": false,
+        "orig_gt_frames": 7
+      },
+      {
+        "original_tid": "t303",
+        "n_products": 2,
+        "original_purity": 0.714,
+        "product_purities": [
+          1.0,
+          0.944
+        ],
+        "weighted_product_purity": 0.95,
+        "delta": 0.236,
+        "helped": true,
+        "hurt": false,
+        "orig_gt_frames": 77
+      },
+      {
+        "original_tid": "t12",
+        "n_products": 17,
+        "original_purity": 0.516,
+        "product_purities": [
+          1.0,
+          0.917,
+          0.682,
+          0.667,
+          1.0,
+          1.0,
+          0.667,
+          1.0,
+          1.0,
+          0.5,
+          1.0,
+          0.5,
+          0.5,
+          0.581,
+          0.87,
+          0.5,
+          1.0
+        ],
+        "weighted_product_purity": 0.719,
+        "delta": 0.203,
+        "helped": true,
+        "hurt": false,
+        "orig_gt_frames": 192
+      },
+      {
+        "original_tid": "t91",
+        "n_products": 2,
+        "original_purity": 0.818,
+        "product_purities": [
+          1.0,
+          1.0
+        ],
+        "weighted_product_purity": 1.0,
+        "delta": 0.182,
+        "helped": true,
+        "hurt": false,
+        "orig_gt_frames": 22
+      }
+    ]
+  },
+  "J_EDEw-20260318-200246": {
+    "n_splits": 50,
+    "n_measured": 47,
+    "helped": 17,
+    "hurt": 4,
+    "neutral": 26,
+    "mean_delta": 0.053212765957446805,
+    "comparisons": [
+      {
+        "original_tid": "t2",
+        "n_products": 3,
+        "original_purity": 0.858,
+        "product_purities": [
+          0.562,
+          0.5,
+          0.308
+        ],
+        "weighted_product_purity": 0.452,
+        "delta": -0.407,
+        "helped": false,
+        "hurt": true,
+        "orig_gt_frames": 127
+      },
+      {
+        "original_tid": "t156",
+        "n_products": 3,
+        "original_purity": 0.967,
+        "product_purities": [
+          1.0,
+          1.0,
+          0.667
+        ],
+        "weighted_product_purity": 0.905,
+        "delta": -0.062,
+        "helped": false,
+        "hurt": true,
+        "orig_gt_frames": 61
+      },
+      {
+        "original_tid": "t11",
+        "n_products": 4,
+        "original_purity": 0.944,
+        "product_purities": [
+          1.0,
+          1.0,
+          0.846,
+          0.75
+        ],
+        "weighted_product_purity": 0.915,
+        "delta": -0.029,
+        "helped": false,
+        "hurt": true,
+        "orig_gt_frames": 107
+      },
+      {
+        "original_tid": "t73",
+        "n_products": 3,
+        "original_purity": 0.984,
+        "product_purities": [
+          0.917,
+          1.0,
+          1.0
+        ],
+        "weighted_product_purity": 0.974,
+        "delta": -0.01,
+        "helped": false,
+        "hurt": true,
+        "orig_gt_frames": 62
+      },
+      {
+        "original_tid": "t299",
+        "n_products": 2,
+        "original_purity": 0.951,
+        "product_purities": [
+          0.893,
+          1.0
+        ],
+        "weighted_product_purity": 0.945,
+        "delta": -0.005,
+        "helped": false,
+        "hurt": false,
+        "orig_gt_frames": 61
+      },
+      {
+        "original_tid": "t85",
+        "n_products": 4,
+        "original_purity": 0.982,
+        "product_purities": [
+          1.0,
+          1.0,
+          0.862,
+          1.0
+        ],
+        "weighted_product_purity": 0.977,
+        "delta": -0.005,
+        "helped": false,
+        "hurt": false,
+        "orig_gt_frames": 219
+      },
+      {
+        "original_tid": "t139",
+        "n_products": 14,
+        "original_purity": 0.978,
+        "product_purities": [
+          1.0,
+          1.0,
+          1.0,
+          0.938,
+          0.944,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.982,
+          1.0
+        ],
+        "weighted_product_purity": 0.977,
+        "delta": -0.001,
+        "helped": false,
+        "hurt": false,
+        "orig_gt_frames": 277
+      },
+      {
+        "original_tid": "t5",
+        "n_products": 15,
+        "original_purity": 0.979,
+        "product_purities": [
+          0.923,
+          0.95,
+          1.0,
+          0.971,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.667,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "weighted_product_purity": 0.978,
+        "delta": -0.001,
+        "helped": false,
+        "hurt": false,
+        "orig_gt_frames": 433
+      },
+      {
+        "original_tid": "t1",
+        "n_products": 2,
+        "original_purity": 1.0,
+        "product_purities": [
+          1.0,
+          1.0
+        ],
+        "weighted_product_purity": 1.0,
+        "delta": 0.0,
+        "helped": false,
+        "hurt": false,
+        "orig_gt_frames": 105
+      },
+      {
+        "original_tid": "t108",
+        "n_products": 1,
+        "original_purity": 1.0,
+        "product_purities": [
+          1.0
+        ],
+        "weighted_product_purity": 1.0,
+        "delta": 0.0,
+        "helped": false,
+        "hurt": false,
+        "orig_gt_frames": 1
+      },
+      {
+        "original_tid": "t121",
+        "n_products": 4,
+        "original_purity": 0.536,
+        "product_purities": [
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "weighted_product_purity": 1.0,
+        "delta": 0.464,
+        "helped": true,
+        "hurt": false,
+        "orig_gt_frames": 28
+      },
+      {
+        "original_tid": "t88",
+        "n_products": 6,
+        "original_purity": 0.578,
+        "product_purities": [
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "weighted_product_purity": 1.0,
+        "delta": 0.422,
+        "helped": true,
+        "hurt": false,
+        "orig_gt_frames": 339
+      },
+      {
+        "original_tid": "t198",
+        "n_products": 7,
+        "original_purity": 0.563,
+        "product_purities": [
+          1.0,
+          0.529,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "weighted_product_purity": 0.884,
+        "delta": 0.321,
+        "helped": true,
+        "hurt": false,
+        "orig_gt_frames": 71
+      },
+      {
+        "original_tid": "t195",
+        "n_products": 4,
+        "original_purity": 0.632,
+        "product_purities": [
+          1.0,
+          1.0,
+          0.875
+        ],
+        "weighted_product_purity": 0.933,
+        "delta": 0.302,
+        "helped": true,
+        "hurt": false,
+        "orig_gt_frames": 19
+      },
+      {
+        "original_tid": "t20",
+        "n_products": 1,
+        "original_purity": 0.75,
+        "product_purities": [
+          1.0
+        ],
+        "weighted_product_purity": 1.0,
+        "delta": 0.25,
+        "helped": true,
+        "hurt": false,
+        "orig_gt_frames": 4
+      },
+      {
+        "original_tid": "t169",
+        "n_products": 7,
+        "original_purity": 0.306,
+        "product_purities": [
+          1.0,
+          1.0,
+          1.0,
+          0.857,
+          0.415,
+          0.75
+        ],
+        "weighted_product_purity": 0.545,
+        "delta": 0.239,
+        "helped": true,
+        "hurt": false,
+        "orig_gt_frames": 98
+      },
+      {
+        "original_tid": "t95",
+        "n_products": 2,
+        "original_purity": 0.714,
+        "product_purities": [
+          0.95,
+          1.0
+        ],
+        "weighted_product_purity": 0.952,
+        "delta": 0.238,
+        "helped": true,
+        "hurt": false,
+        "orig_gt_frames": 28
+      },
+      {
+        "original_tid": "t15",
+        "n_products": 4,
+        "original_purity": 0.562,
+        "product_purities": [
+          1.0,
+          1.0,
+          1.0,
+          0.64
+        ],
+        "weighted_product_purity": 0.723,
+        "delta": 0.161,
+        "helped": true,
+        "hurt": false,
+        "orig_gt_frames": 80
+      },
+      {
+        "original_tid": "t208",
+        "n_products": 1,
+        "original_purity": 0.867,
+        "product_purities": [
+          1.0
+        ],
+        "weighted_product_purity": 1.0,
+        "delta": 0.133,
+        "helped": true,
+        "hurt": false,
+        "orig_gt_frames": 15
+      },
+      {
+        "original_tid": "t200",
+        "n_products": 4,
+        "original_purity": 0.883,
+        "product_purities": [
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "weighted_product_purity": 1.0,
+        "delta": 0.117,
+        "helped": true,
+        "hurt": false,
+        "orig_gt_frames": 205
+      }
+    ]
+  },
+  "metric_definition": "Compares purity of pre-split parent tracklet (all GT-matched frames on detections.parquet) vs weighted-average purity when partitioned by D0.5 product frame ranges from tracklet_bank_summaries.parquet. Delta > 0 = split helped purity."
+}

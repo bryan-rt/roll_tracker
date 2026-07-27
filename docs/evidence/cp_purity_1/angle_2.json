@@ -1,0 +1,453 @@
+{
+  "J_EDEw-20260318-200015": {
+    "n_tracklets_measured": 125,
+    "mean_purity": 0.8831884317354239,
+    "median_purity": 1.0,
+    "histogram": {
+      "0.0-0.1": 0,
+      "0.1-0.2": 0,
+      "0.2-0.3": 0,
+      "0.3-0.4": 0,
+      "0.4-0.5": 0,
+      "0.5-0.6": 18,
+      "0.6-0.7": 6,
+      "0.7-0.8": 6,
+      "0.8-0.9": 13,
+      "0.9-1.0": 82
+    },
+    "n_impure_below_0.8": 30,
+    "impure_tracklets": [
+      {
+        "tracklet_id": "t45",
+        "purity": 0.5,
+        "majority_gt": 22,
+        "total_gt_frames": 2,
+        "gt_distribution": {
+          "22": 1,
+          "27": 1
+        }
+      },
+      {
+        "tracklet_id": "t64",
+        "purity": 0.5,
+        "majority_gt": 25,
+        "total_gt_frames": 20,
+        "gt_distribution": {
+          "25": 10,
+          "24": 10
+        }
+      },
+      {
+        "tracklet_id": "t186",
+        "purity": 0.5,
+        "majority_gt": 22,
+        "total_gt_frames": 132,
+        "gt_distribution": {
+          "22": 66,
+          "27": 66
+        }
+      },
+      {
+        "tracklet_id": "t188",
+        "purity": 0.5,
+        "majority_gt": 24,
+        "total_gt_frames": 4,
+        "gt_distribution": {
+          "24": 2,
+          "25": 2
+        }
+      },
+      {
+        "tracklet_id": "t236",
+        "purity": 0.5,
+        "majority_gt": 24,
+        "total_gt_frames": 2,
+        "gt_distribution": {
+          "24": 1,
+          "25": 1
+        }
+      },
+      {
+        "tracklet_id": "t266",
+        "purity": 0.5,
+        "majority_gt": 24,
+        "total_gt_frames": 6,
+        "gt_distribution": {
+          "24": 3,
+          "25": 3
+        }
+      },
+      {
+        "tracklet_id": "t268",
+        "purity": 0.5,
+        "majority_gt": 18,
+        "total_gt_frames": 2,
+        "gt_distribution": {
+          "18": 1,
+          "20": 1
+        }
+      },
+      {
+        "tracklet_id": "t328",
+        "purity": 0.5,
+        "majority_gt": 22,
+        "total_gt_frames": 8,
+        "gt_distribution": {
+          "22": 4,
+          "26": 4
+        }
+      },
+      {
+        "tracklet_id": "t12",
+        "purity": 0.516,
+        "majority_gt": 27,
+        "total_gt_frames": 192,
+        "gt_distribution": {
+          "27": 99,
+          "22": 52,
+          "26": 41
+        }
+      },
+      {
+        "tracklet_id": "t138",
+        "purity": 0.518,
+        "majority_gt": 25,
+        "total_gt_frames": 56,
+        "gt_distribution": {
+          "25": 29,
+          "24": 27
+        }
+      },
+      {
+        "tracklet_id": "t212",
+        "purity": 0.53,
+        "majority_gt": 25,
+        "total_gt_frames": 66,
+        "gt_distribution": {
+          "24": 31,
+          "25": 35
+        }
+      },
+      {
+        "tracklet_id": "t142",
+        "purity": 0.533,
+        "majority_gt": 23,
+        "total_gt_frames": 212,
+        "gt_distribution": {
+          "14": 99,
+          "23": 113
+        }
+      },
+      {
+        "tracklet_id": "t10",
+        "purity": 0.541,
+        "majority_gt": 15,
+        "total_gt_frames": 183,
+        "gt_distribution": {
+          "23": 84,
+          "15": 99
+        }
+      },
+      {
+        "tracklet_id": "t340",
+        "purity": 0.547,
+        "majority_gt": 22,
+        "total_gt_frames": 64,
+        "gt_distribution": {
+          "22": 35,
+          "26": 29
+        }
+      },
+      {
+        "tracklet_id": "t99",
+        "purity": 0.559,
+        "majority_gt": 15,
+        "total_gt_frames": 34,
+        "gt_distribution": {
+          "15": 19,
+          "14": 11,
+          "23": 4
+        }
+      },
+      {
+        "tracklet_id": "t244",
+        "purity": 0.571,
+        "majority_gt": 18,
+        "total_gt_frames": 21,
+        "gt_distribution": {
+          "20": 9,
+          "18": 12
+        }
+      },
+      {
+        "tracklet_id": "t26",
+        "purity": 0.586,
+        "majority_gt": 25,
+        "total_gt_frames": 29,
+        "gt_distribution": {
+          "25": 17,
+          "24": 12
+        }
+      },
+      {
+        "tracklet_id": "t366",
+        "purity": 0.6,
+        "majority_gt": 24,
+        "total_gt_frames": 25,
+        "gt_distribution": {
+          "24": 15,
+          "25": 10
+        }
+      },
+      {
+        "tracklet_id": "t114",
+        "purity": 0.655,
+        "majority_gt": 22,
+        "total_gt_frames": 29,
+        "gt_distribution": {
+          "26": 5,
+          "27": 5,
+          "22": 19
+        }
+      },
+      {
+        "tracklet_id": "t279",
+        "purity": 0.656,
+        "majority_gt": 25,
+        "total_gt_frames": 32,
+        "gt_distribution": {
+          "24": 11,
+          "25": 21
+        }
+      }
+    ]
+  },
+  "J_EDEw-20260318-200246": {
+    "n_tracklets_measured": 114,
+    "mean_purity": 0.9186093322253819,
+    "median_purity": 1.0,
+    "histogram": {
+      "0.0-0.1": 0,
+      "0.1-0.2": 0,
+      "0.2-0.3": 0,
+      "0.3-0.4": 1,
+      "0.4-0.5": 1,
+      "0.5-0.6": 7,
+      "0.6-0.7": 6,
+      "0.7-0.8": 5,
+      "0.8-0.9": 8,
+      "0.9-1.0": 86
+    },
+    "n_impure_below_0.8": 20,
+    "impure_tracklets": [
+      {
+        "tracklet_id": "t169",
+        "purity": 0.306,
+        "majority_gt": 5,
+        "total_gt_frames": 98,
+        "gt_distribution": {
+          "4": 29,
+          "7": 13,
+          "1": 25,
+          "5": 30,
+          "3": 1
+        }
+      },
+      {
+        "tracklet_id": "t107",
+        "purity": 0.403,
+        "majority_gt": 1,
+        "total_gt_frames": 268,
+        "gt_distribution": {
+          "1": 108,
+          "5": 108,
+          "0": 39,
+          "4": 13
+        }
+      },
+      {
+        "tracklet_id": "t7",
+        "purity": 0.52,
+        "majority_gt": 8,
+        "total_gt_frames": 125,
+        "gt_distribution": {
+          "7": 60,
+          "8": 65
+        }
+      },
+      {
+        "tracklet_id": "t10",
+        "purity": 0.536,
+        "majority_gt": 12,
+        "total_gt_frames": 112,
+        "gt_distribution": {
+          "12": 60,
+          "13": 52
+        }
+      },
+      {
+        "tracklet_id": "t121",
+        "purity": 0.536,
+        "majority_gt": 8,
+        "total_gt_frames": 28,
+        "gt_distribution": {
+          "8": 15,
+          "10": 13
+        }
+      },
+      {
+        "tracklet_id": "t94",
+        "purity": 0.556,
+        "majority_gt": 8,
+        "total_gt_frames": 9,
+        "gt_distribution": {
+          "8": 5,
+          "7": 4
+        }
+      },
+      {
+        "tracklet_id": "t15",
+        "purity": 0.562,
+        "majority_gt": 10,
+        "total_gt_frames": 80,
+        "gt_distribution": {
+          "10": 45,
+          "9": 35
+        }
+      },
+      {
+        "tracklet_id": "t198",
+        "purity": 0.563,
+        "majority_gt": 0,
+        "total_gt_frames": 71,
+        "gt_distribution": {
+          "5": 28,
+          "0": 40,
+          "4": 3
+        }
+      },
+      {
+        "tracklet_id": "t88",
+        "purity": 0.578,
+        "majority_gt": 3,
+        "total_gt_frames": 339,
+        "gt_distribution": {
+          "3": 196,
+          "5": 143
+        }
+      },
+      {
+        "tracklet_id": "t195",
+        "purity": 0.632,
+        "majority_gt": 1,
+        "total_gt_frames": 19,
+        "gt_distribution": {
+          "1": 12,
+          "4": 7
+        }
+      },
+      {
+        "tracklet_id": "t96",
+        "purity": 0.636,
+        "majority_gt": 11,
+        "total_gt_frames": 11,
+        "gt_distribution": {
+          "11": 7,
+          "13": 4
+        }
+      },
+      {
+        "tracklet_id": "t8",
+        "purity": 0.667,
+        "majority_gt": 9,
+        "total_gt_frames": 6,
+        "gt_distribution": {
+          "9": 4,
+          "10": 2
+        }
+      },
+      {
+        "tracklet_id": "t42",
+        "purity": 0.667,
+        "majority_gt": 12,
+        "total_gt_frames": 3,
+        "gt_distribution": {
+          "12": 2,
+          "13": 1
+        }
+      },
+      {
+        "tracklet_id": "t48",
+        "purity": 0.667,
+        "majority_gt": 10,
+        "total_gt_frames": 51,
+        "gt_distribution": {
+          "9": 17,
+          "10": 34
+        }
+      },
+      {
+        "tracklet_id": "t228",
+        "purity": 0.667,
+        "majority_gt": 5,
+        "total_gt_frames": 9,
+        "gt_distribution": {
+          "5": 6,
+          "7": 2,
+          "1": 1
+        }
+      },
+      {
+        "tracklet_id": "t9",
+        "purity": 0.714,
+        "majority_gt": 9,
+        "total_gt_frames": 14,
+        "gt_distribution": {
+          "10": 4,
+          "9": 10
+        }
+      },
+      {
+        "tracklet_id": "t95",
+        "purity": 0.714,
+        "majority_gt": 11,
+        "total_gt_frames": 28,
+        "gt_distribution": {
+          "10": 8,
+          "11": 20
+        }
+      },
+      {
+        "tracklet_id": "t20",
+        "purity": 0.75,
+        "majority_gt": 8,
+        "total_gt_frames": 4,
+        "gt_distribution": {
+          "8": 3,
+          "7": 1
+        }
+      },
+      {
+        "tracklet_id": "t51",
+        "purity": 0.769,
+        "majority_gt": 2,
+        "total_gt_frames": 39,
+        "gt_distribution": {
+          "2": 30,
+          "3": 9
+        }
+      },
+      {
+        "tracklet_id": "t4",
+        "purity": 0.795,
+        "majority_gt": 3,
+        "total_gt_frames": 112,
+        "gt_distribution": {
+          "3": 89,
+          "2": 23
+        }
+      }
+    ]
+  },
+  "metric_definition": "Tracklet purity = for a tracklet, fraction of its GT-annotated detection frames whose GT-matched track is the tracklet's plurality GT track. Matcher: greedy IoU>=0.3."
+}

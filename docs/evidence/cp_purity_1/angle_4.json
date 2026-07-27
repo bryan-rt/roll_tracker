@@ -1,0 +1,547 @@
+{
+  "n_entities": 43,
+  "mean_purity": 0.5310930232558139,
+  "median_purity": 0.393,
+  "histogram": {
+    "0.0-0.1": 0,
+    "0.1-0.2": 1,
+    "0.2-0.3": 9,
+    "0.3-0.4": 12,
+    "0.4-0.5": 3,
+    "0.5-0.6": 2,
+    "0.6-0.7": 4,
+    "0.7-0.8": 2,
+    "0.8-0.9": 0,
+    "0.9-1.0": 10
+  },
+  "tagged_entity_p0022": {
+    "purity": 0.331,
+    "majority_gt": 7,
+    "gt_matched_frames": 462,
+    "total_session_frames": 473,
+    "gt_distribution": {
+      "14": 2,
+      "27": 7,
+      "23": 6,
+      "16": 39,
+      "17": 85,
+      "12": 2,
+      "13": 8,
+      "6": 129,
+      "8": 8,
+      "3": 14,
+      "2": 9,
+      "7": 153
+    }
+  },
+  "diluted_entities": {
+    "p0013": {
+      "purity": 0.16,
+      "majority_gt": 18,
+      "gt_matched_frames": 463,
+      "total_session_frames": 477,
+      "gt_distribution": {
+        "20": 59,
+        "18": 74,
+        "25": 4,
+        "24": 3,
+        "14": 29,
+        "23": 44,
+        "15": 5,
+        "12": 12,
+        "13": 27,
+        "8": 14,
+        "7": 28,
+        "9": 26,
+        "10": 11,
+        "3": 62,
+        "0": 43,
+        "4": 15,
+        "5": 1,
+        "2": 6
+      }
+    },
+    "p0002": {
+      "purity": 0.201,
+      "majority_gt": 5,
+      "gt_matched_frames": 498,
+      "total_session_frames": 503,
+      "gt_distribution": {
+        "26": 53,
+        "23": 33,
+        "15": 1,
+        "16": 30,
+        "27": 35,
+        "22": 19,
+        "4": 67,
+        "6": 1,
+        "13": 10,
+        "5": 100,
+        "0": 12,
+        "11": 3,
+        "9": 1,
+        "8": 14,
+        "12": 92,
+        "2": 27
+      }
+    },
+    "p0017": {
+      "purity": 0.206,
+      "majority_gt": 5,
+      "gt_matched_frames": 476,
+      "total_session_frames": 493,
+      "gt_distribution": {
+        "27": 11,
+        "24": 9,
+        "25": 10,
+        "14": 20,
+        "26": 1,
+        "23": 1,
+        "20": 35,
+        "18": 63,
+        "5": 98,
+        "6": 19,
+        "2": 12,
+        "3": 56,
+        "8": 14,
+        "9": 3,
+        "7": 20,
+        "10": 11,
+        "0": 93
+      }
+    },
+    "p0001": {
+      "purity": 0.227,
+      "majority_gt": 13,
+      "gt_matched_frames": 524,
+      "total_session_frames": 539,
+      "gt_distribution": {
+        "23": 77,
+        "15": 39,
+        "14": 47,
+        "25": 2,
+        "27": 6,
+        "26": 33,
+        "22": 6,
+        "7": 45,
+        "8": 61,
+        "10": 7,
+        "4": 6,
+        "2": 74,
+        "3": 2,
+        "13": 119
+      }
+    },
+    "p0023": {
+      "purity": 0.232,
+      "majority_gt": 27,
+      "gt_matched_frames": 69,
+      "total_session_frames": 70,
+      "gt_distribution": {
+        "26": 7,
+        "22": 1,
+        "27": 16,
+        "23": 13,
+        "14": 4,
+        "17": 7,
+        "20": 9,
+        "18": 12
+      }
+    },
+    "p0029": {
+      "purity": 0.256,
+      "majority_gt": 20,
+      "gt_matched_frames": 289,
+      "total_session_frames": 295,
+      "gt_distribution": {
+        "22": 4,
+        "27": 3,
+        "20": 74,
+        "18": 6,
+        "2": 74,
+        "10": 24,
+        "9": 7,
+        "12": 6,
+        "11": 1,
+        "13": 1,
+        "7": 5,
+        "8": 33,
+        "6": 29,
+        "0": 12,
+        "3": 10
+      }
+    },
+    "p0019": {
+      "purity": 0.257,
+      "majority_gt": 4,
+      "gt_matched_frames": 455,
+      "total_session_frames": 463,
+      "gt_distribution": {
+        "16": 24,
+        "25": 4,
+        "24": 12,
+        "20": 42,
+        "18": 31,
+        "27": 28,
+        "15": 8,
+        "14": 1,
+        "22": 1,
+        "9": 45,
+        "10": 57,
+        "6": 19,
+        "0": 1,
+        "7": 20,
+        "8": 32,
+        "12": 12,
+        "5": 1,
+        "4": 117
+      }
+    },
+    "p0011": {
+      "purity": 0.27,
+      "majority_gt": 0,
+      "gt_matched_frames": 337,
+      "total_session_frames": 343,
+      "gt_distribution": {
+        "15": 48,
+        "23": 39,
+        "26": 3,
+        "14": 29,
+        "25": 10,
+        "16": 72,
+        "17": 26,
+        "0": 91,
+        "1": 9,
+        "13": 10
+      }
+    },
+    "p0010": {
+      "purity": 0.277,
+      "majority_gt": 9,
+      "gt_matched_frames": 426,
+      "total_session_frames": 448,
+      "gt_distribution": {
+        "25": 75,
+        "24": 16,
+        "21": 9,
+        "23": 31,
+        "18": 6,
+        "20": 2,
+        "27": 15,
+        "2": 19,
+        "13": 13,
+        "8": 12,
+        "7": 27,
+        "10": 5,
+        "11": 14,
+        "6": 64,
+        "9": 118
+      }
+    },
+    "p0005": {
+      "purity": 0.295,
+      "majority_gt": 17,
+      "gt_matched_frames": 645,
+      "total_session_frames": 663,
+      "gt_distribution": {
+        "16": 83,
+        "17": 190,
+        "1": 96,
+        "13": 1,
+        "4": 113,
+        "10": 8,
+        "7": 39,
+        "0": 8,
+        "8": 42,
+        "6": 65
+      }
+    },
+    "p0034": {
+      "purity": 0.301,
+      "majority_gt": 8,
+      "gt_matched_frames": 183,
+      "total_session_frames": 190,
+      "gt_distribution": {
+        "10": 49,
+        "9": 1,
+        "12": 5,
+        "4": 34,
+        "6": 39,
+        "8": 55
+      }
+    },
+    "p0003": {
+      "purity": 0.305,
+      "majority_gt": 9,
+      "gt_matched_frames": 568,
+      "total_session_frames": 586,
+      "gt_distribution": {
+        "27": 34,
+        "22": 16,
+        "25": 25,
+        "24": 1,
+        "15": 5,
+        "23": 120,
+        "14": 7,
+        "10": 60,
+        "9": 173,
+        "5": 108,
+        "6": 6,
+        "2": 9,
+        "8": 4
+      }
+    },
+    "p0027": {
+      "purity": 0.319,
+      "majority_gt": 2,
+      "gt_matched_frames": 351,
+      "total_session_frames": 356,
+      "gt_distribution": {
+        "14": 9,
+        "15": 2,
+        "26": 1,
+        "16": 4,
+        "25": 27,
+        "24": 22,
+        "23": 4,
+        "8": 20,
+        "7": 8,
+        "0": 13,
+        "9": 9,
+        "10": 92,
+        "11": 23,
+        "2": 112,
+        "3": 3,
+        "1": 2
+      }
+    },
+    "p0014": {
+      "purity": 0.323,
+      "majority_gt": 7,
+      "gt_matched_frames": 545,
+      "total_session_frames": 555,
+      "gt_distribution": {
+        "22": 22,
+        "26": 1,
+        "14": 1,
+        "27": 13,
+        "24": 5,
+        "15": 2,
+        "23": 42,
+        "20": 19,
+        "18": 10,
+        "16": 73,
+        "3": 52,
+        "2": 40,
+        "1": 1,
+        "12": 5,
+        "8": 67,
+        "10": 4,
+        "7": 176,
+        "6": 9,
+        "4": 1,
+        "11": 2
+      }
+    },
+    "p0022": {
+      "purity": 0.331,
+      "majority_gt": 7,
+      "gt_matched_frames": 462,
+      "total_session_frames": 473,
+      "gt_distribution": {
+        "14": 2,
+        "27": 7,
+        "23": 6,
+        "16": 39,
+        "17": 85,
+        "12": 2,
+        "13": 8,
+        "6": 129,
+        "8": 8,
+        "3": 14,
+        "2": 9,
+        "7": 153
+      }
+    },
+    "p0039": {
+      "purity": 0.335,
+      "majority_gt": 1,
+      "gt_matched_frames": 170,
+      "total_session_frames": 173,
+      "gt_distribution": {
+        "4": 10,
+        "7": 13,
+        "1": 57,
+        "5": 3,
+        "8": 48,
+        "10": 7,
+        "9": 3,
+        "3": 29
+      }
+    },
+    "p0028": {
+      "purity": 0.349,
+      "majority_gt": 5,
+      "gt_matched_frames": 410,
+      "total_session_frames": 421,
+      "gt_distribution": {
+        "14": 42,
+        "23": 40,
+        "15": 2,
+        "24": 13,
+        "25": 11,
+        "8": 18,
+        "9": 25,
+        "10": 49,
+        "6": 24,
+        "13": 5,
+        "7": 8,
+        "4": 6,
+        "0": 24,
+        "5": 143
+      }
+    },
+    "p0020": {
+      "purity": 0.378,
+      "majority_gt": 21,
+      "gt_matched_frames": 511,
+      "total_session_frames": 524,
+      "gt_distribution": {
+        "14": 23,
+        "26": 3,
+        "25": 2,
+        "22": 3,
+        "27": 8,
+        "21": 193,
+        "7": 22,
+        "8": 5,
+        "12": 10,
+        "13": 6,
+        "1": 21,
+        "0": 56,
+        "5": 147,
+        "9": 6,
+        "10": 3,
+        "6": 3
+      }
+    },
+    "p0015": {
+      "purity": 0.38,
+      "majority_gt": 14,
+      "gt_matched_frames": 79,
+      "total_session_frames": 89,
+      "gt_distribution": {
+        "27": 4,
+        "14": 30,
+        "18": 2,
+        "16": 9,
+        "25": 8,
+        "23": 13,
+        "17": 12,
+        "15": 1
+      }
+    },
+    "p0008": {
+      "purity": 0.385,
+      "majority_gt": 19,
+      "gt_matched_frames": 598,
+      "total_session_frames": 605,
+      "gt_distribution": {
+        "21": 66,
+        "19": 230,
+        "8": 66,
+        "10": 102,
+        "9": 5,
+        "4": 1,
+        "13": 9,
+        "12": 1,
+        "5": 8,
+        "11": 100,
+        "7": 1,
+        "6": 9
+      }
+    },
+    "p0006": {
+      "purity": 0.391,
+      "majority_gt": 20,
+      "gt_matched_frames": 634,
+      "total_session_frames": 646,
+      "gt_distribution": {
+        "20": 248,
+        "18": 37,
+        "2": 36,
+        "3": 194,
+        "4": 3,
+        "9": 35,
+        "10": 10,
+        "0": 11,
+        "12": 58,
+        "11": 2
+      }
+    },
+    "p0031": {
+      "purity": 0.393,
+      "majority_gt": 1,
+      "gt_matched_frames": 313,
+      "total_session_frames": 318,
+      "gt_distribution": {
+        "23": 1,
+        "24": 6,
+        "16": 4,
+        "4": 58,
+        "6": 11,
+        "5": 19,
+        "8": 24,
+        "9": 43,
+        "7": 1,
+        "10": 12,
+        "11": 11,
+        "1": 123
+      }
+    },
+    "p0007": {
+      "purity": 0.4,
+      "majority_gt": 19,
+      "gt_matched_frames": 683,
+      "total_session_frames": 685,
+      "gt_distribution": {
+        "19": 273,
+        "21": 26,
+        "6": 189,
+        "10": 1,
+        "4": 22,
+        "2": 48,
+        "11": 73,
+        "12": 4,
+        "8": 21,
+        "1": 26
+      }
+    },
+    "p0026": {
+      "purity": 0.415,
+      "majority_gt": 16,
+      "gt_matched_frames": 130,
+      "total_session_frames": 136,
+      "gt_distribution": {
+        "16": 54,
+        "25": 19,
+        "24": 13,
+        "27": 13,
+        "23": 18,
+        "14": 13
+      }
+    },
+    "p0012": {
+      "purity": 0.425,
+      "majority_gt": 16,
+      "gt_matched_frames": 73,
+      "total_session_frames": 74,
+      "gt_distribution": {
+        "25": 24,
+        "16": 31,
+        "26": 18
+      }
+    }
+  },
+  "metric_definition": "Entity purity = per person_id, fraction of GT-annotated frames where the detection's GT match is the entity's majority GT track. Session-level."
+}
