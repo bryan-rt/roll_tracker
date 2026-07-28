@@ -11,6 +11,20 @@ DEVICE="${DEVICE_1:?missing DEVICE_1 env}"
 REENCODE="${REENCODE:-1}"                   # 1 = libx264 (robust), 0 = copy
 SOURCE_PTS="${SOURCE_PTS:-0}"               # 1 = preserve camera capture timestamps (no wallclock override)
 
+# RTSP read timeout: if no data arrives for this many seconds, ffmpeg exits.
+# Prevents ffmpeg from blocking on a dead stream for minutes (OS TCP timeout).
+# Set conservatively: must exceed normal inter-frame gaps (~67ms at 15fps)
+# but catch dead streams quickly. 10s is safe (150x the normal gap).
+RTSP_TIMEOUT_SEC="${RTSP_TIMEOUT_SEC:-10}"
+RTSP_TIMEOUT_US=$(( RTSP_TIMEOUT_SEC * 1000000 ))
+
+# Backoff tuning
+BACKOFF_INITIAL=3             # seconds; first retry after a quick failure
+BACKOFF_QUICK_MAX=15          # cap for transient/unknown failures
+BACKOFF_404=10                # relay lockout (after stop_stream fix, 404 should be rare)
+BACKOFF_404_MAX=30            # cap for persistent 404
+HEALTHY_RUN_THRESHOLD=60      # seconds — longer = "healthy run", reconnect immediately
+
 TS="${TS:-$(date +%Y%m%d-%H%M%S)}"
 if [ -z "${DIAG_DIR:-}" ]; then
   DIAG_DIR="/recordings/diag/$TS"
@@ -25,17 +39,43 @@ FFMPEG_PID="" EXT_PID=""
 START_EPOCH="$(date -u +%s)"
 DEADLINE="$(( START_EPOCH + WINDOW_SECONDS ))"
 ATTEMPT=0
-BACKOFF=3    # seconds; exponential up to 60s
+BACKOFF=$BACKOFF_INITIAL
+SIDECAR_PIDS=()   # background sidecar extraction PIDs
 
 # ========== helpers ==========
 log() { echo "[$(date -u +%H:%M:%S)] $*" | tee -a "$LOG"; }
+
+stop_stream() {
+  # Best-effort stop of the current RTSP stream session at the relay.
+  # Called before re-generating to avoid orphaning sessions (SDM enforces
+  # a concurrent-stream limit; orphans linger ~5 min).
+  if [ -z "${STOP_TOKEN:-}" ]; then return 0; fi
+  local http
+  http=$(curl -s -w '%{http_code}' --max-time 5 \
+    -o "$DIAG_DIR/stop_attempt_${ATTEMPT}.json" -X POST \
+    "https://smartdevicemanagement.googleapis.com/v1/${DEVICE}:executeCommand" \
+    -H "Authorization: Bearer $ACCESS_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d "{\"command\":\"sdm.devices.commands.CameraLiveStream.StopRtspStream\",\"params\":{\"streamToken\":\"$STOP_TOKEN\"}}")
+  log "[v6] stop_stream HTTP=$http (attempt=$ATTEMPT)"
+  # Clear tokens so we don't try to stop again with stale tokens
+  STOP_TOKEN=""
+  EXT_TOKEN=""
+}
 
 cleanup() {
   set +e
   [ -n "$EXT_PID" ]    && kill "$EXT_PID" 2>/dev/null || true
   [ -n "$FFMPEG_PID" ] && kill "$FFMPEG_PID" 2>/dev/null || true
+  # Wait for any background sidecar extractions
+  for pid in "${SIDECAR_PIDS[@]}"; do
+    wait "$pid" 2>/dev/null || true
+  done
+  # Final stop — use the last known STOP_TOKEN
   if [ -n "${STOP_TOKEN:-}" ]; then
-    http=$(curl -s -w '%{http_code}' -o "$DIAG_DIR/stop.json" -X POST \
+    local http
+    http=$(curl -s -w '%{http_code}' --max-time 5 \
+      -o "$DIAG_DIR/stop.json" -X POST \
       "https://smartdevicemanagement.googleapis.com/v1/${DEVICE}:executeCommand" \
       -H "Authorization: Bearer $ACCESS_TOKEN" \
       -H "Content-Type: application/json" \
@@ -59,6 +99,19 @@ generate_stream() {
     -H "Content-Type: application/json" \
     -d '{"command":"sdm.devices.commands.CameraLiveStream.GenerateRtspStream","params":{}}')
   echo "$http" > "$DIAG_DIR/generate_${ATTEMPT}_http.txt"
+
+  # On 401: refresh token and retry once
+  if [ "$http" = "401" ]; then
+    log "[v6] Generate got 401; refreshing access token"
+    get_access_token
+    http=$(curl -s -w '%{http_code}' -o "$out" \
+      -X POST "https://smartdevicemanagement.googleapis.com/v1/${DEVICE}:executeCommand" \
+      -H "Authorization: Bearer $ACCESS_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d '{"command":"sdm.devices.commands.CameraLiveStream.GenerateRtspStream","params":{}}')
+    echo "$http (after refresh)" >> "$DIAG_DIR/generate_${ATTEMPT}_http.txt"
+  fi
+
   if [ "$http" != "200" ]; then
     log "[v6] Generate failed (HTTP=$http)"
     return 1
@@ -87,6 +140,10 @@ extend_loop() {
 
     local stamp http jf new_ext new_stop exp_iso exp_epoch now
     stamp="$(date -u +%s)"
+
+    # Refresh access token before extending (cheap — cache hit unless expired)
+    get_access_token
+
     http=$(curl -s -w '%{http_code}' -o "$DIAG_DIR/extend_${stamp}.json" \
       -X POST "https://smartdevicemanagement.googleapis.com/v1/${DEVICE}:executeCommand" \
       -H "Authorization: Bearer $ACCESS_TOKEN" \
@@ -116,7 +173,8 @@ extend_loop() {
         next_sleep=240
       fi
     else
-      # brief retry
+      # On failure (including 401): refresh token, brief pause, retry once
+      get_access_token
       sleep 3
       stamp="$(date -u +%s)"
       http=$(curl -s -w '%{http_code}' -o "$DIAG_DIR/extend_${stamp}_retry.json" \
@@ -148,6 +206,11 @@ build_ffmpeg_opts() {
   INPUT_WALLCLOCK=(-use_wallclock_as_timestamps 1)
   COPYTS_OPTS=()
 
+  # RTSP socket timeout — exits ffmpeg when data stops arriving.
+  # Without this, ffmpeg blocks on dead streams for minutes (OS TCP timeout).
+  # The -stimeout option sets the RTSP socket I/O timeout in microseconds.
+  RTSP_TIMEOUT_OPTS=(-stimeout "$RTSP_TIMEOUT_US")
+
   # SOURCE_PTS: preserve camera's own RTP capture timestamps instead of
   # substituting bursty network-arrival times. Proven in CAPTURE-TIME-1:
   # source PTS = uniform 33ms/67ms true capture cadence.
@@ -176,6 +239,8 @@ build_ffmpeg_opts() {
     V_OPTS=(-c:v libx264 -preset veryfast -crf 23 -g 30 -keyint_min 30)
     VF_OPTS=(-vf showinfo)
   fi
+
+  echo "[v6] RTSP socket timeout: ${RTSP_TIMEOUT_SEC}s (${RTSP_TIMEOUT_US}us)" | tee -a "$LOG"
 }
 
 extract_timing_sidecars() {
@@ -421,6 +486,32 @@ extract_timing_sidecars() {
   done
 }
 
+classify_failure() {
+  # Classify ffmpeg exit for backoff decision.
+  # Sets FAILURE_TYPE to one of: healthy, rtsp_404, quick, connect_fail
+  local stderr_file="$1"
+  local run_duration="$2"
+
+  if [ "$run_duration" -ge "$HEALTHY_RUN_THRESHOLD" ]; then
+    FAILURE_TYPE="healthy"
+    return
+  fi
+
+  # Check stderr for specific error patterns
+  if [ -f "$stderr_file" ]; then
+    if grep -q '404.*Not Found\|404Not Found' "$stderr_file" 2>/dev/null; then
+      FAILURE_TYPE="rtsp_404"
+      return
+    fi
+    if grep -q 'Connection refused\|Connection timed out\|Network is unreachable' "$stderr_file" 2>/dev/null; then
+      FAILURE_TYPE="connect_fail"
+      return
+    fi
+  fi
+
+  FAILURE_TYPE="quick"
+}
+
 start_ffmpeg() {
   mkdir -p "$DIAG_DIR"
   local out_tmpl="$DIAG_DIR/${CAM_ID}-%Y%m%d-%H%M%S.mp4"
@@ -454,13 +545,15 @@ start_ffmpeg() {
   fi
 
   # Record attempt metadata
+  local ffmpeg_start_epoch="$EPOCHREALTIME"
   printf '{"attempt":%d,"generate_epoch":"%s","ffmpeg_start_epoch":"%s"}\n' \
     "$ATTEMPT" "$(cat "$DIAG_DIR/generated_at_epoch.txt" 2>/dev/null || echo 0)" \
-    "$EPOCHREALTIME" \
+    "$ffmpeg_start_epoch" \
     >> "$DIAG_DIR/attempt_log.jsonl"
 
   ffmpeg -hide_banner -loglevel info -nostdin -y \
     -rtsp_transport tcp \
+    "${RTSP_TIMEOUT_OPTS[@]}" \
     "${COPYTS_OPTS[@]}" \
     "${INPUT_WALLCLOCK[@]}" -fflags "$INPUT_FFLAGS" -avoid_negative_ts make_zero \
     -analyzeduration 10M -probesize 10M \
@@ -476,6 +569,7 @@ start_ffmpeg() {
     "$out_tmpl" \
     1> "$DIAG_DIR/ffmpeg.stdout" 2> "$stderr_target" &
   FFMPEG_PID=$!
+  FFMPEG_START_EPOCH_INT="${ffmpeg_start_epoch%%.*}"
 
   extend_loop & EXT_PID=$!
 }
@@ -491,10 +585,18 @@ while :; do
   ATTEMPT=$((ATTEMPT+1))
   log "[v6] attempt #$ATTEMPT"
 
+  # Refresh access token before generating (cheap — cache hit unless expired)
+  get_access_token
+
+  # Stop the previous stream session before generating a new one.
+  # Avoids orphaning sessions at the relay (SDM concurrent-stream limit).
+  stop_stream
+
   if ! generate_stream; then
     log "[v6] Generate failed; backoff ${BACKOFF}s"
     sleep "$BACKOFF"
-    [ "$BACKOFF" -lt 60 ] && BACKOFF=$(( BACKOFF * 2 ))
+    [ "$BACKOFF" -lt "$BACKOFF_QUICK_MAX" ] && BACKOFF=$(( BACKOFF * 2 ))
+    [ "$BACKOFF" -gt "$BACKOFF_QUICK_MAX" ] && BACKOFF=$BACKOFF_QUICK_MAX
     continue
   fi
 
@@ -503,7 +605,9 @@ while :; do
   # Wait for ffmpeg to end or window to elapse
   wait "$FFMPEG_PID" || true
   rc=$?
-  log "[v6] ffmpeg exited rc=$rc"
+  local_now="$(date -u +%s)"
+  run_duration=$(( local_now - FFMPEG_START_EPOCH_INT ))
+  log "[v6] ffmpeg exited rc=$rc after ${run_duration}s"
 
   # stop extend loop for this attempt
   [ -n "$EXT_PID" ] && kill "$EXT_PID" 2>/dev/null || true
@@ -516,16 +620,49 @@ while :; do
   fi
   rm -f "$DIAG_DIR/_stderr_fifo_${ATTEMPT}"
 
-  # Extract per-segment timing sidecars from THIS ATTEMPT's stderr
-  extract_timing_sidecars "$DIAG_DIR/ffmpeg_attempt_${ATTEMPT}.stderr"
+  # Extract per-segment timing sidecars in BACKGROUND (off the critical path)
+  extract_timing_sidecars "$DIAG_DIR/ffmpeg_attempt_${ATTEMPT}.stderr" &
+  SIDECAR_PIDS+=($!)
 
   # Done if time is up
   [ "$(date -u +%s)" -ge "$DEADLINE" ] && { log "[v6] window elapsed after attempt #$ATTEMPT"; break; }
 
-  # If ffmpeg ended early, back off and try to recover with a fresh stream
-  log "[v6] preparing next attempt (backoff ${BACKOFF}s)"
-  sleep "$BACKOFF"
-  [ "$BACKOFF" -lt 60 ] && BACKOFF=$(( BACKOFF * 2 ))
+  # Classify the failure and choose backoff
+  classify_failure "$DIAG_DIR/ffmpeg_attempt_${ATTEMPT}.stderr" "$run_duration"
+
+  case "$FAILURE_TYPE" in
+    healthy)
+      # Stream rotation/expiry after a good run — reconnect immediately
+      log "[v6] healthy run (${run_duration}s); reconnecting immediately"
+      BACKOFF=$BACKOFF_INITIAL
+      ;;
+    rtsp_404)
+      # Relay lockout — back off moderately (stop_stream should prevent this)
+      log "[v6] RTSP 404 (relay lockout); backoff ${BACKOFF}s"
+      sleep "$BACKOFF"
+      [ "$BACKOFF" -lt "$BACKOFF_404_MAX" ] && BACKOFF=$(( BACKOFF < BACKOFF_404 ? BACKOFF_404 : BACKOFF * 2 ))
+      [ "$BACKOFF" -gt "$BACKOFF_404_MAX" ] && BACKOFF=$BACKOFF_404_MAX
+      ;;
+    connect_fail)
+      # Network issue — moderate backoff
+      log "[v6] connection failure; backoff ${BACKOFF}s"
+      sleep "$BACKOFF"
+      [ "$BACKOFF" -lt "$BACKOFF_QUICK_MAX" ] && BACKOFF=$(( BACKOFF * 2 ))
+      [ "$BACKOFF" -gt "$BACKOFF_QUICK_MAX" ] && BACKOFF=$BACKOFF_QUICK_MAX
+      ;;
+    *)
+      # Unknown quick failure — standard backoff
+      log "[v6] quick failure (${run_duration}s); backoff ${BACKOFF}s"
+      sleep "$BACKOFF"
+      [ "$BACKOFF" -lt "$BACKOFF_QUICK_MAX" ] && BACKOFF=$(( BACKOFF * 2 ))
+      [ "$BACKOFF" -gt "$BACKOFF_QUICK_MAX" ] && BACKOFF=$BACKOFF_QUICK_MAX
+      ;;
+  esac
+done
+
+# Wait for any background sidecar extractions to finish
+for pid in "${SIDECAR_PIDS[@]}"; do
+  wait "$pid" 2>/dev/null || true
 done
 
 log "[v6] done. Artifacts in $DIAG_DIR"

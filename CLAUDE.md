@@ -64,7 +64,7 @@ docs/                     # Calibration guide, decisions archive, audits
 
 ## Current Status
 
-*Last updated 2026-07-26.*
+*Last updated 2026-07-28.*
 
 Pipeline A→F verified E2E. Session pipeline validated (3-camera, 35/36 clips).
 
@@ -229,6 +229,24 @@ Evidence: `docs/evidence/purity_proxy_{1,2}/`.
   modify production recorder). Analysis: `tools/analyze_capture_timing.py`.
   Evidence: `docs/evidence/capture_time_{1,2}/`, `docs/evidence/recorder_timing_1/`,
   `docs/evidence/wallclock_1/`.
+
+**RECORDER-RELIABILITY-1 (2026-07-28):** Five production reliability fixes in `diag_v6.sh`:
+(1) RTSP socket timeout (`-stimeout`, 10s default) — exits ffmpeg in ~10s when data stops
+instead of 2+ min OS TCP timeout (top fix for recording gaps). (2) Stop stream before
+regenerating — `stop_stream()` calls StopRtspStream before each retry, preventing RTSP
+session orphaning at the relay (root cause of the 404 cascade: SDM concurrent-stream limit).
+(3) Access token refresh per attempt — `get_access_token` before every generate/extend;
+auto-refresh on 401 (token expires at ~21-25 min, fatal for 65-min windows). (4) Failure-type-
+aware backoff — healthy exit (>=60s) reconnects immediately; RTSP 404 backs off moderately
+(10s→30s cap); quick/unknown 3s→15s cap; backoff resets on success. (5) Sidecar extraction
+backgrounded — off the critical path, PIDs waited at window end.
+- Source-PTS dup/drop verdict: source-PTS reduces pixel-identical duplicates 10-50x vs
+  arrival-PTS (FP7oJQ: 5.6%→0.0% typical, PPDmUg: 2.3%→0.0% typical). Mid-stream segments
+  consistently 0.0%. First-segment startup transient can reach 1-2%.
+- SOURCE_PTS exonerated as cause of exits — all failures were RTSP 404 (relay lockout
+  from session orphaning), session invalidation (Nest unilateral), and 401 (token expiry).
+  Zero timestamp/DTS errors.
+Evidence: `docs/evidence/recorder_reliability_1/`.
 
 **CP22 (completed):** Default detection model updated to yolo26n-pose (STAL loss, better
 small-object detection). ultralytics upgraded 8.3.252 → 8.4.33 (`--no-deps`).
@@ -489,6 +507,8 @@ First trained model had FP7oJQ false positives from background memorization.
    temporal engagement windows, cross-camera evidence timing). Report where wrong.
 3. Recorder: adopt source PTS (`-copyts`, drop `-use_wallclock_as_timestamps`/`+genpts`) in
    production → exact per-frame timing, eliminates dup/drop, makes sidecar exact.
+   **SOURCE_PTS exonerated** (RECORDER-RELIABILITY-1): zero timestamp errors in 16 segments
+   across 3 cameras. Dup/drop reduced 10-50x. Ready for default adoption.
 4. A↔D contract fix: reliability-discount the penalty OR displacement-based D0.5 split.
 5. Per-clip measured-fps denominator for motion metrics.
 6. D0.5 Tier 3: disable (interim, recovers -6.6pp regression) or redesign.
@@ -1069,7 +1089,8 @@ because detection under-segmentation gives it wrong input.
 | CP-GT2ACTUALS: Dense error map | **Complete** | Dense per-(frame, gt_track_id) error map with jump detection + D0.5 reconciliation. Family-aware split lookup fix (CP-3). Signal_trace has same bug but locked numbers safe (CP-3.5). Stage A (tracklet_drift) is #1 damage source at 41% of vid2 jumps (CP-6). Module: `src/pipeline_validation/gt2actuals/`. Evidence: `docs/evidence/cp_gt2actuals_*/`. |
 | RECORDER-TIMING-1/2: Per-frame timing preservation | **Complete** | Both VFR (REENCODE=0) and CFR+sidecar (REENCODE=1+showinfo) capture real per-frame timing (773+ unique deltas vs 2 for CFR baseline). Video byte-identical with/without showinfo (confirmed MD5). VFR breaks GT frame-comparability; CFR+sidecar is purely additive. Nest camera now 15fps (was 30fps Mar 2026). Evidence: `docs/evidence/recorder_timing_1/`. |
 | RECORDER-SIDECAR-1: Production timing sidecar | **Active** | CFR + `-vf showinfo` is now the default recording mode (REENCODE=1). Per-segment `.timing.jsonl` sidecar written alongside every mp4 — one row per OUTPUT frame keyed on `frame_index` (join key to Stage A), carrying real input PTS (bursty, not uniform) via nearest-neighbor mapping. **Mismatch is the normal condition** — CFR encoder always dups/drops vs bursty input. `pts_time_s` is APPROXIMATE under mismatch: mean ~80ms, P95 ~230ms, max ~500ms error, worst during lag windows (multiple output frames map to same input PTS during delivery gaps). Input timing SEQUENCE is reliable for lag detection (gap presence/duration); per-output-frame time attribution has ±500ms worst-case. COLLECTION ONLY — no CV pipeline stage consumes it yet. Uploader ignores sidecar (manifest-driven). Deferred consumers: BoT-SORT frame_rate fix (LIVE BUG: tracker assumes 30fps, source now 15fps), dynamic-fps motion metrics, cross-camera wall-clock sync. |
-| SOURCE-PTS-1: Opt-in source PTS capture | **Active** | `SOURCE_PTS=1` flag in diag_v6.sh (default 0 = unchanged). Preserves camera RTP capture timestamps (`-copyts`, no wallclock override). Adds per-line `$EPOCHREALTIME` host-arrival timestamping via stderr fifo → sidecar includes `host_arrival_s`, lower-envelope `pts_wallclock_offset_s`, windowed drift (ppm). Per-attempt stderr files handle retry loop. Rehearsal (7 min, FP7oJQ + PPDmUg): PTS uniform 96-100%, 15fps measured, middle segments mismatch:false (exact 1:1), first/last segments boundary mismatch. J_EDEw offline. Runbook: `docs/runbook_cross_camera_capture.md`. |
+| SOURCE-PTS-1: Opt-in source PTS capture | **Active** | `SOURCE_PTS=1` flag in diag_v6.sh (default 0 = unchanged). Preserves camera RTP capture timestamps (`-copyts`, no wallclock override). Adds per-line `$EPOCHREALTIME` host-arrival timestamping via stderr fifo → sidecar includes `host_arrival_s`, lower-envelope `pts_wallclock_offset_s`, windowed drift (ppm). Per-attempt stderr files handle retry loop. Rehearsal (7 min, FP7oJQ + PPDmUg): PTS uniform 96-100%, 15fps measured, middle segments mismatch:false (exact 1:1), first/last segments boundary mismatch. J_EDEw offline. Runbook: `docs/runbook_cross_camera_capture.md`. **EXONERATED (RECORDER-RELIABILITY-1):** 16 segments across 3 cameras, zero timestamp/DTS errors. All failures were RTSP 404 (session orphaning), session invalidation (Nest-side), or 401 (token expiry). Dup/drop reduced 10-50x vs arrival-PTS. Ready for default adoption. |
+| RECORDER-RELIABILITY-1: Production reliability | **Complete** | Five fixes in `diag_v6.sh`: (1) RTSP socket timeout `-stimeout` 10s (top fix — dead-stream gap 2m28s→~10s), (2) stop_stream before regenerating (root cause fix — prevents RTSP session orphaning at relay, the true cause of the 404 cascade), (3) access token refresh per attempt (token expires ~21-25 min; critical for 65-min window), (4) failure-type-aware backoff (healthy→immediate reconnect; 404→10-30s; quick→3-15s; reset on success), (5) sidecar extraction backgrounded. Source-PTS dup/drop verdict: pixel-identical dups 10-50x lower (FP7oJQ 5.6%→0.0%, PPDmUg 2.3%→0.0% typical). Evidence: `docs/evidence/recorder_reliability_1/`. |
 
 ## Never Touch
 

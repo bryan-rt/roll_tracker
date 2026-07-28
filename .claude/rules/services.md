@@ -50,6 +50,28 @@ paths:
   production recorder. Source PTS capture, per-frame (source_PTS, host_arrival) pairs,
   lower-envelope offset with windowed drift check, RTCP hunt. Analysis:
   `tools/analyze_capture_timing.py`.
+- **RECORDER-RELIABILITY-1 (2026-07-28):** Five reliability fixes in `diag_v6.sh`:
+  1. **RTSP socket timeout** (`-stimeout`, default 10s): ffmpeg exits within ~10s when
+     data stops instead of blocking for 2+ min on OS TCP timeout. Configurable via
+     `RTSP_TIMEOUT_SEC` env var. Top fix for recording gaps.
+  2. **Stop stream before regenerating**: `stop_stream()` calls StopRtspStream (best-effort,
+     5s timeout) before every `generate_stream` in the retry loop. Prevents orphaning
+     RTSP sessions at the relay — the root cause of the 404 cascade observed on FP7oJQ
+     and J_EDEw (SDM enforces concurrent-stream limit per camera).
+  3. **Access token refresh per attempt**: `get_access_token` called before every generate
+     and extend (cache hit unless expired — cheap). On Generate 401: auto-refresh + retry.
+     Token expires after ~21-25 min; without refresh, the 65-min evening window would fail.
+  4. **Failure-type-aware backoff**: healthy exit (>=60s) → immediate reconnect + reset;
+     RTSP 404 → 10s→30s cap (moderate, since stop_stream prevents pileup); quick/unknown →
+     3s→15s cap. Generate 401 → refresh + immediate retry.
+  5. **Sidecar extraction backgrounded**: `extract_timing_sidecars` runs in background,
+     PIDs waited at window end. Removes processing-time contribution to gaps.
+  Evidence: `docs/evidence/recorder_reliability_1/`.
+- **Source-PTS dup/drop verdict (RECORDER-RELIABILITY-1 Part C):** Source-PTS reduces
+  pixel-identical duplicate frames by 10-50x vs arrival-PTS (FP7oJQ: 5.6% → 0.0% typical;
+  PPDmUg: 2.3% → 0.0% typical). First-segment startup transient can be 1-2%. Mid-stream
+  segments consistently 0.0%. Sidecar input/output mismatch still occurs (14/16 segments)
+  but pixel-level duplication is nearly eliminated. Both cameras benefit.
 
 ## processor
 - Polls `data/raw/nest/` for new MP4s, invokes bjj_pipeline A→F.
