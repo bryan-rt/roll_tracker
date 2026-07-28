@@ -14,6 +14,12 @@ paths:
 - `entrypoint.sh` delegates to `diag_v8.sh` scheduler.
 - **REENCODE modes:** `1` (default) and `2` = CFR libx264 + `-vf showinfo` timing sidecar
   (video byte-identical with/without showinfo, confirmed via MD5). `0` = VFR stream copy.
+- **SOURCE_PTS flag** (default 0): when `SOURCE_PTS=1`, preserves camera's own RTP capture
+  timestamps (`-copyts`, no `-use_wallclock_as_timestamps`). Adds per-line host-arrival
+  timestamping via `$EPOCHREALTIME` stderr fifo, giving (source_PTS, host_arrival) pairs.
+  Sidecar includes `host_arrival_s`, lower-envelope `pts_wallclock_offset_s`, windowed
+  drift rate (ppm). Per-attempt stderr files handle retry loop (each stream generation =
+  different PTS base + relay session). Passed through v7_2 → v6.
 - **Per-segment timing sidecar (RECORDER-SIDECAR-1):** Every CFR segment mp4 gets a
   `.timing.jsonl` sibling. One row per OUTPUT frame, keyed on `frame_index` (matches
   FrameIterator's `cap.read()` counter — join key to Stage A). Each row carries the REAL

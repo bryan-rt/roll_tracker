@@ -9,6 +9,7 @@ EXT_EARLY_SEC="${EXT_EARLY_SEC:-120}"         # schedule next extend at (expires
 CAM_ID="${CAM_ID_1:-cam1}"
 DEVICE="${DEVICE_1:?missing DEVICE_1 env}"
 REENCODE="${REENCODE:-1}"                   # 1 = libx264 (robust), 0 = copy
+SOURCE_PTS="${SOURCE_PTS:-0}"               # 1 = preserve camera capture timestamps (no wallclock override)
 
 TS="${TS:-$(date +%Y%m%d-%H%M%S)}"
 if [ -z "${DIAG_DIR:-}" ]; then
@@ -144,6 +145,18 @@ build_ffmpeg_opts() {
   VF_OPTS=()
   FPS_MODE_OPTS=()
   INPUT_FFLAGS="+genpts+igndts"
+  INPUT_WALLCLOCK=(-use_wallclock_as_timestamps 1)
+  COPYTS_OPTS=()
+
+  # SOURCE_PTS: preserve camera's own RTP capture timestamps instead of
+  # substituting bursty network-arrival times. Proven in CAPTURE-TIME-1:
+  # source PTS = uniform 33ms/67ms true capture cadence.
+  if [ "$SOURCE_PTS" = "1" ]; then
+    echo "[v6] SOURCE_PTS=1 → preserving camera capture timestamps (-copyts)" | tee -a "$LOG"
+    INPUT_WALLCLOCK=()              # remove -use_wallclock_as_timestamps 1
+    INPUT_FFLAGS="+igndts"          # drop +genpts — keep source PTS
+    COPYTS_OPTS=(-copyts)           # preserve original timestamps
+  fi
 
   # Video path: REENCODE=1|2 (CFR + timing sidecar), 0 (VFR passthrough)
   # Mode 1 and 2 are now identical: CFR re-encode with -vf showinfo for timing
@@ -168,9 +181,10 @@ build_ffmpeg_opts() {
 extract_timing_sidecars() {
   # Post-process ffmpeg stderr to produce per-segment .timing.jsonl sidecars.
   # Each sidecar has one row per OUTPUT frame (keyed on frame_index matching
-  # FrameIterator's cap.read() counter), with the real INPUT arrival PTS
-  # mapped via nearest-neighbor two-pointer.
-  local stderr="$DIAG_DIR/ffmpeg.stderr"
+  # FrameIterator's cap.read() counter).
+  # When SOURCE_PTS=1: includes host_arrival_s, lower-envelope offset, drift.
+  # When SOURCE_PTS=0: nearest-neighbor two-pointer mapping (arrival-PTS).
+  local stderr="${1:-$DIAG_DIR/ffmpeg.stderr}"
   [ ! -f "$stderr" ] && return 0
   grep -q 'Parsed_showinfo.*pts_time:' "$stderr" || return 0
 
@@ -205,21 +219,29 @@ extract_timing_sidecars() {
     fi
 
     local sidecar="${seg_path%.mp4}.timing.jsonl"
-    local pts_tmp="$DIAG_DIR/_pts_${si}.tmp"
+    local pairs_tmp="$DIAG_DIR/_pairs_${ATTEMPT}_${si}.tmp"
 
-    # Extract showinfo pts_time values for this segment's stderr range, sort by PTS
-    sed -n "${from_line},${to_line}p" "$stderr" \
-      | grep 'Parsed_showinfo.*pts_time:' \
-      | sed -n 's/.*pts_time:\([0-9.eE+-]*\).*/\1/p' \
-      | sort -g \
-      > "$pts_tmp"
+    if [ "$SOURCE_PTS" = "1" ]; then
+      # SOURCE_PTS mode: extract (host_arrival, source_pts) pairs from timestamped stderr
+      # Line format: "1785106319.123456 [Parsed_showinfo_0 @ ...] ... pts_time:0.033 ..."
+      sed -n "${from_line},${to_line}p" "$stderr" \
+        | grep 'Parsed_showinfo.*pts_time:' \
+        | sed -n 's/^\([0-9.]*\) .*pts_time:\([0-9.eE+-]*\).*/\1 \2/p' \
+        > "$pairs_tmp"
+    else
+      # Arrival-PTS mode: extract pts_time only (no host timestamp)
+      sed -n "${from_line},${to_line}p" "$stderr" \
+        | grep 'Parsed_showinfo.*pts_time:' \
+        | sed -n 's/.*pts_time:\([0-9.eE+-]*\).*/0 \1/p' \
+        > "$pairs_tmp"
+    fi
 
     local input_count
-    input_count=$(wc -l < "$pts_tmp" | tr -d ' ')
+    input_count=$(wc -l < "$pairs_tmp" | tr -d ' ')
 
     if [ "$input_count" -eq 0 ]; then
       log "[v6] ⚠ sidecar: $(basename "$seg_path") — no showinfo data, skipping"
-      rm -f "$pts_tmp"
+      rm -f "$pairs_tmp"
       continue
     fi
 
@@ -236,80 +258,165 @@ extract_timing_sidecars() {
 
     if [ "$output_count" -eq 0 ]; then
       log "[v6] ⚠ sidecar: $(basename "$seg_path") — cannot read output frame count, skipping"
-      rm -f "$pts_tmp"
+      rm -f "$pairs_tmp"
       continue
     fi
 
     # Mismatch detection
     local mismatch="false"
-    if [ "$input_count" -ne "$output_count" ]; then
-      mismatch="true"
-    fi
+    [ "$input_count" -ne "$output_count" ] && mismatch="true"
 
-    # Two-pointer mapping: for each output frame, find nearest input PTS.
-    # Writes one JSONL row per OUTPUT frame (frame_index = join key to Stage A).
-    # pts_time_s = the REAL input arrival time (bursty, NOT uniform CFR).
+    local use_source_pts="$SOURCE_PTS"
+
+    # Unified awk: handles both modes. In source-PTS mode, includes host_arrival_s,
+    # lower-envelope offset, windowed drift check, measured fps.
     awk -v output_count="$output_count" \
         -v output_fps="$output_fps" \
         -v epoch="$epoch" \
         -v input_count="$input_count" \
         -v mismatch="$mismatch" \
-        -v pts_file="$pts_tmp" \
+        -v pairs_file="$pairs_tmp" \
+        -v source_pts_mode="$use_source_pts" \
+        -v attempt="$ATTEMPT" \
     '
     BEGIN {
-      # Read sorted input PTS into array
+      # Read (host_arrival, source_pts) pairs
       ni = 0
-      while ((getline line < pts_file) > 0) {
-        input_pts[ni] = line + 0.0
+      while ((getline line < pairs_file) > 0) {
+        split(line, parts, " ")
+        host_arr[ni] = parts[1] + 0.0
+        raw_pts[ni]  = parts[2] + 0.0
         ni++
       }
-      close(pts_file)
+      close(pairs_file)
 
-      # Normalize PTS: subtract first value so segment-relative starts at ~0
-      base_pts = (ni > 0) ? input_pts[0] : 0
-      for (k = 0; k < ni; k++) input_pts[k] -= base_pts
+      # Sort by PTS (insertion sort — handles rare B-frame reorder)
+      for (a = 1; a < ni; a++) {
+        kp = raw_pts[a]; kh = host_arr[a]
+        b = a - 1
+        while (b >= 0 && raw_pts[b] > kp) {
+          raw_pts[b+1] = raw_pts[b]; host_arr[b+1] = host_arr[b]
+          b--
+        }
+        raw_pts[b+1] = kp; host_arr[b+1] = kh
+      }
 
-      # Parse fractional fps (e.g. "69/4" or "30")
+      # Normalize PTS: segment-relative
+      base_pts = (ni > 0) ? raw_pts[0] : 0
+      for (k = 0; k < ni; k++) raw_pts[k] -= base_pts
+
+      # Parse fractional fps
       if (index(output_fps, "/") > 0) {
-        split(output_fps, fparts, "/")
-        fps_val = fparts[1] / fparts[2]
+        split(output_fps, fp, "/")
+        fps_val = fp[1] / fp[2]
       } else {
         fps_val = output_fps + 0.0
       }
       if (fps_val <= 0) fps_val = 30.0
       interval = 1.0 / fps_val
 
-      # Metadata line
-      printf "{\"_meta\":true,\"segment_start_epoch\":%s,\"input_frame_count\":%d,\"output_frame_count\":%d,\"output_fps\":%.4f,\"mismatch\":%s}\n", \
-        epoch, ni, output_count, fps_val, mismatch
+      # Measured fps
+      measured_fps = fps_val
+      if (ni > 1 && raw_pts[ni-1] > 0) {
+        measured_fps = (ni - 1) / raw_pts[ni-1]
+      }
 
-      # Two-pointer: map each output frame to nearest input PTS
+      # PTS uniformity stats
+      sum_d = 0; sum_d2 = 0; nd = 0
+      for (k = 1; k < ni; k++) {
+        d = (raw_pts[k] - raw_pts[k-1]) * 1000
+        sum_d += d; sum_d2 += d*d; nd++
+      }
+      mean_d = (nd > 0) ? sum_d / nd : 0
+      stdev_d = (nd > 0) ? sqrt(sum_d2/nd - mean_d*mean_d) : 0
+
+      # --- Lower-envelope offset + windowed drift (SOURCE_PTS only) ---
+      global_min_offset = 0; drift_rate = 0; drift_flat = "true"; drift_ppm = 0
+      n_windows = 0
+
+      if (source_pts_mode == "1" && ni > 0) {
+        global_min_offset = 1e18
+        for (k = 0; k < ni; k++) {
+          off = host_arr[k] - raw_pts[k]
+          if (off < global_min_offset) global_min_offset = off
+        }
+
+        # Windowed offsets (10s windows)
+        win_size = 10.0
+        for (w = 0; w < 60 && ni > 0; w++) {
+          ws = w * win_size; we = (w + 1) * win_size
+          if (ws >= raw_pts[ni-1]) break
+          wmin = 1e18; wmid = (ws + we) / 2.0; found = 0
+          for (k = 0; k < ni; k++) {
+            if (raw_pts[k] >= ws && raw_pts[k] < we) {
+              off = host_arr[k] - raw_pts[k]
+              if (off < wmin) wmin = off
+              found = 1
+            }
+          }
+          if (found) {
+            win_off[n_windows] = wmin; win_mid[n_windows] = wmid
+            n_windows++
+          }
+        }
+
+        # Linear fit for drift
+        if (n_windows >= 2) {
+          sx=0;sy=0;sxx=0;sxy=0
+          for (w=0;w<n_windows;w++) {
+            sx+=win_mid[w]; sy+=win_off[w]
+            sxx+=win_mid[w]*win_mid[w]; sxy+=win_mid[w]*win_off[w]
+          }
+          den = n_windows*sxx - sx*sx
+          if (den != 0) drift_rate = (n_windows*sxy - sx*sy) / den
+        }
+        drift_ppm = drift_rate * 1e6
+        drift_flat = (n_windows<2 || (drift_rate>-0.0001 && drift_rate<0.0001)) ? "true" : "false"
+      }
+
+      # --- Metadata line ---
+      if (source_pts_mode == "1") {
+        printf "{\"_meta\":true,\"segment_start_epoch\":%s,\"attempt\":%d,\"input_frame_count\":%d,\"output_frame_count\":%d,\"output_fps\":%.4f,\"measured_fps\":%.4f,\"mismatch\":%s,\"pts_wallclock_offset_s\":%.6f,\"offset_method\":\"lower_envelope\",\"drift_rate_s_per_s\":%.9f,\"drift_flat\":%s,\"drift_ppm\":%.3f,\"n_drift_windows\":%d,\"pts_mean_delta_ms\":%.4f,\"pts_stdev_delta_ms\":%.4f}\n", \
+          epoch, attempt, ni, output_count, fps_val, measured_fps, mismatch, \
+          global_min_offset, drift_rate, drift_flat, drift_ppm, n_windows, mean_d, stdev_d
+      } else {
+        printf "{\"_meta\":true,\"segment_start_epoch\":%s,\"attempt\":%d,\"input_frame_count\":%d,\"output_frame_count\":%d,\"output_fps\":%.4f,\"measured_fps\":%.4f,\"mismatch\":%s}\n", \
+          epoch, attempt, ni, output_count, fps_val, measured_fps, mismatch
+      }
+
+      # --- Two-pointer: map output frames to nearest input PTS ---
       j = 0
       for (i = 0; i < output_count; i++) {
         t_out = i * interval
-        # Advance j while next input PTS is closer to t_out
         while (j + 1 < ni) {
-          d_cur = input_pts[j] - t_out
-          if (d_cur < 0) d_cur = -d_cur
-          d_next = input_pts[j+1] - t_out
-          if (d_next < 0) d_next = -d_next
-          if (d_next <= d_cur) j++
+          d_cur = raw_pts[j] - t_out; if (d_cur < 0) d_cur = -d_cur
+          d_nxt = raw_pts[j+1] - t_out; if (d_nxt < 0) d_nxt = -d_nxt
+          if (d_nxt <= d_cur) j++
           else break
         }
-        printf "{\"frame_index\":%d,\"pts_time_s\":%.6f,\"input_n\":%d}\n", i, input_pts[j], j
+        if (source_pts_mode == "1") {
+          printf "{\"frame_index\":%d,\"pts_time_s\":%.6f,\"host_arrival_s\":%.6f,\"input_n\":%d}\n", \
+            i, raw_pts[j], host_arr[j], j
+        } else {
+          printf "{\"frame_index\":%d,\"pts_time_s\":%.6f,\"input_n\":%d}\n", \
+            i, raw_pts[j], j
+        }
       }
     }
     ' > "$sidecar"
 
-    rm -f "$pts_tmp"
+    rm -f "$pairs_tmp"
 
-    # Summary line with loud mismatch warning
+    # Summary line with loud mismatch warning + measured fps
     local sidecar_lines
-    sidecar_lines=$(( $(wc -l < "$sidecar") - 1 ))  # subtract metadata line
+    sidecar_lines=$(( $(wc -l < "$sidecar") - 1 ))
+    local fps_info=""
+    fps_info=$(head -1 "$sidecar" | grep -oE '"measured_fps":[0-9.]+' | cut -d: -f2)
+
     if [ "$mismatch" = "true" ]; then
-      log "[v6] ⚠ MISMATCH sidecar: $(basename "$sidecar") input=$input_count output=$output_count (frame join may be inaccurate)"
+      log "[v6] ⚠ MISMATCH sidecar: $(basename "$sidecar") input=$input_count output=$output_count fps=${fps_info:-?}"
     else
-      log "[v6] sidecar: $(basename "$sidecar") $sidecar_lines/$output_count ✓ (epoch=$epoch)"
+      log "[v6] sidecar: $(basename "$sidecar") $sidecar_lines/$output_count ✓ fps=${fps_info:-?} (epoch=$epoch)"
     fi
   done
 }
@@ -328,9 +435,34 @@ start_ffmpeg() {
     generate_stream || log "[v6] pre-start regenerate failed; proceeding with current URL"
   fi
 
+  # Per-attempt stderr file (supports retry loop — each attempt gets its own file)
+  local stderr_file="$DIAG_DIR/ffmpeg_attempt_${ATTEMPT}.stderr"
+  TS_PID=""
+
+  if [ "$SOURCE_PTS" = "1" ]; then
+    # Host-arrival timestamping: pipe stderr through fifo, prepend $EPOCHREALTIME
+    local stderr_fifo="$DIAG_DIR/_stderr_fifo_${ATTEMPT}"
+    mkfifo "$stderr_fifo"
+    while IFS= read -r line; do
+      printf "%s %s\n" "$EPOCHREALTIME" "$line"
+    done < "$stderr_fifo" > "$stderr_file" &
+    TS_PID=$!
+    local stderr_target="$stderr_fifo"
+    log "[v6] attempt $ATTEMPT: source-PTS mode, host-arrival timestamping → $(basename "$stderr_file")"
+  else
+    local stderr_target="$stderr_file"
+  fi
+
+  # Record attempt metadata
+  printf '{"attempt":%d,"generate_epoch":"%s","ffmpeg_start_epoch":"%s"}\n' \
+    "$ATTEMPT" "$(cat "$DIAG_DIR/generated_at_epoch.txt" 2>/dev/null || echo 0)" \
+    "$EPOCHREALTIME" \
+    >> "$DIAG_DIR/attempt_log.jsonl"
+
   ffmpeg -hide_banner -loglevel info -nostdin -y \
     -rtsp_transport tcp \
-    -use_wallclock_as_timestamps 1 -fflags "$INPUT_FFLAGS" -avoid_negative_ts make_zero \
+    "${COPYTS_OPTS[@]}" \
+    "${INPUT_WALLCLOCK[@]}" -fflags "$INPUT_FFLAGS" -avoid_negative_ts make_zero \
     -analyzeduration 10M -probesize 10M \
     -i "$URL" \
     -map 0:v:0 -map 0:a:0 \
@@ -342,7 +474,7 @@ start_ffmpeg() {
     -t "$(( DEADLINE - $(date -u +%s) ))" \
     "${SEG_OPTS[@]}" \
     "$out_tmpl" \
-    1> "$DIAG_DIR/ffmpeg.stdout" 2> "$DIAG_DIR/ffmpeg.stderr" &
+    1> "$DIAG_DIR/ffmpeg.stdout" 2> "$stderr_target" &
   FFMPEG_PID=$!
 
   extend_loop & EXT_PID=$!
@@ -377,8 +509,15 @@ while :; do
   [ -n "$EXT_PID" ] && kill "$EXT_PID" 2>/dev/null || true
   EXT_PID=""
 
-  # Extract per-segment timing sidecars from showinfo data in stderr
-  extract_timing_sidecars
+  # Clean up stderr fifo + timestamper for this attempt
+  if [ -n "${TS_PID:-}" ] && [ "$TS_PID" != "" ]; then
+    wait "$TS_PID" 2>/dev/null || true
+    TS_PID=""
+  fi
+  rm -f "$DIAG_DIR/_stderr_fifo_${ATTEMPT}"
+
+  # Extract per-segment timing sidecars from THIS ATTEMPT's stderr
+  extract_timing_sidecars "$DIAG_DIR/ffmpeg_attempt_${ATTEMPT}.stderr"
 
   # Done if time is up
   [ "$(date -u +%s)" -ge "$DEADLINE" ] && { log "[v6] window elapsed after attempt #$ATTEMPT"; break; }
