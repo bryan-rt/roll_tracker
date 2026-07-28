@@ -174,6 +174,7 @@ run_one_cam() {
   SOURCE_PTS="$SOURCE_PTS" \
   FIRST_EXT_DELAY_SEC="$FIRST_EXT_DELAY_SEC" \
   EXT_EARLY_SEC="$EXT_EARLY_SEC" \
+  N_CAMERAS="${#DEVICE_PATH[@]}" \
   bash -lc '/app/diag_v6.sh' || true
 
   echo "[v7][$lbl] done."

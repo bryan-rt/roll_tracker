@@ -240,13 +240,24 @@ auto-refresh on 401 (token expires at ~21-25 min, fatal for 65-min windows). (4)
 aware backoff — healthy exit (>=60s) reconnects immediately; RTSP 404 backs off moderately
 (10s→30s cap); quick/unknown 3s→15s cap; backoff resets on success. (5) Sidecar extraction
 backgrounded — off the critical path, PIDs waited at window end.
-- Source-PTS dup/drop verdict: source-PTS reduces pixel-identical duplicates 10-50x vs
-  arrival-PTS (FP7oJQ: 5.6%→0.0% typical, PPDmUg: 2.3%→0.0% typical). Mid-stream segments
-  consistently 0.0%. First-segment startup transient can reach 1-2%.
+- Source-PTS dup/drop verdict: **camera-dependent** — PPDmUg at 15.0fps shows exact sidecar
+  match; FP7oJQ at 13.85fps still produces ~8% input/output mismatch under source-PTS.
+  Pixel-identical duplicates reduced 10-50x vs arrival-PTS on both cameras.
 - SOURCE_PTS exonerated as cause of exits — all failures were RTSP 404 (relay lockout
   from session orphaning), session invalidation (Nest unilateral), and 401 (token expiry).
   Zero timestamp/DTS errors.
 Evidence: `docs/evidence/recorder_reliability_1/`.
+
+**RECORDER-RELIABILITY-2 (2026-07-28):** API traffic reduction + quota awareness. RELIABILITY-1
+increased API calls from ~0.75/min to ~17/min, triggering SDM 429 rate limits. SDM quota:
+**10 QPM per user per project** (shared across all cameras, all ExecuteDeviceCommand calls).
+Fixes: (1) optimistic URL reuse (0 API calls when session still valid), (2) conditional
+stop_stream (skip for dead sessions — confirmed 400="stream_token invalid"), (3) 429 backoff
+(60s→300s, Retry-After support), (4) generate 404 fail-fast (3 retries then exit), (5)
+consecutive failure escalation (5+ failures → slow-poll 120-300s, prevents offline cameras from
+consuming shared quota), (6) cross-camera quota coordination (N_CAMERAS from v7_2, dynamic
+min retry interval from 70% of quota/N, jitter on every backoff).
+Evidence: `docs/evidence/recorder_reliability_2/`.
 
 **CP22 (completed):** Default detection model updated to yolo26n-pose (STAL loss, better
 small-object detection). ultralytics upgraded 8.3.252 → 8.4.33 (`--no-deps`).
@@ -1090,7 +1101,8 @@ because detection under-segmentation gives it wrong input.
 | RECORDER-TIMING-1/2: Per-frame timing preservation | **Complete** | Both VFR (REENCODE=0) and CFR+sidecar (REENCODE=1+showinfo) capture real per-frame timing (773+ unique deltas vs 2 for CFR baseline). Video byte-identical with/without showinfo (confirmed MD5). VFR breaks GT frame-comparability; CFR+sidecar is purely additive. Nest camera now 15fps (was 30fps Mar 2026). Evidence: `docs/evidence/recorder_timing_1/`. |
 | RECORDER-SIDECAR-1: Production timing sidecar | **Active** | CFR + `-vf showinfo` is now the default recording mode (REENCODE=1). Per-segment `.timing.jsonl` sidecar written alongside every mp4 — one row per OUTPUT frame keyed on `frame_index` (join key to Stage A), carrying real input PTS (bursty, not uniform) via nearest-neighbor mapping. **Mismatch is the normal condition** — CFR encoder always dups/drops vs bursty input. `pts_time_s` is APPROXIMATE under mismatch: mean ~80ms, P95 ~230ms, max ~500ms error, worst during lag windows (multiple output frames map to same input PTS during delivery gaps). Input timing SEQUENCE is reliable for lag detection (gap presence/duration); per-output-frame time attribution has ±500ms worst-case. COLLECTION ONLY — no CV pipeline stage consumes it yet. Uploader ignores sidecar (manifest-driven). Deferred consumers: BoT-SORT frame_rate fix (LIVE BUG: tracker assumes 30fps, source now 15fps), dynamic-fps motion metrics, cross-camera wall-clock sync. |
 | SOURCE-PTS-1: Opt-in source PTS capture | **Active** | `SOURCE_PTS=1` flag in diag_v6.sh (default 0 = unchanged). Preserves camera RTP capture timestamps (`-copyts`, no wallclock override). Adds per-line `$EPOCHREALTIME` host-arrival timestamping via stderr fifo → sidecar includes `host_arrival_s`, lower-envelope `pts_wallclock_offset_s`, windowed drift (ppm). Per-attempt stderr files handle retry loop. Rehearsal (7 min, FP7oJQ + PPDmUg): PTS uniform 96-100%, 15fps measured, middle segments mismatch:false (exact 1:1), first/last segments boundary mismatch. J_EDEw offline. Runbook: `docs/runbook_cross_camera_capture.md`. **EXONERATED (RECORDER-RELIABILITY-1):** 16 segments across 3 cameras, zero timestamp/DTS errors. All failures were RTSP 404 (session orphaning), session invalidation (Nest-side), or 401 (token expiry). Dup/drop reduced 10-50x vs arrival-PTS. Ready for default adoption. |
-| RECORDER-RELIABILITY-1: Production reliability | **Complete** | Five fixes in `diag_v6.sh`: (1) RTSP socket timeout `-stimeout` 10s (top fix — dead-stream gap 2m28s→~10s), (2) stop_stream before regenerating (root cause fix — prevents RTSP session orphaning at relay, the true cause of the 404 cascade), (3) access token refresh per attempt (token expires ~21-25 min; critical for 65-min window), (4) failure-type-aware backoff (healthy→immediate reconnect; 404→10-30s; quick→3-15s; reset on success), (5) sidecar extraction backgrounded. Source-PTS dup/drop verdict: pixel-identical dups 10-50x lower (FP7oJQ 5.6%→0.0%, PPDmUg 2.3%→0.0% typical). Evidence: `docs/evidence/recorder_reliability_1/`. |
+| RECORDER-RELIABILITY-1: Production reliability | **Complete** | Five fixes in `diag_v6.sh`: (1) RTSP socket timeout 10s (top fix — dead-stream gap 2m28s→~10s), (2) stop_stream before regenerating (prevents session orphaning), (3) access token refresh per attempt, (4) failure-type-aware backoff, (5) sidecar extraction backgrounded. Source-PTS dup/drop verdict: pixel-identical dups 10-50x lower — **camera-dependent** (PPDmUg exact at 15fps; FP7oJQ ~8% mismatch at 13.85fps). Evidence: `docs/evidence/recorder_reliability_1/`. |
+| RECORDER-RELIABILITY-2: API quota awareness | **Complete** | RELIABILITY-1 increased API calls to ~17/min, triggering 429 (SDM quota: 10 QPM per user per project, shared across all cameras). Fixes: (1) optimistic URL reuse (0 API calls when session valid), (2) conditional stop_stream (skip for dead sessions — 400 body confirms already terminated), (3) 429 backoff 60s→300s with Retry-After, (4) generate 404 fail-fast (3 retries), (5) consecutive failure escalation (5+ failures → slow-poll 120-300s), (6) cross-camera quota: N_CAMERAS from v7_2, dynamic min retry interval from 70%×10QPM/N, jitter on every backoff. Estimated: healthy ~1 QPM, 1-failing ~3-4 QPM, all-failing ~7 QPM (escalates to ~1-2). Evidence: `docs/evidence/recorder_reliability_2/`. |
 
 ## Never Touch
 

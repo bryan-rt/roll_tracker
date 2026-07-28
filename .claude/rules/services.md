@@ -67,11 +67,26 @@ paths:
   5. **Sidecar extraction backgrounded**: `extract_timing_sidecars` runs in background,
      PIDs waited at window end. Removes processing-time contribution to gaps.
   Evidence: `docs/evidence/recorder_reliability_1/`.
-- **Source-PTS dup/drop verdict (RECORDER-RELIABILITY-1 Part C):** Source-PTS reduces
+- **RECORDER-RELIABILITY-2 (2026-07-28):** API traffic reduction + quota awareness.
+  RELIABILITY-1 increased API calls from ~0.75/min to ~17/min, triggering 429 rate limits.
+  SDM quota: **10 QPM per user per project** (shared across ALL cameras and commands).
+  Fixes: (1) **Optimistic URL reuse** — after healthy exit with valid extend expiry, restart
+  ffmpeg on the same URL (0 API calls). Falls through to generate on quick failure.
+  (2) **Conditional stop_stream** — only called when session is believed alive; dead sessions
+  (RTSP 404, invalidated, timeout-no-data) skip stop entirely (confirmed: 400 body = "stream_token
+  invalid"). (3) **429 backoff** — 60s start, 300s cap, honors Retry-After header. Applied to
+  generate and extend. (4) **Generate 404 fail-fast** — device-not-found exits after 3 retries
+  instead of burning the window. (5) **Consecutive failure escalation** — after 5 failures of
+  any type, backoff escalates to 120-300s slow-poll; prevents offline cameras from consuming
+  shared quota (J_EDEw: ~100 retries/30min → ~12-15). (6) **Cross-camera quota coordination** —
+  `N_CAMERAS` passed from v7_2; per-camera min retry interval computed dynamically from
+  `70% of 10 QPM / N`; jitter (0-5s) on every backoff; BACKOFF_INITIAL=8, BACKOFF_QUICK_MAX=25.
+  Evidence: `docs/evidence/recorder_reliability_2/`.
+- **Source-PTS dup/drop verdict (qualified, RELIABILITY-1+2):** Source-PTS reduces
   pixel-identical duplicate frames by 10-50x vs arrival-PTS (FP7oJQ: 5.6% → 0.0% typical;
-  PPDmUg: 2.3% → 0.0% typical). First-segment startup transient can be 1-2%. Mid-stream
-  segments consistently 0.0%. Sidecar input/output mismatch still occurs (14/16 segments)
-  but pixel-level duplication is nearly eliminated. Both cameras benefit.
+  PPDmUg: 2.3% → 0.0% typical). **Camera-dependent:** PPDmUg at 15.0fps shows exact
+  sidecar match (405/405); FP7oJQ at 13.85fps still produces ~8% input/output mismatch
+  (605→653 fabricated frames). The improvement tracks source-PTS cadence regularity.
 
 ## processor
 - Polls `data/raw/nest/` for new MP4s, invokes bjj_pipeline A→F.

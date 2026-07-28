@@ -13,17 +13,38 @@ SOURCE_PTS="${SOURCE_PTS:-0}"               # 1 = preserve camera capture timest
 
 # RTSP read timeout: if no data arrives for this many seconds, ffmpeg exits.
 # Prevents ffmpeg from blocking on a dead stream for minutes (OS TCP timeout).
-# Set conservatively: must exceed normal inter-frame gaps (~67ms at 15fps)
-# but catch dead streams quickly. 10s is safe (150x the normal gap).
+# 10s is safe (150x the normal inter-frame gap of ~67ms at 15fps).
 RTSP_TIMEOUT_SEC="${RTSP_TIMEOUT_SEC:-10}"
 RTSP_TIMEOUT_US=$(( RTSP_TIMEOUT_SEC * 1000000 ))
 
-# Backoff tuning
-BACKOFF_INITIAL=3             # seconds; first retry after a quick failure
-BACKOFF_QUICK_MAX=15          # cap for transient/unknown failures
-BACKOFF_404=10                # relay lockout (after stop_stream fix, 404 should be rare)
-BACKOFF_404_MAX=30            # cap for persistent 404
-HEALTHY_RUN_THRESHOLD=60      # seconds — longer = "healthy run", reconnect immediately
+# --- SDM API quota-aware backoff ---
+# ExecuteDeviceCommand: 10 QPM per project per user (shared across ALL cameras).
+# Per-device (CAMERA): 30 QPM / 100 QPH. Per-command per-device: 5 QPM.
+# Binding constraint: 10 QPM user-project.
+# Source: developers.google.com/nest/device-access/project/limits
+SDM_USER_QPM=10
+N_CAMERAS="${N_CAMERAS:-3}"
+
+# Compute minimum retry interval dynamically from quota + camera count.
+# Target ~60-70% of quota to leave headroom for extends/stops/retried-429s.
+CALLS_PER_MIN_BUDGET=$(( (SDM_USER_QPM * 7 / 10) / N_CAMERAS ))  # 70% of quota / N
+[ "$CALLS_PER_MIN_BUDGET" -lt 1 ] && CALLS_PER_MIN_BUDGET=1
+MIN_RETRY_INTERVAL=$(( 60 / CALLS_PER_MIN_BUDGET ))  # seconds between API calls
+
+# Backoff tuning (sized to respect per-camera share of 10 QPM)
+BACKOFF_INITIAL=8              # seconds; first retry after a quick failure
+BACKOFF_QUICK_MAX=25           # cap for transient/unknown failures (~2.4 calls/min)
+BACKOFF_404=15                 # RTSP relay lockout
+BACKOFF_404_MAX=30             # cap for persistent RTSP 404
+BACKOFF_429=60                 # SDM rate limit — start high, escalate
+BACKOFF_429_MAX=300            # 5 min cap
+HEALTHY_RUN_THRESHOLD=60       # seconds — longer = "healthy run", reconnect immediately
+REUSE_FAIL_THRESHOLD=5         # seconds — if reuse attempt dies faster, fall through
+DEVICE_404_MAX_RETRIES=3       # give up on persistent device-not-found
+CONSECUTIVE_FAIL_ESCALATE=5    # after this many consecutive failures, escalate to slow poll
+CONSECUTIVE_FAIL_BACKOFF=120   # slow-poll backoff (2 min)
+CONSECUTIVE_FAIL_BACKOFF_MAX=300  # slow-poll cap (5 min)
+JITTER_MAX_SEC=5               # random jitter added to every backoff
 
 TS="${TS:-$(date +%Y%m%d-%H%M%S)}"
 if [ -z "${DIAG_DIR:-}" ]; then
@@ -42,13 +63,30 @@ ATTEMPT=0
 BACKOFF=$BACKOFF_INITIAL
 SIDECAR_PIDS=()   # background sidecar extraction PIDs
 
+# Session state
+NEED_NEW_SESSION=true   # first iteration must generate
+SESSION_DEAD=true       # conservative start — forces generate on first attempt
+WAS_REUSE=false         # tracks whether current attempt reused an existing URL
+CONSECUTIVE_FAILURES=0  # consecutive failed attempts (reset on success)
+CONSECUTIVE_DEVICE_404=0  # consecutive device-not-found from generate
+GENERATE_FAIL_TYPE=""   # set by generate_stream on failure: "429", "device_404", "other"
+
 # ========== helpers ==========
 log() { echo "[$(date -u +%H:%M:%S)] $*" | tee -a "$LOG"; }
 
+jittered_sleep() {
+  local base="$1"
+  local jitter=$(( RANDOM % (JITTER_MAX_SEC + 1) ))
+  local total=$(( base + jitter ))
+  # Enforce minimum retry interval (quota-aware)
+  [ "$total" -lt "$MIN_RETRY_INTERVAL" ] && total="$MIN_RETRY_INTERVAL"
+  sleep "$total"
+}
+
 stop_stream() {
   # Best-effort stop of the current RTSP stream session at the relay.
-  # Called before re-generating to avoid orphaning sessions (SDM enforces
-  # a concurrent-stream limit; orphans linger ~5 min).
+  # Only called when we believe the session is still ALIVE and we're
+  # deliberately abandoning it. Never called for dead sessions.
   if [ -z "${STOP_TOKEN:-}" ]; then return 0; fi
   local http
   http=$(curl -s -w '%{http_code}' --max-time 5 \
@@ -58,7 +96,6 @@ stop_stream() {
     -H "Content-Type: application/json" \
     -d "{\"command\":\"sdm.devices.commands.CameraLiveStream.StopRtspStream\",\"params\":{\"streamToken\":\"$STOP_TOKEN\"}}")
   log "[v6] stop_stream HTTP=$http (attempt=$ATTEMPT)"
-  # Clear tokens so we don't try to stop again with stale tokens
   STOP_TOKEN=""
   EXT_TOKEN=""
 }
@@ -71,7 +108,7 @@ cleanup() {
   for pid in "${SIDECAR_PIDS[@]}"; do
     wait "$pid" 2>/dev/null || true
   done
-  # Final stop — use the last known STOP_TOKEN
+  # Final stop — session may still be alive at window end
   if [ -n "${STOP_TOKEN:-}" ]; then
     local http
     http=$(curl -s -w '%{http_code}' --max-time 5 \
@@ -91,9 +128,11 @@ get_access_token() {
 }
 
 generate_stream() {
+  GENERATE_FAIL_TYPE=""
   local out="$DIAG_DIR/generate_${ATTEMPT}.json"
+  local headers="$DIAG_DIR/generate_${ATTEMPT}_headers.txt"
   local http
-  http=$(curl -s -w '%{http_code}' -o "$out" \
+  http=$(curl -s -w '%{http_code}' -D "$headers" -o "$out" \
     -X POST "https://smartdevicemanagement.googleapis.com/v1/${DEVICE}:executeCommand" \
     -H "Authorization: Bearer $ACCESS_TOKEN" \
     -H "Content-Type: application/json" \
@@ -104,7 +143,7 @@ generate_stream() {
   if [ "$http" = "401" ]; then
     log "[v6] Generate got 401; refreshing access token"
     get_access_token
-    http=$(curl -s -w '%{http_code}' -o "$out" \
+    http=$(curl -s -w '%{http_code}' -D "$headers" -o "$out" \
       -X POST "https://smartdevicemanagement.googleapis.com/v1/${DEVICE}:executeCommand" \
       -H "Authorization: Bearer $ACCESS_TOKEN" \
       -H "Content-Type: application/json" \
@@ -112,7 +151,29 @@ generate_stream() {
     echo "$http (after refresh)" >> "$DIAG_DIR/generate_${ATTEMPT}_http.txt"
   fi
 
+  if [ "$http" = "429" ]; then
+    GENERATE_FAIL_TYPE="429"
+    # Check for Retry-After header
+    local retry_after
+    retry_after=$(grep -i 'Retry-After' "$headers" 2>/dev/null | head -1 | tr -d '\r' | awk '{print $2}')
+    if [ -n "$retry_after" ] && [ "$retry_after" -gt 0 ] 2>/dev/null; then
+      log "[v6] Generate 429 rate-limited (Retry-After: ${retry_after}s)"
+      BACKOFF_429_OVERRIDE="$retry_after"
+    else
+      log "[v6] Generate 429 rate-limited (no Retry-After header)"
+      BACKOFF_429_OVERRIDE=""
+    fi
+    return 1
+  fi
+
+  if [ "$http" = "404" ]; then
+    GENERATE_FAIL_TYPE="device_404"
+    log "[v6] Generate 404 — device not found"
+    return 1
+  fi
+
   if [ "$http" != "200" ]; then
+    GENERATE_FAIL_TYPE="other"
     log "[v6] Generate failed (HTTP=$http)"
     return 1
   fi
@@ -121,6 +182,7 @@ generate_stream() {
   EXT_TOKEN="$(jq -r '.results.streamExtensionToken // empty' "$out")"
   STOP_TOKEN="$(jq -r '.results.streamToken // empty' "$out")"
   if [ -z "$URL" ] || [ -z "$EXT_TOKEN" ] || [ -z "$STOP_TOKEN" ]; then
+    GENERATE_FAIL_TYPE="other"
     log "[v6] Generate missing fields (url/ext/stop)"
     return 1
   fi
@@ -163,6 +225,8 @@ extend_loop() {
       if [ -n "$exp_iso" ]; then
         exp_epoch=$(date -u -d "$exp_iso" +%s 2>/dev/null || echo "")
         if [ -n "$exp_epoch" ]; then
+          # Publish expiry for main loop's reuse decision
+          echo "$exp_epoch" > "$DIAG_DIR/_extend_expiry.txt"
           now="$(date -u +%s)"
           next_sleep=$(( exp_epoch - EXT_EARLY_SEC - now ))
           [ "$next_sleep" -lt 60 ] && next_sleep=60
@@ -172,6 +236,10 @@ extend_loop() {
       else
         next_sleep=240
       fi
+    elif [ "$http" = "429" ]; then
+      # Rate limited — back off longer before retrying extend
+      log "[v6] extend got 429; backing off 60s"
+      next_sleep=60
     else
       # On failure (including 401): refresh token, brief pause, retry once
       get_access_token
@@ -208,8 +276,8 @@ build_ffmpeg_opts() {
 
   # RTSP socket timeout — exits ffmpeg when data stops arriving.
   # Without this, ffmpeg blocks on dead streams for minutes (OS TCP timeout).
-  # The -stimeout option sets the RTSP socket I/O timeout in microseconds.
-  RTSP_TIMEOUT_OPTS=(-stimeout "$RTSP_TIMEOUT_US")
+  # The -timeout option sets the RTSP socket I/O timeout in microseconds.
+  RTSP_TIMEOUT_OPTS=(-timeout "$RTSP_TIMEOUT_US")
 
   # SOURCE_PTS: preserve camera's own RTP capture timestamps instead of
   # substituting bursty network-arrival times. Proven in CAPTURE-TIME-1:
@@ -222,9 +290,6 @@ build_ffmpeg_opts() {
   fi
 
   # Video path: REENCODE=1|2 (CFR + timing sidecar), 0 (VFR passthrough)
-  # Mode 1 and 2 are now identical: CFR re-encode with -vf showinfo for timing
-  # sidecar extraction. Video output is byte-identical with and without showinfo
-  # (confirmed via MD5 comparison in RECORDER-TIMING-2).
   if [ "$REENCODE" = "1" ] || [ "$REENCODE" = "2" ]; then
     echo "[v6] REENCODE=$REENCODE → libx264 veryfast + timing sidecar (CFR)" | tee -a "$LOG"
     V_OPTS=(-c:v libx264 -preset veryfast -crf 23 -g 30 -keyint_min 30)
@@ -240,7 +305,8 @@ build_ffmpeg_opts() {
     VF_OPTS=(-vf showinfo)
   fi
 
-  echo "[v6] RTSP socket timeout: ${RTSP_TIMEOUT_SEC}s (${RTSP_TIMEOUT_US}us)" | tee -a "$LOG"
+  echo "[v6] RTSP socket timeout: ${RTSP_TIMEOUT_SEC}s" | tee -a "$LOG"
+  echo "[v6] API budget: ${SDM_USER_QPM} QPM / ${N_CAMERAS} cameras → ${CALLS_PER_MIN_BUDGET} calls/min, min interval ${MIN_RETRY_INTERVAL}s" | tee -a "$LOG"
 }
 
 extract_timing_sidecars() {
@@ -287,14 +353,11 @@ extract_timing_sidecars() {
     local pairs_tmp="$DIAG_DIR/_pairs_${ATTEMPT}_${si}.tmp"
 
     if [ "$SOURCE_PTS" = "1" ]; then
-      # SOURCE_PTS mode: extract (host_arrival, source_pts) pairs from timestamped stderr
-      # Line format: "1785106319.123456 [Parsed_showinfo_0 @ ...] ... pts_time:0.033 ..."
       sed -n "${from_line},${to_line}p" "$stderr" \
         | grep 'Parsed_showinfo.*pts_time:' \
         | sed -n 's/^\([0-9.]*\) .*pts_time:\([0-9.eE+-]*\).*/\1 \2/p' \
         > "$pairs_tmp"
     else
-      # Arrival-PTS mode: extract pts_time only (no host timestamp)
       sed -n "${from_line},${to_line}p" "$stderr" \
         | grep 'Parsed_showinfo.*pts_time:' \
         | sed -n 's/.*pts_time:\([0-9.eE+-]*\).*/0 \1/p' \
@@ -310,7 +373,6 @@ extract_timing_sidecars() {
       continue
     fi
 
-    # Get output frame count and fps from the segment mp4
     local output_count=0 output_fps=0
     if [ -f "$seg_path" ]; then
       output_count=$(ffprobe -hide_banner -select_streams v:0 \
@@ -327,14 +389,11 @@ extract_timing_sidecars() {
       continue
     fi
 
-    # Mismatch detection
     local mismatch="false"
     [ "$input_count" -ne "$output_count" ] && mismatch="true"
 
     local use_source_pts="$SOURCE_PTS"
 
-    # Unified awk: handles both modes. In source-PTS mode, includes host_arrival_s,
-    # lower-envelope offset, windowed drift check, measured fps.
     awk -v output_count="$output_count" \
         -v output_fps="$output_fps" \
         -v epoch="$epoch" \
@@ -345,7 +404,6 @@ extract_timing_sidecars() {
         -v attempt="$ATTEMPT" \
     '
     BEGIN {
-      # Read (host_arrival, source_pts) pairs
       ni = 0
       while ((getline line < pairs_file) > 0) {
         split(line, parts, " ")
@@ -355,7 +413,6 @@ extract_timing_sidecars() {
       }
       close(pairs_file)
 
-      # Sort by PTS (insertion sort — handles rare B-frame reorder)
       for (a = 1; a < ni; a++) {
         kp = raw_pts[a]; kh = host_arr[a]
         b = a - 1
@@ -366,11 +423,9 @@ extract_timing_sidecars() {
         raw_pts[b+1] = kp; host_arr[b+1] = kh
       }
 
-      # Normalize PTS: segment-relative
       base_pts = (ni > 0) ? raw_pts[0] : 0
       for (k = 0; k < ni; k++) raw_pts[k] -= base_pts
 
-      # Parse fractional fps
       if (index(output_fps, "/") > 0) {
         split(output_fps, fp, "/")
         fps_val = fp[1] / fp[2]
@@ -380,13 +435,11 @@ extract_timing_sidecars() {
       if (fps_val <= 0) fps_val = 30.0
       interval = 1.0 / fps_val
 
-      # Measured fps
       measured_fps = fps_val
       if (ni > 1 && raw_pts[ni-1] > 0) {
         measured_fps = (ni - 1) / raw_pts[ni-1]
       }
 
-      # PTS uniformity stats
       sum_d = 0; sum_d2 = 0; nd = 0
       for (k = 1; k < ni; k++) {
         d = (raw_pts[k] - raw_pts[k-1]) * 1000
@@ -395,7 +448,6 @@ extract_timing_sidecars() {
       mean_d = (nd > 0) ? sum_d / nd : 0
       stdev_d = (nd > 0) ? sqrt(sum_d2/nd - mean_d*mean_d) : 0
 
-      # --- Lower-envelope offset + windowed drift (SOURCE_PTS only) ---
       global_min_offset = 0; drift_rate = 0; drift_flat = "true"; drift_ppm = 0
       n_windows = 0
 
@@ -406,7 +458,6 @@ extract_timing_sidecars() {
           if (off < global_min_offset) global_min_offset = off
         }
 
-        # Windowed offsets (10s windows)
         win_size = 10.0
         for (w = 0; w < 60 && ni > 0; w++) {
           ws = w * win_size; we = (w + 1) * win_size
@@ -425,7 +476,6 @@ extract_timing_sidecars() {
           }
         }
 
-        # Linear fit for drift
         if (n_windows >= 2) {
           sx=0;sy=0;sxx=0;sxy=0
           for (w=0;w<n_windows;w++) {
@@ -439,7 +489,6 @@ extract_timing_sidecars() {
         drift_flat = (n_windows<2 || (drift_rate>-0.0001 && drift_rate<0.0001)) ? "true" : "false"
       }
 
-      # --- Metadata line ---
       if (source_pts_mode == "1") {
         printf "{\"_meta\":true,\"segment_start_epoch\":%s,\"attempt\":%d,\"input_frame_count\":%d,\"output_frame_count\":%d,\"output_fps\":%.4f,\"measured_fps\":%.4f,\"mismatch\":%s,\"pts_wallclock_offset_s\":%.6f,\"offset_method\":\"lower_envelope\",\"drift_rate_s_per_s\":%.9f,\"drift_flat\":%s,\"drift_ppm\":%.3f,\"n_drift_windows\":%d,\"pts_mean_delta_ms\":%.4f,\"pts_stdev_delta_ms\":%.4f}\n", \
           epoch, attempt, ni, output_count, fps_val, measured_fps, mismatch, \
@@ -449,7 +498,6 @@ extract_timing_sidecars() {
           epoch, attempt, ni, output_count, fps_val, measured_fps, mismatch
       }
 
-      # --- Two-pointer: map output frames to nearest input PTS ---
       j = 0
       for (i = 0; i < output_count; i++) {
         t_out = i * interval
@@ -472,7 +520,6 @@ extract_timing_sidecars() {
 
     rm -f "$pairs_tmp"
 
-    # Summary line with loud mismatch warning + measured fps
     local sidecar_lines
     sidecar_lines=$(( $(wc -l < "$sidecar") - 1 ))
     local fps_info=""
@@ -487,44 +534,53 @@ extract_timing_sidecars() {
 }
 
 classify_failure() {
-  # Classify ffmpeg exit for backoff decision.
-  # Sets FAILURE_TYPE to one of: healthy, rtsp_404, quick, connect_fail
+  # Classify ffmpeg exit for backoff + session-state decisions.
+  # Sets FAILURE_TYPE and SESSION_DEAD.
+  # Uses Parsed_showinfo as the reliable indicator of whether frame data was
+  # received (validated: never-connected attempts have 0 showinfo lines;
+  # Opening lines are unreliable — segment muxer may open a file early).
   local stderr_file="$1"
   local run_duration="$2"
 
   if [ "$run_duration" -ge "$HEALTHY_RUN_THRESHOLD" ]; then
     FAILURE_TYPE="healthy"
+    SESSION_DEAD=false
     return
   fi
 
-  # Check stderr for specific error patterns
+  local got_data=false
+  if [ -f "$stderr_file" ] && grep -q 'Parsed_showinfo' "$stderr_file" 2>/dev/null; then
+    got_data=true
+  fi
+
   if [ -f "$stderr_file" ]; then
-    if grep -q '404.*Not Found\|404Not Found' "$stderr_file" 2>/dev/null; then
-      FAILURE_TYPE="rtsp_404"
+    if grep -q '404.*Not Found\|404Not Found\|session.*invalidated' "$stderr_file" 2>/dev/null; then
+      FAILURE_TYPE="session_dead"
+      SESSION_DEAD=true
       return
     fi
-    if grep -q 'Connection refused\|Connection timed out\|Network is unreachable' "$stderr_file" 2>/dev/null; then
-      FAILURE_TYPE="connect_fail"
+    if grep -q 'Connection timed out\|Connection refused\|Network is unreachable' "$stderr_file" 2>/dev/null; then
+      if [ "$got_data" = "true" ]; then
+        # Data was flowing, then connection died — mid-stream failure
+        FAILURE_TYPE="connect_fail"
+      else
+        # Never got any data — session never established
+        FAILURE_TYPE="session_dead"
+      fi
+      SESSION_DEAD=true
       return
     fi
   fi
 
+  # Unknown quick failure
   FAILURE_TYPE="quick"
+  SESSION_DEAD=true
 }
 
 start_ffmpeg() {
   mkdir -p "$DIAG_DIR"
   local out_tmpl="$DIAG_DIR/${CAM_ID}-%Y%m%d-%H%M%S.mp4"
   log "[v6] recording until $(date -u -d "@$DEADLINE" +%H:%M:%S) in ${SEG_SECONDS}s segments → $out_tmpl"
-
-  # Freshness guard: if URL is old (>60s), re-generate once
-  local now age
-  now="$(date -u +%s)"
-  age=$(( now - $(cat "$DIAG_DIR/generated_at_epoch.txt" 2>/dev/null || echo "$now") ))
-  if [ "$age" -gt 60 ]; then
-    log "[v6] URL is ${age}s old; regenerating before start"
-    generate_stream || log "[v6] pre-start regenerate failed; proceeding with current URL"
-  fi
 
   # Per-attempt stderr file (supports retry loop — each attempt gets its own file)
   local stderr_file="$DIAG_DIR/ffmpeg_attempt_${ATTEMPT}.stderr"
@@ -546,9 +602,10 @@ start_ffmpeg() {
 
   # Record attempt metadata
   local ffmpeg_start_epoch="$EPOCHREALTIME"
-  printf '{"attempt":%d,"generate_epoch":"%s","ffmpeg_start_epoch":"%s"}\n' \
+  printf '{"attempt":%d,"generate_epoch":"%s","ffmpeg_start_epoch":"%s","reuse":%s}\n' \
     "$ATTEMPT" "$(cat "$DIAG_DIR/generated_at_epoch.txt" 2>/dev/null || echo 0)" \
     "$ffmpeg_start_epoch" \
+    "$WAS_REUSE" \
     >> "$DIAG_DIR/attempt_log.jsonl"
 
   ffmpeg -hide_banner -loglevel info -nostdin -y \
@@ -579,25 +636,65 @@ get_access_token
 
 build_ffmpeg_opts
 
+# Initialize extend expiry file
+echo "0" > "$DIAG_DIR/_extend_expiry.txt"
+
 while :; do
   [ "$(date -u +%s)" -ge "$DEADLINE" ] && { log "[v6] window elapsed"; break; }
 
   ATTEMPT=$((ATTEMPT+1))
-  log "[v6] attempt #$ATTEMPT"
 
-  # Refresh access token before generating (cheap — cache hit unless expired)
-  get_access_token
+  if [ "$NEED_NEW_SESSION" = "true" ]; then
+    log "[v6] attempt #$ATTEMPT"
 
-  # Stop the previous stream session before generating a new one.
-  # Avoids orphaning sessions at the relay (SDM concurrent-stream limit).
-  stop_stream
+    # Refresh access token (cheap — cache hit unless expired)
+    get_access_token
 
-  if ! generate_stream; then
-    log "[v6] Generate failed; backoff ${BACKOFF}s"
-    sleep "$BACKOFF"
-    [ "$BACKOFF" -lt "$BACKOFF_QUICK_MAX" ] && BACKOFF=$(( BACKOFF * 2 ))
-    [ "$BACKOFF" -gt "$BACKOFF_QUICK_MAX" ] && BACKOFF=$BACKOFF_QUICK_MAX
-    continue
+    # Stop the previous session ONLY if we believe it's still alive.
+    # Dead sessions return 400 ("stream_token invalid") — confirmed in
+    # RECORDER-RELIABILITY-1 test. Skipping saves an API call.
+    if [ "$SESSION_DEAD" = "false" ]; then
+      stop_stream
+    fi
+
+    if ! generate_stream; then
+      # Handle generate failure by type
+      case "$GENERATE_FAIL_TYPE" in
+        429)
+          local backoff_val="${BACKOFF_429_OVERRIDE:-$BACKOFF_429}"
+          [ "$backoff_val" -lt "$BACKOFF_429" ] && backoff_val="$BACKOFF_429"
+          log "[v6] 429 rate-limited; backoff ${backoff_val}s + jitter"
+          jittered_sleep "$backoff_val"
+          [ "$BACKOFF_429" -lt "$BACKOFF_429_MAX" ] && BACKOFF_429=$(( BACKOFF_429 * 2 ))
+          [ "$BACKOFF_429" -gt "$BACKOFF_429_MAX" ] && BACKOFF_429=$BACKOFF_429_MAX
+          ;;
+        device_404)
+          CONSECUTIVE_DEVICE_404=$(( CONSECUTIVE_DEVICE_404 + 1 ))
+          if [ "$CONSECUTIVE_DEVICE_404" -ge "$DEVICE_404_MAX_RETRIES" ]; then
+            log "[v6] device not found after $CONSECUTIVE_DEVICE_404 attempts; giving up"
+            break
+          fi
+          log "[v6] device 404 ($CONSECUTIVE_DEVICE_404/$DEVICE_404_MAX_RETRIES); backoff ${BACKOFF}s + jitter"
+          jittered_sleep "$BACKOFF"
+          ;;
+        *)
+          log "[v6] Generate failed; backoff ${BACKOFF}s + jitter"
+          jittered_sleep "$BACKOFF"
+          [ "$BACKOFF" -lt "$BACKOFF_QUICK_MAX" ] && BACKOFF=$(( BACKOFF * 2 ))
+          [ "$BACKOFF" -gt "$BACKOFF_QUICK_MAX" ] && BACKOFF=$BACKOFF_QUICK_MAX
+          ;;
+      esac
+      CONSECUTIVE_FAILURES=$(( CONSECUTIVE_FAILURES + 1 ))
+      continue
+    fi
+
+    # Generate succeeded — reset counters
+    CONSECUTIVE_DEVICE_404=0
+    NEED_NEW_SESSION=false
+    WAS_REUSE=false
+  else
+    log "[v6] attempt #$ATTEMPT (reusing URL, 0 API calls)"
+    WAS_REUSE=true
   fi
 
   start_ffmpeg
@@ -627,35 +724,77 @@ while :; do
   # Done if time is up
   [ "$(date -u +%s)" -ge "$DEADLINE" ] && { log "[v6] window elapsed after attempt #$ATTEMPT"; break; }
 
-  # Classify the failure and choose backoff
+  # Classify the failure and update session state
   classify_failure "$DIAG_DIR/ffmpeg_attempt_${ATTEMPT}.stderr" "$run_duration"
 
+  # Track consecutive failures for escalation
+  if [ "$FAILURE_TYPE" = "healthy" ]; then
+    CONSECUTIVE_FAILURES=0
+    BACKOFF=$BACKOFF_INITIAL
+  else
+    CONSECUTIVE_FAILURES=$(( CONSECUTIVE_FAILURES + 1 ))
+  fi
+
+  # Decide: reuse existing URL or get a new session?
   case "$FAILURE_TYPE" in
     healthy)
-      # Stream rotation/expiry after a good run — reconnect immediately
-      log "[v6] healthy run (${run_duration}s); reconnecting immediately"
-      BACKOFF=$BACKOFF_INITIAL
+      # Check if the session's extend expiry is still in the future
+      local extend_expiry
+      extend_expiry=$(cat "$DIAG_DIR/_extend_expiry.txt" 2>/dev/null || echo 0)
+      local_now="$(date -u +%s)"
+      if [ "$extend_expiry" -gt "$local_now" ] && [ "$SESSION_DEAD" = "false" ]; then
+        NEED_NEW_SESSION=false
+        log "[v6] healthy run (${run_duration}s); session still valid (expires $(date -u -d "@$extend_expiry" +%H:%M:%S)); reusing URL"
+      else
+        NEED_NEW_SESSION=true
+        log "[v6] healthy run (${run_duration}s); session expired; reconnecting immediately"
+      fi
+      ;;
+    session_dead)
+      NEED_NEW_SESSION=true
+      # Check for escalation on consecutive failures
+      if [ "$CONSECUTIVE_FAILURES" -ge "$CONSECUTIVE_FAIL_ESCALATE" ]; then
+        local esc_backoff=$CONSECUTIVE_FAIL_BACKOFF
+        [ "$CONSECUTIVE_FAILURES" -gt $(( CONSECUTIVE_FAIL_ESCALATE + 3 )) ] && esc_backoff=$CONSECUTIVE_FAIL_BACKOFF_MAX
+        log "[v6] session dead (${CONSECUTIVE_FAILURES} consecutive failures); slow-polling ${esc_backoff}s + jitter"
+        jittered_sleep "$esc_backoff"
+      else
+        log "[v6] session dead; backoff ${BACKOFF}s + jitter"
+        jittered_sleep "$BACKOFF"
+        [ "$BACKOFF" -lt "$BACKOFF_QUICK_MAX" ] && BACKOFF=$(( BACKOFF * 2 ))
+        [ "$BACKOFF" -gt "$BACKOFF_QUICK_MAX" ] && BACKOFF=$BACKOFF_QUICK_MAX
+      fi
       ;;
     rtsp_404)
-      # Relay lockout — back off moderately (stop_stream should prevent this)
-      log "[v6] RTSP 404 (relay lockout); backoff ${BACKOFF}s"
-      sleep "$BACKOFF"
-      [ "$BACKOFF" -lt "$BACKOFF_404_MAX" ] && BACKOFF=$(( BACKOFF < BACKOFF_404 ? BACKOFF_404 : BACKOFF * 2 ))
-      [ "$BACKOFF" -gt "$BACKOFF_404_MAX" ] && BACKOFF=$BACKOFF_404_MAX
+      NEED_NEW_SESSION=true
+      if [ "$CONSECUTIVE_FAILURES" -ge "$CONSECUTIVE_FAIL_ESCALATE" ]; then
+        local esc_backoff=$CONSECUTIVE_FAIL_BACKOFF
+        [ "$CONSECUTIVE_FAILURES" -gt $(( CONSECUTIVE_FAIL_ESCALATE + 3 )) ] && esc_backoff=$CONSECUTIVE_FAIL_BACKOFF_MAX
+        log "[v6] RTSP 404 (${CONSECUTIVE_FAILURES} consecutive failures); slow-polling ${esc_backoff}s + jitter"
+        jittered_sleep "$esc_backoff"
+      else
+        log "[v6] RTSP 404 (relay lockout); backoff ${BACKOFF}s + jitter"
+        jittered_sleep "$BACKOFF"
+        [ "$BACKOFF" -lt "$BACKOFF_404_MAX" ] && BACKOFF=$(( BACKOFF < BACKOFF_404 ? BACKOFF_404 : BACKOFF * 2 ))
+        [ "$BACKOFF" -gt "$BACKOFF_404_MAX" ] && BACKOFF=$BACKOFF_404_MAX
+      fi
       ;;
-    connect_fail)
-      # Network issue — moderate backoff
-      log "[v6] connection failure; backoff ${BACKOFF}s"
-      sleep "$BACKOFF"
-      [ "$BACKOFF" -lt "$BACKOFF_QUICK_MAX" ] && BACKOFF=$(( BACKOFF * 2 ))
-      [ "$BACKOFF" -gt "$BACKOFF_QUICK_MAX" ] && BACKOFF=$BACKOFF_QUICK_MAX
-      ;;
-    *)
-      # Unknown quick failure — standard backoff
-      log "[v6] quick failure (${run_duration}s); backoff ${BACKOFF}s"
-      sleep "$BACKOFF"
-      [ "$BACKOFF" -lt "$BACKOFF_QUICK_MAX" ] && BACKOFF=$(( BACKOFF * 2 ))
-      [ "$BACKOFF" -gt "$BACKOFF_QUICK_MAX" ] && BACKOFF=$BACKOFF_QUICK_MAX
+    connect_fail|*)
+      NEED_NEW_SESSION=true
+      # If this was a reuse attempt that failed quickly, skip backoff — fall through to generate
+      if [ "$WAS_REUSE" = "true" ] && [ "$run_duration" -lt "$REUSE_FAIL_THRESHOLD" ]; then
+        log "[v6] reuse failed (${run_duration}s); falling through to regenerate"
+      elif [ "$CONSECUTIVE_FAILURES" -ge "$CONSECUTIVE_FAIL_ESCALATE" ]; then
+        local esc_backoff=$CONSECUTIVE_FAIL_BACKOFF
+        [ "$CONSECUTIVE_FAILURES" -gt $(( CONSECUTIVE_FAIL_ESCALATE + 3 )) ] && esc_backoff=$CONSECUTIVE_FAIL_BACKOFF_MAX
+        log "[v6] failure #${CONSECUTIVE_FAILURES} (${FAILURE_TYPE}, ${run_duration}s); slow-polling ${esc_backoff}s + jitter"
+        jittered_sleep "$esc_backoff"
+      else
+        log "[v6] ${FAILURE_TYPE} (${run_duration}s); backoff ${BACKOFF}s + jitter"
+        jittered_sleep "$BACKOFF"
+        [ "$BACKOFF" -lt "$BACKOFF_QUICK_MAX" ] && BACKOFF=$(( BACKOFF * 2 ))
+        [ "$BACKOFF" -gt "$BACKOFF_QUICK_MAX" ] && BACKOFF=$BACKOFF_QUICK_MAX
+      fi
       ;;
   esac
 done
