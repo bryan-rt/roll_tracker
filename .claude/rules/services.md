@@ -82,11 +82,36 @@ paths:
   `N_CAMERAS` passed from v7_2; per-camera min retry interval computed dynamically from
   `70% of 10 QPM / N`; jitter (0-5s) on every backoff; BACKOFF_INITIAL=8, BACKOFF_QUICK_MAX=25.
   Evidence: `docs/evidence/recorder_reliability_2/`.
-- **Source-PTS dup/drop verdict (qualified, RELIABILITY-1+2):** Source-PTS reduces
-  pixel-identical duplicate frames by 10-50x vs arrival-PTS (FP7oJQ: 5.6% → 0.0% typical;
-  PPDmUg: 2.3% → 0.0% typical). **Camera-dependent:** PPDmUg at 15.0fps shows exact
-  sidecar match (405/405); FP7oJQ at 13.85fps still produces ~8% input/output mismatch
-  (605→653 fabricated frames). The improvement tracks source-PTS cadence regularity.
+- **ffmpeg option fragility:** `-stimeout` was removed in ffmpeg 7.x. The correct option is
+  `-timeout` (same microsecond units). `debian:stable-slim` silently rolled bookworm→trixie.
+  **Pin the Debian version in Dockerfiles** to prevent silent option invalidation on rebuild.
+- **Source-PTS dup/drop verdict (TWO mechanisms, partially fixed):**
+  1. **Bursty arrival timestamps** → ffmpeg mis-inferred frame rate → dup/drop. **FIXED** by
+     source PTS (pixel-identical dups reduced 10-50x).
+  2. **CFR encode target ≠ actual capture rate** → encoder pads to fill the grid. **STILL
+     PRESENT.** FP7oJQ at 13.85fps against 15fps target → 8.3% fabricated (554→600). PPDmUg
+     exact only because rate equals target (15.00fps). Since stream fps varies per session AND
+     between cameras, any fixed CFR target will mismatch some camera some of the time.
+  **OPEN CONTRADICTION:** RELIABILITY-1 reported FP7oJQ "0.0% typical" pixel-identical dups
+  via `mpdecimate`, but sidecar reports 8% fabricated frames. CFR padding produces
+  bit-identical frames — one measurement is wrong. Resolve before trusting either.
+- **Timing capabilities (consolidated contract):**
+  - **Relative per-frame timing: TRUE** (sensor clock, ~33ms/~67ms intervals, 1.21ms stdev).
+  - **Absolute per-frame timing: ESTIMATED ±14–56ms** (recorder-side lower-envelope offset +
+    per-camera drift correction; FP7oJQ −603 ppm ≈ 181ms/5min, linearly correctable).
+  - **RTCP definitively ABSENT** (both TCP and UDP) → no absolute camera clock from stream.
+  - **fps varies** per session AND per camera; SDP unreliable. Never hardcode fps.
+  - **Sidecar schema:** `frame_index` (join key to Stage A), `pts_time_s`, `host_arrival_s`,
+    `input_n` (consecutive same `input_n` = fabricated duplicate). Metadata: measured fps
+    (4dp), lower-envelope offset, drift ppm, mismatch flag.
+- **Remaining recorder work (open checkpoint):**
+  1. Validate reuse path, token refresh past ~25-min barrier, sustained coverage, no 429s.
+  2. Resolve 0.0%-vs-8% duplicate-measurement contradiction.
+  3. Make `SOURCE_PTS=1` the DEFAULT (currently opt-in).
+  4. Decide CFR-target-vs-actual-rate: per-clip CFR target, or accept padding and let
+     pipeline flag duplicates via `input_n` (preferred — no recorder change needed).
+  5. `N_CAMERAS` div-by-zero guard: `(10*7/10)/N` → 0 at N≥8 → `60/0` crash. Add floor of 1.
+  6. Pin Debian version in Dockerfile.
 
 ## processor
 - Polls `data/raw/nest/` for new MP4s, invokes bjj_pipeline A→F.

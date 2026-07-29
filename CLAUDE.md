@@ -64,7 +64,7 @@ docs/                     # Calibration guide, decisions archive, audits
 
 ## Current Status
 
-*Last updated 2026-07-28.*
+*Last updated 2026-07-29.*
 
 Pipeline A→F verified E2E. Session pipeline validated (3-camera, 35/36 clips).
 
@@ -246,6 +246,12 @@ backgrounded — off the critical path, PIDs waited at window end.
 - SOURCE_PTS exonerated as cause of exits — all failures were RTSP 404 (relay lockout
   from session orphaning), session invalidation (Nest unilateral), and 401 (token expiry).
   Zero timestamp/DTS errors.
+- **ffmpeg option fragility:** `-stimeout` was removed in ffmpeg 7.x; the correct option for
+  current builds is `-timeout` (same microsecond units). `debian:stable-slim` silently rolled
+  bookworm→trixie, changing the available ffmpeg. **Pin the Debian version in Dockerfiles.**
+- Backoff bug: exponential backoff NEVER RESET on success (3→6→12→…→96s, pinned for the rest
+  of the window). Now resets on healthy exit. This compounded the timeout bug — long waits
+  between retries grew geometrically.
 Evidence: `docs/evidence/recorder_reliability_1/`.
 
 **RECORDER-RELIABILITY-2 (2026-07-28):** API traffic reduction + quota awareness. RELIABILITY-1
@@ -258,6 +264,43 @@ consecutive failure escalation (5+ failures → slow-poll 120-300s, prevents off
 consuming shared quota), (6) cross-camera quota coordination (N_CAMERAS from v7_2, dynamic
 min retry interval from 70% of quota/N, jitter on every backoff).
 Evidence: `docs/evidence/recorder_reliability_2/`.
+
+**TWO dup/drop mechanisms (important qualification):**
+1. **Bursty arrival timestamps** → ffmpeg mis-inferred frame rate → dup/drop. **FIXED** by
+   source PTS (pixel-identical dups reduced 10-50x).
+2. **CFR encode target ≠ actual capture rate** → encoder pads/drops to fill the grid. **STILL
+   PRESENT.** FP7oJQ captures at 13.85fps against 15fps CFR target → 8.3% fabricated frames
+   (554→600). PPDmUg exact only because its rate equals the target (15.00fps). Since stream fps
+   varies per session AND between cameras, any fixed CFR target will mismatch some camera some
+   of the time.
+**OPEN CONTRADICTION:** RELIABILITY-1 reported FP7oJQ "0.0% typical" pixel-identical duplicates
+via `mpdecimate`, but the sidecar reports 8% fabricated frames. CFR padding produces
+bit-identical frames that `mpdecimate` should detect. One measurement is wrong — resolve
+before trusting either number.
+
+**Timing capabilities (consolidated contract):**
+- **Relative per-frame timing: TRUE and camera-derived.** RTP timestamps from the sensor clock.
+  Uniform ~33ms (30fps) or ~67ms (15fps) intervals, 1.21ms stdev. Intervals are real.
+- **Absolute per-frame timing: ESTIMATED ±14–56ms.** Recorder-side lower-envelope offset
+  against host clock. Per-camera drift measurable and linearly correctable (FP7oJQ −603 ppm
+  ≈ 181ms/5min).
+- **RTCP definitively ABSENT** across all cameras, both TCP and UDP. No RTP→NTP wall-clock
+  mapping available. Absolute camera clock NOT accessible from stream.
+- **fps varies** per session AND per camera. SDP unreliable (reports 30 when delivering 15).
+  **Never hardcode fps anywhere.**
+- **Sidecar schema** (per output frame): `frame_index` (join key to Stage A), `pts_time_s`
+  (source capture PTS), `host_arrival_s`, `input_n` (source frame this output maps to —
+  consecutive same `input_n` = fabricated duplicate). Metadata: measured fps (4 decimal
+  places), lower-envelope offset, drift ppm, mismatch flag.
+
+**CRITICAL CAVEAT: prior GT measurements made on CORRUPTED FOOTAGE.** All existing GT footage
+and every measurement derived from it predates the recorder fixes and was recorded under
+bursty-arrival timestamps causing large-scale dup/drop (35% input/output mismatch in one
+case). Duplicate frames inject FALSE ZERO-MOTION into BoT-SORT's Kalman filter; dropped
+frames inject FALSE TELEPORTS. An unknown fraction of the measured "Stage A tracklet_drift"
+(41%) may be RECORDER-INJECTED rather than a tracking limitation. **Hold GT2ACTUALS drift
+attribution, purity-proxy results, and Stage A sweep conclusions LOOSELY until re-measured
+on clean footage.** Keep old GT clips as a regression baseline.
 
 **CP22 (completed):** Default detection model updated to yolo26n-pose (STAL loss, better
 small-object detection). ultralytics upgraded 8.3.252 → 8.4.33 (`--no-deps`).
@@ -528,6 +571,27 @@ First trained model had FP7oJQ false positives from background memorization.
 8. Productionize masked histograms (validated +0.09 AUC, not shipped).
 9. Stage A `match_thresh` sweep — AFTER the A↔D fix, since SWEEP-4 was measured against
    the un-fixed penalty.
+10. Resolve 0.0%-vs-8% duplicate-measurement contradiction (mpdecimate vs sidecar input_n).
+11. Pin Debian version in Dockerfile (`debian:stable-slim` silently rolled, removing
+    `-stimeout`). Add `N_CAMERAS` div-by-zero guard (integer division to 0 at N≥8 → crash).
+
+**Forward pipeline direction (PLANNED, not built):**
+1. **Dynamic fps replaces hardcoded 30** everywhere: BoT-SORT `frame_rate`, `speed_mps_k`,
+   `derive_clip_frame_offset`, Stage E temporal windows, cross-camera evidence timing.
+   Source: per-clip measured fps from sidecar.
+2. **Padded/duplicate frames: EMIT NORMALLY BUT FLAG, EXCLUDE FROM KALMAN UPDATE.**
+   Detection: consecutive output frames sharing same `input_n` in sidecar. Emitting keeps
+   `frame_index` contiguous (all joins work); flagging lets consumers decide. Removes false
+   zero-motion without recorder change — CFR-padding mechanism can stay.
+3. **Consumer split:** per-frame dt + duplicate flags everywhere we control code; per-clip
+   scalar measured fps for BoT-SORT (boxmot hardcodes unit Kalman time-step; variable-dt
+   requires forking). Intra-clip cadence uniform (1.21ms stdev), scalar loses little.
+4. **GT-join decision needed:** CVAT labels duplicate frames like any other. Decide whether
+   GT2ACTUALS scores or excludes pipeline-flagged duplicates before analysis.
+5. **A/B validation on SAME new footage:** Run new post-fix footage through pipeline twice
+   (old logic vs new logic) behind a config flag, against same CVAT GT. Keep old code path
+   as a flag. Expectation: fps correction likely the larger lever (2x dt error); duplicate
+   exclusion removes 0-8% false zero-motion depending on camera.
 
 **Deferred (lower priority):**
 - CP23b remaining: empty frame injection, bbox size tier filtering, tracklet deduplication
@@ -567,6 +631,16 @@ clip-level person_tracks, val-split, greedy IoU>=0.3, with pipeline state noted.
 6. **CP-TAG-4a "+22.7pp improvement" → RETRACTED (SWEEP-3b).** Both 40.5% and 63.2%
    read the SAME pre-commit person_tracks. Difference was full-range vs val-split
    frame selection, not a code-change effect. CP-TAG-4a's actual effect is UNKNOWN.
+7. **RELIABILITY-1 "dup/drop resolved" → QUALIFIED.** Source PTS fixed mechanism 1
+   (arrival-timestamp jitter) but mechanism 2 (CFR-target ≠ capture-rate padding)
+   is STILL PRESENT. Any fixed CFR target will mismatch some camera some of the time.
+8. **Prior GT measurements made on CORRUPTED FOOTAGE.** All existing GT footage and
+   every measurement derived from it predates recorder fixes and was recorded under
+   bursty-arrival timestamps (35% mismatch in one case). Duplicate frames → false
+   zero-motion; dropped frames → false teleports. An unknown fraction of measured
+   "Stage A tracklet_drift" (41%) may be recorder-injected. Hold GT2ACTUALS drift
+   attribution, purity-proxy results, and Stage A sweep LOOSELY until re-measured on
+   clean footage.
 
 ## Pipeline Validation Framework (TB-EVAL series, completed 2026-05-12)
 

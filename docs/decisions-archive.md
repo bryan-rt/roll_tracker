@@ -565,4 +565,69 @@ Evidence: `docs/evidence/purity_proxy_{1,2}/`.
   Tier-2 alignment ±14–56ms. FP7oJQ −603 ppm clock drift. **Stream fps varies per session
   (15 and 30 both observed). SDP unreliable. Do not hardcode fps.**
 - Diagnostic module: `services/nest_recorder/recorder/diag_timing.sh`.
+- **ffmpeg option fragility:** `-stimeout` removed in ffmpeg 7.x; correct option is `-timeout`
+  (same microsecond units). `debian:stable-slim` silently rolled bookworm→trixie. Pin Debian.
 Evidence: `docs/evidence/{wallclock_1,recorder_timing_1,capture_time_{1,2}}/`.
+
+---
+
+## Dup/Drop Qualification (2026-07-29)
+
+The RECORDER-RELIABILITY-1 "dup/drop resolved" verdict is QUALIFIED. There are TWO independent
+mechanisms and source PTS only fixed one:
+
+1. **Bursty arrival timestamps** → ffmpeg mis-inferred the frame rate → dup/drop. **FIXED** by
+   source PTS (pixel-identical dups reduced 10-50x).
+2. **CFR encode target ≠ actual capture rate** → encoder pads/drops to fill the grid. **STILL
+   PRESENT.** Evidence: FP7oJQ captures at 13.85fps against a 15fps CFR target →
+   `15.0 / 13.85 = 1.083` → sidecar shows input 554 → output 600 (8.3% fabricated). PPDmUg
+   is exact (640/640) only because its rate happens to equal the target (15.00 = 15.00).
+   Since stream fps VARIES per session (15 and 30 both observed) and BETWEEN cameras in the
+   same session (13.85 vs 15.00), any fixed CFR target will mismatch some camera some of the
+   time.
+
+**OPEN CONTRADICTION:** RELIABILITY-1 reported FP7oJQ at "0.0% typical" pixel-identical
+duplicates, but the sidecar reports 8% fabricated frames. CFR padding produces bit-identical
+frames, so `mpdecimate` should detect them. One measurement is wrong. Logged as an open item
+to resolve before trusting either number.
+
+---
+
+## Corrupted Footage Caveat (2026-07-29)
+
+**CRITICAL:** All existing GT footage and every measurement derived from it predates the
+recorder fixes (RECORDER-RELIABILITY-1/2) and was recorded under the OLD logic:
+bursty-arrival timestamps causing large-scale dup/drop (35% input/output mismatch measured
+in one case) and a user-visible pause/speed-up jitter artifact.
+
+**Impact on prior conclusions:**
+- Duplicate frames inject FALSE ZERO-MOTION into BoT-SORT's Kalman filter.
+- Dropped frames inject FALSE TELEPORTS.
+- An unknown fraction of the measured "Stage A tracklet_drift" (recorded as the dominant
+  damage source at ~41% of vid2 jumps) may be RECORDER-INJECTED rather than a tracking
+  limitation.
+
+**This qualifies — without invalidating — the following:**
+- GT2ACTUALS drift attribution (CP-6 stage-attribution analysis)
+- Purity-proxy results (PURITY-PROXY-1/2)
+- Stage A tuning sweep (SWEEP-1 through SWEEP-4)
+
+**Guidance:** Hold these conclusions LOOSELY until re-measured on clean (post-fix) footage.
+Keep old GT clips as a regression baseline. Do not discard prior measurements — the
+structural findings (lever hierarchy, architectural gaps) are likely sound; the quantitative
+breakdowns (41% drift, proxy AUC values, sweep deltas) are the uncertain part.
+
+---
+
+## Remaining Recorder Work (open checkpoint, 2026-07-29)
+
+1. Validate reuse path firing, token refresh past the ~25-min barrier, sustained coverage,
+   no 429s in a real capture session.
+2. Resolve the 0.0%-vs-8% duplicate-measurement contradiction (mpdecimate vs sidecar input_n).
+3. Make `SOURCE_PTS=1` the DEFAULT (currently opt-in) — the "make it canon" step.
+4. Decide CFR-target-vs-actual-rate: per-clip CFR target, or accept padding and let the
+   pipeline flag duplicates via `input_n` (preferred — no recorder change needed).
+5. `N_CAMERAS` div-by-zero guard: `(10*7/10)/N` integer-divides to 0 at N≥8, then `60/0`
+   crashes at startup. Add a floor of 1.
+6. Pin the Debian version in the Dockerfile (`debian:stable-slim` silently rolled and
+   removed `-stimeout`).
