@@ -102,7 +102,7 @@ Each tier adds signal; lower tiers never break.
 
 ## Undistortion Audit (2026-04-02)
 All 9 pipeline code paths verified correct. Convention: u_px/v_px = raw pixel space,
-x_m/y_m = world via `project_to_world()`. See `docs/undistortion_audit.md`.
+x_m/y_m = world via `project_to_world()`. See `docs/reference/undistortion_audit.md`.
 
 ## Processor Flow
 Loop 1 (D+E per camera) → cross-camera merge → CP17/CP20 Pass 2 (tag evidence +

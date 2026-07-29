@@ -1,3 +1,11 @@
+> **CORRECTION (2026-07-26, CAPTURE-TIME-2):** The "30fps" generalization below
+> was overturned. Stream fps VARIES per session (15 and 30 both measured from
+> source PTS) and differs BETWEEN cameras (13.85 vs 15.00 in one session). SDP
+> is unreliable (reports 30 when delivering 15). The measurements in this
+> document remain valid for the J_EDEw session captured on 2026-07-04; only the
+> generalization to all cameras/sessions was wrong. See CLAUDE.md "Overturned
+> Conclusions" item 4 and `docs/evidence/capture_time_2/findings.md`.
+
 # CAPTURE-TIME-1: Source PTS Reveals True 30fps Capture Timestamps
 
 **Date:** 2026-07-04

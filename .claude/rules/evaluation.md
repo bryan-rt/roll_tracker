@@ -7,7 +7,7 @@ paths:
 
 ## Frozen Instrument (CP-EVAL-1, v1.0)
 
-Spec: `docs/eval_instrument_spec.md`. Do NOT modify without a deliberate migration brief.
+Spec: `docs/reference/eval_instrument_spec.md`. Do NOT modify without a deliberate migration brief.
 
 - **Single matcher:** `common/matching.py` — Hungarian, IoU 0.5, scipy. No additional matchers.
 - **Identity mapping:** Derived in `gt_person_trace.py` from `per_frame_matches.parquet` +

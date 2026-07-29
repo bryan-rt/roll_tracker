@@ -72,6 +72,10 @@ Root cause ranking: wrong_id (28.2%) > pair_box (23.1%) > miss (10.4%) > d4_fram
 These numbers are NOT comparable without stating the basis (camera set, frame range,
 person_tracks level, pipeline state). Canonical: clip-level, val-split, greedy IoU>=0.3.
 
+⚠ All figures above were measured on PRE-source-PTS footage with significant frame
+duplication/dropping — see CLAUDE.md "Corrupted Footage Caveat". Hold loosely until
+re-measured on clean footage.
+
 **KNOWN BUG (CP-GT2ACTUALS-3.5):** `stage_d_trace.py`'s `_compute_dominant_person_ids`
 and `run_d_trace` use single-resolution `_resolve_tracklet_id` without the family-aware
 fallback. If D0.5 splits exist, this produces inflated no_id (vid2: 58% → 6.9% with

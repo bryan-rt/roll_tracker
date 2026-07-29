@@ -54,7 +54,7 @@ Not referenced by any evidence doc. Not a named baseline.
 ### 2c. NMS sweep (1.1 GB)
 
 CP7 NMS experiment (iou 0.7, 0.85, 0.9, 0.95). Results summarized in
-`docs/cp7_pre4_nms_experiment.md`. Experiment complete — findings documented.
+`docs/checkpoints/cp7_pre4_nms_experiment.md`. Experiment complete — findings documented.
 Not referenced by any evidence provenance file.
 
 ### 2d. Evaluation directories
@@ -338,7 +338,7 @@ Paths referenced in `docs/evidence/`:
 - `outputs/_eval/signal_trace/bjj-detect-all-cameras_pre_fix/` — **PRESERVED** (in signal_trace)
 
 Paths referenced in `docs/*.md`:
-- `outputs/_eval_baseline_penalty_15/` — referenced for format/structure, not data. **CANDIDATE DELETE** — findings fully documented in `docs/cp1_evidence.md` et al.
+- `outputs/_eval_baseline_penalty_15/` — referenced for format/structure, not data. **CANDIDATE DELETE** — findings fully documented in `docs/checkpoints/cp1_evidence.md` et al.
 - `outputs/_eval_baseline_cp2_penalty_25/` — same situation. **CANDIDATE DELETE**.
 - `outputs/_eval_gt/{cam}/.../stage_*` — **PRESERVED** (in _eval_gt).
 
@@ -400,16 +400,16 @@ Paths referenced in `docs/*.md`:
 ### TIER 3 — Baselines (~6 GB reclaimed)
 
 Per-path evidence re-check performed. Each verified against `docs/evidence/` and
-`docs/*.md`. Two baselines (penalty_15, cp2) are referenced in `docs/cp2_results.md`
-and `docs/cp3_results.md` for the findings (fully documented in markdown), not for
+`docs/*.md`. Two baselines (penalty_15, cp2) are referenced in `docs/checkpoints/cp2_results.md`
+and `docs/checkpoints/cp3_results.md` for the findings (fully documented in markdown), not for
 the data artifacts themselves. All are lite-mode only (pre-v2/pre-CP5, cannot be
 used for full-mode trace).
 
 | Path | Size | Action | Evidence ref? |
 |------|------|--------|--------------|
 | `outputs_cp20_baseline/` | 4.1 GB | DELETED | None |
-| `outputs/_eval_baseline_penalty_15/` | 351 MB | DELETED | docs/cp2_results.md (findings only) |
-| `outputs/_eval_baseline_cp2_penalty_25/` | 335 MB | DELETED | docs/cp3_results.md (findings only) |
+| `outputs/_eval_baseline_penalty_15/` | 351 MB | DELETED | docs/checkpoints/cp2_results.md (findings only) |
+| `outputs/_eval_baseline_cp2_penalty_25/` | 335 MB | DELETED | docs/checkpoints/cp3_results.md (findings only) |
 | `outputs/_eval_baseline_cp5_pre/` | 332 MB | DELETED | None |
 | `outputs/_eval_baseline_cp4_pre/` | 332 MB | DELETED | None |
 | `outputs/_eval_baseline_cp3b_pre/` | 315 MB | DELETED | None |

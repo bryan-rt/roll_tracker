@@ -58,7 +58,7 @@ bug fix history. It is NOT auto-loaded by Claude Code. Access it manually when n
 | Projected polylines saved at calibration time | ✅ Decided | Dense-sampled mat edge points in homography.json. Used by mat_line_detection for line matching. |
 | CP19: Unified calibration pipeline | ✅ Implemented | Replaces CP18 affine correction. Phase A (polyline lens cal) + Phase B (mat-line H refinement via RANSAC). Integrated into save handlers + batch recalibration script. Empty-frame selection via temporal median. Results: 1.0-1.3px reproj, 61-82% inliers across 3 cameras. |
 | Cross-camera calibration verification | ✅ Complete | `calibration_verify.py` pairwise world-coordinate agreement. 9mm worst-case deviation across 3 cameras. |
-| Undistortion pipeline audit | ✅ Complete | All 9 code paths verified correct (2026-04-02). Convention: u_px/v_px = raw pixel, x_m/y_m = world via project_to_world(). See `docs/undistortion_audit.md`. |
+| Undistortion pipeline audit | ✅ Complete | All 9 code paths verified correct (2026-04-02). Convention: u_px/v_px = raw pixel, x_m/y_m = world via project_to_world(). See `docs/reference/undistortion_audit.md`. |
 | Pose decomposition (v6) as canonical height model | ✅ Decided | Replaces polynomial/affine fitting (v1–v5). Uses K⁻¹@H decomposition → SVD-orthogonalized 3×4 P matrix. Zero training data. |
 | H in undistorted pixel space | ✅ Decided | Verified by tracing wizard Step 3 code path. Comments saying "raw" are stale. |
 | Lens calibration fixed-f candidate sweep | ✅ Decided | Replaces loose-bounds single optimizer. `_get_f_candidates` from `homography_calibrate.py`. k bounds ±1.0. |
@@ -71,7 +71,7 @@ bug fix history. It is NOT auto-loaded by Claude Code. Access it manually when n
 | Eval baseline preservation includes pipeline artifacts | ✅ Decided | Copy both _eval/ and _eval_gt/{cam}/{clip}/ for full-mode trace. Historical baselines (pre-CP6) are lite-mode only. |
 | CP5 parallel-carrier consolidation in D1 | ✅ Implemented | d3_dropped collapsed: J_EDEw 49.7%→7.9%, PPDmUg 39.9%→0%, FP7oJQ 24.0%→4.6%. present_misattributed now dominant (59–66%). Solver OPTIMAL, mergers stable. |
 | DetectorConfig.iou: tunable NMS threshold (CP7-pre-6) | ✅ Ratified | Optional[float]=None. Default-inert (proven by artifact-diff regression: detections `0ceee2a1…`, person_tracks `8e6383d2…` identical pre/post). Setting iou bypasses CoreML → .pt + disables end2end NMS. Runtime WARNING emitted. See entry below. |
-| CP-EVAL-1: Frozen eval instrument v1.0 | ✅ Decided | Single-path Layer 1/2 (cdf1037). Hungarian IoU 0.5. Identity mapping: per_frame_matches + person_tracks. Spec: `docs/eval_instrument_spec.md`. |
+| CP-EVAL-1: Frozen eval instrument v1.0 | ✅ Decided | Single-path Layer 1/2 (cdf1037). Hungarian IoU 0.5. Identity mapping: per_frame_matches + person_tracks. Spec: `docs/reference/eval_instrument_spec.md`. |
 | CP-REID-1: BoT-SORT ReID experiment | ❌ Rejected | Generic osnet_x0_25_msmt17 — negligible improvement, 2-3x runtime overhead. Domain gap too large for overhead fisheye. (84157bb) |
 | CP-SWAP-1: Tracker-swap diagnostic | ✅ Complete | 167 GT-oracle swaps, best AUC 0.663 (bbox_aspect_change). Marginal single-feature separability. Module: `pipeline_validation/tracker_swap/`. (b989832) |
 | CP-SWAP-2: Swap pattern characterization | ✅ Complete | 47% hop_into_unoccupied, 28% cascade, 2% exchange. 41% transient. 45% no kinematic spike. Informed splitter design. (3afee17) |
@@ -136,14 +136,14 @@ This means setting `iou` is NOT just a threshold tweak — it substitutes the in
 backend. Detection output will differ from production CoreML even at `iou=0.7` (matching
 the ultralytics default) because the NMS implementation differs.
 
-**Sweep caveat:** All CP7-pre-6 sweep numbers (docs/cp7_pre6_nms_sweep.md) were produced
+**Sweep caveat:** All CP7-pre-6 sweep numbers (docs/checkpoints/cp7_pre6_nms_sweep.md) were produced
 on .pt with Python-side NMS, NOT production CoreML/ANE. The cross-arm trend (relaxing NMS
 monotonically worsens misattribution) is valid; the absolute numbers are not
 production-comparable.
 
 **Sweep conclusion (settled):** NMS relaxation ruled out as standalone fix. Every
 relaxation step worsened misattribution (4.0% → 25.1%), fragmentation (1.0 → 4.5
-tracklets/GT), and solo-context regression. See docs/cp7_pre6_nms_sweep.md.
+tracklets/GT), and solo-context regression. See docs/checkpoints/cp7_pre6_nms_sweep.md.
 
 ## Applied Migrations (23 total)
 

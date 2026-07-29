@@ -47,6 +47,8 @@ paths:
     available but not discriminative). Disabling Tier 3 removes 241 false splits
     at cost of 19 correct (5.4%). **Interim recommendation: disable Tier 3.**
     FP7oJQ/PPDmUg thin-classification (coverage artifact, 5.8%/33.3%).
+    ⚠ Coverage figures measured on PRE-source-PTS footage with significant frame
+    duplication/dropping — see CLAUDE.md "Corrupted Footage Caveat".
 - **Stage E** `matches`: Two-layer engagement. E0 input validation → E1 cap2 GROUP seeds →
   E2 proximity hysteresis → E3 union+buffer → E4 buzzer gate (optional) → E5 min duration →
   E6 identity enrichment. Zero matches is valid (no exception).

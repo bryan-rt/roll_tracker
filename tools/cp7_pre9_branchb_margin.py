@@ -473,7 +473,7 @@ def main():
           f"{100*true_branch_b/scorable:.1f}% of scorable misattributed frames.")
     print(f"  This replaces the asserted 84.3% from CP7-pre-8.")
 
-    print(f"\n  STOP: Report at docs/cp7_pre9_branchb_margin.md.")
+    print(f"\n  STOP: Report at docs/checkpoints/cp7_pre9_branchb_margin.md.")
     print(f"  Node design returns to the web session.")
 
 

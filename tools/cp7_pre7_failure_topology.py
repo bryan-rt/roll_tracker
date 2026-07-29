@@ -793,7 +793,7 @@ def group_bucket_crosstab(instances: list[dict]) -> pd.DataFrame:
 def generate_report(instances: list[dict], spot_check: list[dict],
                     crosstab: pd.DataFrame, lopsided: Optional[str],
                     meas6_run: bool) -> str:
-    """Generate docs/cp7_pre7_failure_topology.md content."""
+    """Generate docs/checkpoints/cp7_pre7_failure_topology.md content."""
     lines = []
     lines.append("# CP7-pre-7: Dominant-Failure Tracklet Topology (FP7oJQ)")
     lines.append("")
@@ -1182,7 +1182,7 @@ def main():
 
     # Generate and write doc
     report = generate_report(instances, spot_check, crosstab, lopsided, run_meas6)
-    doc_path = REPO_ROOT / "docs/cp7_pre7_failure_topology.md"
+    doc_path = REPO_ROOT / "docs/checkpoints/cp7_pre7_failure_topology.md"
     doc_path.write_text(report, encoding="utf-8")
     logger.info("Report written to %s", doc_path)
 

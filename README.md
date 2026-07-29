@@ -218,14 +218,14 @@ cd backend/supabase/supabase && npx supabase start
 ```
 
 See `.claude/rules/commands.md` for full command reference.
-See `docs/calibration_guide.md` for calibration workflow.
+See `docs/guides/calibration_guide.md` for calibration workflow.
 
 ## Current Status
 
 - **Pipeline:** E2E verified. 3-camera session pipeline validated (35/36 clips).
 - **Calibration:** Sub-centimeter cross-camera agreement (9mm). CP19 unified wizard.
 - **Identity:** Tag corroboration (CP17 Tier 1) + coordinate evidence (Tier 2, disabled by default).
-- **Undistortion:** All 9 pipeline code paths audited correct. See `docs/undistortion_audit.md`.
+- **Undistortion:** All 9 pipeline code paths audited correct. See `docs/reference/undistortion_audit.md`.
 - **Apps:** Flutter tested on Pixel 7 Pro. Web app functional draft (mat editor + admin pricing).
 - **Deployment:** Native Mac via `run_local.sh`. Docker pending for Linux.
 - **Supabase:** 23 migrations applied. 10 tables, RLS on all.

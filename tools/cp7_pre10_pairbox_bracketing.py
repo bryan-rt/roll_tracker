@@ -714,7 +714,7 @@ def main():
     print(f"  at separation points (isolated boxes) — the exact points being tested.")
     print(f"  The lean is benign but the numbers are not ground-truth-verified outside 0-300.")
 
-    print(f"\n  STOP: Report at docs/cp7_pre10_pairbox_bracketing.md.")
+    print(f"\n  STOP: Report at docs/checkpoints/cp7_pre10_pairbox_bracketing.md.")
     print(f"  Detection-vs-propagation prioritization returns to the web session.")
 
 

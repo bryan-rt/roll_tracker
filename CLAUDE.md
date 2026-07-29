@@ -16,6 +16,9 @@ ILP stitching → per-athlete match clips → Supabase → Flutter app.
 3. **Pass 3 — Execute**: Implement, test, update CLAUDE.md if architecture changed,
    commit+push. ⏸ STOP — summarize and wait for review.
 
+**Never skip a pause.** User approval gates each pass. Do not run Pass 2
+immediately after Pass 1, and do not run Pass 3 immediately after Pass 2.
+
 **Evidence-driven design:** Do not code from assumptions. When behavior is uncertain:
 enhance logging → inspect real output → plan from evidence. Propose instrumentation
 before fixes when root cause is unclear.
@@ -37,7 +40,7 @@ app_web/                  # Vite+React gym owner app
 configs/                  # default.yaml, per-camera overrides, homography.json
 configs/models/           # Per-model training manifests (model_id.yaml)
 tools/                    # Training, evaluation, comparison, packaging scripts
-docs/                     # Calibration guide, decisions archive, audits
+docs/                     # CATALOG.md, decisions archive, checkpoints, evidence, guides, reference
 .claude/rules/            # Domain-specific context (auto-loaded by path scope)
 ```
 
@@ -749,7 +752,7 @@ migration since downstream tooling will depend on it.
 | PPDmUg | 6.1% | 13.3% | 7.2% | 39.9% | 2.0% | 18.9% | 12.7% |
 
 d3_dropped is the dominant failure mode on J_EDEw and PPDmUg. Parallel-carrier
-displacement confirmed as root cause (see `docs/cp6_gt_trace_baseline.md` Section 4).
+displacement confirmed as root cause (see `docs/checkpoints/cp6_gt_trace_baseline.md` Section 4).
 CP5 (parallel-carrier consolidation) verdict: **resume**.
 
 **Baseline preservation discipline (NEW):** When preserving an eval baseline going forward,
@@ -1008,27 +1011,27 @@ recall of 75-86%. Conclusion: the dominant failure mode is parallel-carrier disp
 in D1 graph construction, not penalty tuning.
 
 **The arc:**
-- **CP0** (`docs/stage_d_audit_findings.md`): Config audit. Confirmed 7 of 8 D3 penalty
+- **CP0** (`docs/reference/stage_d_audit_findings.md`): Config audit. Confirmed 7 of 8 D3 penalty
   fields are dead (never wired from config -> constraints). Only
   `unexplained_tracklet_penalty` is live (via explicit solver.py parameter, bypassing
   the broken constraints path).
-- **CP1** (`docs/cp1_evidence.md`): Quantitative evidence. Cost inversion confirmed --
+- **CP1** (`docs/checkpoints/cp1_evidence.md`): Quantitative evidence. Cost inversion confirmed --
   interior BIRTH+DEATH (20.02) exceeded the flat drop penalty (15.0), so dropping
   interior tracklets was globally optimal.
-- **CP2** (`docs/cp2_results.md`): Penalty 15->25. Partial -- helped FP7oJQ marginally,
+- **CP2** (`docs/checkpoints/cp2_results.md`): Penalty 15->25. Partial -- helped FP7oJQ marginally,
   no effect on J_EDEw/PPDmUg. Binding constraint is not the cost floor.
-- **CP2.5** (`docs/cp2.5_diagnostics.md`): Diagnosed flat penalty as length-agnostic.
+- **CP2.5** (`docs/checkpoints/cp2.5_diagnostics.md`): Diagnosed flat penalty as length-agnostic.
   Recommended length-proportional.
-- **CP3** (`docs/cp3_results.md`): Pure per-frame penalty. REGRESSION (short tracklets
+- **CP3** (`docs/checkpoints/cp3_results.md`): Pure per-frame penalty. REGRESSION (short tracklets
   became too cheap to drop). Rolled back.
-- **CP3b** (`docs/cp3b_results.md`): Floor-protected `max(base, per_frame*n_frames)`.
+- **CP3b** (`docs/checkpoints/cp3b_results.md`): Floor-protected `max(base, per_frame*n_frames)`.
   No regression but no improvement on long tracklets. Penalty mechanism declared
   saturated.
-- **CP4** (`docs/cp4_flow_topology.md`): Root cause found -- parallel-carrier displacement.
+- **CP4** (`docs/checkpoints/cp4_flow_topology.md`): Root cause found -- parallel-carrier displacement.
   When two tracklets are simultaneous carrier candidates for a merge event, D1 creates
   duplicate GROUP nodes; the solver routes one and orphans the other's entire chain.
   Penalty cannot fix this (it's structural, upstream of cost).
-- **CP6** (`docs/cp6_gt_trace_baseline.md`): Built a permanent GT-anchored trace layer in
+- **CP6** (`docs/checkpoints/cp6_gt_trace_baseline.md`): Built a permanent GT-anchored trace layer in
   pipeline_validation (see below). Confirmed CP4 at the row level AND found the picture is
   bigger than pairwise: J_EDEw has FOUR long carriers dropped (t1, t3, t5, t111), only two
   kept (t108, t2). 100% of d3_dropped frames across all cameras have a concurrent kept
@@ -1063,7 +1066,7 @@ detection-level pair separation (see CP7 investigation below).
 
 **CP5 (completed 2026-05-21):** Parallel-carrier consolidation in D1 graph construction.
 `_consolidate_parallel_triggers` helper in `d1_graph_build.py` — deterministic N-way
-tiebreak (dist -> n_frames -> lexicographic carrier_id). Results (`docs/cp5_results.md`):
+tiebreak (dist -> n_frames -> lexicographic carrier_id). Results (`docs/checkpoints/cp5_results.md`):
 d3_dropped collapsed (J_EDEw 49.7% -> 7.9%, PPDmUg 39.9% -> 0.0%, FP7oJQ 24.0% -> 4.6%).
 present rose modestly (J_EDEw 7.4%, PPDmUg 10.6%, FP7oJQ 6.4%). present_misattributed
 is now the dominant failure mode (59-66% at CP5; 51-61% after CP-SPLIT-1). Solver
@@ -1147,7 +1150,7 @@ because detection under-segmentation gives it wrong input.
 
 | Decision | Status | Notes |
 |----------|--------|-------|
-| CP-EVAL-1: Eval instrument freeze — single-path Layer 1/2 | **Active** | Frozen 2026-05-22 (cdf1037). Hungarian IoU 0.5. Identity mapping derived from `per_frame_matches.parquet` + `person_tracks.parquet` inside `gt_person_trace.py`. Spec: `docs/eval_instrument_spec.md` v1.0. |
+| CP-EVAL-1: Eval instrument freeze — single-path Layer 1/2 | **Active** | Frozen 2026-05-22 (cdf1037). Hungarian IoU 0.5. Identity mapping derived from `per_frame_matches.parquet` + `person_tracks.parquet` inside `gt_person_trace.py`. Spec: `docs/reference/eval_instrument_spec.md` v1.0. |
 | CP-REID-1: BoT-SORT ReID experiment | **Rejected — DOMAIN GAP** | Generic `osnet_x0_25_msmt17` rejected for domain gap (street pedestrian vs overhead fisheye grappling), NOT color-blindness. V-histogram win does NOT reopen deep ReID. See updated row below. |
 | CP-SWAP-1: Tracker-swap diagnostic | **Complete** | 167 GT-oracle swaps across 68/562 tracklets. Best single-feature AUC=0.663 (`bbox_aspect_change`). FP7oJQ world_accel 25.8x spike ratio, AUC=0.714. Histogram coverage 100% at swap boundaries. Module: `src/pipeline_validation/tracker_swap/`. |
 | CP-SWAP-2: Swap pattern characterization | **Complete** | 47% hop_into_unoccupied, 28% cascade, 2% exchange. 41% transient (50% single-frame flickers). 45% no kinematic spike. 81% within 0.5m. Informed CP-SPLIT-1 design. |
@@ -1155,7 +1158,7 @@ because detection under-segmentation gives it wrong input.
 | Domain-specific ReID training | **Deferred** | Superseded by CP7 finding: on FP7oJQ (one 2.5-min clip) ~74% of misattribution is detection under-segmentation, not addressable by ReID. Detection pair separation is the primary lever. |
 | BoT-SORT parameter tuning | **Deferred** | iou_threshold, track_buffer experiments. After detection pair separation. |
 | GROUP node assignment reform | **Deferred** | D4 boundary fix using realized_group_pairings. ~3-5pp potential. Concurrent-swap node deferred as ~10% sidecar (CP7-pre-9). |
-| CP7: Misattribution decomposition | **Complete** | Eight-checkpoint investigation (pre-2→pre-10). On FP7oJQ (one 2.5-min clip): ~74% pair-box (55.7% confirmed unbracketed), 9.9% true Branch-B, 0% bracketed — single-clip, confirmation pending on buzzer video. Detection pair separation is the primary lever. See `docs/cp7_pre9_branchb_margin.md`, `docs/cp7_pre10_pairbox_bracketing.md`. |
+| CP7: Misattribution decomposition | **Complete** | Eight-checkpoint investigation (pre-2→pre-10). On FP7oJQ (one 2.5-min clip): ~74% pair-box (55.7% confirmed unbracketed), 9.9% true Branch-B, 0% bracketed — single-clip, confirmation pending on buzzer video. Detection pair separation is the primary lever. See `docs/checkpoints/cp7_pre9_branchb_margin.md`, `docs/checkpoints/cp7_pre10_pairbox_bracketing.md`. |
 | CP-TAG-1: Tag signal trace | **Complete** | Tag detection is bbox-gated (Stage C scans padded detection bboxes only). Tag visibility 0.07-0.23% of tracklet frames. Signal chain C→D2→D4 works (2/2 videos), but tags too rare for sole identity. Cross-tab: 28% of wrong_id from pair_box, 72% from tight_match. See `signal_trace/tag_trace.py`. |
 | CP-TAG-2: Tag ceiling experiment | **Complete** | Full-frame scan (no bbox/cadence restriction) found identical tag observations to pipeline (1+3 across 9,030 frames). Bottleneck is physical occlusion at ceiling distance, not pipeline gating. Dense GT (stride-1, 10x points) confirms stride-10 is representative (±0.3pp). AprilTags cannot be sole identity mechanism. See `tools/tag_fullscan.py`, `tools/tag_experiment.py`. |
 | Cross-tracklet identity diagnostic | **Complete** | Must_link is soft (2× penalty), identity doesn't propagate across tracklets, GROUP dilutes tag identity. Video 1: 17 person_ids for 1 GT person, 167 intra-tracklet transitions. Video 2: tagged tracklet (862f) dropped, tag assigned to wrong person via nested detection. Three architectural gaps: soft must_link, no path propagation, GROUP dilution. |
@@ -1174,7 +1177,7 @@ because detection under-segmentation gives it wrong input.
 | CP-GT2ACTUALS: Dense error map | **Complete** | Dense per-(frame, gt_track_id) error map with jump detection + D0.5 reconciliation. Family-aware split lookup fix (CP-3). Signal_trace has same bug but locked numbers safe (CP-3.5). Stage A (tracklet_drift) is #1 damage source at 41% of vid2 jumps (CP-6). Module: `src/pipeline_validation/gt2actuals/`. Evidence: `docs/evidence/cp_gt2actuals_*/`. |
 | RECORDER-TIMING-1/2: Per-frame timing preservation | **Complete** | Both VFR (REENCODE=0) and CFR+sidecar (REENCODE=1+showinfo) capture real per-frame timing (773+ unique deltas vs 2 for CFR baseline). Video byte-identical with/without showinfo (confirmed MD5). VFR breaks GT frame-comparability; CFR+sidecar is purely additive. Nest camera now 15fps (was 30fps Mar 2026). Evidence: `docs/evidence/recorder_timing_1/`. |
 | RECORDER-SIDECAR-1: Production timing sidecar | **Active** | CFR + `-vf showinfo` is now the default recording mode (REENCODE=1). Per-segment `.timing.jsonl` sidecar written alongside every mp4 — one row per OUTPUT frame keyed on `frame_index` (join key to Stage A), carrying real input PTS (bursty, not uniform) via nearest-neighbor mapping. **Mismatch is the normal condition** — CFR encoder always dups/drops vs bursty input. `pts_time_s` is APPROXIMATE under mismatch: mean ~80ms, P95 ~230ms, max ~500ms error, worst during lag windows (multiple output frames map to same input PTS during delivery gaps). Input timing SEQUENCE is reliable for lag detection (gap presence/duration); per-output-frame time attribution has ±500ms worst-case. COLLECTION ONLY — no CV pipeline stage consumes it yet. Uploader ignores sidecar (manifest-driven). Deferred consumers: BoT-SORT frame_rate fix (LIVE BUG: tracker assumes 30fps, source now 15fps), dynamic-fps motion metrics, cross-camera wall-clock sync. |
-| SOURCE-PTS-1: Opt-in source PTS capture | **Active** | `SOURCE_PTS=1` flag in diag_v6.sh (default 0 = unchanged). Preserves camera RTP capture timestamps (`-copyts`, no wallclock override). Adds per-line `$EPOCHREALTIME` host-arrival timestamping via stderr fifo → sidecar includes `host_arrival_s`, lower-envelope `pts_wallclock_offset_s`, windowed drift (ppm). Per-attempt stderr files handle retry loop. Rehearsal (7 min, FP7oJQ + PPDmUg): PTS uniform 96-100%, 15fps measured, middle segments mismatch:false (exact 1:1), first/last segments boundary mismatch. J_EDEw offline. Runbook: `docs/runbook_cross_camera_capture.md`. **EXONERATED (RECORDER-RELIABILITY-1):** 16 segments across 3 cameras, zero timestamp/DTS errors. All failures were RTSP 404 (session orphaning), session invalidation (Nest-side), or 401 (token expiry). Dup/drop reduced 10-50x vs arrival-PTS. Ready for default adoption. |
+| SOURCE-PTS-1: Opt-in source PTS capture | **Active** | `SOURCE_PTS=1` flag in diag_v6.sh (default 0 = unchanged). Preserves camera RTP capture timestamps (`-copyts`, no wallclock override). Adds per-line `$EPOCHREALTIME` host-arrival timestamping via stderr fifo → sidecar includes `host_arrival_s`, lower-envelope `pts_wallclock_offset_s`, windowed drift (ppm). Per-attempt stderr files handle retry loop. Rehearsal (7 min, FP7oJQ + PPDmUg): PTS uniform 96-100%, 15fps measured, middle segments mismatch:false (exact 1:1), first/last segments boundary mismatch. J_EDEw offline. Runbook: `docs/guides/runbook_cross_camera_capture.md`. **EXONERATED (RECORDER-RELIABILITY-1):** 16 segments across 3 cameras, zero timestamp/DTS errors. All failures were RTSP 404 (session orphaning), session invalidation (Nest-side), or 401 (token expiry). Dup/drop reduced 10-50x vs arrival-PTS. Ready for default adoption. |
 | RECORDER-RELIABILITY-1: Production reliability | **Complete** | Five fixes in `diag_v6.sh`: (1) RTSP socket timeout 10s (top fix — dead-stream gap 2m28s→~10s), (2) stop_stream before regenerating (prevents session orphaning), (3) access token refresh per attempt, (4) failure-type-aware backoff, (5) sidecar extraction backgrounded. Source-PTS dup/drop verdict: pixel-identical dups 10-50x lower — **camera-dependent** (PPDmUg exact at 15fps; FP7oJQ ~8% mismatch at 13.85fps). Evidence: `docs/evidence/recorder_reliability_1/`. |
 | RECORDER-RELIABILITY-2: API quota awareness | **Complete** | RELIABILITY-1 increased API calls to ~17/min, triggering 429 (SDM quota: 10 QPM per user per project, shared across all cameras). Fixes: (1) optimistic URL reuse (0 API calls when session valid), (2) conditional stop_stream (skip for dead sessions — 400 body confirms already terminated), (3) 429 backoff 60s→300s with Retry-After, (4) generate 404 fail-fast (3 retries), (5) consecutive failure escalation (5+ failures → slow-poll 120-300s), (6) cross-camera quota: N_CAMERAS from v7_2, dynamic min retry interval from 70%×10QPM/N, jitter on every backoff. Estimated: healthy ~1 QPM, 1-failing ~3-4 QPM, all-failing ~7 QPM (escalates to ~1-2). Evidence: `docs/evidence/recorder_reliability_2/`. |
 

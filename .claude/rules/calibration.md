@@ -16,7 +16,7 @@ and Supabase.
 
 Unified 3-step CLI: initial H → lens cal → final H refinement. Auto-resumes from any
 interruption. `--skip-lens` for H-only recal, `--force` to redo all steps, `--verify`
-for cross-camera agreement check. See `docs/calibration_guide.md`.
+for cross-camera agreement check. See `docs/guides/calibration_guide.md`.
 
 ### Phase A — Polyline Lens Calibration
 

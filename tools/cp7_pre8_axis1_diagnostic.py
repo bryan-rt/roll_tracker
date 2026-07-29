@@ -843,7 +843,7 @@ def main():
         else:
             print(f"\n  No clear lean. Wait for buzzer-video GT.")
 
-    print(f"\n  STOP: Report written to {OUT_DIR}/ and docs/cp7_pre8_axis1_signature.md.")
+    print(f"\n  STOP: Report written to {OUT_DIR}/ and docs/checkpoints/cp7_pre8_axis1_signature.md.")
     print(f"  Node/trigger design returns to the web session.")
 
     return episodes, d1_brackets, all_brackets, sig_results
