@@ -4,6 +4,7 @@
 Subcommands:
   analyze   — Extract per-frame timing from a clip, flag anomalies, check Stage A compat
   compare   — Compare frame counts between VFR and CFR clips
+  dupfix    — RECORDER-DUPFIX-1: Resolve duplicate-frame contradiction at decode level
 
 Usage:
   python tools/analyze_recorder_timing.py analyze \
@@ -12,6 +13,11 @@ Usage:
 
   python tools/analyze_recorder_timing.py compare \
     --vfr <vfr.mp4> --cfr <cfr.mp4> [--output-dir <dir>]
+
+  python tools/analyze_recorder_timing.py dupfix \
+    --segments <mp4> [<mp4> ...] \
+    --stderr <stderr> [<stderr> ...] \
+    --output-dir docs/evidence/recorder_dupfix_1/
 """
 from __future__ import annotations
 
@@ -454,6 +460,609 @@ def cmd_compare(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------------
+# DUPFIX helpers
+# ---------------------------------------------------------------------------
+
+def extract_framehash(clip_path: Path) -> tuple[int, int, list[int]]:
+    """Decode all video frames and compute per-frame MD5 hashes.
+
+    Returns (total_frames, adjacent_dup_count, dup_frame_indices).
+    Uses -map 0:v:0 to exclude audio (C3).
+    """
+    cmd = [
+        "ffmpeg", "-i", str(clip_path),
+        "-map", "0:v:0",
+        "-f", "framehash", "-hash", "md5", "-",
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    if result.returncode != 0:
+        print(f"framehash failed: {result.stderr[:500]}", file=sys.stderr)
+        sys.exit(1)
+
+    hashes = []
+    stream_indices = set()
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        # Format: stream_index, packet_dts, packet_pts, packet_duration, packet_size, hash
+        parts = line.split(",")
+        if len(parts) >= 6:
+            stream_indices.add(parts[0].strip())
+            hashes.append(parts[-1].strip())
+
+    if len(stream_indices) > 1:
+        print(f"ERROR: framehash found multiple stream indices: {stream_indices}. "
+              f"Expected exactly 1 (video only).", file=sys.stderr)
+        sys.exit(1)
+
+    adj_dups = 0
+    dup_indices = []
+    for i in range(1, len(hashes)):
+        if hashes[i] == hashes[i - 1]:
+            adj_dups += 1
+            dup_indices.append(i)
+
+    return len(hashes), adj_dups, dup_indices
+
+
+def run_mpdecimate_fresh(clip_path: Path, strict: bool = True
+                         ) -> tuple[int, int, int]:
+    """Run mpdecimate on clip.
+
+    Args:
+        strict: If True, use hi=1:lo=1:frac=1 (pixel-identical only).
+                If False, use default thresholds (near-identical).
+
+    Returns (input_frames, output_frames, dropped_frames).
+    Dropped = input - output (mpdecimate removes frames from the stream).
+    """
+    vf = "mpdecimate=hi=1:lo=1:frac=1" if strict else "mpdecimate"
+    cmd = [
+        "ffmpeg", "-i", str(clip_path),
+        "-map", "0:v:0",
+        "-vf", vf,
+        "-f", "null", "-",
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+
+    # Get input frame count from nb_frames
+    cmd_nb = [
+        "ffprobe", "-hide_banner", "-select_streams", "v:0",
+        "-count_frames", "-show_entries", "stream=nb_read_frames",
+        "-of", "csv=p=0", str(clip_path),
+    ]
+    nb_result = subprocess.run(cmd_nb, capture_output=True, text=True, timeout=300)
+    input_frames = int(nb_result.stdout.strip()) if nb_result.stdout.strip() else 0
+
+    # Get output frame count from the final progress line
+    output_frames = 0
+    for line in result.stderr.splitlines():
+        m = re.search(r"frame=\s*(\d+)", line)
+        if m:
+            output_frames = int(m.group(1))
+
+    dropped = input_frames - output_frames
+    return input_frames, output_frames, dropped
+
+
+def split_showinfo_by_segment(stderr_path: Path) -> dict[str, list[str]]:
+    """Split showinfo lines by Opening boundaries, mirroring extract_timing_sidecars().
+
+    Returns {segment_filename: [showinfo_lines]}.
+    """
+    with open(stderr_path) as f:
+        all_lines = f.readlines()
+
+    # Find Opening boundaries
+    opening_re = re.compile(r"Opening '(.+?\.mp4)' for writing")
+    boundaries = []  # (line_index, filename)
+    for i, line in enumerate(all_lines):
+        m = opening_re.search(line)
+        if m:
+            boundaries.append((i, Path(m.group(1)).name))
+
+    if not boundaries:
+        return {}
+
+    showinfo_re = re.compile(r"Parsed_showinfo.*pts_time:")
+    result = {}
+    for bi, (start_idx, filename) in enumerate(boundaries):
+        end_idx = boundaries[bi + 1][0] if bi + 1 < len(boundaries) else len(all_lines)
+        si_lines = [l for l in all_lines[start_idx:end_idx] if showinfo_re.search(l)]
+        result[filename] = si_lines
+
+    return result
+
+
+def read_sidecar_meta(timing_jsonl_path: Path) -> dict | None:
+    """Read _meta line from existing .timing.jsonl sidecar."""
+    if not timing_jsonl_path.exists():
+        return None
+    with open(timing_jsonl_path) as f:
+        first = f.readline().strip()
+        if first:
+            meta = json.loads(first)
+            if meta.get("_meta"):
+                return meta
+    return None
+
+
+def count_sidecar_input_n_patterns(timing_jsonl_path: Path) -> dict:
+    """Count adjacent-identical input_n (dups) and forward jumps in sidecar.
+
+    Returns {total_frames, dups, dup_pct, jumps, jump_pct}.
+    """
+    if not timing_jsonl_path.exists():
+        return {"error": f"sidecar not found: {timing_jsonl_path}"}
+
+    input_ns = []
+    with open(timing_jsonl_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            row = json.loads(line)
+            if row.get("_meta"):
+                continue
+            input_ns.append(row.get("input_n", -1))
+
+    if len(input_ns) < 2:
+        return {"total_frames": len(input_ns), "dups": 0, "dup_pct": 0.0,
+                "jumps": 0, "jump_pct": 0.0}
+
+    dups = 0
+    jumps = 0
+    for i in range(1, len(input_ns)):
+        diff = input_ns[i] - input_ns[i - 1]
+        if diff == 0:
+            dups += 1
+        elif diff > 1:
+            jumps += 1
+
+    total = len(input_ns)
+    return {
+        "total_frames": total,
+        "dups": dups,
+        "dup_pct": round(100.0 * dups / total, 2) if total > 0 else 0.0,
+        "jumps": jumps,
+        "jump_pct": round(100.0 * jumps / total, 2) if total > 0 else 0.0,
+    }
+
+
+def compute_pts_gaps(showinfo_lines: list[str],
+                     nominal_interval_ms: float | None = None
+                     ) -> dict:
+    """Compute per-frame PTS gap analysis from raw showinfo lines.
+
+    Args:
+        showinfo_lines: Lines from ffmpeg stderr containing Parsed_showinfo.
+        nominal_interval_ms: Expected inter-frame interval. If None, uses median.
+
+    Returns dict with pts_nominal_interval_ms, pts_gap_count,
+    pts_implied_missing_frames, pts_gap_histogram.
+    """
+    pts_re = re.compile(r"pts_time:\s*([0-9.eE+-]+)")
+    pts_vals = []
+    for line in showinfo_lines:
+        m = pts_re.search(line)
+        if m:
+            pts_vals.append(float(m.group(1)))
+
+    if len(pts_vals) < 2:
+        return {
+            "pts_nominal_interval_ms": None,
+            "pts_gap_count": 0,
+            "pts_implied_missing_frames": 0,
+            "pts_gap_histogram": {"2x": 0, "3x": 0, "4x": 0, "5x_plus": 0},
+        }
+
+    deltas_ms = [
+        (pts_vals[j] - pts_vals[j - 1]) * 1000.0
+        for j in range(1, len(pts_vals))
+    ]
+    arr = np.array(deltas_ms)
+    nominal = nominal_interval_ms if nominal_interval_ms else float(np.median(arr))
+
+    threshold = 1.5 * nominal
+    gap_count = 0
+    implied_missing = 0
+    histogram = {"2x": 0, "3x": 0, "4x": 0, "5x_plus": 0}
+
+    for d in deltas_ms:
+        if d > threshold:
+            gap_count += 1
+            ratio = d / nominal
+            missing = round(ratio) - 1
+            implied_missing += missing
+            if ratio < 2.5:
+                histogram["2x"] += 1
+            elif ratio < 3.5:
+                histogram["3x"] += 1
+            elif ratio < 4.5:
+                histogram["4x"] += 1
+            else:
+                histogram["5x_plus"] += 1
+
+    return {
+        "pts_nominal_interval_ms": round(nominal, 4),
+        "pts_gap_count": gap_count,
+        "pts_implied_missing_frames": implied_missing,
+        "pts_gap_histogram": histogram,
+    }
+
+
+def get_nb_read_frames(clip_path: Path) -> int:
+    """Get true decoded frame count via ffprobe -count_frames."""
+    cmd = [
+        "ffprobe", "-hide_banner", "-select_streams", "v:0",
+        "-count_frames",
+        "-show_entries", "stream=nb_read_frames",
+        "-of", "csv=p=0", str(clip_path),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    val = result.stdout.strip()
+    if val and val != "N/A":
+        return int(val)
+    return -1
+
+
+def get_encoder_tag(clip_path: Path) -> str:
+    """Get encoder format tag from mp4."""
+    cmd = [
+        "ffprobe", "-hide_banner",
+        "-show_entries", "format_tags=encoder",
+        "-of", "csv=p=0", str(clip_path),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    return result.stdout.strip() or "unknown"
+
+
+def infer_recorder_mode(clip_path: Path) -> str:
+    """Infer recorder mode from filename date.
+
+    Pre-July 2026 = arrival-PTS (old recorder), July+ = source-PTS.
+    """
+    name = clip_path.stem
+    m = re.search(r"(\d{8})-(\d{6})", name)
+    if m:
+        date_str = m.group(1)
+        year = int(date_str[:4])
+        month = int(date_str[4:6])
+        if year < 2026 or (year == 2026 and month < 7):
+            return "arrival-PTS"
+    return "source-PTS"
+
+
+# ---------------------------------------------------------------------------
+# DUPFIX subcommand
+# ---------------------------------------------------------------------------
+
+def cmd_dupfix(args: argparse.Namespace) -> None:
+    segments = [Path(s) for s in args.segments]
+    stderr_files = [Path(s) for s in args.stderr_files]
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    if len(segments) != len(stderr_files):
+        print(f"ERROR: {len(segments)} segments but {len(stderr_files)} stderr files. "
+              f"Must be 1:1.", file=sys.stderr)
+        sys.exit(1)
+
+    print("=" * 70)
+    print("RECORDER-DUPFIX-1: Resolve duplicate-frame contradiction at decode level")
+    print("=" * 70)
+    print()
+
+    # --- Instrument Validation ---
+    # Find the arrival-PTS control clip (first one with arrival-PTS mode)
+    control_idx = None
+    for i, seg in enumerate(segments):
+        if infer_recorder_mode(seg) == "arrival-PTS":
+            control_idx = i
+            break
+
+    if control_idx is not None:
+        control_path = segments[control_idx]
+        print("=" * 70)
+        print("INSTRUMENT VALIDATION — Known-Bad Control")
+        print(f"Clip: {control_path.name}")
+        print(f"Expected: arrival-PTS era, mpdecimate ~255 dups (~5.6%)")
+        print("=" * 70)
+        print()
+
+        # Step 1: framehash
+        print("Running framehash (video-only, MD5)...")
+        fh_total, fh_dups, _ = extract_framehash(control_path)
+        print(f"  framehash_total: {fh_total}")
+        print(f"  framehash_adjacent_dups: {fh_dups}")
+        print(f"  framehash_dup_pct: {100.0 * fh_dups / fh_total:.2f}%" if fh_total > 0 else "")
+
+        # Gate check 1: total matches historical 4530 (same decode)
+        historical_total = 4530
+        if fh_total != historical_total:
+            print(f"\n  WARNING: framehash_total ({fh_total}) != historical "
+                  f"total ({historical_total}).")
+            print(f"  Not the same decode as RELIABILITY-1. Investigating but not gating.")
+        else:
+            print(f"  framehash_total matches historical {historical_total}.")
+        print()
+
+        # Step 2: fresh mpdecimate (strict = pixel-identical only)
+        print("Running mpdecimate fresh (strict: hi=1:lo=1:frac=1)...")
+        mpd_input, mpd_output, mpd_dups = run_mpdecimate_fresh(control_path, strict=True)
+        print(f"  mpdecimate input:  {mpd_input}")
+        print(f"  mpdecimate output: {mpd_output}")
+        print(f"  mpdecimate strict dups (input-output): {mpd_dups}")
+        print()
+
+        # Also run default for comparison
+        print("Running mpdecimate fresh (default thresholds)...")
+        mpd_d_input, mpd_d_output, mpd_d_dups = run_mpdecimate_fresh(control_path, strict=False)
+        print(f"  mpdecimate default dups: {mpd_d_dups}")
+        print(f"  (Default thresholds catch near-identical; strict catches pixel-identical)")
+        print(f"  RELIABILITY-1 reported 255 dups — likely default or intermediate thresholds.")
+        print()
+
+        # Gate: framehash should agree with strict mpdecimate (both pixel-identical)
+        # Allow small difference (1-2 frames) due to hash vs pixel-diff methods
+        diff = abs(fh_dups - mpd_dups)
+        if fh_dups == 0:
+            print(f"  GATE FAIL: framehash found 0 dups on a known-bad clip.")
+            print(f"  Instrument is broken. Stopping.")
+            sys.exit(1)
+        elif diff <= 5:
+            print(f"  GATE PASS: framehash ({fh_dups}) ≈ strict mpdecimate ({mpd_dups}), "
+                  f"diff={diff}.")
+            print(f"  Both methods agree on pixel-identical duplicates.")
+        else:
+            print(f"  GATE WARNING: framehash ({fh_dups}) vs strict mpdecimate ({mpd_dups}), "
+                  f"diff={diff}.")
+            print(f"  Methods disagree — investigate threshold sensitivity.")
+        print()
+
+    # --- Falsifiable Prediction (C4) ---
+    print("=" * 70)
+    print("FALSIFIABLE PREDICTION (recorded before measurement)")
+    print("=" * 70)
+    print()
+    print("If Count 2 (nb_read_frames) for FP7oJQ-20260728-062531.mp4 returns ~1867")
+    print("rather than 1830, the sidecar's output_count is wrong at source and a large")
+    print("share of the reported mismatch dissolves without any CFR-padding argument")
+    print("being needed.")
+    print()
+    print("Existing evidence from RELIABILITY-1:")
+    print("  mpdecimate Frames: 1867, Dups: 37, nb_frames: 1830")
+    print("  1867 - 37 = 1830 (matches nb_frames exactly)")
+    print("  showinfo_count: 1857 (from sidecar)")
+    print("  Three counts: showinfo 1857, decode ~1867, nb_frames 1830")
+    print()
+
+    # --- Per-Segment Analysis ---
+    print("=" * 70)
+    print("PER-SEGMENT ANALYSIS")
+    print("=" * 70)
+    print()
+
+    results = []
+
+    for i, (seg_path, stderr_path) in enumerate(zip(segments, stderr_files)):
+        seg_name = seg_path.name
+        cam_id = seg_name.split("-")[0]
+        recorder_mode = infer_recorder_mode(seg_path)
+        is_arrival = recorder_mode == "arrival-PTS"
+
+        print(f"--- Segment {i+1}/{len(segments)}: {seg_name} ---")
+        print(f"    Camera: {cam_id}  Mode: {recorder_mode}")
+        print()
+
+        # Count 1: nb_frames (container metadata)
+        cmd_nb = [
+            "ffprobe", "-hide_banner", "-select_streams", "v:0",
+            "-show_entries", "stream=nb_frames",
+            "-of", "csv=p=0", str(seg_path),
+        ]
+        nb_frames_result = subprocess.run(cmd_nb, capture_output=True, text=True, timeout=30)
+        nb_frames_str = nb_frames_result.stdout.strip()
+        nb_frames = int(nb_frames_str) if nb_frames_str and nb_frames_str != "N/A" else -1
+        print(f"    Count 1 (nb_frames):       {nb_frames}")
+
+        # Count 2: nb_read_frames (true decoded)
+        print(f"    Count 2 (nb_read_frames):  ", end="", flush=True)
+        nb_read = get_nb_read_frames(seg_path)
+        print(nb_read)
+
+        # Count 3: cv2 iterated count
+        compat = check_stage_a_compat(seg_path)
+        cv2_count = compat["actual_iterated_count"]
+        cv2_fps = compat["cap_prop_fps"]
+        print(f"    Count 3 (cv2 iterated):    {cv2_count}")
+
+        # Count 4: framehash adjacent dups
+        print(f"    Count 4 (framehash):       ", end="", flush=True)
+        fh_total, fh_dups, fh_dup_indices = extract_framehash(seg_path)
+        fh_pct = round(100.0 * fh_dups / fh_total, 2) if fh_total > 0 else 0.0
+        print(f"{fh_total} total, {fh_dups} adj dups ({fh_pct}%)")
+
+        # Count 5: showinfo count (attributed to this segment)
+        seg_showinfo = split_showinfo_by_segment(stderr_path)
+        si_count = 0
+        seg_key = seg_name
+        if seg_key in seg_showinfo:
+            si_count = len(seg_showinfo[seg_key])
+        else:
+            # Try matching without exact filename
+            for k, v in seg_showinfo.items():
+                if seg_name.replace(".mp4", "") in k:
+                    si_count = len(v)
+                    seg_key = k
+                    break
+            if si_count == 0:
+                # Single-segment stderr: count all showinfo lines
+                total_si = sum(len(v) for v in seg_showinfo.values())
+                if len(seg_showinfo) == 1:
+                    si_count = list(seg_showinfo.values())[0].__len__()
+                else:
+                    # Count total from file directly
+                    with open(stderr_path) as f:
+                        si_count = sum(1 for l in f if "Parsed_showinfo" in l and "pts_time:" in l)
+        print(f"    Count 5 (showinfo):        {si_count}")
+
+        # Sidecar data
+        sidecar_path = seg_path.with_suffix(".timing.jsonl")
+        sidecar_meta = read_sidecar_meta(sidecar_path)
+        sidecar_input_count = sidecar_meta.get("input_frame_count", -1) if sidecar_meta else -1
+        sidecar_output_count = sidecar_meta.get("output_frame_count", -1) if sidecar_meta else -1
+        sidecar_measured_fps = sidecar_meta.get("measured_fps", None) if sidecar_meta else None
+
+        # C1: input_n patterns from sidecar
+        input_n_patterns = count_sidecar_input_n_patterns(sidecar_path)
+        sidecar_input_n_dups = input_n_patterns.get("dups", -1)
+        sidecar_input_n_dup_pct = input_n_patterns.get("dup_pct", 0.0)
+        sidecar_input_n_jumps = input_n_patterns.get("jumps", -1)
+        sidecar_input_n_jump_pct = input_n_patterns.get("jump_pct", 0.0)
+
+        print(f"    Sidecar input_count:       {sidecar_input_count}")
+        print(f"    Sidecar output_count:      {sidecar_output_count}")
+        print(f"    Sidecar input_n dups:      {sidecar_input_n_dups} ({sidecar_input_n_dup_pct}%)")
+        print(f"    Sidecar input_n jumps:     {sidecar_input_n_jumps} ({sidecar_input_n_jump_pct}%)")
+
+        # Rates
+        encoder = get_encoder_tag(seg_path)
+        stream_info = extract_stts(seg_path)
+        r_frame_rate = stream_info.get("r_frame_rate", "?")
+        avg_frame_rate = stream_info.get("avg_frame_rate", "?")
+
+        # True capture fps from showinfo PTS deltas (C5: null for arrival-PTS)
+        true_capture_fps = None
+        input_pts_stdev_ms = None
+        if not is_arrival and seg_key in seg_showinfo and len(seg_showinfo[seg_key]) > 1:
+            # Parse PTS from this segment's showinfo lines only
+            showinfo_re_pts = re.compile(r"pts_time:\s*([0-9.eE+-]+)")
+            pts_vals = []
+            for line in seg_showinfo[seg_key]:
+                m = showinfo_re_pts.search(line)
+                if m:
+                    pts_vals.append(float(m.group(1)))
+            if len(pts_vals) > 1:
+                deltas_ms = [
+                    (pts_vals[j] - pts_vals[j - 1]) * 1000.0
+                    for j in range(1, len(pts_vals))
+                ]
+                arr = np.array(deltas_ms)
+                median_delta_s = float(np.median(arr)) / 1000.0
+                if median_delta_s > 0:
+                    true_capture_fps = round(1.0 / median_delta_s, 4)
+                input_pts_stdev_ms = round(float(np.std(arr)), 4)
+
+        # Output PTS stdev
+        output_pts_stdev_ms = None
+        df_pts = extract_pts_ffprobe(seg_path)
+        if not df_pts.empty:
+            df_pts = compute_deltas(df_pts, "pts_time_s")
+            out_valid = df_pts["delta_ms"].dropna()
+            if not out_valid.empty:
+                output_pts_stdev_ms = round(float(out_valid.std()), 4)
+
+        print(f"    Encoder:                   {encoder}")
+        print(f"    r_frame_rate:              {r_frame_rate}")
+        print(f"    avg_frame_rate:            {avg_frame_rate}")
+        print(f"    cv2 CAP_PROP_FPS:          {cv2_fps}")
+        print(f"    True capture fps:          {true_capture_fps}" +
+              (" (N/A for arrival-PTS)" if is_arrival else ""))
+        print(f"    Sidecar measured_fps:      {sidecar_measured_fps}")
+        print(f"    Input PTS stdev (ms):      {input_pts_stdev_ms}")
+        print(f"    Output PTS stdev (ms):     {output_pts_stdev_ms}")
+
+        # C6: Per-segment frame ledger
+        ledger_residual = None
+        if si_count > 0 and nb_read > 0:
+            ledger_residual = si_count - (nb_read - fh_dups)
+        print(f"    Ledger: showinfo - (nb_read - fh_dups) = "
+              f"{si_count} - ({nb_read} - {fh_dups}) = {ledger_residual}")
+        print()
+
+        row = {
+            "segment": seg_name,
+            "camera": cam_id,
+            "date": seg_name.split("-")[1][:8] if "-" in seg_name else "unknown",
+            "recorder_mode": recorder_mode,
+            "encoder": encoder,
+            "nb_frames": nb_frames,
+            "nb_read_frames": nb_read,
+            "cv2_iterated_count": cv2_count,
+            "framehash_total": fh_total,
+            "framehash_adjacent_dups": fh_dups,
+            "framehash_dup_pct": fh_pct,
+            "showinfo_count": si_count,
+            "sidecar_input_count": sidecar_input_count,
+            "sidecar_output_count": sidecar_output_count,
+            "sidecar_input_n_dups": sidecar_input_n_dups,
+            "sidecar_input_n_dup_pct": sidecar_input_n_dup_pct,
+            "sidecar_input_n_jumps": sidecar_input_n_jumps,
+            "sidecar_input_n_jump_pct": sidecar_input_n_jump_pct,
+            "true_capture_fps": true_capture_fps,
+            "sidecar_measured_fps": sidecar_measured_fps,
+            "container_r_frame_rate": r_frame_rate,
+            "container_avg_frame_rate": avg_frame_rate,
+            "cv2_cap_prop_fps": cv2_fps,
+            "input_pts_stdev_ms": input_pts_stdev_ms,
+            "output_pts_stdev_ms": output_pts_stdev_ms,
+            "ledger_residual": ledger_residual,
+        }
+        results.append(row)
+
+    # --- Cross-Segment Showinfo Reconciliation ---
+    print("=" * 70)
+    print("CROSS-SEGMENT SHOWINFO RECONCILIATION")
+    print("=" * 70)
+    print()
+
+    # Group segments by stderr file for multi-segment checks
+    stderr_groups: dict[str, list[dict]] = {}
+    for row, stderr_path in zip(results, stderr_files):
+        key = str(stderr_path)
+        stderr_groups.setdefault(key, []).append(row)
+
+    reconciliation = []
+    for stderr_key, group in stderr_groups.items():
+        sp = Path(stderr_key)
+        with open(sp) as f:
+            total_showinfo = sum(1 for l in f if "Parsed_showinfo" in l and "pts_time:" in l)
+        sum_per_seg = sum(r["showinfo_count"] for r in group)
+
+        # Leading-edge loss: showinfo lines before first Opening marker
+        leading_edge_loss = total_showinfo - sum_per_seg
+
+        print(f"  stderr: {sp.name}")
+        print(f"    total showinfo in file:    {total_showinfo}")
+        print(f"    sum of per-segment counts: {sum_per_seg}")
+        print(f"    leading-edge loss:         {leading_edge_loss}")
+        print(f"    (This check can only detect lines lost before the first Opening marker;")
+        print(f"     boundary misattribution between segments is invisible to this sum.)")
+        print()
+
+        reconciliation.append({
+            "stderr_file": sp.name,
+            "total_showinfo_lines": total_showinfo,
+            "sum_per_segment_showinfo": sum_per_seg,
+            "leading_edge_loss": leading_edge_loss,
+        })
+
+    # --- Save results ---
+    output = {
+        "per_segment": results,
+        "cross_segment_reconciliation": reconciliation,
+    }
+    with open(output_dir / "results.json", "w") as f:
+        json.dump(output, f, indent=2, default=str)
+
+    print(f"\nResults saved to {output_dir}/results.json")
+    print(f"\nWrite findings.md manually from these results.")
+    print("=" * 70)
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -481,11 +1090,24 @@ def main():
                            default="docs/evidence/recorder_timing_1/",
                            help="Output directory")
 
+    # dupfix
+    p_dupfix = sub.add_parser("dupfix",
+        help="RECORDER-DUPFIX-1: Resolve duplicate-frame contradiction")
+    p_dupfix.add_argument("--segments", nargs="+", required=True,
+                          help="Paths to mp4 segments to analyze")
+    p_dupfix.add_argument("--stderr-files", nargs="+", required=True,
+                          help="Paths to ffmpeg stderr files (1:1 with segments)")
+    p_dupfix.add_argument("--output-dir",
+                          default="docs/evidence/recorder_dupfix_1/",
+                          help="Output directory")
+
     args = parser.parse_args()
     if args.command == "analyze":
         cmd_analyze(args)
     elif args.command == "compare":
         cmd_compare(args)
+    elif args.command == "dupfix":
+        cmd_dupfix(args)
 
 
 if __name__ == "__main__":

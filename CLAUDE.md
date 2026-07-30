@@ -268,18 +268,21 @@ consuming shared quota), (6) cross-camera quota coordination (N_CAMERAS from v7_
 min retry interval from 70% of quota/N, jitter on every backoff).
 Evidence: `docs/evidence/recorder_reliability_2/`.
 
-**TWO dup/drop mechanisms (important qualification):**
+**TWO dup/drop mechanisms (DUPFIX-1/2 — duplicates resolved, drops measured):**
 1. **Bursty arrival timestamps** → ffmpeg mis-inferred frame rate → dup/drop. **FIXED** by
-   source PTS (pixel-identical dups reduced 10-50x).
+   source PTS (pixel-identical dups reduced from 34/4530 = 0.75% to 0/segment; one exception
+   PPDmUg-070422 3 frames / 0.18%).
 2. **CFR encode target ≠ actual capture rate** → encoder pads/drops to fill the grid. **STILL
-   PRESENT.** FP7oJQ captures at 13.85fps against 15fps CFR target → 8.3% fabricated frames
-   (554→600). PPDmUg exact only because its rate equals the target (15.00fps). Since stream fps
-   varies per session AND between cameras, any fixed CFR target will mismatch some camera some
-   of the time.
-**OPEN CONTRADICTION:** RELIABILITY-1 reported FP7oJQ "0.0% typical" pixel-identical duplicates
-via `mpdecimate`, but the sidecar reports 8% fabricated frames. CFR padding produces
-bit-identical frames that `mpdecimate` should detect. One measurement is wrong — resolve
-before trusting either number.
+   PRESENT.** Padding: x264 re-encodes padded frames independently; they differ at pixel level
+   (framehash 0 adjacent-identical). `input_n` repetition is a count-mismatch artifact — NOT
+   safe as a duplicate flag. **Dropping: REAL and MEASURED (DUPFIX-2).** Two sub-mechanisms:
+   - **Upstream/network loss (FP7oJQ):** PTS gaps of 2x nominal, 0.1-7.7% per attempt.
+     Conservation deficit matches PTS gap count exactly. Concentrated in startup transients.
+   - **CFR decimation (PPDmUg):** Camera delivers >15fps (15.86, 15.63), ffmpeg drops excess.
+     0-3.0% per attempt. PTS stream gap-free — frames arrived but were not encoded.
+   Both produce false teleports in the Kalman filter. Detection via `pts_time_s` gaps;
+   correction requires variable-dt Kalman step (boxmot fork, not scoped).
+   Evidence: `docs/evidence/recorder_dupfix_1/`.
 
 **Timing capabilities (consolidated contract):**
 - **Relative per-frame timing: TRUE and camera-derived.** RTP timestamps from the sensor clock.
@@ -481,7 +484,7 @@ First trained model had FP7oJQ false positives from background memorization.
 | `tools/cp_purity_2_floor.py` | Aggregate reconciliation + addressable ceiling (CP-PURITY-2) |
 | `tools/purity_proxy_1_analysis.py` | Purity proxy scores: max_displacement, kinematic features |
 | `tools/purity_proxy_2_analysis.py` | Masked-appearance purity proxy analysis |
-| `tools/analyze_recorder_timing.py` | Recorder per-frame timing extraction + analysis |
+| `tools/analyze_recorder_timing.py` | Recorder per-frame timing extraction + analysis (subcommands: analyze, compare, dupfix) |
 | `tools/analyze_capture_timing.py` | Multi-camera timing diagnostic session analysis |
 | `services/nest_recorder/recorder/diag_timing.sh` | Multi-camera timing diagnostic (source PTS, RTCP hunt) |
 
@@ -574,7 +577,11 @@ First trained model had FP7oJQ false positives from background memorization.
 8. Productionize masked histograms (validated +0.09 AUC, not shipped).
 9. Stage A `match_thresh` sweep — AFTER the A↔D fix, since SWEEP-4 was measured against
    the un-fixed penalty.
-10. Resolve 0.0%-vs-8% duplicate-measurement contradiction (mpdecimate vs sidecar input_n).
+10. ~~Resolve 0.0%-vs-8% duplicate-measurement contradiction~~ **RESOLVED (DUPFIX-1/2):**
+    Duplicates: 0 pixel-identical on source-PTS (one 0.18% exception). `input_n` is NOT
+    safe as a duplicate flag. Drops: REAL and measured — FP7oJQ 0.1-7.7% (PTS gaps),
+    PPDmUg 0-3.0% (CFR decimation). Detection via PTS gaps validated; correction needs
+    boxmot fork. RELIABILITY-1's mpdecimate used near-identical thresholds.
 11. Pin Debian version in Dockerfile (`debian:stable-slim` silently rolled, removing
     `-stimeout`). Add `N_CAMERAS` div-by-zero guard (integer division to 0 at N≥8 → crash).
 
@@ -582,10 +589,15 @@ First trained model had FP7oJQ false positives from background memorization.
 1. **Dynamic fps replaces hardcoded 30** everywhere: BoT-SORT `frame_rate`, `speed_mps_k`,
    `derive_clip_frame_offset`, Stage E temporal windows, cross-camera evidence timing.
    Source: per-clip measured fps from sidecar.
-2. **Padded/duplicate frames: EMIT NORMALLY BUT FLAG, EXCLUDE FROM KALMAN UPDATE.**
-   Detection: consecutive output frames sharing same `input_n` in sidecar. Emitting keeps
-   `frame_index` contiguous (all joins work); flagging lets consumers decide. Removes false
-   zero-motion without recorder change — CFR-padding mechanism can stay.
+2. **Dropped frames: DETECT VIA PTS GAPS, FLAG FOR CONSUMERS.**
+   **Duplicate half RETIRED (DUPFIX-1):** zero pixel-identical adjacent frames on source-PTS
+   footage; `input_n` is not a valid duplicate flag; Kalman-update-skip unnecessary.
+   **Drop half OPEN (DUPFIX-2):** real frame drops measured on both cameras — upstream/network
+   loss on FP7oJQ (0.1-7.7% per attempt, PTS gaps), CFR decimation on PPDmUg (0-3.0%,
+   camera >15fps target). Both produce false teleports in the Kalman filter. Detection via
+   `pts_time_s` gaps (covers both mechanisms). Correction requires variable-dt Kalman step
+   (boxmot fork, not scoped). Emit frames normally, flag drops via PTS gap, let consumers
+   decide. Evidence: `docs/evidence/recorder_dupfix_1/`.
 3. **Consumer split:** per-frame dt + duplicate flags everywhere we control code; per-clip
    scalar measured fps for BoT-SORT (boxmot hardcodes unit Kalman time-step; variable-dt
    requires forking). Intra-clip cadence uniform (1.21ms stdev), scalar loses little.
@@ -634,9 +646,16 @@ clip-level person_tracks, val-split, greedy IoU>=0.3, with pipeline state noted.
 6. **CP-TAG-4a "+22.7pp improvement" → RETRACTED (SWEEP-3b).** Both 40.5% and 63.2%
    read the SAME pre-commit person_tracks. Difference was full-range vs val-split
    frame selection, not a code-change effect. CP-TAG-4a's actual effect is UNKNOWN.
-7. **RELIABILITY-1 "dup/drop resolved" → QUALIFIED.** Source PTS fixed mechanism 1
-   (arrival-timestamp jitter) but mechanism 2 (CFR-target ≠ capture-rate padding)
-   is STILL PRESENT. Any fixed CFR target will mismatch some camera some of the time.
+7. **RELIABILITY-1 "dup/drop resolved" → RE-QUALIFIED (DUPFIX-1/2).** Source PTS fixed
+   mechanism 1 (arrival-timestamp jitter): zero pixel-identical adjacent frames on 9/10
+   source-PTS segments (one exception: 3 frames / 0.18% on PPDmUg-070422). CFR-padded
+   frames are re-encoded by x264 and differ at pixel level. `input_n` repetition is a
+   count-mismatch artifact. **Duplicates resolved; drops are NOT.** DUPFIX-2 measured real
+   frame drops on both cameras: upstream/network loss on FP7oJQ (0.1-7.7%, PTS gaps), CFR
+   decimation on PPDmUg (0-3.0%, camera >15fps). Both produce false teleports in the Kalman
+   filter. Detection via PTS gaps; correction requires boxmot fork (variable-dt).
+   RELIABILITY-1's mpdecimate "255 dups" used default thresholds (near-identical); true
+   pixel-identical count on arrival-PTS control is 34 (0.75%).
 8. **Prior GT measurements made on CORRUPTED FOOTAGE.** All existing GT footage and
    every measurement derived from it predates recorder fixes and was recorded under
    bursty-arrival timestamps (35% mismatch in one case). Duplicate frames → false
@@ -644,6 +663,12 @@ clip-level person_tracks, val-split, greedy IoU>=0.3, with pipeline state noted.
    "Stage A tracklet_drift" (41%) may be recorder-injected. Hold GT2ACTUALS drift
    attribution, purity-proxy results, and Stage A sweep LOOSELY until re-measured on
    clean footage.
+9. **"Padded frames = duplicates, skip Kalman update" → DUPLICATE HALF RETIRED, DROP HALF
+   OPEN (DUPFIX-1/2).** Framehash proves 0 pixel-identical adjacent frames on source-PTS
+   segments (one 0.18% exception). x264 re-encodes padded frames independently. `input_n`
+   would drop ~7-8% of real frames — harmful. **But real frame drops exist** (0.1-7.7% on
+   FP7oJQ, 0-3.0% on PPDmUg) and produce false teleports. Drop detection via PTS gaps is
+   validated; drop correction requires variable-dt Kalman step (boxmot fork, unscoped).
 
 ## Pipeline Validation Framework (TB-EVAL series, completed 2026-05-12)
 

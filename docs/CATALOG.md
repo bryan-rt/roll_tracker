@@ -1,6 +1,6 @@
 # docs/ Catalog
 
-*Status-tagged index of every documentation file. Updated 2026-07-29.*
+*Status-tagged index of every documentation file. Updated 2026-07-30.*
 
 **Status tags:**
 - **CURRENT** — reflects present state, safe to act on
@@ -42,8 +42,9 @@
 | `docs/evidence/capture_time_1/findings.md` | Source PTS discovery on J_EDEw (30fps session) | **CORRECTED** — "30fps" generalized; corrected by CAPTURE-TIME-2 (fps varies) |
 | `docs/evidence/capture_time_2/findings.md` | RTCP absence, cross-camera drift, fps varies | **CURRENT** |
 | `docs/evidence/recorder_timing_1/findings.md` | CFR+sidecar timing preservation analysis | **CURRENT** |
-| `docs/evidence/recorder_reliability_1/findings.md` | Five production recorder fixes + dup/drop verdict | **CURRENT** |
+| `docs/evidence/recorder_reliability_1/findings.md` | Five production recorder fixes + dup/drop verdict | **CORRECTED** — mpdecimate "255 dups" was near-identical (default thresholds), not pixel-identical. Pixel-identical on arrival-PTS is 34 (0.75%). See DUPFIX-1. |
 | `docs/evidence/recorder_reliability_2/findings.md` | API quota awareness + traffic reduction | **CURRENT** |
+| `docs/evidence/recorder_dupfix_1/findings.md` | DUPFIX-1/2: Duplicate contradiction resolved (0 pixel-identical dups); frame drops measured (FP7oJQ 0.1-7.7% PTS gaps, PPDmUg 0-3.0% CFR decimation); conservation test, boundary attribution, PTS gap analysis | **CURRENT** |
 | `docs/evidence/wallclock_1/findings.md` | Container PTS is synthetic (CFR discards wall-clock) | **HISTORICAL** |
 
 ## Evidence — Identity Investigation Arc
