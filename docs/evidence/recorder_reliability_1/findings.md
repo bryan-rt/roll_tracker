@@ -159,9 +159,9 @@ recording gaps.
 | 062939 | 1796 | 1800 | true | 14.97 |
 | 063135 | 777 | 806 | true | 15.00 |
 | 070240 | 428 | 460 | true | 13.92 |
-| **Total** | **6657** | **6716** | | |
+| **Total** | **6657** | **6696** | | |
 
-FP7oJQ: 6657 input vs 6716 output (+0.9%). All segments mismatch.
+FP7oJQ: 6657 input vs 6696 output (+0.59%). All segments mismatch.
 
 **PPDmUg (hour 07):**
 
