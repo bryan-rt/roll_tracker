@@ -561,52 +561,58 @@ First trained model had FP7oJQ false positives from background memorization.
 1. **[LIVE BUG] BoT-SORT `frame_rate` = per-clip MEASURED fps.** Currently hardcoded/
    assumed 30 while streams deliver 15–30 varying by session. `track_buffer`'s real-time
    lifespan is wrong, directly affecting the dominant drift damage.
+   ⏳ blocked on CP-R5 (correctness) → CP-R6 (contract).
 2. **[NEW AUDIT] Frame-rate & cross-camera assumption audit across Stages A–F.** Enumerate
    every place that assumes fixed/known fps, uniform frame spacing, or synchronized cameras
    (BoT-SORT frame_rate, velocity/`speed_mps_k`, `derive_clip_frame_offset`, Stage E
    temporal engagement windows, cross-camera evidence timing). Report where wrong.
-3. Recorder: adopt source PTS (`-copyts`, drop `-use_wallclock_as_timestamps`/`+genpts`) in
-   production → exact per-frame timing, eliminates dup/drop, makes sidecar exact.
-   **SOURCE_PTS exonerated** (RECORDER-RELIABILITY-1): zero timestamp errors in 16 segments
-   across 3 cameras. Dup/drop reduced 10-50x. Ready for default adoption.
+   ⏳ blocked on CP-R5 (correctness) → CP-R6 (contract).
+3. **Recorder productionization (CP-R1 through CP-R8):** see
+   `docs/roadmap/recorder_productionization.md`. Covers source PTS adoption, passthrough
+   build, default flip, Dockerfile pin, sidecar boundary fix, sidecar contract v2,
+   hardening, and clean-footage GT capture.
 4. A↔D contract fix: reliability-discount the penalty OR displacement-based D0.5 split.
 5. Per-clip measured-fps denominator for motion metrics.
+   ⏳ blocked on CP-R5 (correctness) → CP-R6 (contract).
 6. D0.5 Tier 3: disable (interim, recovers -6.6pp regression) or redesign.
 7. Cross-camera sync via source PTS + host-clock lower envelope WITH per-camera drift
-   correction (Tier 2, ±14–56ms).
+   correction (Tier 2, ±14–56ms). Consumes `host_offset_s`, `drift_ppm`, `drift_flat`
+   from sidecar contract v2. The alignment work is Stage D.
+   ⏳ blocked on CP-R5 (correctness) → CP-R6 (contract).
 8. Productionize masked histograms (validated +0.09 AUC, not shipped).
 9. Stage A `match_thresh` sweep — AFTER the A↔D fix, since SWEEP-4 was measured against
    the un-fixed penalty.
-10. ~~Resolve 0.0%-vs-8% duplicate-measurement contradiction~~ **RESOLVED (DUPFIX-1/2):**
-    Duplicates: 0 pixel-identical on source-PTS (one 0.18% exception). `input_n` is NOT
-    safe as a duplicate flag. Drops: REAL and measured — FP7oJQ 0.1-7.7% (PTS gaps),
-    PPDmUg 0-3.0% (CFR decimation). Detection via PTS gaps validated; correction needs
-    boxmot fork. RELIABILITY-1's mpdecimate used near-identical thresholds.
-11. Pin Debian version in Dockerfile (`debian:stable-slim` silently rolled, removing
-    `-stimeout`). Add `N_CAMERAS` div-by-zero guard (integer division to 0 at N≥8 → crash).
 
 **Forward pipeline direction (PLANNED, not built):**
 1. **Dynamic fps replaces hardcoded 30** everywhere: BoT-SORT `frame_rate`, `speed_mps_k`,
    `derive_clip_frame_offset`, Stage E temporal windows, cross-camera evidence timing.
    Source: per-clip measured fps from sidecar.
-2. **Dropped frames: DETECT VIA PTS GAPS, FLAG FOR CONSUMERS.**
-   **Duplicate half RETIRED (DUPFIX-1):** zero pixel-identical adjacent frames on source-PTS
-   footage; `input_n` is not a valid duplicate flag; Kalman-update-skip unnecessary.
-   **Drop half OPEN (DUPFIX-2):** real frame drops measured on both cameras — upstream/network
-   loss on FP7oJQ (0.1-7.7% per attempt, PTS gaps), CFR decimation on PPDmUg (0-3.0%,
-   camera >15fps target). Both produce false teleports in the Kalman filter. Detection via
-   `pts_time_s` gaps (covers both mechanisms). Correction requires variable-dt Kalman step
-   (boxmot fork, not scoped). Emit frames normally, flag drops via PTS gap, let consumers
-   decide. Evidence: `docs/evidence/recorder_dupfix_1/`.
-3. **Consumer split:** per-frame dt + duplicate flags everywhere we control code; per-clip
+   ⏳ blocked on CP-R5 (correctness) → CP-R6 (contract).
+2. **Consume sidecar gap flags in Stage A via coast-step injection.** When the sidecar
+   flags a gap of N nominal intervals, feed the tracker N detection-free frames before the
+   real one so Kalman predictions match real elapsed time. Requires no boxmot change.
+   Depends on CP-R6. Try before considering any variable-dt fork.
+   ⏳ blocked on CP-R5 (correctness) → CP-R6 (contract).
+3. **boxmot variable-dt (fork or subclass)** — contingent; open only if coast-step
+   injection (item 2) proves insufficient. Check whether boxmot permits Kalman injection
+   or subclassing first; the code change is a few lines, the cost is maintaining
+   divergence from upstream.
+4. **Consumer split:** per-frame dt + gap flags everywhere we control code; per-clip
    scalar measured fps for BoT-SORT (boxmot hardcodes unit Kalman time-step; variable-dt
    requires forking). Intra-clip cadence uniform (1.21ms stdev), scalar loses little.
-4. **GT-join decision needed:** CVAT labels duplicate frames like any other. Decide whether
+   ⏳ blocked on CP-R5 (correctness) → CP-R6 (contract).
+5. **GT-join decision needed:** CVAT labels duplicate frames like any other. Decide whether
    GT2ACTUALS scores or excludes pipeline-flagged duplicates before analysis.
-5. **A/B validation on SAME new footage:** Run new post-fix footage through pipeline twice
+6. **A/B validation on SAME new footage:** Run new post-fix footage through pipeline twice
    (old logic vs new logic) behind a config flag, against same CVAT GT. Keep old code path
-   as a flag. Expectation: fps correction likely the larger lever (2x dt error); duplicate
-   exclusion removes 0-8% false zero-motion depending on camera.
+   as a flag. Expectation: fps correction is the primary lever (~2x dt error today).
+   Coast-step drop handling is secondary, sized by the measured per-camera gap rate.
+   Duplicate exclusion is **moot on post-fix footage** — DUPFIX measured zero exact
+   duplicates on source-PTS segments, and passthrough removes the padding mechanism
+   entirely.
+7. **Re-measure drift attribution on clean footage** — after CP-R8 delivers clean GT.
+   The 41% "Stage A tracklet_drift" and all purity-proxy/sweep results rest on corrupted
+   pre-fix footage. ⏳ blocked on CP-R8.
 
 **Deferred (lower priority):**
 - CP23b remaining: empty frame injection, bbox size tier filtering, tracklet deduplication
@@ -654,6 +660,7 @@ clip-level person_tracks, val-split, greedy IoU>=0.3, with pipeline state noted.
    frame drops on both cameras: upstream/network loss on FP7oJQ (0.1-7.7%, PTS gaps), CFR
    decimation on PPDmUg (0-3.0%, camera >15fps). Both produce false teleports in the Kalman
    filter. Detection via PTS gaps; correction requires boxmot fork (variable-dt).
+   Evidence: `docs/evidence/recorder_dupfix_1/findings.md`.
    RELIABILITY-1's mpdecimate "255 dups" used default thresholds (near-identical); true
    pixel-identical count on arrival-PTS control is 34 (0.75%).
 8. **Prior GT measurements made on CORRUPTED FOOTAGE.** All existing GT footage and
@@ -669,6 +676,7 @@ clip-level person_tracks, val-split, greedy IoU>=0.3, with pipeline state noted.
    would drop ~7-8% of real frames — harmful. **But real frame drops exist** (0.1-7.7% on
    FP7oJQ, 0-3.0% on PPDmUg) and produce false teleports. Drop detection via PTS gaps is
    validated; drop correction requires variable-dt Kalman step (boxmot fork, unscoped).
+   Evidence: `docs/evidence/recorder_dupfix_1/findings.md`.
 
 ## Pipeline Validation Framework (TB-EVAL series, completed 2026-05-12)
 

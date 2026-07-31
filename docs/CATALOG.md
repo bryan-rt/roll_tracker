@@ -26,6 +26,12 @@
 | `docs/guides/calibration_guide.md` | Camera calibration workflow (lens cal + H refinement) | **CURRENT** |
 | `docs/guides/runbook_cross_camera_capture.md` | Multi-camera source-PTS capture runbook | **CURRENT** |
 
+## Roadmaps
+
+| Path | Purpose | Status |
+|------|---------|--------|
+| `docs/roadmap/recorder_productionization.md` | Live plan for recorder productionization (CP-R1 through CP-R8) | **CURRENT** |
+
 ## Reference & Audits
 
 | Path | Purpose | Status |
