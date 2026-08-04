@@ -5,6 +5,12 @@
 > and linking evidence. Do not add, remove, or resequence checkpoints from a CLI session.
 > If a checkpoint appears wrong or incomplete, flag it rather than editing it.
 
+> **Resequencing (2026-07-31):** CP-R2 now precedes CP-R1. CP-R2 builds passthrough behind
+> a new opt-in flag with the default unchanged, so it does not alter production recording
+> behaviour and does not require a rebuild. Building it first lets the CP-R1 capture run
+> with passthrough enabled, satisfying CP-R1's reliability goals and CP-R2's measurement
+> goals in a single capture rather than two.
+
 **Design principle:** Upstream network loss cannot be prevented. Recorder-injected
 corruption can be eliminated entirely. Where loss is unavoidable, **preserve the evidence**
 rather than smoothing it away — a visible gap is information; a normalized gap is a silent
@@ -60,7 +66,7 @@ changes the checkpoint-2 calculus on `track_buffer` and coast-step injection.
 
 ## CP-R2 — Passthrough: build and measure (flag stays opt-in)
 
-**Status:** 🔲 Not started
+**Status:** 🔄 In progress
 **Evidence:** *(link to docs/evidence/... once it exists)*
 
 Build it, prove it, do **not** default it yet.
@@ -156,6 +162,13 @@ sidecar currently has an unreliable per-segment `input_count`, and the mechanism
   belong to a segment by timestamp, not by where a log line landed.
 - Re-run the DUPFIX instrument against the old split to quantify what changed.
 - Resolve or formally park the ~9s offset mechanism.
+- **Note:** `pts_time_s` in the sidecar is segment-relative (base-subtracted from the first
+  PTS in the segment's attributed stderr range). CP-R5's boundary fix will shift the time
+  origin for affected segments — this is expected, not an anomaly.
+- **Corroboration (CP-R2 smoke test, 2026-08-04):** mismatch pattern on PPDmUg passthrough
+  reproduces the boundary hypothesis exactly: seg1 ni=357/output=330 (+27), seg2 300/300
+  (0), seg3 228/255 (−27). The +27/−27 cancel, middle segment is clean. Strongest
+  confirmation yet of the start-of-attempt stderr offset.
 
 Do this **before** CP-R6, so the new contract isn't built on an unexplained parsing bug.
 
@@ -183,17 +196,44 @@ Replace **constructed** fields with **observed** ones:
 | `gap_flag` | `dt_s > 1.5x` nominal | False-teleport signal, preserved not smoothed. |
 | `implied_missing_frames` | `round(dt/nominal) - 1` | Coast-step count for Stage A injection. |
 | `is_duplicate` | framehash equality | Observed, not inferred from a count mismatch. Should be permanently 0 post-CP-R3 — a regression canary. |
-| `host_offset_s` | host-clock lower envelope | Absolute time anchor (±14–56ms estimated) |
+| `pts_wallclock_offset_s` | host-clock lower envelope | Absolute time anchor (±14–56ms estimated). Already emitted in `_meta`; needs contracting, not building. |
 | `drift_ppm` | per-camera measured drift | Linear clock correction (e.g. FP7oJQ −603 ppm) |
 | `drift_flat` | existing `_meta` flag | Whether linear correction is valid for this clip |
 | `schema_version` | — | Lets the pipeline assert compatibility. |
 
 RTCP is absent on all cameras (CAPTURE-TIME-2), so an absolute camera clock is unavailable
-from the stream. The `host_offset_s`, `drift_ppm`, and `drift_flat` fields are the best
+from the stream. The `pts_wallclock_offset_s`, `drift_ppm`, and `drift_flat` fields are the best
 available estimate, not ground truth.
 
 **Retire `input_n` as a duplicate signal.** DUPFIX proved it is an arithmetic construction,
 not an observation.
+
+**Resolved anomaly: `pts_time` precision (CP-R2b).** ffmpeg's showinfo emits `pts_time` with
+only 3 decimal places. Fixed by extracting raw `pts` ticks (integer) and dividing by the
+timebase (parsed from the showinfo config line, fallback 90000). True camera rate is
+~15.000fps (tick deltas alternate 6030/5940 at 1/90000 timebase, mean ~6000 = exactly
+15.000fps), not the 14.9254 the quantized median computed. `measured_fps` now uses a
+trimmed mean of tick deltas (gap-robust AND alternation-correct). `sidecar_schema: 2`
+marks the new format.
+
+**Caveat: `pts_stdev_delta_ms` measures tick alternation, not camera jitter.** v1 and v2
+sidecars agree (~0.47ms on clean PPDmUg segments). The camera alternates 6030/5940 ticks
+(±30 ticks = ±0.333ms) to distribute a non-integer mean of ~6000 ticks — this alternation
+dominates the stdev. The field should not be used as a jitter proxy; it measures the
+encoder's tick-distribution pattern. RELIABILITY-1's elevated-stdev startup-transient
+finding (~5ms on first segments) likely reflects real startup behaviour overlaid on
+alternation, but the two are not separable from stdev alone.
+
+**Free drop metric from trimmed mean.** `pts_delta_trim_total - pts_delta_trim_kept` is
+the number of PTS gaps (dropped frames) per segment. FP7oJQ smoke test: 8–9% discarded on
+all three segments, consistent with DUPFIX's 0.1–7.7% per-attempt range. These are real
+false teleports reaching the tracker; coast-step injection (checkpoint 2) addresses them.
+
+**Open anomaly: drift instability on short segments.** CP-R2 smoke test measured
+`drift_ppm: 2449` on a 20s PPDmUg segment with only 2 drift windows, vs RELIABILITY-1's
+−603 ppm on FP7oJQ over 5 minutes. A drift figure computed from ≤2 windows is unstable and
+should not be contracted as authoritative without a minimum-window guard (e.g. require
+n_drift_windows ≥ 4 for `drift_flat: false`).
 
 Write the contract into `.claude/rules/` or `docs/reference/` so checkpoint 2 codes against
 a spec rather than reverse-engineering a JSONL.

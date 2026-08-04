@@ -296,8 +296,14 @@ Evidence: `docs/evidence/recorder_reliability_2/`.
   **Never hardcode fps anywhere.**
 - **Sidecar schema** (per output frame): `frame_index` (join key to Stage A), `pts_time_s`
   (source capture PTS), `host_arrival_s`, `input_n` (source frame this output maps to —
-  consecutive same `input_n` = fabricated duplicate). Metadata: measured fps (4 decimal
-  places), lower-envelope offset, drift ppm, mismatch flag.
+  consecutive same `input_n` = fabricated duplicate). Metadata (`sidecar_schema: 2`):
+  `measured_fps` (trimmed mean, authoritative), `measured_fps_median`, `measured_fps_mean`,
+  `pts_timebase` (parsed from showinfo config, typically 90000), `pts_tick_delta_median`,
+  `pts_tick_delta_mean`, `pts_delta_trim_kept`/`_total`, lower-envelope offset, drift ppm,
+  mismatch flag, `timing_mode` (`"cfr_grid"` or `"passthrough"`), `pts_origin`
+  (`"segment_relative"`), `fps_method` (`"trimmed_mean"`). All PTS-derived values computed
+  from integer ticks (not the 3-decimal `pts_time`); v1 sidecars used `pts_time` and have
+  quantization-biased `measured_fps` and `pts_stdev_delta_ms`.
 
 **CRITICAL CAVEAT: prior GT measurements made on CORRUPTED FOOTAGE.** All existing GT footage
 and every measurement derived from it predates the recorder fixes and was recorded under
@@ -576,7 +582,7 @@ First trained model had FP7oJQ false positives from background memorization.
    ⏳ blocked on CP-R5 (correctness) → CP-R6 (contract).
 6. D0.5 Tier 3: disable (interim, recovers -6.6pp regression) or redesign.
 7. Cross-camera sync via source PTS + host-clock lower envelope WITH per-camera drift
-   correction (Tier 2, ±14–56ms). Consumes `host_offset_s`, `drift_ppm`, `drift_flat`
+   correction (Tier 2, ±14–56ms). Consumes `pts_wallclock_offset_s`, `drift_ppm`, `drift_flat`
    from sidecar contract v2. The alignment work is Stage D.
    ⏳ blocked on CP-R5 (correctness) → CP-R6 (contract).
 8. Productionize masked histograms (validated +0.09 AUC, not shipped).

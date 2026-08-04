@@ -10,6 +10,7 @@ CAM_ID="${CAM_ID_1:-cam1}"
 DEVICE="${DEVICE_1:?missing DEVICE_1 env}"
 REENCODE="${REENCODE:-1}"                   # 1 = libx264 (robust), 0 = copy
 SOURCE_PTS="${SOURCE_PTS:-0}"               # 1 = preserve camera capture timestamps (no wallclock override)
+FPS_PASSTHROUGH="${FPS_PASSTHROUGH:-0}"    # 1 = VFR passthrough in re-encode mode (no CFR resampling)
 
 # RTSP read timeout: if no data arrives for this many seconds, ffmpeg exits.
 # Prevents ffmpeg from blocking on a dead stream for minutes (OS TCP timeout).
@@ -289,11 +290,26 @@ build_ffmpeg_opts() {
     COPYTS_OPTS=(-copyts)           # preserve original timestamps
   fi
 
+  # Guard: FPS_PASSTHROUGH=1 without SOURCE_PTS=1 would pass bursty arrival timestamps
+  # through unresampled — worse than either default alone. Force SOURCE_PTS=1.
+  if [ "$FPS_PASSTHROUGH" = "1" ] && [ "$SOURCE_PTS" != "1" ]; then
+    echo "[v6] ⚠ FPS_PASSTHROUGH=1 requires SOURCE_PTS=1; forcing SOURCE_PTS=1" | tee -a "$LOG"
+    SOURCE_PTS="1"
+    INPUT_WALLCLOCK=()
+    INPUT_FFLAGS="+igndts"
+    COPYTS_OPTS=(-copyts)
+  fi
+
   # Video path: REENCODE=1|2 (CFR + timing sidecar), 0 (VFR passthrough)
   if [ "$REENCODE" = "1" ] || [ "$REENCODE" = "2" ]; then
-    echo "[v6] REENCODE=$REENCODE → libx264 veryfast + timing sidecar (CFR)" | tee -a "$LOG"
     V_OPTS=(-c:v libx264 -preset veryfast -crf 23 -g 30 -keyint_min 30)
     VF_OPTS=(-vf showinfo)
+    if [ "$FPS_PASSTHROUGH" = "1" ]; then
+      echo "[v6] REENCODE=$REENCODE + FPS_PASSTHROUGH=1 → libx264 veryfast + VFR passthrough + timing sidecar" | tee -a "$LOG"
+      FPS_MODE_OPTS=(-fps_mode passthrough)
+    else
+      echo "[v6] REENCODE=$REENCODE → libx264 veryfast + timing sidecar (CFR)" | tee -a "$LOG"
+    fi
   elif [ "$REENCODE" = "0" ]; then
     echo "[v6] REENCODE=0 → stream copy (VFR passthrough)" | tee -a "$LOG"
     V_OPTS=(-c:v copy)
@@ -307,6 +323,7 @@ build_ffmpeg_opts() {
 
   echo "[v6] RTSP socket timeout: ${RTSP_TIMEOUT_SEC}s" | tee -a "$LOG"
   echo "[v6] API budget: ${SDM_USER_QPM} QPM / ${N_CAMERAS} cameras → ${CALLS_PER_MIN_BUDGET} calls/min, min interval ${MIN_RETRY_INTERVAL}s" | tee -a "$LOG"
+  echo "[v6] timing config: SOURCE_PTS=$SOURCE_PTS REENCODE=$REENCODE FPS_PASSTHROUGH=$FPS_PASSTHROUGH" | tee -a "$LOG"
 }
 
 extract_timing_sidecars() {
@@ -339,7 +356,21 @@ extract_timing_sidecars() {
   local total_stderr_lines
   total_stderr_lines=$(wc -l < "$stderr")
 
-  # Step 2: For each segment, extract showinfo PTS, get output info, build sidecar
+  # Extract timebase from showinfo config line (once per attempt, before segments)
+  local timebase=0
+  local tb_line
+  tb_line=$(grep 'config in time_base:' "$stderr" | head -1)
+  if [ -n "$tb_line" ]; then
+    timebase=$(echo "$tb_line" | sed -n 's/.*time_base: *1\/\([0-9][0-9]*\).*/\1/p')
+  fi
+  if [ "$timebase" -gt 0 ] 2>/dev/null; then
+    log "[v6] sidecar: timebase=1/$timebase (from showinfo config)"
+  else
+    timebase=90000
+    log "[v6] ⚠ sidecar: timebase not found in showinfo config; fallback to 1/$timebase"
+  fi
+
+  # Step 2: For each segment, extract showinfo PTS ticks, get output info, build sidecar
   for (( si=0; si<${#seg_paths[@]}; si++ )); do
     local seg_path="${seg_paths[$si]}"
     local from_line="${seg_lines[$si]}"
@@ -352,20 +383,30 @@ extract_timing_sidecars() {
     local sidecar="${seg_path%.mp4}.timing.jsonl"
     local pairs_tmp="$DIAG_DIR/_pairs_${ATTEMPT}_${si}.tmp"
 
+    # Extract integer PTS ticks (not pts_time which truncates to 3 decimals).
+    # Z1: regex requires at least one digit after optional sign; no trailing space required.
     if [ "$SOURCE_PTS" = "1" ]; then
       sed -n "${from_line},${to_line}p" "$stderr" \
-        | grep 'Parsed_showinfo.*pts_time:' \
-        | sed -n 's/^\([0-9.]*\) .*pts_time:\([0-9.eE+-]*\).*/\1 \2/p' \
+        | grep 'Parsed_showinfo.*pts:' \
+        | sed -n 's/^\([0-9.]*\) .*pts: *\(-\?[0-9][0-9]*\).*/\1 \2/p' \
         > "$pairs_tmp"
     else
       sed -n "${from_line},${to_line}p" "$stderr" \
-        | grep 'Parsed_showinfo.*pts_time:' \
-        | sed -n 's/.*pts_time:\([0-9.eE+-]*\).*/0 \1/p' \
+        | grep 'Parsed_showinfo.*pts:' \
+        | sed -n 's/.*pts: *\(-\?[0-9][0-9]*\).*/0 \1/p' \
         > "$pairs_tmp"
     fi
 
     local input_count
     input_count=$(wc -l < "$pairs_tmp" | tr -d ' ')
+
+    # Z2: verify regex matched every showinfo line — detect silent frame drops
+    local showinfo_count
+    showinfo_count=$(sed -n "${from_line},${to_line}p" "$stderr" \
+      | grep -c 'Parsed_showinfo.*pts:' || true)
+    if [ "$input_count" -ne "$showinfo_count" ]; then
+      log "[v6] ⚠ sidecar: $(basename "$seg_path") — regex matched $input_count of $showinfo_count showinfo lines"
+    fi
 
     if [ "$input_count" -eq 0 ]; then
       log "[v6] ⚠ sidecar: $(basename "$seg_path") — no showinfo data, skipping"
@@ -393,7 +434,181 @@ extract_timing_sidecars() {
     [ "$input_count" -ne "$output_count" ] && mismatch="true"
 
     local use_source_pts="$SOURCE_PTS"
+    local fps_passthrough_mode="${FPS_PASSTHROUGH:-0}"
 
+    if [ "$fps_passthrough_mode" = "1" ]; then
+    # Passthrough: 1:1 mapping, no CFR grid construction.
+    # Separate awk to keep the CFR path structurally untouched.
+    # Input: pairs_file has (host_arrival, pts_ticks) per line.
+    # All PTS arithmetic in integer ticks; convert to seconds after base subtraction.
+    awk -v output_count="$output_count" \
+        -v epoch="$epoch" \
+        -v mismatch="$mismatch" \
+        -v pairs_file="$pairs_tmp" \
+        -v source_pts_mode="$use_source_pts" \
+        -v attempt="$ATTEMPT" \
+        -v timebase="$timebase" \
+    '
+    BEGIN {
+      # Read (host_arrival, pts_ticks) pairs
+      ni = 0
+      while ((getline line < pairs_file) > 0) {
+        split(line, parts, " ")
+        host_arr[ni] = parts[1] + 0.0
+        raw_ticks[ni] = parts[2] + 0    # integer ticks
+        ni++
+      }
+      close(pairs_file)
+
+      # Sort by ticks
+      for (a = 1; a < ni; a++) {
+        kt = raw_ticks[a]; kh = host_arr[a]
+        b = a - 1
+        while (b >= 0 && raw_ticks[b] > kt) {
+          raw_ticks[b+1] = raw_ticks[b]; host_arr[b+1] = host_arr[b]
+          b--
+        }
+        raw_ticks[b+1] = kt; host_arr[b+1] = kh
+      }
+
+      # Integer base subtraction FIRST (exact), then convert to seconds
+      base_ticks = (ni > 0) ? raw_ticks[0] : 0
+      for (k = 0; k < ni; k++) {
+        raw_pts[k] = (raw_ticks[k] - base_ticks) / timebase
+      }
+
+      # Tick deltas (integer exact — awk doubles hold integers exactly up to 2^53;
+      # at 90000 ticks/sec a 65-min session is ~351M ticks, far below 2^53)
+      nd = 0
+      for (k = 1; k < ni; k++) {
+        tick_deltas[nd] = raw_ticks[k] - raw_ticks[k-1]
+        nd++
+      }
+
+      # Sort tick deltas (insertion sort)
+      for (a = 1; a < nd; a++) {
+        kv = tick_deltas[a]
+        b = a - 1
+        while (b >= 0 && tick_deltas[b] > kv) {
+          tick_deltas[b+1] = tick_deltas[b]
+          b--
+        }
+        tick_deltas[b+1] = kv
+      }
+
+      # Median tick delta
+      if (nd > 0) {
+        if (nd % 2 == 1) median_tick = tick_deltas[int(nd/2)]
+        else median_tick = (tick_deltas[nd/2 - 1] + tick_deltas[nd/2]) / 2.0
+      } else median_tick = 0
+
+      # Trimmed mean: discard deltas outside [0.5×, 1.5×] median (Z3)
+      trim_sum = 0; trim_n = 0
+      lo_cutoff = median_tick * 0.5
+      hi_cutoff = median_tick * 1.5
+      for (k = 0; k < nd; k++) {
+        if (tick_deltas[k] >= lo_cutoff && tick_deltas[k] <= hi_cutoff) {
+          trim_sum += tick_deltas[k]
+          trim_n++
+        }
+      }
+      trimmed_mean_tick = (trim_n > 0) ? trim_sum / trim_n : median_tick
+
+      # Mean tick delta
+      tick_sum = 0
+      for (k = 0; k < nd; k++) tick_sum += tick_deltas[k]
+      mean_tick = (nd > 0) ? tick_sum / nd : 0
+
+      # FPS from each method
+      measured_fps = (trimmed_mean_tick > 0) ? timebase / trimmed_mean_tick : 0
+      measured_fps_median = (median_tick > 0) ? timebase / median_tick : 0
+      measured_fps_mean = 0
+      if (ni > 1 && raw_pts[ni-1] > 0) {
+        measured_fps_mean = (ni - 1) / raw_pts[ni-1]
+      }
+
+      # PTS delta stats (from ticks, converted to ms)
+      sum_d = 0; sum_d2 = 0
+      for (k = 0; k < nd; k++) {
+        d_ms = tick_deltas[k] * 1000.0 / timebase
+        sum_d += d_ms; sum_d2 += d_ms * d_ms
+      }
+      mean_d = (nd > 0) ? sum_d / nd : 0
+      stdev_d = (nd > 0) ? sqrt(sum_d2/nd - mean_d*mean_d) : 0
+
+      # Drift (operates on raw_pts seconds + host_arr, same as before)
+      global_min_offset = 0; drift_rate = 0; drift_flat = "true"; drift_ppm = 0
+      n_windows = 0
+
+      if (source_pts_mode == "1" && ni > 0) {
+        global_min_offset = 1e18
+        for (k = 0; k < ni; k++) {
+          off = host_arr[k] - raw_pts[k]
+          if (off < global_min_offset) global_min_offset = off
+        }
+
+        win_size = 10.0
+        for (w = 0; w < 60 && ni > 0; w++) {
+          ws = w * win_size; we = (w + 1) * win_size
+          if (ws >= raw_pts[ni-1]) break
+          wmin = 1e18; wmid = (ws + we) / 2.0; found = 0
+          for (k = 0; k < ni; k++) {
+            if (raw_pts[k] >= ws && raw_pts[k] < we) {
+              off = host_arr[k] - raw_pts[k]
+              if (off < wmin) wmin = off
+              found = 1
+            }
+          }
+          if (found) {
+            win_off[n_windows] = wmin; win_mid[n_windows] = wmid
+            n_windows++
+          }
+        }
+
+        if (n_windows >= 2) {
+          sx=0;sy=0;sxx=0;sxy=0
+          for (w=0;w<n_windows;w++) {
+            sx+=win_mid[w]; sy+=win_off[w]
+            sxx+=win_mid[w]*win_mid[w]; sxy+=win_mid[w]*win_off[w]
+          }
+          den = n_windows*sxx - sx*sx
+          if (den != 0) drift_rate = (n_windows*sxy - sx*sy) / den
+        }
+        drift_ppm = drift_rate * 1e6
+        drift_flat = (n_windows<2 || (drift_rate>-0.0001 && drift_rate<0.0001)) ? "true" : "false"
+      }
+
+      # _meta — passthrough mode
+      if (source_pts_mode == "1") {
+        printf "{\"_meta\":true,\"sidecar_schema\":2,\"timing_mode\":\"passthrough\",\"pts_origin\":\"segment_relative\",\"fps_method\":\"trimmed_mean\",\"segment_start_epoch\":%s,\"attempt\":%d,\"input_frame_count\":%d,\"output_frame_count\":%d,\"measured_fps\":%.4f,\"measured_fps_median\":%.4f,\"measured_fps_mean\":%.4f,\"pts_timebase\":%d,\"pts_tick_delta_median\":%.1f,\"pts_tick_delta_mean\":%.1f,\"pts_delta_trim_kept\":%d,\"pts_delta_trim_total\":%d,\"mismatch\":%s,\"pts_wallclock_offset_s\":%.6f,\"offset_method\":\"lower_envelope\",\"drift_rate_s_per_s\":%.9f,\"drift_flat\":%s,\"drift_ppm\":%.3f,\"n_drift_windows\":%d,\"pts_mean_delta_ms\":%.4f,\"pts_stdev_delta_ms\":%.4f}\n", \
+          epoch, attempt, ni, output_count, measured_fps, measured_fps_median, measured_fps_mean, \
+          timebase, median_tick, mean_tick, trim_n, nd, mismatch, \
+          global_min_offset, drift_rate, drift_flat, drift_ppm, n_windows, mean_d, stdev_d
+      } else {
+        printf "{\"_meta\":true,\"sidecar_schema\":2,\"timing_mode\":\"passthrough\",\"pts_origin\":\"segment_relative\",\"fps_method\":\"trimmed_mean\",\"segment_start_epoch\":%s,\"attempt\":%d,\"input_frame_count\":%d,\"output_frame_count\":%d,\"measured_fps\":%.4f,\"measured_fps_median\":%.4f,\"measured_fps_mean\":%.4f,\"pts_timebase\":%d,\"pts_tick_delta_median\":%.1f,\"pts_tick_delta_mean\":%.1f,\"pts_delta_trim_kept\":%d,\"pts_delta_trim_total\":%d,\"mismatch\":%s}\n", \
+          epoch, attempt, ni, output_count, measured_fps, measured_fps_median, measured_fps_mean, \
+          timebase, median_tick, mean_tick, trim_n, nd, mismatch
+      }
+
+      # 1:1 mapping — each output frame IS the input frame
+      for (i = 0; i < ni; i++) {
+        if (source_pts_mode == "1") {
+          printf "{\"frame_index\":%d,\"pts_time_s\":%.6f,\"host_arrival_s\":%.6f,\"input_n\":%d}\n", \
+            i, raw_pts[i], host_arr[i], i
+        } else {
+          printf "{\"frame_index\":%d,\"pts_time_s\":%.6f,\"input_n\":%d}\n", \
+            i, raw_pts[i], i
+        }
+      }
+    }
+    ' > "$sidecar"
+
+    else
+    # CFR grid: nearest-neighbour mapping of uniform output grid to input PTS.
+    # Input: pairs_file has (host_arrival, pts_ticks) per line.
+    # Same tick-based precision as passthrough; CFR grid structure unchanged.
+    # measured_fps here describes INPUT capture cadence, not the output grid rate
+    # (which is output_fps from ffprobe). Same semantics as before, better precision.
     awk -v output_count="$output_count" \
         -v output_fps="$output_fps" \
         -v epoch="$epoch" \
@@ -402,30 +617,37 @@ extract_timing_sidecars() {
         -v pairs_file="$pairs_tmp" \
         -v source_pts_mode="$use_source_pts" \
         -v attempt="$ATTEMPT" \
+        -v timebase="$timebase" \
     '
     BEGIN {
+      # Read (host_arrival, pts_ticks) pairs
       ni = 0
       while ((getline line < pairs_file) > 0) {
         split(line, parts, " ")
         host_arr[ni] = parts[1] + 0.0
-        raw_pts[ni]  = parts[2] + 0.0
+        raw_ticks[ni] = parts[2] + 0    # integer ticks
         ni++
       }
       close(pairs_file)
 
+      # Sort by ticks
       for (a = 1; a < ni; a++) {
-        kp = raw_pts[a]; kh = host_arr[a]
+        kt = raw_ticks[a]; kh = host_arr[a]
         b = a - 1
-        while (b >= 0 && raw_pts[b] > kp) {
-          raw_pts[b+1] = raw_pts[b]; host_arr[b+1] = host_arr[b]
+        while (b >= 0 && raw_ticks[b] > kt) {
+          raw_ticks[b+1] = raw_ticks[b]; host_arr[b+1] = host_arr[b]
           b--
         }
-        raw_pts[b+1] = kp; host_arr[b+1] = kh
+        raw_ticks[b+1] = kt; host_arr[b+1] = kh
       }
 
-      base_pts = (ni > 0) ? raw_pts[0] : 0
-      for (k = 0; k < ni; k++) raw_pts[k] -= base_pts
+      # Integer base subtraction FIRST (exact), then convert to seconds
+      base_ticks = (ni > 0) ? raw_ticks[0] : 0
+      for (k = 0; k < ni; k++) {
+        raw_pts[k] = (raw_ticks[k] - base_ticks) / timebase
+      }
 
+      # Output grid interval from ffprobe r_frame_rate
       if (index(output_fps, "/") > 0) {
         split(output_fps, fp, "/")
         fps_val = fp[1] / fp[2]
@@ -435,19 +657,65 @@ extract_timing_sidecars() {
       if (fps_val <= 0) fps_val = 30.0
       interval = 1.0 / fps_val
 
-      measured_fps = fps_val
-      if (ni > 1 && raw_pts[ni-1] > 0) {
-        measured_fps = (ni - 1) / raw_pts[ni-1]
+      # Tick deltas (integer exact)
+      nd = 0
+      for (k = 1; k < ni; k++) {
+        tick_deltas[nd] = raw_ticks[k] - raw_ticks[k-1]
+        nd++
       }
 
-      sum_d = 0; sum_d2 = 0; nd = 0
-      for (k = 1; k < ni; k++) {
-        d = (raw_pts[k] - raw_pts[k-1]) * 1000
-        sum_d += d; sum_d2 += d*d; nd++
+      # Sort tick deltas (insertion sort)
+      for (a = 1; a < nd; a++) {
+        kv = tick_deltas[a]
+        b = a - 1
+        while (b >= 0 && tick_deltas[b] > kv) {
+          tick_deltas[b+1] = tick_deltas[b]
+          b--
+        }
+        tick_deltas[b+1] = kv
+      }
+
+      # Median tick delta
+      if (nd > 0) {
+        if (nd % 2 == 1) median_tick = tick_deltas[int(nd/2)]
+        else median_tick = (tick_deltas[nd/2 - 1] + tick_deltas[nd/2]) / 2.0
+      } else median_tick = 0
+
+      # Trimmed mean: discard deltas outside [0.5×, 1.5×] median (Z3)
+      trim_sum = 0; trim_n = 0
+      lo_cutoff = median_tick * 0.5
+      hi_cutoff = median_tick * 1.5
+      for (k = 0; k < nd; k++) {
+        if (tick_deltas[k] >= lo_cutoff && tick_deltas[k] <= hi_cutoff) {
+          trim_sum += tick_deltas[k]
+          trim_n++
+        }
+      }
+      trimmed_mean_tick = (trim_n > 0) ? trim_sum / trim_n : median_tick
+
+      # Mean tick delta
+      tick_sum = 0
+      for (k = 0; k < nd; k++) tick_sum += tick_deltas[k]
+      mean_tick = (nd > 0) ? tick_sum / nd : 0
+
+      # FPS: measured_fps = trimmed mean of INPUT capture cadence (not output grid)
+      measured_fps = (trimmed_mean_tick > 0) ? timebase / trimmed_mean_tick : 0
+      measured_fps_median = (median_tick > 0) ? timebase / median_tick : 0
+      measured_fps_mean = 0
+      if (ni > 1 && raw_pts[ni-1] > 0) {
+        measured_fps_mean = (ni - 1) / raw_pts[ni-1]
+      }
+
+      # PTS delta stats (from ticks, converted to ms)
+      sum_d = 0; sum_d2 = 0
+      for (k = 0; k < nd; k++) {
+        d_ms = tick_deltas[k] * 1000.0 / timebase
+        sum_d += d_ms; sum_d2 += d_ms * d_ms
       }
       mean_d = (nd > 0) ? sum_d / nd : 0
       stdev_d = (nd > 0) ? sqrt(sum_d2/nd - mean_d*mean_d) : 0
 
+      # Drift (operates on raw_pts seconds + host_arr)
       global_min_offset = 0; drift_rate = 0; drift_flat = "true"; drift_ppm = 0
       n_windows = 0
 
@@ -490,12 +758,14 @@ extract_timing_sidecars() {
       }
 
       if (source_pts_mode == "1") {
-        printf "{\"_meta\":true,\"segment_start_epoch\":%s,\"attempt\":%d,\"input_frame_count\":%d,\"output_frame_count\":%d,\"output_fps\":%.4f,\"measured_fps\":%.4f,\"mismatch\":%s,\"pts_wallclock_offset_s\":%.6f,\"offset_method\":\"lower_envelope\",\"drift_rate_s_per_s\":%.9f,\"drift_flat\":%s,\"drift_ppm\":%.3f,\"n_drift_windows\":%d,\"pts_mean_delta_ms\":%.4f,\"pts_stdev_delta_ms\":%.4f}\n", \
-          epoch, attempt, ni, output_count, fps_val, measured_fps, mismatch, \
+        printf "{\"_meta\":true,\"sidecar_schema\":2,\"timing_mode\":\"cfr_grid\",\"pts_origin\":\"segment_relative\",\"fps_method\":\"trimmed_mean\",\"segment_start_epoch\":%s,\"attempt\":%d,\"input_frame_count\":%d,\"output_frame_count\":%d,\"output_fps\":%.4f,\"measured_fps\":%.4f,\"measured_fps_median\":%.4f,\"measured_fps_mean\":%.4f,\"pts_timebase\":%d,\"pts_tick_delta_median\":%.1f,\"pts_tick_delta_mean\":%.1f,\"pts_delta_trim_kept\":%d,\"pts_delta_trim_total\":%d,\"mismatch\":%s,\"pts_wallclock_offset_s\":%.6f,\"offset_method\":\"lower_envelope\",\"drift_rate_s_per_s\":%.9f,\"drift_flat\":%s,\"drift_ppm\":%.3f,\"n_drift_windows\":%d,\"pts_mean_delta_ms\":%.4f,\"pts_stdev_delta_ms\":%.4f}\n", \
+          epoch, attempt, ni, output_count, fps_val, measured_fps, measured_fps_median, measured_fps_mean, \
+          timebase, median_tick, mean_tick, trim_n, nd, mismatch, \
           global_min_offset, drift_rate, drift_flat, drift_ppm, n_windows, mean_d, stdev_d
       } else {
-        printf "{\"_meta\":true,\"segment_start_epoch\":%s,\"attempt\":%d,\"input_frame_count\":%d,\"output_frame_count\":%d,\"output_fps\":%.4f,\"measured_fps\":%.4f,\"mismatch\":%s}\n", \
-          epoch, attempt, ni, output_count, fps_val, measured_fps, mismatch
+        printf "{\"_meta\":true,\"sidecar_schema\":2,\"timing_mode\":\"cfr_grid\",\"pts_origin\":\"segment_relative\",\"fps_method\":\"trimmed_mean\",\"segment_start_epoch\":%s,\"attempt\":%d,\"input_frame_count\":%d,\"output_frame_count\":%d,\"output_fps\":%.4f,\"measured_fps\":%.4f,\"measured_fps_median\":%.4f,\"measured_fps_mean\":%.4f,\"pts_timebase\":%d,\"pts_tick_delta_median\":%.1f,\"pts_tick_delta_mean\":%.1f,\"pts_delta_trim_kept\":%d,\"pts_delta_trim_total\":%d,\"mismatch\":%s}\n", \
+          epoch, attempt, ni, output_count, fps_val, measured_fps, measured_fps_median, measured_fps_mean, \
+          timebase, median_tick, mean_tick, trim_n, nd, mismatch
       }
 
       j = 0
@@ -517,6 +787,8 @@ extract_timing_sidecars() {
       }
     }
     ' > "$sidecar"
+
+    fi
 
     rm -f "$pairs_tmp"
 
