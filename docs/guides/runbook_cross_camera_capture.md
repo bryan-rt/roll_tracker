@@ -49,8 +49,11 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d recorder
 # Run the capture DETACHED inside the container
 # diag_v7_2.sh discovers all cameras and fans out to parallel diag_v6.sh workers
 docker compose -f docker-compose.yml -f docker-compose.dev.yml exec -d recorder \
-  bash -lc 'WINDOW_SECONDS=3900 SEG_SECONDS=120 SOURCE_PTS=1 /app/diag_v7_2.sh'
+  bash -lc 'WINDOW_SECONDS=3900 SEG_SECONDS=120 SOURCE_PTS=1 /app/diag_v7_2.sh'  # SOURCE_PTS=1 explicit for clarity; now the default (CP-R3)
 ```
+
+`WINDOW_SECONDS=3900` covers the 65-min evening session window; adjust for shorter captures
+(e.g. `1800` for a 30-min validation run).
 
 The `-d` flag detaches the exec so it survives terminal close.
 

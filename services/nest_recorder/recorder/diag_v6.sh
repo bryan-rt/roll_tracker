@@ -9,8 +9,8 @@ EXT_EARLY_SEC="${EXT_EARLY_SEC:-120}"         # schedule next extend at (expires
 CAM_ID="${CAM_ID_1:-cam1}"
 DEVICE="${DEVICE_1:?missing DEVICE_1 env}"
 REENCODE="${REENCODE:-1}"                   # 1 = libx264 (robust), 0 = copy
-SOURCE_PTS="${SOURCE_PTS:-0}"               # 1 = preserve camera capture timestamps (no wallclock override)
-FPS_PASSTHROUGH="${FPS_PASSTHROUGH:-0}"    # 1 = VFR passthrough in re-encode mode (no CFR resampling)
+SOURCE_PTS="${SOURCE_PTS:-1}"               # 1 = preserve camera capture timestamps (no wallclock override)
+FPS_PASSTHROUGH="${FPS_PASSTHROUGH:-1}"    # 1 = VFR passthrough in re-encode mode (no CFR resampling)
 
 # RTSP read timeout: if no data arrives for this many seconds, ffmpeg exits.
 # Prevents ffmpeg from blocking on a dead stream for minutes (OS TCP timeout).
@@ -291,13 +291,12 @@ build_ffmpeg_opts() {
   fi
 
   # Guard: FPS_PASSTHROUGH=1 without SOURCE_PTS=1 would pass bursty arrival timestamps
-  # through unresampled — worse than either default alone. Force SOURCE_PTS=1.
+  # through unresampled — worse than either default alone.
+  # SOURCE_PTS defaults to 1 everywhere (CP-R3), so a non-1 value here is always an
+  # explicit operator choice. Honour it: disable passthrough rather than overriding.
   if [ "$FPS_PASSTHROUGH" = "1" ] && [ "$SOURCE_PTS" != "1" ]; then
-    echo "[v6] ⚠ FPS_PASSTHROUGH=1 requires SOURCE_PTS=1; forcing SOURCE_PTS=1" | tee -a "$LOG"
-    SOURCE_PTS="1"
-    INPUT_WALLCLOCK=()
-    INPUT_FFLAGS="+igndts"
-    COPYTS_OPTS=(-copyts)
+    echo "[v6] ⚠ SOURCE_PTS=$SOURCE_PTS explicit → disabling FPS_PASSTHROUGH (CFR path)" | tee -a "$LOG"
+    FPS_PASSTHROUGH="0"
   fi
 
   # Video path: REENCODE=1|2 (CFR + timing sidecar), 0 (VFR passthrough)
@@ -434,7 +433,7 @@ extract_timing_sidecars() {
     [ "$input_count" -ne "$output_count" ] && mismatch="true"
 
     local use_source_pts="$SOURCE_PTS"
-    local fps_passthrough_mode="${FPS_PASSTHROUGH:-0}"
+    local fps_passthrough_mode="${FPS_PASSTHROUGH:-1}"
 
     if [ "$fps_passthrough_mode" = "1" ]; then
     # Passthrough: 1:1 mapping, no CFR grid construction.

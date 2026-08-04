@@ -66,8 +66,8 @@ changes the checkpoint-2 calculus on `track_buffer` and coast-step injection.
 
 ## CP-R2 — Passthrough: build and measure (flag stays opt-in)
 
-**Status:** 🔄 In progress
-**Evidence:** *(link to docs/evidence/... once it exists)*
+**Status:** ✅ Complete
+**Evidence:** commit `b1f3b08` + smoke tests 2026-08-04
 
 Build it, prove it, do **not** default it yet.
 
@@ -107,8 +107,8 @@ capture for comparison.
 
 ## CP-R3 — Flip the defaults (script-only, instantly revertible)
 
-**Status:** 🔲 Not started
-**Evidence:** *(link to docs/evidence/... once it exists)*
+**Status:** ✅ Complete
+**Evidence:** defaults flipped in diag_v6/v7_2/v8.sh; rollback via `SOURCE_PTS=0 FPS_PASSTHROUGH=0`
 
 Only after CP-R2 passes on real footage.
 
@@ -223,6 +223,14 @@ dominates the stdev. The field should not be used as a jitter proxy; it measures
 encoder's tick-distribution pattern. RELIABILITY-1's elevated-stdev startup-transient
 finding (~5ms on first segments) likely reflects real startup behaviour overlaid on
 alternation, but the two are not separable from stdev alone.
+
+**measured_fps is only valid under source-PTS.** Under `SOURCE_PTS=0` (arrival-PTS rollback),
+inter-frame deltas are burst-distributed and the trimmed mean returns nonsense (~14000 on
+PPDmUg, measured 2026-08-04 CP-R3 smoke test). The span-based `measured_fps_mean` still reads
+~15 in the same segments — the disagreement between the two fields is the diagnostic that
+catches this. CP-R6's contract must scope `measured_fps` to `timing_mode: "passthrough"` /
+source-PTS only, or emit an explicit validity flag. Consumers must not read `measured_fps`
+from an arrival-PTS sidecar.
 
 **Free drop metric from trimmed mean.** `pts_delta_trim_total - pts_delta_trim_kept` is
 the number of PTS gaps (dropped frames) per segment. FP7oJQ smoke test: 8–9% discarded on
