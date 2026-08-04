@@ -932,7 +932,7 @@ while :; do
       # Handle generate failure by type
       case "$GENERATE_FAIL_TYPE" in
         429)
-          local backoff_val="${BACKOFF_429_OVERRIDE:-$BACKOFF_429}"
+          backoff_val="${BACKOFF_429_OVERRIDE:-$BACKOFF_429}"
           [ "$backoff_val" -lt "$BACKOFF_429" ] && backoff_val="$BACKOFF_429"
           log "[v6] 429 rate-limited; backoff ${backoff_val}s + jitter"
           jittered_sleep "$backoff_val"
@@ -1010,7 +1010,6 @@ while :; do
   case "$FAILURE_TYPE" in
     healthy)
       # Check if the session's extend expiry is still in the future
-      local extend_expiry
       extend_expiry=$(cat "$DIAG_DIR/_extend_expiry.txt" 2>/dev/null || echo 0)
       local_now="$(date -u +%s)"
       if [ "$extend_expiry" -gt "$local_now" ] && [ "$SESSION_DEAD" = "false" ]; then
@@ -1025,7 +1024,7 @@ while :; do
       NEED_NEW_SESSION=true
       # Check for escalation on consecutive failures
       if [ "$CONSECUTIVE_FAILURES" -ge "$CONSECUTIVE_FAIL_ESCALATE" ]; then
-        local esc_backoff=$CONSECUTIVE_FAIL_BACKOFF
+        esc_backoff=$CONSECUTIVE_FAIL_BACKOFF
         [ "$CONSECUTIVE_FAILURES" -gt $(( CONSECUTIVE_FAIL_ESCALATE + 3 )) ] && esc_backoff=$CONSECUTIVE_FAIL_BACKOFF_MAX
         log "[v6] session dead (${CONSECUTIVE_FAILURES} consecutive failures); slow-polling ${esc_backoff}s + jitter"
         jittered_sleep "$esc_backoff"
@@ -1039,7 +1038,7 @@ while :; do
     rtsp_404)
       NEED_NEW_SESSION=true
       if [ "$CONSECUTIVE_FAILURES" -ge "$CONSECUTIVE_FAIL_ESCALATE" ]; then
-        local esc_backoff=$CONSECUTIVE_FAIL_BACKOFF
+        esc_backoff=$CONSECUTIVE_FAIL_BACKOFF
         [ "$CONSECUTIVE_FAILURES" -gt $(( CONSECUTIVE_FAIL_ESCALATE + 3 )) ] && esc_backoff=$CONSECUTIVE_FAIL_BACKOFF_MAX
         log "[v6] RTSP 404 (${CONSECUTIVE_FAILURES} consecutive failures); slow-polling ${esc_backoff}s + jitter"
         jittered_sleep "$esc_backoff"
@@ -1056,7 +1055,7 @@ while :; do
       if [ "$WAS_REUSE" = "true" ] && [ "$run_duration" -lt "$REUSE_FAIL_THRESHOLD" ]; then
         log "[v6] reuse failed (${run_duration}s); falling through to regenerate"
       elif [ "$CONSECUTIVE_FAILURES" -ge "$CONSECUTIVE_FAIL_ESCALATE" ]; then
-        local esc_backoff=$CONSECUTIVE_FAIL_BACKOFF
+        esc_backoff=$CONSECUTIVE_FAIL_BACKOFF
         [ "$CONSECUTIVE_FAILURES" -gt $(( CONSECUTIVE_FAIL_ESCALATE + 3 )) ] && esc_backoff=$CONSECUTIVE_FAIL_BACKOFF_MAX
         log "[v6] failure #${CONSECUTIVE_FAILURES} (${FAILURE_TYPE}, ${run_duration}s); slow-polling ${esc_backoff}s + jitter"
         jittered_sleep "$esc_backoff"
