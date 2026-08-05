@@ -98,6 +98,7 @@
 | Path | Purpose | Status |
 |------|---------|--------|
 | `docs/evidence/storage_audit_1/proposal.md` | Storage cleanup proposal (eval baselines) | **HISTORICAL** |
+| `docs/evidence/session_churn_1/findings.md` | CP-R10: Session churn investigation — caffeinate vs display sleep | **CURRENT** |
 
 ## Checkpoint Records
 

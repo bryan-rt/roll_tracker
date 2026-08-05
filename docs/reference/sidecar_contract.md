@@ -166,13 +166,6 @@ direction as gap-induced discards. The below-median test does not fire in this c
 authoritative. Consumers handling critical bimodal cases should also inspect the raw `dt_s`
 distribution.
 
-**Validation status:** The bimodal detection logic and `short_mode_*` field emission path
-have been code-reviewed and verified correct on unimodal segments (structural test correctly
-returns `false` when discards are gap-like). End-to-end emission of `is_bimodal: true` with
-populated `short_mode_*` fields has not been exercised from a live capture — no camera
-delivered mixed-rate frames during validation. Remove this note when a bimodal segment
-validates the full emission path.
-
 ### What consumers get
 
 When `is_bimodal: true`, four additional fields appear in `_meta`:
@@ -318,7 +311,7 @@ and all host-arrival fields are absent.
 | 1 | 2026-07 | Initial. `pts_time` (3 decimal, quantized). |
 | 2 | 2026-08-02 | Integer tick precision via `pts` field. `measured_fps` from trimmed mean of tick deltas. `pts_stdev_delta_ms` added. |
 | 3 | 2026-08-05 | PTS-based segment boundary split (CP-R5). `pts_origin: "segment_relative"`. `input_frame_count` corrected. |
-| 4 | 2026-08-05 | Contract established (CP-R6). `source_pts` validity gate. `nominal_dt_s`, `dt_s`, `is_bimodal` + mode fields added. `measured_fps`/`measured_fps_median` omitted under `source_pts: false`. Drift fields gated at `n_drift_windows >= 4`. `input_n` deprecated. |
+| 4 | 2026-08-05 | Contract established (CP-R6). `source_pts` validity gate. `nominal_dt_s`, `dt_s`, `is_bimodal` + mode fields added. `measured_fps`/`measured_fps_median` omitted under `source_pts: false`. Drift fields gated at `n_drift_windows >= 4`. `input_n` deprecated. First production validation of bimodal emission (2026-08-05, CP-R10): 8 of 33 PPDmUg segments emitted `is_bimodal: true` with valid `short_mode_*` fields. |
 
 ---
 

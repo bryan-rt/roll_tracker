@@ -323,13 +323,15 @@ this checkpoint, not a separate item).
 
 ## CP-R7 — Hardening and operability
 
-**Status:** 🔲 Not started
+**Status:** 🔲 Not started (coverage metric done — pulled forward into CP-R10)
 **Evidence:** *(link to docs/evidence/... once it exists)*
 
 - `N_CAMERAS=0` edge: the `-lt 1` floor at `diag_v6.sh:31` protects the retry interval, but
   the division at line 30 still crashes if `N_CAMERAS=0` is set explicitly. One line.
-- Per-camera coverage/uptime metric logged per session — currently assessed by reading
-  stderr by hand.
+- ~~Per-camera coverage/uptime metric logged per session — currently assessed by reading
+  stderr by hand.~~ **Done (CP-R10).** `services/nest_recorder/coverage_report.py`. Session-scoped
+  via `--start-epoch` / `--window`, per-camera, named lead-in/tail gaps, attempt count from
+  `attempt_log.jsonl`. Validated on CP-R1 baseline.
 - J_EDEw intermittent offline: characterise, then decide actionable vs accepted.
 - Park open anomalies with named status: the 1867 mpdecimate count; the 0.18% PPDmUg
   duplicates on empty-FOV footage.
@@ -387,32 +389,26 @@ documented capture path; runbook updated.
 
 ## CP-R10 — Session churn investigation
 
-**Status:** 🔲 Not started
-**Evidence:** *(link to docs/evidence/... once it exists)*
+**Status:** ✅ Complete (Outcome 3 — inconclusive, single sample)
+**Evidence:** `docs/evidence/session_churn_1/findings.md`
 
-Depends on CP-R9 (caffeinate fix required for the cheapest test).
+**Result:** Caffeinate materially reduced attempts on both cameras (14→4 FP7oJQ, 14→6 PPDmUg)
+and eliminated the correlated gap pattern that characterized display-sleep-induced churn.
+Display sleep confirmed as A cause. However, FP7oJQ's total gap increased (+23%) due to a
+late-capture cluster at ~45 min (possibly a Nest session lifetime limit), masking the
+improvement. PPDmUg improved clearly: total gap -67.6%, longest run +59%.
 
-**Observation (CP-R1, 2026-08-04):** on healthy cameras, Nest invalidated RTSP sessions
-every 1-8 minutes. FP7oJQ and PPDmUg each needed 14 ffmpeg attempts to produce 32 segments,
-with 1-3 minutes of retry/backoff between healthy runs. The recorder recovered correctly
-every time — this is not a recorder bug — but each cycle is **1-3 minutes of footage not
-captured**. For a BJJ gym that is rolls not recorded. During a GT capture it is holes in
-footage you are paying to annotate.
+**CP-R8 gate:** Proceed. Use `capture.sh` (caffeinate). PPDmUg is the primary GT camera
+(95.9% coverage). FP7oJQ may need proactive session refresh for captures >45 min.
 
-**Leading hypothesis:** the host's display slept repeatedly during the capture (user
-observation). Display sleep can trigger network-interface power management on macOS. This
-fits better than a Nest-side concurrent-session limit — the churn occurred even with
-`stop_stream` calls, and the sessions were freshly generated.
+**Coverage metric:** `services/nest_recorder/coverage_report.py` (pulled forward from CP-R7).
+Session-scoped (`--start-epoch` / `--window`), per-camera, named gaps.
 
-**Cheapest test:** run a capture with display sleep disabled (see CP-R9 caffeinate work) and
-compare churn rate against the 2026-08-04 baseline of ~14 attempts / 32 segments per camera
-over 65 minutes.
+**Bimodal validation (CP-R6, opportunistic):** 8 PPDmUg segments emitted `is_bimodal: true`
+with valid `short_mode_*` fields. Contract caveat removed.
 
-**Alternatives if that fails:** SDM concurrent-stream limits; orphaned sessions from earlier
-smoke tests; relay-side timeout; network-interface power management independent of display.
-
-**Done when:** churn root cause identified; either resolved or accepted with a stated
-coverage budget.
+**Drift windows (CP-R6, opportunistic):** 120s segments reach 12-13 drift windows.
+`drift_rate_s_per_s` and `drift_ppm` confirmed emitted in production.
 
 ---
 
