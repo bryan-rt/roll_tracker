@@ -55,19 +55,13 @@ echo "[1/4] Ensuring container is running..."
 $COMPOSE up -d recorder 2>&1 | grep -v "^time=" || true
 echo ""
 
-# --- Pre-flight: ffmpeg option availability ---
-echo "[2/4] Checking ffmpeg option availability..."
-FFHELP_TMP=$(mktemp)
-$COMPOSE exec recorder ffmpeg -h full >"$FFHELP_TMP" 2>&1 || true
-
-for opt in "-timeout" "-fps_mode" "-copyts"; do
-  if grep -q -- "$opt" "$FFHELP_TMP"; then
-    pass "ffmpeg supports $opt"
-  else
-    fail "ffmpeg does NOT support $opt — recording will break"
-  fi
-done
-rm -f "$FFHELP_TMP"
+# --- Pre-flight: ffmpeg option availability (same script as production entrypoint) ---
+echo "[2/4] Checking ffmpeg options (check_ffmpeg_opts.sh)..."
+if $COMPOSE exec recorder /app/check_ffmpeg_opts.sh 2>&1 | grep -v "^time="; then
+  pass "check_ffmpeg_opts.sh passed"
+else
+  fail "check_ffmpeg_opts.sh FAILED — ffmpeg is missing required options"
+fi
 echo ""
 
 # Bail early if ffmpeg is broken
@@ -167,7 +161,7 @@ for cam_line in "${CAM_LINES[@]}"; do
 
   # Assertion 1: startup log values
   log_line=$($COMPOSE exec recorder bash -c \
-    "grep 'timing config:' '${cam_dir}run.log' 2>/dev/null | head -1 | tr -d '\r\n'" 2>&1 | grep -v "^time=")
+    "grep 'timing config:' '${cam_dir}run.log' 2>/dev/null | tail -1 | tr -d '\r\n'" 2>&1 | grep -v "^time=")
 
   if echo "$log_line" | grep -q "SOURCE_PTS=$EXP_SOURCE_PTS.*FPS_PASSTHROUGH=$EXP_FPS_PASSTHROUGH"; then
     pass "startup log: SOURCE_PTS=$EXP_SOURCE_PTS FPS_PASSTHROUGH=$EXP_FPS_PASSTHROUGH"

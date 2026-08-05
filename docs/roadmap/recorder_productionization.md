@@ -159,8 +159,13 @@ passes; rollback verified to work.
 
 ## CP-R4 — Pin the base image + startup assertion (requires rebuild)
 
-**Status:** 🔲 Not started
-**Evidence:** *(link to docs/evidence/... once it exists)*
+**Status:** ✅ Complete
+**Evidence:** Rebuilt 2026-08-05. `debian:trixie-slim` (Debian 13.6), ffmpeg 7.1.5-0+deb13u1
+(unchanged from prior image). `check_ffmpeg_opts.sh` asserts `-timeout`, `-fps_mode`,
+`-copyts` — called from both `entrypoint.sh` (production) and `smoke_test.sh` (dev).
+Assertion failure demonstrated (exit 1 on missing option). `COPY *.sh` prevents future
+scripts from being absent in production. No apt pin on ffmpeg (assertion is the protection;
+trixie will not cross 7.x boundary). `smoke_test.sh` both modes passing post-rebuild.
 
 `debian:stable-slim` silently rolled bookworm→trixie and invalidated `-stimeout`, which
 would have caused total recording failure. Now that correct behaviour depends on `-timeout`
