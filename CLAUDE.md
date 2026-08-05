@@ -223,9 +223,19 @@ Evidence: `docs/evidence/purity_proxy_{1,2}/`.
   alignment achievable at ±14–56ms** using source PTS + host-clock lower envelope.
   FP7oJQ shows −603 ppm clock drift (~181ms over 5 min) — measurable, linearly
   correctable.
-- **Stream fps VARIES per session** (15fps and 30fps both observed from source PTS).
-  SDP reports 30 when delivering 15. Cameras differ from each other (13.85 vs 15.00
-  measured in one session). **Do not hardcode fps anywhere — use per-clip measured fps.**
+- **Stream fps VARIES per session AND mid-stream** (15fps and 30fps both observed from
+  source PTS). SDP reports 30 when delivering 15. Cameras differ from each other (13.85
+  vs 15.00 measured in one session). **CP-R1b: bimodal frame-rate oscillation** —
+  FP7oJQ interleaves 33ms and 67ms inter-frame intervals within a single 33-min ffmpeg
+  invocation, with the short-mode proportion shifting from 0% to 99% over time. Whether
+  this is genuine rate change or relay-level frame loss is **structurally undecidable**
+  from PTS alone (the 15fps tick pattern is the algebraic pair-sum of the 30fps pattern).
+  Container metadata (`r_frame_rate`, `CAP_PROP_FPS`) is stale on bimodal segments.
+  `measured_fps` is broken on bimodal segments (**TRIM-BIMODAL defect**: trimmed mean
+  discards the minority mode as outliers — 36% discard on FP7oJQ transition segment).
+  Per-frame `dt_s` from the sidecar is the only reliable rate source.
+  Evidence: `docs/evidence/recorder_fps_adaptation_1/`.
+  **Do not hardcode fps anywhere — use per-frame dt from sidecar.**
 - `frame_index` is a sequential `cap.read()` counter (frame_iterator.py), NOT PTS-derived.
   Works for any fps.
 - Diagnostic module: `services/nest_recorder/recorder/diag_timing.sh` (parallel, does NOT
@@ -603,9 +613,12 @@ First trained model had FP7oJQ false positives from background memorization.
    injection (item 2) proves insufficient. Check whether boxmot permits Kalman injection
    or subclassing first; the code change is a few lines, the cost is maintaining
    divergence from upstream.
-4. **Consumer split:** per-frame dt + gap flags everywhere we control code; per-clip
-   scalar measured fps for BoT-SORT (boxmot hardcodes unit Kalman time-step; variable-dt
-   requires forking). Intra-clip cadence uniform (1.21ms stdev), scalar loses little.
+4. **Consumer split:** per-frame dt + gap flags everywhere we control code; per-frame dt
+   for BoT-SORT (boxmot hardcodes unit Kalman time-step; variable-dt requires forking).
+   **CP-R1b invalidated the per-clip scalar plan:** bimodal frame-rate oscillation
+   (interleaved 33/67ms intervals, short-mode proportion shifting mid-segment) means no
+   single scalar describes a clip. Additionally, `measured_fps` is broken on bimodal
+   segments (TRIM-BIMODAL: 36% discard on transition segment). Per-frame `dt_s` required.
    ⏳ blocked on CP-R5 (correctness) → CP-R6 (contract).
 5. **GT-join decision needed:** CVAT labels duplicate frames like any other. Decide whether
    GT2ACTUALS scores or excludes pipeline-flagged duplicates before analysis.

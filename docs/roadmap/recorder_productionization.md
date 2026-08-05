@@ -192,7 +192,7 @@ Replace **constructed** fields with **observed** ones:
 | Field | Source | Purpose |
 |---|---|---|
 | `dt_s` | consecutive source PTS delta | True per-frame interval. Kills the fps bug at source. |
-| `measured_fps` | median interval across clip | The per-clip scalar BoT-SORT needs. Correct on truncated segments. |
+| `measured_fps` | trimmed mean of tick deltas | Segment-level average. **NOT sufficient as sole rate source** — CP-R1b proved fps changes mid-segment (15/30fps oscillation within a single ffmpeg invocation). Blends to misleading values on transition segments. Retain as a summary statistic; consumers must use `dt_s` for frame-level accuracy. |
 | `gap_flag` | `dt_s > 1.5x` nominal | False-teleport signal, preserved not smoothed. |
 | `implied_missing_frames` | `round(dt/nominal) - 1` | Coast-step count for Stage A injection. |
 | `is_duplicate` | framehash equality | Observed, not inferred from a count mismatch. Should be permanently 0 post-CP-R3 — a regression canary. |
@@ -232,10 +232,33 @@ catches this. CP-R6's contract must scope `measured_fps` to `timing_mode: "passt
 source-PTS only, or emit an explicit validity flag. Consumers must not read `measured_fps`
 from an arrival-PTS sidecar.
 
+**Per-clip scalar fps is provably insufficient (CP-R1b).** FP7oJQ oscillates between 15fps
+and 30fps mid-segment within a single ffmpeg invocation (attempt 14, 33 minutes continuous).
+The camera interleaves 33ms and 67ms frames — never intermediate dt values — with the
+proportion varying over time. `measured_fps` blends to misleading values on transition
+segments (e.g. 30.0019 for a segment that is 64% at 33ms). Container metadata (`r_frame_rate`,
+`CAP_PROP_FPS`) records the rate at container creation and is stale when the stream changes
+underneath. PPDmUg shows the same mechanism at lower magnitude (interleaved 33ms frames
+producing 15.2-17.6 `measured_fps`). `dt_s` per frame is the only reliable rate source.
+Evidence: `docs/evidence/recorder_fps_adaptation_1/findings.md`.
+
 **Free drop metric from trimmed mean.** `pts_delta_trim_total - pts_delta_trim_kept` is
 the number of PTS gaps (dropped frames) per segment. FP7oJQ smoke test: 8–9% discarded on
 all three segments, consistent with DUPFIX's 0.1–7.7% per-attempt range. These are real
 false teleports reaching the tracker; coast-step injection (checkpoint 2) addresses them.
+
+**TRIM-BIMODAL defect (CP-R1b, blocking CP-R6).** The trimmed mean (lo = median x 0.5,
+hi = median x 1.5) assumes unimodal dt distribution. Under bimodal oscillation (interleaved
+33ms and 67ms inter-frame intervals), the majority mode captures the median and the bounds
+discard the minority mode as "outliers." Measured discard rates on bimodal segments:
+FP7oJQ-163102 (66% short-mode): 36% discarded, reports 30.0019 instead of blended ~22fps.
+PPDmUg-163240 (16% short-mode): 10.8% discarded (trims 2970-tick but keeps 3060-tick frames).
+PPDmUg-163041 (30% short-mode): 0% discarded (boundary survives by luck: lo = median x 0.5
+= 5940 x 0.5 = 2970, exactly the tick value). Does NOT affect stable-rate segments (all
+controls show correct `measured_fps`). **Fix direction:** detect bimodality and report both
+modes plus their proportions (e.g. `mode_1_fps`, `mode_1_proportion`, `is_bimodal` flag)
+rather than forcing a single scalar. Blocks CP-R6 from contracting `measured_fps` as
+authoritative until resolved.
 
 **Open anomaly: drift instability on short segments.** CP-R2 smoke test measured
 `drift_ppm: 2449` on a 20s PPDmUg segment with only 2 drift windows, vs RELIABILITY-1's

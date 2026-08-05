@@ -51,6 +51,7 @@
 | `docs/evidence/recorder_reliability_1/findings.md` | Five production recorder fixes + dup/drop verdict | **CORRECTED** — mpdecimate "255 dups" was near-identical (default thresholds), not pixel-identical. Pixel-identical on arrival-PTS is 34 (0.75%). See DUPFIX-1. |
 | `docs/evidence/recorder_reliability_2/findings.md` | API quota awareness + traffic reduction | **CURRENT** |
 | `docs/evidence/recorder_dupfix_1/findings.md` | DUPFIX-1/2: Duplicate contradiction resolved (0 pixel-identical dups); frame drops measured (FP7oJQ 0.1-7.7% PTS gaps, PPDmUg 0-3.0% CFR decimation); conservation test, boundary attribution, PTS gap analysis | **CURRENT** |
+| `docs/evidence/recorder_fps_adaptation_1/findings.md` | CP-R1b: Bimodal frame-rate oscillation (interleaved 33/67ms inter-frame intervals). TRIM-BIMODAL defect: trimmed mean discards minority mode (36% discard on transition segment). Genuine rate change vs relay frame loss is structurally undecidable from PTS. Per-frame dt is the only reliable rate source. | **CURRENT** |
 | `docs/evidence/wallclock_1/findings.md` | Container PTS is synthetic (CFR discards wall-clock) | **HISTORICAL** |
 
 ## Evidence — Identity Investigation Arc
