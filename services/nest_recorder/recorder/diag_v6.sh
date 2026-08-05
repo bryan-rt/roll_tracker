@@ -335,11 +335,11 @@ extract_timing_sidecars() {
   [ ! -f "$stderr" ] && return 0
   grep -q 'Parsed_showinfo.*pts_time:' "$stderr" || return 0
 
-  # Step 1: Find segment mp4s and their opening-line positions in stderr
-  local -a seg_paths seg_lines seg_epochs
+  # Step 1: Find segment mp4s from Opening markers (reliable for DISCOVERY,
+  # but NOT used as split points — the muxer lags behind the filter graph).
+  local -a seg_paths seg_epochs
   while IFS= read -r gline; do
-    local lineno path base ymd_hms epoch=0
-    lineno="${gline%%:*}"
+    local path base ymd_hms epoch=0
     path=$(echo "$gline" | sed "s/.*Opening '//;s/' for writing.*//")
     base=$(basename "$path" .mp4)
     ymd_hms=$(echo "$base" | grep -oE '[0-9]{8}-[0-9]{6}')
@@ -347,13 +347,10 @@ extract_timing_sidecars() {
       epoch=$(date -d "${ymd_hms:0:4}-${ymd_hms:4:2}-${ymd_hms:6:2} ${ymd_hms:9:2}:${ymd_hms:11:2}:${ymd_hms:13:2}" +%s 2>/dev/null || echo 0)
     fi
     seg_paths+=("$path")
-    seg_lines+=("$lineno")
     seg_epochs+=("$epoch")
-  done < <(grep -n "Opening.*\.mp4.*for writing" "$stderr")
+  done < <(grep "Opening.*\.mp4.*for writing" "$stderr")
 
   [ "${#seg_paths[@]}" -eq 0 ] && return 0
-  local total_stderr_lines
-  total_stderr_lines=$(wc -l < "$stderr")
 
   # Extract timebase from showinfo config line (once per attempt, before segments)
   local timebase=0
@@ -369,43 +366,137 @@ extract_timing_sidecars() {
     log "[v6] ⚠ sidecar: timebase not found in showinfo config; fallback to 1/$timebase"
   fi
 
-  # Step 2: For each segment, extract showinfo PTS ticks, get output info, build sidecar
+  # Step 2: Build cumulative-duration boundaries from ffprobe.
+  # CP-R5: PTS-based split replaces line-position split. Each showinfo line is
+  # assigned to a segment by where its PTS falls in the cumulative duration window.
+  # Works identically for passthrough and CFR: under SOURCE_PTS=0, showinfo PTS are
+  # arrival-wallclock and segment durations are wallclock, so elapsed-time bucketing
+  # aligns regardless of the input/output count ratio.
+  local -a seg_durations seg_boundaries
+  local dur_sum=0
   for (( si=0; si<${#seg_paths[@]}; si++ )); do
     local seg_path="${seg_paths[$si]}"
-    local from_line="${seg_lines[$si]}"
+    local dur=""
+    if [ -f "$seg_path" ]; then
+      dur=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$seg_path" 2>/dev/null | tr -d ' \r')
+    fi
+    if [ -z "$dur" ] || [ "$dur" = "N/A" ]; then
+      if (( si + 1 < ${#seg_paths[@]} )); then
+        # Non-final segment with missing duration is a hard error
+        log "[v6] ⚠ sidecar: $(basename "$seg_path") — cannot read duration, skipping attempt"
+        return 0
+      fi
+      dur="0"  # Final segment: absorbs everything from its boundary onward
+    fi
+    seg_durations+=("$dur")
+    seg_boundaries+=("$dur_sum")
+    dur_sum=$(awk "BEGIN{printf \"%.6f\", $dur_sum + $dur}")
+  done
+
+  # Extract ALL showinfo (host_arrival, pts_ticks) pairs from the entire stderr
+  local all_pairs="$DIAG_DIR/_all_pairs_${ATTEMPT}.tmp"
+  if [ "$SOURCE_PTS" = "1" ]; then
+    grep 'Parsed_showinfo.*pts:' "$stderr" \
+      | sed -n 's/^\([0-9.]*\) .*pts: *\(-\?[0-9][0-9]*\).*/\1 \2/p' \
+      > "$all_pairs"
+  else
+    grep 'Parsed_showinfo.*pts:' "$stderr" \
+      | sed -n 's/.*pts: *\(-\?[0-9][0-9]*\).*/0 \1/p' \
+      > "$all_pairs"
+  fi
+
+  local total_showinfo
+  total_showinfo=$(wc -l < "$all_pairs" | tr -d ' ')
+  if [ "$total_showinfo" -eq 0 ]; then
+    log "[v6] ⚠ sidecar: no showinfo data in attempt $ATTEMPT"
+    rm -f "$all_pairs"
+    return 0
+  fi
+
+  # Z2: verify regex matched every showinfo line
+  local raw_showinfo_count
+  raw_showinfo_count=$(grep -c 'Parsed_showinfo.*pts:' "$stderr" || true)
+  if [ "$total_showinfo" -ne "$raw_showinfo_count" ]; then
+    log "[v6] ⚠ sidecar: regex matched $total_showinfo of $raw_showinfo_count showinfo lines"
+  fi
+
+  # Anchor pre-check (C2): PTS span vs sum of segment durations should agree
+  local first_pts last_pts pts_span_s
+  first_pts=$(head -1 "$all_pairs" | awk '{print $2}')
+  last_pts=$(tail -1 "$all_pairs" | awk '{print $2}')
+  pts_span_s=$(awk "BEGIN{printf \"%.6f\", ($last_pts - $first_pts) / $timebase}")
+  local span_diff
+  span_diff=$(awk "BEGIN{printf \"%.6f\", $pts_span_s - $dur_sum}")
+  local abs_diff
+  abs_diff=$(awk "BEGIN{d=$span_diff; if(d<0) d=-d; printf \"%.6f\", d}")
+  # Allow up to 2 frames of disagreement (~0.134s at 15fps)
+  if awk "BEGIN{exit ($abs_diff > 0.2) ? 0 : 1}"; then
+    log "[v6] ⚠ sidecar: PTS span (${pts_span_s}s) vs segment durations (${dur_sum}s) differ by ${span_diff}s"
+  fi
+
+  # Assign each showinfo line to a segment by PTS-based elapsed time.
+  # Boundaries are cumulative durations anchored at the first showinfo PTS.
+  # Segment i owns [boundary_i, boundary_{i+1}). Last segment owns [boundary_last, ∞).
+  local -a seg_pair_files
+  for (( si=0; si<${#seg_paths[@]}; si++ )); do
+    seg_pair_files+=("$DIAG_DIR/_pairs_${ATTEMPT}_${si}.tmp")
+    : > "${seg_pair_files[$si]}"  # truncate
+  done
+
+  # Build boundary string for awk: "0.0 120.5 240.3 ..."
+  local boundary_str=""
+  for b in "${seg_boundaries[@]}"; do
+    boundary_str="${boundary_str}${b} "
+  done
+
+  # Build output-file-path string for awk
+  local outfile_str=""
+  for f in "${seg_pair_files[@]}"; do
+    outfile_str="${outfile_str}${f}|"
+  done
+
+  # Single-pass assignment: read all pairs, compute elapsed PTS, write to segment file
+  awk -v timebase="$timebase" \
+      -v boundaries="$boundary_str" \
+      -v outfiles="$outfile_str" \
+      -v n_segs="${#seg_paths[@]}" \
+  '
+  BEGIN {
+    split(boundaries, bnd, " ")
+    split(outfiles, files, "|")
+    base_ticks = -1
+  }
+  {
+    host = $1; ticks = $2 + 0
+    if (base_ticks < 0) base_ticks = ticks
+    elapsed = (ticks - base_ticks) / timebase
+
+    # Find the segment: last segment whose boundary <= elapsed
+    seg = 1  # 1-indexed from split()
+    for (s = n_segs; s >= 1; s--) {
+      if (elapsed >= bnd[s] + 0.0) { seg = s; break }
+    }
+    print host, ticks >> files[seg]
+  }
+  ' "$all_pairs"
+
+  # Close awk output files (awk >> keeps them open until END, but we are done)
+  rm -f "$all_pairs"
+
+  # Report leading-edge lines (showinfo before first Opening marker, recovered by CP-R5)
+  local leading_edge
+  leading_edge=$(wc -l < "${seg_pair_files[0]}" | tr -d ' ')
+  # (The old method dropped lines before the first Opening marker; PTS-based recovers them)
+
+  # Step 3: For each segment, get output info and build sidecar
+  for (( si=0; si<${#seg_paths[@]}; si++ )); do
+    local seg_path="${seg_paths[$si]}"
     local epoch="${seg_epochs[$si]}"
-    local to_line="$total_stderr_lines"
-    if (( si + 1 < ${#seg_lines[@]} )); then
-      to_line="${seg_lines[$((si+1))]}"
-    fi
-
+    local pairs_tmp="${seg_pair_files[$si]}"
     local sidecar="${seg_path%.mp4}.timing.jsonl"
-    local pairs_tmp="$DIAG_DIR/_pairs_${ATTEMPT}_${si}.tmp"
-
-    # Extract integer PTS ticks (not pts_time which truncates to 3 decimals).
-    # Z1: regex requires at least one digit after optional sign; no trailing space required.
-    if [ "$SOURCE_PTS" = "1" ]; then
-      sed -n "${from_line},${to_line}p" "$stderr" \
-        | grep 'Parsed_showinfo.*pts:' \
-        | sed -n 's/^\([0-9.]*\) .*pts: *\(-\?[0-9][0-9]*\).*/\1 \2/p' \
-        > "$pairs_tmp"
-    else
-      sed -n "${from_line},${to_line}p" "$stderr" \
-        | grep 'Parsed_showinfo.*pts:' \
-        | sed -n 's/.*pts: *\(-\?[0-9][0-9]*\).*/0 \1/p' \
-        > "$pairs_tmp"
-    fi
 
     local input_count
     input_count=$(wc -l < "$pairs_tmp" | tr -d ' ')
-
-    # Z2: verify regex matched every showinfo line — detect silent frame drops
-    local showinfo_count
-    showinfo_count=$(sed -n "${from_line},${to_line}p" "$stderr" \
-      | grep -c 'Parsed_showinfo.*pts:' || true)
-    if [ "$input_count" -ne "$showinfo_count" ]; then
-      log "[v6] ⚠ sidecar: $(basename "$seg_path") — regex matched $input_count of $showinfo_count showinfo lines"
-    fi
 
     if [ "$input_count" -eq 0 ]; then
       log "[v6] ⚠ sidecar: $(basename "$seg_path") — no showinfo data, skipping"
@@ -579,12 +670,12 @@ extract_timing_sidecars() {
 
       # _meta — passthrough mode
       if (source_pts_mode == "1") {
-        printf "{\"_meta\":true,\"sidecar_schema\":2,\"timing_mode\":\"passthrough\",\"pts_origin\":\"segment_relative\",\"fps_method\":\"trimmed_mean\",\"segment_start_epoch\":%s,\"attempt\":%d,\"input_frame_count\":%d,\"output_frame_count\":%d,\"measured_fps\":%.4f,\"measured_fps_median\":%.4f,\"measured_fps_mean\":%.4f,\"pts_timebase\":%d,\"pts_tick_delta_median\":%.1f,\"pts_tick_delta_mean\":%.1f,\"pts_delta_trim_kept\":%d,\"pts_delta_trim_total\":%d,\"mismatch\":%s,\"pts_wallclock_offset_s\":%.6f,\"offset_method\":\"lower_envelope\",\"drift_rate_s_per_s\":%.9f,\"drift_flat\":%s,\"drift_ppm\":%.3f,\"n_drift_windows\":%d,\"pts_mean_delta_ms\":%.4f,\"pts_stdev_delta_ms\":%.4f}\n", \
+        printf "{\"_meta\":true,\"sidecar_schema\":3,\"timing_mode\":\"passthrough\",\"pts_origin\":\"segment_relative\",\"fps_method\":\"trimmed_mean\",\"segment_start_epoch\":%s,\"attempt\":%d,\"input_frame_count\":%d,\"output_frame_count\":%d,\"measured_fps\":%.4f,\"measured_fps_median\":%.4f,\"measured_fps_mean\":%.4f,\"pts_timebase\":%d,\"pts_tick_delta_median\":%.1f,\"pts_tick_delta_mean\":%.1f,\"pts_delta_trim_kept\":%d,\"pts_delta_trim_total\":%d,\"mismatch\":%s,\"pts_wallclock_offset_s\":%.6f,\"offset_method\":\"lower_envelope\",\"drift_rate_s_per_s\":%.9f,\"drift_flat\":%s,\"drift_ppm\":%.3f,\"n_drift_windows\":%d,\"pts_mean_delta_ms\":%.4f,\"pts_stdev_delta_ms\":%.4f}\n", \
           epoch, attempt, ni, output_count, measured_fps, measured_fps_median, measured_fps_mean, \
           timebase, median_tick, mean_tick, trim_n, nd, mismatch, \
           global_min_offset, drift_rate, drift_flat, drift_ppm, n_windows, mean_d, stdev_d
       } else {
-        printf "{\"_meta\":true,\"sidecar_schema\":2,\"timing_mode\":\"passthrough\",\"pts_origin\":\"segment_relative\",\"fps_method\":\"trimmed_mean\",\"segment_start_epoch\":%s,\"attempt\":%d,\"input_frame_count\":%d,\"output_frame_count\":%d,\"measured_fps\":%.4f,\"measured_fps_median\":%.4f,\"measured_fps_mean\":%.4f,\"pts_timebase\":%d,\"pts_tick_delta_median\":%.1f,\"pts_tick_delta_mean\":%.1f,\"pts_delta_trim_kept\":%d,\"pts_delta_trim_total\":%d,\"mismatch\":%s}\n", \
+        printf "{\"_meta\":true,\"sidecar_schema\":3,\"timing_mode\":\"passthrough\",\"pts_origin\":\"segment_relative\",\"fps_method\":\"trimmed_mean\",\"segment_start_epoch\":%s,\"attempt\":%d,\"input_frame_count\":%d,\"output_frame_count\":%d,\"measured_fps\":%.4f,\"measured_fps_median\":%.4f,\"measured_fps_mean\":%.4f,\"pts_timebase\":%d,\"pts_tick_delta_median\":%.1f,\"pts_tick_delta_mean\":%.1f,\"pts_delta_trim_kept\":%d,\"pts_delta_trim_total\":%d,\"mismatch\":%s}\n", \
           epoch, attempt, ni, output_count, measured_fps, measured_fps_median, measured_fps_mean, \
           timebase, median_tick, mean_tick, trim_n, nd, mismatch
       }
@@ -757,12 +848,12 @@ extract_timing_sidecars() {
       }
 
       if (source_pts_mode == "1") {
-        printf "{\"_meta\":true,\"sidecar_schema\":2,\"timing_mode\":\"cfr_grid\",\"pts_origin\":\"segment_relative\",\"fps_method\":\"trimmed_mean\",\"segment_start_epoch\":%s,\"attempt\":%d,\"input_frame_count\":%d,\"output_frame_count\":%d,\"output_fps\":%.4f,\"measured_fps\":%.4f,\"measured_fps_median\":%.4f,\"measured_fps_mean\":%.4f,\"pts_timebase\":%d,\"pts_tick_delta_median\":%.1f,\"pts_tick_delta_mean\":%.1f,\"pts_delta_trim_kept\":%d,\"pts_delta_trim_total\":%d,\"mismatch\":%s,\"pts_wallclock_offset_s\":%.6f,\"offset_method\":\"lower_envelope\",\"drift_rate_s_per_s\":%.9f,\"drift_flat\":%s,\"drift_ppm\":%.3f,\"n_drift_windows\":%d,\"pts_mean_delta_ms\":%.4f,\"pts_stdev_delta_ms\":%.4f}\n", \
+        printf "{\"_meta\":true,\"sidecar_schema\":3,\"timing_mode\":\"cfr_grid\",\"pts_origin\":\"segment_relative\",\"fps_method\":\"trimmed_mean\",\"segment_start_epoch\":%s,\"attempt\":%d,\"input_frame_count\":%d,\"output_frame_count\":%d,\"output_fps\":%.4f,\"measured_fps\":%.4f,\"measured_fps_median\":%.4f,\"measured_fps_mean\":%.4f,\"pts_timebase\":%d,\"pts_tick_delta_median\":%.1f,\"pts_tick_delta_mean\":%.1f,\"pts_delta_trim_kept\":%d,\"pts_delta_trim_total\":%d,\"mismatch\":%s,\"pts_wallclock_offset_s\":%.6f,\"offset_method\":\"lower_envelope\",\"drift_rate_s_per_s\":%.9f,\"drift_flat\":%s,\"drift_ppm\":%.3f,\"n_drift_windows\":%d,\"pts_mean_delta_ms\":%.4f,\"pts_stdev_delta_ms\":%.4f}\n", \
           epoch, attempt, ni, output_count, fps_val, measured_fps, measured_fps_median, measured_fps_mean, \
           timebase, median_tick, mean_tick, trim_n, nd, mismatch, \
           global_min_offset, drift_rate, drift_flat, drift_ppm, n_windows, mean_d, stdev_d
       } else {
-        printf "{\"_meta\":true,\"sidecar_schema\":2,\"timing_mode\":\"cfr_grid\",\"pts_origin\":\"segment_relative\",\"fps_method\":\"trimmed_mean\",\"segment_start_epoch\":%s,\"attempt\":%d,\"input_frame_count\":%d,\"output_frame_count\":%d,\"output_fps\":%.4f,\"measured_fps\":%.4f,\"measured_fps_median\":%.4f,\"measured_fps_mean\":%.4f,\"pts_timebase\":%d,\"pts_tick_delta_median\":%.1f,\"pts_tick_delta_mean\":%.1f,\"pts_delta_trim_kept\":%d,\"pts_delta_trim_total\":%d,\"mismatch\":%s}\n", \
+        printf "{\"_meta\":true,\"sidecar_schema\":3,\"timing_mode\":\"cfr_grid\",\"pts_origin\":\"segment_relative\",\"fps_method\":\"trimmed_mean\",\"segment_start_epoch\":%s,\"attempt\":%d,\"input_frame_count\":%d,\"output_frame_count\":%d,\"output_fps\":%.4f,\"measured_fps\":%.4f,\"measured_fps_median\":%.4f,\"measured_fps_mean\":%.4f,\"pts_timebase\":%d,\"pts_tick_delta_median\":%.1f,\"pts_tick_delta_mean\":%.1f,\"pts_delta_trim_kept\":%d,\"pts_delta_trim_total\":%d,\"mismatch\":%s}\n", \
           epoch, attempt, ni, output_count, fps_val, measured_fps, measured_fps_median, measured_fps_mean, \
           timebase, median_tick, mean_tick, trim_n, nd, mismatch
       }

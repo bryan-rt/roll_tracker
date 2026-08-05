@@ -58,8 +58,12 @@ residuals cannot cancel under pure boundary misattribution.
 > FP7oJQ h06 attempt_1 ledger residuals sum within +/-10 of zero; `framehash_adjacent_dups`
 > = 0 for all four segments.
 
-**Result: PASS.** Residuals: +27, -1, -4, -29 = **-7**. All four `framehash_adjacent_dups`
-= 0. Boundary attribution errors on FP7oJQ h06 are redistributive, not lossy.
+**Result: ~~PASS~~ CORRECTED (CP-R5).** Original residuals: +27, -1, -4, -29 = -7. The -7
+rested on the line-position split silently dropping 47 leading-edge showinfo lines (3.1s
+of filter-graph output before the first `Opening` marker). With the PTS-based split
+(CP-R5), true input count is 6276, not 6229. Conservation deficit = 6236 - 6276 = **-40**
+(40 real frame drops). FP7oJQ h06 attempt_1 is **lossy**, consistent with PPDmUg. The P2
+criterion (+/-10 of zero) **FAILS**. `framehash_adjacent_dups` = 0 remains valid.
 
 ### P3 (DUPFIX-2)
 
@@ -196,15 +200,15 @@ PPDmUg-070219's 108 `input_n` jumps agree with the 105-frame conservation defici
 | FP7oJQ-20260728-063135 | last | 777 | 806 | 0 | -29 | 0.47 | 0 |
 | **Sum** | | **6229** | **6236** | **0** | **-7** | | **8** |
 
-Residuals sum to -7. Conservation net = -7 (output 7 more than input). PTS implied missing
-= 8. These three numbers are consistent: 8 frames were genuinely gapped in the PTS stream,
-producing 8 extra output frames via CFR padding, minus 1 frame where a gap coincided with
-a natural slot boundary = net -7.
+**CORRECTED (CP-R5):** The original residual sum of -7 was an artifact of the line-position
+split dropping 47 leading-edge showinfo lines. True total: 6276 input, 6236 output = **-40**
+conservation deficit (40 real frame drops). PTS implied missing = 8 was computed from the
+TRIMMED tick deltas and measures only the gaps visible after trimming — it does not capture
+the full loss. See `docs/evidence/recorder_boundary_fix_1/findings.md` for corrected
+per-segment residuals.
 
-The first segment (062531) has +27 residual despite 0 PTS gaps and 0.47ms stdev. This is
-boundary misattribution at attempt start: showinfo lines between the first frame arriving
-and the muxer's `Opening` log line are attributed to segment 062531 but may include leading
-frames. The last segment (063135) has -29 residual — the mirror image at attempt end.
+The first segment's +27 residual was boundary misattribution; the last segment's -29 was its
+mirror. Both are corrected by the PTS-based split.
 
 ### Position-in-attempt pattern
 

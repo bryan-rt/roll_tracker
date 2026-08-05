@@ -306,8 +306,9 @@ Evidence: `docs/evidence/recorder_reliability_2/`.
   **Never hardcode fps anywhere.**
 - **Sidecar schema** (per output frame): `frame_index` (join key to Stage A), `pts_time_s`
   (source capture PTS), `host_arrival_s`, `input_n` (source frame this output maps to —
-  consecutive same `input_n` = fabricated duplicate). Metadata (`sidecar_schema: 2`):
-  `measured_fps` (trimmed mean, authoritative), `measured_fps_median`, `measured_fps_mean`,
+  consecutive same `input_n` = fabricated duplicate). Metadata (`sidecar_schema: 3`,
+  bumped from 2 in CP-R5 — boundary fix changed `input_frame_count` and `pts_time_s` origin):
+  `measured_fps` (trimmed mean), `measured_fps_median`, `measured_fps_mean`,
   `pts_timebase` (parsed from showinfo config, typically 90000), `pts_tick_delta_median`,
   `pts_tick_delta_mean`, `pts_delta_trim_kept`/`_total`, lower-envelope offset, drift ppm,
   mismatch flag, `timing_mode` (`"cfr_grid"` or `"passthrough"`), `pts_origin`

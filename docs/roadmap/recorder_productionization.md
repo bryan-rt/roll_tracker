@@ -184,8 +184,11 @@ test passes.
 
 ## CP-R5 — Fix the sidecar boundary split (live correctness bug)
 
-**Status:** 🔲 Not started
-**Evidence:** *(link to docs/evidence/... once it exists)*
+**Status:** ✅ Complete
+**Evidence:** `docs/evidence/recorder_boundary_fix_1/findings.md`. PTS-based split replaces
+line-position split. PPDmUg seg1 residual +30 -> +0 (exact). FP7oJQ recovered 47 leading-
+edge frames (3.1s). Schema bumped to 3. Muxer lag mechanism unexplained (0.27s PPDmUg vs
+3.1s FP7oJQ — ruled out x264 lookahead, not ruled out muxing queue / stderr interleave).
 
 **Evidence basis:** `docs/evidence/recorder_dupfix_1/findings.md`
 
@@ -198,8 +201,9 @@ sidecar currently has an unreliable per-segment `input_count`, and the mechanism
 - Re-run the DUPFIX instrument against the old split to quantify what changed.
 - Resolve or formally park the ~9s offset mechanism.
 - **Note:** `pts_time_s` in the sidecar is segment-relative (base-subtracted from the first
-  PTS in the segment's attributed stderr range). CP-R5's boundary fix will shift the time
-  origin for affected segments — this is expected, not an anomaly.
+  PTS in the segment's attributed stderr range). CP-R5's boundary fix **has shifted** the
+  time origin for affected segments — documented in
+  `docs/evidence/recorder_boundary_fix_1/findings.md`.
 - **Corroboration (CP-R2 smoke test, 2026-08-04):** mismatch pattern on PPDmUg passthrough
   reproduces the boundary hypothesis exactly: seg1 ni=357/output=330 (+27), seg2 300/300
   (0), seg3 228/255 (−27). The +27/−27 cancel, middle segment is clean. Strongest

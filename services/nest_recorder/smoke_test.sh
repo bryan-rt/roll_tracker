@@ -211,10 +211,10 @@ for cam_line in "${CAM_LINES[@]}"; do
 
     # Assertion 5: sidecar_schema
     schema=$(echo "$meta" | grep -o '"sidecar_schema":[0-9]*' | cut -d: -f2)
-    if [[ "$schema" == "2" ]]; then
-      pass "$bn: sidecar_schema=2"
+    if [[ "$schema" == "3" ]]; then
+      pass "$bn: sidecar_schema=3"
     else
-      fail "$bn: sidecar_schema=$schema, expected 2"
+      fail "$bn: sidecar_schema=$schema, expected 3"
     fi
 
     # Assertion 6: measured_fps band (C2: bimodal-aware)

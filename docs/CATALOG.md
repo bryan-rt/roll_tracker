@@ -52,6 +52,7 @@
 | `docs/evidence/recorder_reliability_2/findings.md` | API quota awareness + traffic reduction | **CURRENT** |
 | `docs/evidence/recorder_dupfix_1/findings.md` | DUPFIX-1/2: Duplicate contradiction resolved (0 pixel-identical dups); frame drops measured (FP7oJQ 0.1-7.7% PTS gaps, PPDmUg 0-3.0% CFR decimation); conservation test, boundary attribution, PTS gap analysis | **CURRENT** |
 | `docs/evidence/recorder_fps_adaptation_1/findings.md` | CP-R1b: Bimodal frame-rate oscillation (interleaved 33/67ms inter-frame intervals). TRIM-BIMODAL defect: trimmed mean discards minority mode (36% discard on transition segment). Genuine rate change vs relay frame loss is structurally undecidable from PTS. Per-frame dt is the only reliable rate source. | **CURRENT** |
+| `docs/evidence/recorder_boundary_fix_1/findings.md` | CP-R5: PTS-based segment boundary split replaces line-position split. PPDmUg seg1 residual -135 -> -109 (correct), +30 -> +0 (exact). FP7oJQ leading edge 47 frames recovered (3.1s of dropped data). Schema bumped to 3. | **CURRENT** |
 | `docs/evidence/wallclock_1/findings.md` | Container PTS is synthetic (CFR discards wall-clock) | **HISTORICAL** |
 
 ## Evidence — Identity Investigation Arc
