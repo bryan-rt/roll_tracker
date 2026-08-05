@@ -11,6 +11,32 @@
 > with passthrough enabled, satisfying CP-R1's reliability goals and CP-R2's measurement
 > goals in a single capture rather than two.
 
+## Execution Order
+
+Checkpoint IDs are labels, not sequence. Work proceeds in this order:
+
+| # | Checkpoint | Why here |
+|---|---|---|
+| 1 | CP-R9 — Smoke harness + caffeinate wiring | Small; de-risks every checkpoint after it. Caffeinate is a CP-R8 prerequisite. |
+| 2 | CP-R4 — Pin image + startup assertion | Requires a rebuild; surface any ffmpeg-version surprise now, not before GT capture. |
+| 3 | CP-R5 — Sidecar boundary fix | Prerequisite for CP-R6. Validated by the existing DUPFIX instrument. |
+| 4 | CP-R6 — Sidecar contract v2 (incl. TRIM-BIMODAL) | The payoff — where recorder work becomes usable downstream. |
+| 5 | CP-R10 — Session churn investigation | 1-3 min gaps are unacceptable during a GT session. Must resolve before CP-R8. |
+| 6 | CP-R7 — Hardening remainder | Low priority, no dependents. |
+| 7 | CP-R8 — Clean-footage GT capture | Depends on all of the above. |
+
+**Hard dependencies:**
+- CP-R5 → CP-R6 — the boundary bug corrupts per-segment counts *and* `base_pts` (the
+  sidecar's time origin). Fixing it later would shift the origin under consumers.
+- TRIM-BIMODAL → CP-R6 — `measured_fps` cannot be contracted as authoritative while it
+  misreports bimodal segments.
+- CP-R9 (caffeinate) → CP-R8 — the GT capture is long and unattended.
+- CP-R4 → CP-R8 — do not record footage you care about on an unpinned image.
+
+CP-R4 is otherwise independent. Most CP-R7 items are standalone.
+
+---
+
 **Design principle:** Upstream network loss cannot be prevented. Recorder-injected
 corruption can be eliminated entirely. Where loss is unavoidable, **preserve the evidence**
 rather than smoothing it away — a visible gap is information; a normalized gap is a silent
@@ -42,8 +68,12 @@ Target production config: `SOURCE_PTS=1` + `REENCODE=1` + `-fps_mode passthrough
 
 ## CP-R1 — Validation capture
 
-**Status:** 🔲 Not started
-**Evidence:** *(link to docs/evidence/... once it exists)*
+**Status:** ✅ Complete
+**Evidence:** 65-min capture 2026-08-04 19:32-20:37 UTC. All four validation targets
+confirmed: optimistic URL reuse fired, token refresh carried past the ~21-25 min barrier
+(17 extends/camera, zero 401s), no 429s. Coverage PARTIAL — session churn produced 1-3 min
+gaps (see CP-R10). J_EDEw produced zero segments. Uncovered a pre-existing crash
+(`local` outside function, fixed in `6112dc0`).
 
 Gates every production change below. Last unvalidated reliability behaviours.
 
@@ -192,7 +222,7 @@ Replace **constructed** fields with **observed** ones:
 | Field | Source | Purpose |
 |---|---|---|
 | `dt_s` | consecutive source PTS delta | True per-frame interval. Kills the fps bug at source. |
-| `measured_fps` | trimmed mean of tick deltas | Segment-level average. **NOT sufficient as sole rate source** — CP-R1b proved fps changes mid-segment (15/30fps oscillation within a single ffmpeg invocation). Blends to misleading values on transition segments. Retain as a summary statistic; consumers must use `dt_s` for frame-level accuracy. |
+| `measured_fps` | trimmed mean of tick deltas | Segment-level summary. See "Bimodal rate representation" below for limitations. |
 | `gap_flag` | `dt_s > 1.5x` nominal | False-teleport signal, preserved not smoothed. |
 | `implied_missing_frames` | `round(dt/nominal) - 1` | Coast-step count for Stage A injection. |
 | `is_duplicate` | framehash equality | Observed, not inferred from a count mismatch. Should be permanently 0 post-CP-R3 — a regression canary. |
@@ -232,33 +262,40 @@ catches this. CP-R6's contract must scope `measured_fps` to `timing_mode: "passt
 source-PTS only, or emit an explicit validity flag. Consumers must not read `measured_fps`
 from an arrival-PTS sidecar.
 
-**Per-clip scalar fps is provably insufficient (CP-R1b).** FP7oJQ oscillates between 15fps
-and 30fps mid-segment within a single ffmpeg invocation (attempt 14, 33 minutes continuous).
-The camera interleaves 33ms and 67ms frames — never intermediate dt values — with the
-proportion varying over time. `measured_fps` blends to misleading values on transition
-segments (e.g. 30.0019 for a segment that is 64% at 33ms). Container metadata (`r_frame_rate`,
-`CAP_PROP_FPS`) records the rate at container creation and is stale when the stream changes
-underneath. PPDmUg shows the same mechanism at lower magnitude (interleaved 33ms frames
-producing 15.2-17.6 `measured_fps`). `dt_s` per frame is the only reliable rate source.
-Evidence: `docs/evidence/recorder_fps_adaptation_1/findings.md`.
+**Bimodal rate representation (TRIM-BIMODAL + per-clip-scalar — CP-R1b).**
+
+CP-R1b proved that frames arrive at two discrete rates — 33ms (~30fps) and 67ms (~15fps) —
+interleaved within a single segment, with the short-mode proportion shifting mid-stream
+within one continuous ffmpeg invocation. Container metadata (`r_frame_rate`, `CAP_PROP_FPS`)
+records the rate at container creation and is stale when the stream changes underneath.
+PPDmUg shows the same mechanism at lower magnitude (interleaved 33ms frames producing
+15.2-17.6 `measured_fps`). Evidence: `docs/evidence/recorder_fps_adaptation_1/findings.md`.
+
+A per-clip scalar fps is therefore **provably insufficient** — no single number describes
+a segment containing a proportion transition. `dt_s` per frame is the only reliable rate
+source.
+
+The current trimmed mean (lo = median x 0.5, hi = median x 1.5) additionally **misreports
+bimodal segments** (TRIM-BIMODAL defect): the majority mode captures the median, and the
+bounds discard the minority mode as "outliers." Three failure modes observed:
+
+| Segment | Short-mode % | Discard % | measured_fps | Correct? |
+|---------|-------------|-----------|-------------|----------|
+| FP7oJQ-163102 | 65.9% | 36.0% | 30.0019 | Wrong — reports majority mode only |
+| PPDmUg-163240 | 16.1% | 10.8% | 15.4530 | Inflated — trims 2970-tick, keeps 3060-tick |
+| PPDmUg-163041 | 29.9% | 0.0% | 17.6351 | Correct (by luck: lo = 2970, exactly the tick value) |
+
+Does NOT affect stable-rate segments (all controls show correct `measured_fps`).
+
+CP-R6 must decide how the contract represents a bimodal segment. Leading direction: detect
+bimodality (two peaks in the tick-delta histogram separated by ~2x) and report both modes
+plus their proportions (`mode_1_fps`, `mode_1_proportion`, `mode_2_fps`,
+`mode_2_proportion`, `is_bimodal` flag), rather than forcing a single scalar.
 
 **Free drop metric from trimmed mean.** `pts_delta_trim_total - pts_delta_trim_kept` is
 the number of PTS gaps (dropped frames) per segment. FP7oJQ smoke test: 8–9% discarded on
 all three segments, consistent with DUPFIX's 0.1–7.7% per-attempt range. These are real
 false teleports reaching the tracker; coast-step injection (checkpoint 2) addresses them.
-
-**TRIM-BIMODAL defect (CP-R1b, blocking CP-R6).** The trimmed mean (lo = median x 0.5,
-hi = median x 1.5) assumes unimodal dt distribution. Under bimodal oscillation (interleaved
-33ms and 67ms inter-frame intervals), the majority mode captures the median and the bounds
-discard the minority mode as "outliers." Measured discard rates on bimodal segments:
-FP7oJQ-163102 (66% short-mode): 36% discarded, reports 30.0019 instead of blended ~22fps.
-PPDmUg-163240 (16% short-mode): 10.8% discarded (trims 2970-tick but keeps 3060-tick frames).
-PPDmUg-163041 (30% short-mode): 0% discarded (boundary survives by luck: lo = median x 0.5
-= 5940 x 0.5 = 2970, exactly the tick value). Does NOT affect stable-rate segments (all
-controls show correct `measured_fps`). **Fix direction:** detect bimodality and report both
-modes plus their proportions (e.g. `mode_1_fps`, `mode_1_proportion`, `is_bimodal` flag)
-rather than forcing a single scalar. Blocks CP-R6 from contracting `measured_fps` as
-authoritative until resolved.
 
 **Open anomaly: drift instability on short segments.** CP-R2 smoke test measured
 `drift_ppm: 2449` on a 20s PPDmUg segment with only 2 drift windows, vs RELIABILITY-1's
@@ -270,6 +307,8 @@ Write the contract into `.claude/rules/` or `docs/reference/` so checkpoint 2 co
 a spec rather than reverse-engineering a JSONL.
 
 **Done when:** schema documented, emitted in production, sample validates against it.
+Bimodal-segment representation decided and implemented (the TRIM-BIMODAL fix is part of
+this checkpoint, not a separate item).
 
 ---
 
@@ -280,8 +319,6 @@ a spec rather than reverse-engineering a JSONL.
 
 - `N_CAMERAS=0` edge: the `-lt 1` floor at `diag_v6.sh:31` protects the retry interval, but
   the division at line 30 still crashes if `N_CAMERAS=0` is set explicitly. One line.
-- **Regression smoke harness**: script the 60s three-camera check into one command. It has
-  already caught one would-be total failure; it should not depend on remembering a ritual.
 - Per-camera coverage/uptime metric logged per session — currently assessed by reading
   stderr by hand.
 - J_EDEw intermittent offline: characterise, then decide actionable vs accepted.
@@ -309,6 +346,66 @@ Stage A sweeps — is held loosely for that reason.
 
 ---
 
+## CP-R9 — Smoke harness + caffeinate wiring
+
+**Status:** 🔲 Not started
+**Evidence:** *(link to docs/evidence/... once it exists)*
+
+Two operational gaps that de-risk every checkpoint after them.
+
+**Regression smoke harness.** A single scripted command running the standard check:
+`diag_v7_2.sh` (never `diag_v6.sh` standalone — that fails Generate 404 because `.env`
+`DEVICE_*` values are human-readable names, not SDM device paths; `diag_v7_2.sh` resolves
+them), short `SEG_SECONDS`, then assert on startup log values, `timing_mode`,
+`sidecar_schema`, `measured_fps` sanity, and segment durations. **Rationale: the ad-hoc
+smoke test has failed twice — once run against `diag_v6.sh` standalone and misdiagnosed
+(CP-R3), once skipped entirely (CP-R3 Pass 1).** Scripting it makes every later checkpoint
+cheaper and harder to get wrong.
+
+**Caffeinate wiring gap.** `services/nest_recorder/run_process.sh` has
+`caffeinate -dims -s -w $`, and `docs/decisions-archive.md` records it as a decision — but
+the runbook instructs `docker compose exec -d` **directly**, bypassing the wrapper entirely.
+So caffeinate never runs on the documented capture path. Two further issues: `-s` only holds
+while on AC power, and `-w $` dies when the wrapper exits, so a detached `exec -d` would
+outlive its own caffeinate. Fix the wiring so long captures are protected regardless of
+invocation path.
+
+**Done when:** smoke harness passes on a healthy container; caffeinate protects the
+documented capture path; runbook updated.
+
+---
+
+## CP-R10 — Session churn investigation
+
+**Status:** 🔲 Not started
+**Evidence:** *(link to docs/evidence/... once it exists)*
+
+Depends on CP-R9 (caffeinate fix required for the cheapest test).
+
+**Observation (CP-R1, 2026-08-04):** on healthy cameras, Nest invalidated RTSP sessions
+every 1-8 minutes. FP7oJQ and PPDmUg each needed 14 ffmpeg attempts to produce 32 segments,
+with 1-3 minutes of retry/backoff between healthy runs. The recorder recovered correctly
+every time — this is not a recorder bug — but each cycle is **1-3 minutes of footage not
+captured**. For a BJJ gym that is rolls not recorded. During a GT capture it is holes in
+footage you are paying to annotate.
+
+**Leading hypothesis:** the host's display slept repeatedly during the capture (user
+observation). Display sleep can trigger network-interface power management on macOS. This
+fits better than a Nest-side concurrent-session limit — the churn occurred even with
+`stop_stream` calls, and the sessions were freshly generated.
+
+**Cheapest test:** run a capture with display sleep disabled (see CP-R9 caffeinate work) and
+compare churn rate against the 2026-08-04 baseline of ~14 attempts / 32 segments per camera
+over 65 minutes.
+
+**Alternatives if that fails:** SDM concurrent-stream limits; orphaned sessions from earlier
+smoke tests; relay-side timeout; network-interface power management independent of display.
+
+**Done when:** churn root cause identified; either resolved or accepted with a stated
+coverage budget.
+
+---
+
 ## Definition of "production-ready"
 
 The recorder is done when all of these hold:
@@ -321,8 +418,10 @@ The recorder is done when all of these hold:
 5. Correct behaviour is the **default**, with rollback switches retained.
 6. A **single command** regression-tests the whole path.
 7. Clean GT footage exists for downstream re-measurement.
+8. Sustained coverage without systematic multi-minute gaps.
 
-CP-R1→R4 deliver 1, 2, 4, 5. CP-R5→R6 deliver 3. CP-R7 delivers 6. CP-R8 delivers 7.
+CP-R1→R4 deliver 1, 2, 4, 5. CP-R5→R6 deliver 3. CP-R9 delivers 6 + enables unattended
+capture. CP-R7 delivers remaining hardening. CP-R10 delivers 8. CP-R8 delivers 7.
 
 ---
 

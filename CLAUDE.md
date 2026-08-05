@@ -583,10 +583,19 @@ First trained model had FP7oJQ false positives from background memorization.
    (BoT-SORT frame_rate, velocity/`speed_mps_k`, `derive_clip_frame_offset`, Stage E
    temporal engagement windows, cross-camera evidence timing). Report where wrong.
    ⏳ blocked on CP-R5 (correctness) → CP-R6 (contract).
-3. **Recorder productionization (CP-R1 through CP-R8):** see
+3. **Recorder productionization (CP-R1 through CP-R10):** see
    `docs/roadmap/recorder_productionization.md`. Covers source PTS adoption, passthrough
    build, default flip, Dockerfile pin, sidecar boundary fix, sidecar contract v2,
-   hardening, and clean-footage GT capture.
+   smoke harness, session churn, hardening, and clean-footage GT capture.
+3b. **Investigate whether consistent 30fps delivery is achievable.** FP7oJQ reached 99%
+   short-mode (~33ms intervals) during the CP-R1 capture, so the camera demonstrably can
+   deliver 30fps. Most footage runs at half that. For BJJ, fast transitions are where
+   tracklets break, so doubling temporal resolution attacks the dominant failure mode
+   directly. Whether it is reachable depends on resolving loss-vs-encode, which requires
+   RTP sequence numbers from a diagnostic capture (CP-R1b S5 — structurally undecidable
+   from PTS alone). Classification: **investigation is recorder-side** (requires
+   diagnostic capture with `-loglevel debug`); **benefit is pipeline-side** (doubles
+   temporal resolution for the tracker).
 4. A↔D contract fix: reliability-discount the penalty OR displacement-based D0.5 split.
 5. Per-clip measured-fps denominator for motion metrics.
    ⏳ blocked on CP-R5 (correctness) → CP-R6 (contract).

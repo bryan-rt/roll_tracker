@@ -30,7 +30,7 @@
 
 | Path | Purpose | Status |
 |------|---------|--------|
-| `docs/roadmap/recorder_productionization.md` | Live plan for recorder productionization (CP-R1 through CP-R8) | **CURRENT** |
+| `docs/roadmap/recorder_productionization.md` | Live plan for recorder productionization (CP-R1 through CP-R10) | **CURRENT** |
 
 ## Reference & Audits
 
