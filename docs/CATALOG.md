@@ -36,6 +36,7 @@
 
 | Path | Purpose | Status |
 |------|---------|--------|
+| `docs/reference/sidecar_contract.md` | Sidecar timing contract -- schema v4 (CP-R6). Authoritative spec for `.timing.jsonl`. | **CURRENT** |
 | `docs/reference/eval_instrument_spec.md` | CP-EVAL-1 frozen instrument v1.0 spec | **CURRENT** |
 | `docs/reference/undistortion_audit.md` | All 9 undistortion code paths verified (2026-04-02) | **CURRENT** |
 | `docs/reference/stage_d_audit_findings.md` | CP0: Stage D config audit (7/8 penalty fields dead) | **HISTORICAL** |

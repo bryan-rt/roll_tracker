@@ -626,6 +626,36 @@ extract_timing_sidecars() {
       mean_d = (nd > 0) ? sum_d / nd : 0
       stdev_d = (nd > 0) ? sqrt(sum_d2/nd - mean_d*mean_d) : 0
 
+      # Bimodal detection — structural test on trimmed-mean discards.
+      # Below-cutoff discards indicate a short-mode cluster (bimodal).
+      # Gap-induced discards scatter above the high cutoff.
+      discard_below = 0; discard_above = 0
+      for (k = 0; k < nd; k++) {
+        if (tick_deltas[k] < lo_cutoff) discard_below++
+        else if (tick_deltas[k] > hi_cutoff) discard_above++
+      }
+      total_discard = discard_below + discard_above
+      is_bimodal_val = "false"
+      short_mode_frac = 0; sm_fps = 0; sm_dt = 0; lm_dt = 0
+      if (total_discard >= 3 && discard_below > 0.3 * total_discard) {
+        is_bimodal_val = "true"
+        short_thresh = median_tick * 0.75
+        s_n = 0; s_sum = 0; l_n = 0; l_sum = 0
+        for (k = 0; k < nd; k++) {
+          if (tick_deltas[k] < short_thresh) { s_n++; s_sum += tick_deltas[k] }
+          else { l_n++; l_sum += tick_deltas[k] }
+        }
+        short_mode_frac = (nd > 0) ? s_n / nd : 0
+        sm_tick = (s_n > 0) ? s_sum / s_n : 0
+        lm_tick = (l_n > 0) ? l_sum / l_n : 0
+        sm_fps = (sm_tick > 0) ? timebase / sm_tick : 0
+        sm_dt = (sm_tick > 0) ? sm_tick / timebase : 0
+        lm_dt = (lm_tick > 0) ? lm_tick / timebase : 0
+      }
+
+      # nominal_dt_s: median-based reference interval for consumer gap detection
+      nominal_dt_val = (median_tick > 0) ? median_tick / timebase : 0
+
       # Drift (operates on raw_pts seconds + host_arr, same as before)
       global_min_offset = 0; drift_rate = 0; drift_flat = "true"; drift_ppm = 0
       n_windows = 0
@@ -668,27 +698,60 @@ extract_timing_sidecars() {
         drift_flat = (n_windows<2 || (drift_rate>-0.0001 && drift_rate<0.0001)) ? "true" : "false"
       }
 
-      # _meta — passthrough mode
+      # _meta — passthrough mode (string-built for conditional fields)
+      m = "{\"_meta\":true,\"sidecar_schema\":4"
+      m = m ",\"timing_mode\":\"passthrough\""
+      m = m ",\"source_pts\":" (source_pts_mode == "1" ? "true" : "false")
+      m = m ",\"pts_origin\":\"segment_relative\""
+      m = m ",\"fps_method\":\"trimmed_mean\""
+      m = m sprintf(",\"segment_start_epoch\":%s", epoch)
+      m = m sprintf(",\"attempt\":%d", attempt)
+      m = m sprintf(",\"input_frame_count\":%d", ni)
+      m = m sprintf(",\"output_frame_count\":%d", output_count)
       if (source_pts_mode == "1") {
-        printf "{\"_meta\":true,\"sidecar_schema\":3,\"timing_mode\":\"passthrough\",\"pts_origin\":\"segment_relative\",\"fps_method\":\"trimmed_mean\",\"segment_start_epoch\":%s,\"attempt\":%d,\"input_frame_count\":%d,\"output_frame_count\":%d,\"measured_fps\":%.4f,\"measured_fps_median\":%.4f,\"measured_fps_mean\":%.4f,\"pts_timebase\":%d,\"pts_tick_delta_median\":%.1f,\"pts_tick_delta_mean\":%.1f,\"pts_delta_trim_kept\":%d,\"pts_delta_trim_total\":%d,\"mismatch\":%s,\"pts_wallclock_offset_s\":%.6f,\"offset_method\":\"lower_envelope\",\"drift_rate_s_per_s\":%.9f,\"drift_flat\":%s,\"drift_ppm\":%.3f,\"n_drift_windows\":%d,\"pts_mean_delta_ms\":%.4f,\"pts_stdev_delta_ms\":%.4f}\n", \
-          epoch, attempt, ni, output_count, measured_fps, measured_fps_median, measured_fps_mean, \
-          timebase, median_tick, mean_tick, trim_n, nd, mismatch, \
-          global_min_offset, drift_rate, drift_flat, drift_ppm, n_windows, mean_d, stdev_d
-      } else {
-        printf "{\"_meta\":true,\"sidecar_schema\":3,\"timing_mode\":\"passthrough\",\"pts_origin\":\"segment_relative\",\"fps_method\":\"trimmed_mean\",\"segment_start_epoch\":%s,\"attempt\":%d,\"input_frame_count\":%d,\"output_frame_count\":%d,\"measured_fps\":%.4f,\"measured_fps_median\":%.4f,\"measured_fps_mean\":%.4f,\"pts_timebase\":%d,\"pts_tick_delta_median\":%.1f,\"pts_tick_delta_mean\":%.1f,\"pts_delta_trim_kept\":%d,\"pts_delta_trim_total\":%d,\"mismatch\":%s}\n", \
-          epoch, attempt, ni, output_count, measured_fps, measured_fps_median, measured_fps_mean, \
-          timebase, median_tick, mean_tick, trim_n, nd, mismatch
+        m = m sprintf(",\"nominal_dt_s\":%.6f", nominal_dt_val)
+        m = m sprintf(",\"measured_fps\":%.4f", measured_fps)
+        m = m sprintf(",\"measured_fps_median\":%.4f", measured_fps_median)
       }
+      m = m sprintf(",\"measured_fps_mean\":%.4f", measured_fps_mean)
+      m = m sprintf(",\"pts_timebase\":%d", timebase)
+      m = m sprintf(",\"pts_tick_delta_median\":%.1f", median_tick)
+      m = m sprintf(",\"pts_tick_delta_mean\":%.1f", mean_tick)
+      m = m sprintf(",\"pts_delta_trim_kept\":%d", trim_n)
+      m = m sprintf(",\"pts_delta_trim_total\":%d", nd)
+      m = m sprintf(",\"mismatch\":%s", mismatch)
+      if (source_pts_mode == "1") {
+        m = m sprintf(",\"is_bimodal\":%s", is_bimodal_val)
+        if (is_bimodal_val == "true") {
+          m = m sprintf(",\"short_mode_fraction\":%.4f", short_mode_frac)
+          m = m sprintf(",\"short_mode_fps\":%.4f", sm_fps)
+          m = m sprintf(",\"short_mode_dt_s\":%.6f", sm_dt)
+          m = m sprintf(",\"long_mode_dt_s\":%.6f", lm_dt)
+        }
+        m = m sprintf(",\"pts_wallclock_offset_s\":%.6f", global_min_offset)
+        m = m ",\"offset_method\":\"lower_envelope\""
+        if (n_windows >= 4) {
+          m = m sprintf(",\"drift_rate_s_per_s\":%.9f", drift_rate)
+          m = m sprintf(",\"drift_ppm\":%.3f", drift_ppm)
+        }
+        m = m sprintf(",\"drift_flat\":%s", drift_flat)
+        m = m sprintf(",\"n_drift_windows\":%d", n_windows)
+      }
+      m = m sprintf(",\"pts_mean_delta_ms\":%.4f", mean_d)
+      m = m sprintf(",\"pts_stdev_delta_ms\":%.4f", stdev_d)
+      m = m "}"
+      print m
 
       # 1:1 mapping — each output frame IS the input frame
       for (i = 0; i < ni; i++) {
+        r = sprintf("{\"frame_index\":%d,\"pts_time_s\":%.6f", i, raw_pts[i])
         if (source_pts_mode == "1") {
-          printf "{\"frame_index\":%d,\"pts_time_s\":%.6f,\"host_arrival_s\":%.6f,\"input_n\":%d}\n", \
-            i, raw_pts[i], host_arr[i], i
-        } else {
-          printf "{\"frame_index\":%d,\"pts_time_s\":%.6f,\"input_n\":%d}\n", \
-            i, raw_pts[i], i
+          if (i == 0) r = r ",\"dt_s\":null"
+          else r = r sprintf(",\"dt_s\":%.6f", raw_pts[i] - raw_pts[i-1])
+          r = r sprintf(",\"host_arrival_s\":%.6f", host_arr[i])
         }
+        r = r sprintf(",\"input_n\":%d}", i)
+        print r
       }
     }
     ' > "$sidecar"
@@ -805,6 +868,34 @@ extract_timing_sidecars() {
       mean_d = (nd > 0) ? sum_d / nd : 0
       stdev_d = (nd > 0) ? sqrt(sum_d2/nd - mean_d*mean_d) : 0
 
+      # Bimodal detection — structural test on trimmed-mean discards.
+      discard_below = 0; discard_above = 0
+      for (k = 0; k < nd; k++) {
+        if (tick_deltas[k] < lo_cutoff) discard_below++
+        else if (tick_deltas[k] > hi_cutoff) discard_above++
+      }
+      total_discard = discard_below + discard_above
+      is_bimodal_val = "false"
+      short_mode_frac = 0; sm_fps = 0; sm_dt = 0; lm_dt = 0
+      if (total_discard >= 3 && discard_below > 0.3 * total_discard) {
+        is_bimodal_val = "true"
+        short_thresh = median_tick * 0.75
+        s_n = 0; s_sum = 0; l_n = 0; l_sum = 0
+        for (k = 0; k < nd; k++) {
+          if (tick_deltas[k] < short_thresh) { s_n++; s_sum += tick_deltas[k] }
+          else { l_n++; l_sum += tick_deltas[k] }
+        }
+        short_mode_frac = (nd > 0) ? s_n / nd : 0
+        sm_tick = (s_n > 0) ? s_sum / s_n : 0
+        lm_tick = (l_n > 0) ? l_sum / l_n : 0
+        sm_fps = (sm_tick > 0) ? timebase / sm_tick : 0
+        sm_dt = (sm_tick > 0) ? sm_tick / timebase : 0
+        lm_dt = (lm_tick > 0) ? lm_tick / timebase : 0
+      }
+
+      # nominal_dt_s: median-based reference interval for consumer gap detection
+      nominal_dt_val = (median_tick > 0) ? median_tick / timebase : 0
+
       # Drift (operates on raw_pts seconds + host_arr)
       global_min_offset = 0; drift_rate = 0; drift_flat = "true"; drift_ppm = 0
       n_windows = 0
@@ -847,17 +938,52 @@ extract_timing_sidecars() {
         drift_flat = (n_windows<2 || (drift_rate>-0.0001 && drift_rate<0.0001)) ? "true" : "false"
       }
 
+      # _meta — CFR grid mode (string-built for conditional fields)
+      m = "{\"_meta\":true,\"sidecar_schema\":4"
+      m = m ",\"timing_mode\":\"cfr_grid\""
+      m = m ",\"source_pts\":" (source_pts_mode == "1" ? "true" : "false")
+      m = m ",\"pts_origin\":\"segment_relative\""
+      m = m ",\"fps_method\":\"trimmed_mean\""
+      m = m sprintf(",\"segment_start_epoch\":%s", epoch)
+      m = m sprintf(",\"attempt\":%d", attempt)
+      m = m sprintf(",\"input_frame_count\":%d", ni)
+      m = m sprintf(",\"output_frame_count\":%d", output_count)
+      m = m sprintf(",\"output_fps\":%.4f", fps_val)
       if (source_pts_mode == "1") {
-        printf "{\"_meta\":true,\"sidecar_schema\":3,\"timing_mode\":\"cfr_grid\",\"pts_origin\":\"segment_relative\",\"fps_method\":\"trimmed_mean\",\"segment_start_epoch\":%s,\"attempt\":%d,\"input_frame_count\":%d,\"output_frame_count\":%d,\"output_fps\":%.4f,\"measured_fps\":%.4f,\"measured_fps_median\":%.4f,\"measured_fps_mean\":%.4f,\"pts_timebase\":%d,\"pts_tick_delta_median\":%.1f,\"pts_tick_delta_mean\":%.1f,\"pts_delta_trim_kept\":%d,\"pts_delta_trim_total\":%d,\"mismatch\":%s,\"pts_wallclock_offset_s\":%.6f,\"offset_method\":\"lower_envelope\",\"drift_rate_s_per_s\":%.9f,\"drift_flat\":%s,\"drift_ppm\":%.3f,\"n_drift_windows\":%d,\"pts_mean_delta_ms\":%.4f,\"pts_stdev_delta_ms\":%.4f}\n", \
-          epoch, attempt, ni, output_count, fps_val, measured_fps, measured_fps_median, measured_fps_mean, \
-          timebase, median_tick, mean_tick, trim_n, nd, mismatch, \
-          global_min_offset, drift_rate, drift_flat, drift_ppm, n_windows, mean_d, stdev_d
-      } else {
-        printf "{\"_meta\":true,\"sidecar_schema\":3,\"timing_mode\":\"cfr_grid\",\"pts_origin\":\"segment_relative\",\"fps_method\":\"trimmed_mean\",\"segment_start_epoch\":%s,\"attempt\":%d,\"input_frame_count\":%d,\"output_frame_count\":%d,\"output_fps\":%.4f,\"measured_fps\":%.4f,\"measured_fps_median\":%.4f,\"measured_fps_mean\":%.4f,\"pts_timebase\":%d,\"pts_tick_delta_median\":%.1f,\"pts_tick_delta_mean\":%.1f,\"pts_delta_trim_kept\":%d,\"pts_delta_trim_total\":%d,\"mismatch\":%s}\n", \
-          epoch, attempt, ni, output_count, fps_val, measured_fps, measured_fps_median, measured_fps_mean, \
-          timebase, median_tick, mean_tick, trim_n, nd, mismatch
+        m = m sprintf(",\"nominal_dt_s\":%.6f", nominal_dt_val)
+        m = m sprintf(",\"measured_fps\":%.4f", measured_fps)
+        m = m sprintf(",\"measured_fps_median\":%.4f", measured_fps_median)
       }
+      m = m sprintf(",\"measured_fps_mean\":%.4f", measured_fps_mean)
+      m = m sprintf(",\"pts_timebase\":%d", timebase)
+      m = m sprintf(",\"pts_tick_delta_median\":%.1f", median_tick)
+      m = m sprintf(",\"pts_tick_delta_mean\":%.1f", mean_tick)
+      m = m sprintf(",\"pts_delta_trim_kept\":%d", trim_n)
+      m = m sprintf(",\"pts_delta_trim_total\":%d", nd)
+      m = m sprintf(",\"mismatch\":%s", mismatch)
+      if (source_pts_mode == "1") {
+        m = m sprintf(",\"is_bimodal\":%s", is_bimodal_val)
+        if (is_bimodal_val == "true") {
+          m = m sprintf(",\"short_mode_fraction\":%.4f", short_mode_frac)
+          m = m sprintf(",\"short_mode_fps\":%.4f", sm_fps)
+          m = m sprintf(",\"short_mode_dt_s\":%.6f", sm_dt)
+          m = m sprintf(",\"long_mode_dt_s\":%.6f", lm_dt)
+        }
+        m = m sprintf(",\"pts_wallclock_offset_s\":%.6f", global_min_offset)
+        m = m ",\"offset_method\":\"lower_envelope\""
+        if (n_windows >= 4) {
+          m = m sprintf(",\"drift_rate_s_per_s\":%.9f", drift_rate)
+          m = m sprintf(",\"drift_ppm\":%.3f", drift_ppm)
+        }
+        m = m sprintf(",\"drift_flat\":%s", drift_flat)
+        m = m sprintf(",\"n_drift_windows\":%d", n_windows)
+      }
+      m = m sprintf(",\"pts_mean_delta_ms\":%.4f", mean_d)
+      m = m sprintf(",\"pts_stdev_delta_ms\":%.4f", stdev_d)
+      m = m "}"
+      print m
 
+      # CFR grid: nearest-neighbour mapping (no dt_s — grid spacing is 1/output_fps)
       j = 0
       for (i = 0; i < output_count; i++) {
         t_out = i * interval
@@ -885,7 +1011,7 @@ extract_timing_sidecars() {
     local sidecar_lines
     sidecar_lines=$(( $(wc -l < "$sidecar") - 1 ))
     local fps_info=""
-    fps_info=$(head -1 "$sidecar" | grep -oE '"measured_fps":[0-9.]+' | cut -d: -f2)
+    fps_info=$(head -1 "$sidecar" | grep -oE '"measured_fps":[0-9.]+' | cut -d: -f2 || true)
 
     if [ "$mismatch" = "true" ]; then
       log "[v6] ⚠ MISMATCH sidecar: $(basename "$sidecar") input=$input_count output=$output_count fps=${fps_info:-?}"

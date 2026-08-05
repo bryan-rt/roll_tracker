@@ -20,27 +20,15 @@ paths:
   Sidecar includes `host_arrival_s`, lower-envelope `pts_wallclock_offset_s`, windowed
   drift rate (ppm). Per-attempt stderr files handle retry loop (each stream generation =
   different PTS base + relay session). Passed through v7_2 → v6.
-- **Per-segment timing sidecar (RECORDER-SIDECAR-1):** Every CFR segment mp4 gets a
-  `.timing.jsonl` sibling. One row per OUTPUT frame, keyed on `frame_index` (matches
-  FrameIterator's `cap.read()` counter — join key to Stage A). Each row carries the REAL
-  input arrival PTS (bursty, NOT uniform CFR) via nearest-neighbor two-pointer mapping.
-  Schema: `{_meta, segment_start_epoch, input_frame_count, output_frame_count, output_fps,
-  mismatch}` header + `{frame_index, pts_time_s, input_n}` per frame.
-  **MISMATCH is the normal condition** (input != output frame count). The CFR encoder
-  always dups/drops when bursty input timing != uniform output spacing. When mismatched,
-  `pts_time_s` is a NEAREST-NEIGHBOR APPROXIMATION, not exact input timing per output
-  frame. Error grows with gap magnitude: mean ~80ms, P95 ~230ms, max ~500ms during lag
-  windows (precisely where accuracy matters most — multiple output frames map to the same
-  input PTS during gaps). Consumers must treat pts_time_s as approximate under mismatch;
-  the input timing SEQUENCE is reliable for lag detection (gap presence/duration), but
-  per-output-frame time attribution has ±500ms worst-case error.
-  **MISMATCH warning** emitted loudly to recorder log. Sidecar is COLLECTION ONLY — no
-  CV pipeline stage consumes it yet. Uploader is manifest-driven and ignores the sidecar.
-- **Source PTS discovery (CAPTURE-TIME-1/2):** The RTSP stream carries TRUE capture
-  timestamps via RTP (90kHz clock). The production recorder DISCARDS them with
-  `-use_wallclock_as_timestamps 1 +genpts`, substituting bursty arrival times. Under
-  source PTS (`-copyts`), timestamps are uniform ~33ms or ~67ms. Adoption would make the
-  sidecar EXACT (no mismatch/approximation). Not yet in production.
+- **Per-segment timing sidecar (schema v4, CP-R6):** Every segment mp4 gets a
+  `.timing.jsonl` sibling. Authoritative contract: `docs/reference/sidecar_contract.md`.
+  Under passthrough (production default), 1:1 mapping with per-frame `dt_s` and `nominal_dt_s`.
+  Under CFR rollback, nearest-neighbor mapping (approximate). `source_pts` boolean in `_meta`
+  gates validity of tick-delta-derived fields. `input_n` deprecated (DUPFIX instrument only).
+  COLLECTION ONLY — no CV pipeline stage consumes it yet. Uploader ignores sidecar.
+- **Source PTS (CAPTURE-TIME-1/2, now the default):** `SOURCE_PTS=1` + `FPS_PASSTHROUGH=1`
+  since CP-R3. Camera RTP capture timestamps preserved; no CFR resampling. Rollback:
+  `SOURCE_PTS=0 FPS_PASSTHROUGH=0`.
 - **Stream fps VARIES per session** (15fps and 30fps both observed from source PTS). SDP
   reports 30 when delivering 15. Different cameras differ. **Do not hardcode fps.**
 - **RTCP absent** — 0 sender reports across all cameras on both TCP and UDP. Absolute
@@ -101,17 +89,10 @@ paths:
     per-camera drift correction; FP7oJQ −603 ppm ≈ 181ms/5min, linearly correctable).
   - **RTCP definitively ABSENT** (both TCP and UDP) → no absolute camera clock from stream.
   - **fps varies** per session AND per camera; SDP unreliable. Never hardcode fps.
-  - **Sidecar schema:** `frame_index` (join key to Stage A), `pts_time_s`, `host_arrival_s`,
-    `input_n` (consecutive same `input_n` = fabricated duplicate). Metadata: measured fps
-    (4dp), lower-envelope offset, drift ppm, mismatch flag.
-- **Remaining recorder work (open checkpoint):**
-  1. Validate reuse path, token refresh past ~25-min barrier, sustained coverage, no 429s.
-  2. Resolve 0.0%-vs-8% duplicate-measurement contradiction.
-  3. Make `SOURCE_PTS=1` the DEFAULT (currently opt-in).
-  4. Decide CFR-target-vs-actual-rate: per-clip CFR target, or accept padding and let
-     pipeline flag duplicates via `input_n` (preferred — no recorder change needed).
-  5. `N_CAMERAS` div-by-zero guard: `(10*7/10)/N` → 0 at N≥8 → `60/0` crash. Add floor of 1.
-  6. Pin Debian version in Dockerfile.
+  - **Sidecar contract:** `docs/reference/sidecar_contract.md` (schema v4, CP-R6).
+- **Remaining recorder work:** See `docs/roadmap/recorder_productionization.md`.
+  CP-R1 through CP-R6 complete. Remaining: CP-R10 (session churn), CP-R7 (hardening),
+  CP-R8 (clean-footage GT capture).
 
 ## processor
 - Polls `data/raw/nest/` for new MP4s, invokes bjj_pipeline A→F.

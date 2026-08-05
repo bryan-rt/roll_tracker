@@ -211,10 +211,10 @@ for cam_line in "${CAM_LINES[@]}"; do
 
     # Assertion 5: sidecar_schema
     schema=$(echo "$meta" | grep -o '"sidecar_schema":[0-9]*' | cut -d: -f2)
-    if [[ "$schema" == "3" ]]; then
-      pass "$bn: sidecar_schema=3"
+    if [[ "$schema" == "4" ]]; then
+      pass "$bn: sidecar_schema=4"
     else
-      fail "$bn: sidecar_schema=$schema, expected 3"
+      fail "$bn: sidecar_schema=$schema, expected 4"
     fi
 
     # Assertion 6: measured_fps band (C2: bimodal-aware)
@@ -223,11 +223,11 @@ for cam_line in "${CAM_LINES[@]}"; do
     trim_total=$(echo "$meta" | grep -o '"pts_delta_trim_total":[0-9]*' | cut -d: -f2)
 
     if [[ "$MODE" == "rollback" ]]; then
-      # Arrival-PTS: measured_fps should be nonsense (>1000)
-      if (( $(echo "$measured_fps > 1000" | bc -l 2>/dev/null || echo 0) )); then
-        pass "$bn: measured_fps=$measured_fps (arrival-PTS nonsense, expected)"
+      # Schema 4: measured_fps is OMITTED under source_pts=false (arrival-PTS)
+      if [[ -z "$measured_fps" ]]; then
+        pass "$bn: measured_fps absent (arrival-PTS, expected under schema 4)"
       else
-        fail "$bn: measured_fps=$measured_fps under arrival-PTS — expected >1000"
+        fail "$bn: measured_fps=$measured_fps present under arrival-PTS — expected absent"
       fi
     else
       # Source-PTS: must be within ±10% of 15 or 30

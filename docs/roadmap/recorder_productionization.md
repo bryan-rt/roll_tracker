@@ -216,10 +216,10 @@ closes on attempts with no real loss.
 
 ---
 
-## CP-R6 — Sidecar contract v2 (the handoff — where the value is realized)
+## CP-R6 — Sidecar contract v4 (the handoff — where the value is realized)
 
-**Status:** 🔲 Not started
-**Evidence:** *(link to docs/evidence/... once it exists)*
+**Status:** ✅ Complete
+**Evidence:** `docs/reference/sidecar_contract.md` (authoritative spec)
 
 **Evidence basis:** `docs/evidence/recorder_dupfix_1/findings.md`
 
