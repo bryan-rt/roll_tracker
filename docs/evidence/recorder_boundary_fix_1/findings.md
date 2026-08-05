@@ -43,6 +43,9 @@ Both within tolerance — the anchor is valid.
 
 Convention: residual = output - input (DUPFIX-2's convention; negative = real drops).
 
+All four multi-segment attempts re-measured. Single-segment attempts (FP7oJQ h07, FP7oJQ
+h29) not re-measured — the boundary split only affects multi-segment attempts.
+
 ### PPDmUg h07 attempt_1
 
 | Segment | nb_frames | old showinfo | old residual | new showinfo | new residual |
@@ -90,6 +93,51 @@ Convention: residual = output - input (DUPFIX-2's convention; negative = real dr
   true deficit is -40 (40 real frame drops). **DUPFIX-2's P2 ("redistributive, not lossy")
   is corrected: FP7oJQ h06 attempt_1 IS lossy.** See correction in
   `docs/evidence/recorder_dupfix_1/findings.md`.
+
+### PPDmUg h07 attempt_2
+
+| Segment | nb_frames | old showinfo | old residual | new showinfo | new residual |
+|---------|-----------|-------------|-------------|-------------|-------------|
+| PPDmUg-20260728-070849 | 1800 | 1905 | **-105** | 1879 | **-79** |
+| PPDmUg-20260728-071051 | 1800 | 1800 | **+0** | 1800 | **+0** |
+| PPDmUg-20260728-071250 | 1800 | 1798 | **+2** | 1800 | **+0** |
+| PPDmUg-20260728-071450 | 1800 | 1803 | **-3** | 1800 | **+0** |
+| PPDmUg-20260728-071650 | 1800 | 1797 | **+3** | 1800 | **+0** |
+| PPDmUg-20260728-071850 | 1156 | 1127 | **+29** | 1155 | **+1** |
+| **TOTAL** | **10156** | **10230** | **-74** | **10234** | **-78** |
+
+- Mid-segments (seg1-seg4): all four go to **exact zero** residual. The PTS-based split
+  eliminates the ±2/±3 jitter that the line-position method produced.
+- Leading edge: 4 lines (10234 - 10230).
+- Attempt total: old -74 -> new -78.
+
+### PPDmUg h07 attempt_3
+
+| Segment | nb_frames | old showinfo | old residual | new showinfo | new residual |
+|---------|-----------|-------------|-------------|-------------|-------------|
+| PPDmUg-20260728-072126 | 1830 | 1856 | **-26** | 1838 | **-8** |
+| PPDmUg-20260728-072328 | 1800 | 1800 | **+0** | 1800 | **+0** |
+| PPDmUg-20260728-072528 | 1642 | 1616 | **+26** | 1643 | **-1** |
+| **TOTAL** | **5272** | **5272** | **+0** | **5281** | **-9** |
+
+- The "exactly 0" conservation was an artifact: 9 leading-edge lines were dropped by the
+  old method. True deficit: **-9** (9 real frame drops).
+- Mid-segment (seg1): unchanged at zero.
+
+### Summary: loss is universal, magnitude varies
+
+**DUPFIX-2's finding that "two attempts conserve" is corrected.** Every multi-segment attempt
+shows real frame loss under the PTS-based split:
+
+| Attempt | Old deficit | New deficit | Leading edge |
+|---------|-----------|-----------|-------------|
+| FP7oJQ h06 att_1 | +7 | **-40** | 47 |
+| PPDmUg h07 att_1 | -105 | **-109** | 4 |
+| PPDmUg h07 att_2 | -74 | **-78** | 4 |
+| PPDmUg h07 att_3 | +0 | **-9** | 9 |
+
+Loss is present in every attempt. The "attempt-specific conservation" framing was an
+artifact of the old split dropping leading-edge lines, masking small deficits as zero.
 
 ## Mechanism investigation: leading edge = muxer lag (one measurement, not two)
 

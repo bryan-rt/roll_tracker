@@ -70,19 +70,23 @@ criterion (+/-10 of zero) **FAILS**. `framehash_adjacent_dups` = 0 remains valid
 > Attempt-level conservation figures computed from sidecar `_meta` reproduce the N2 table
 > within +/-2 frames per attempt.
 
-**Result: PASS.** All values match exactly:
+**Result: ~~PASS~~ CORRECTED (CP-R5).** Original values used input counts from the line-
+position split, which dropped leading-edge showinfo lines. CP-R5's PTS-based split recovers
+these. Corrected values (commit `3cb7ca7`):
 
-| Attempt | sum input | sum output | Net | Conserved? |
-|---------|-----------|------------|-----|------------|
-| FP7oJQ h06 attempt_1 (062531, 062734, 062939, 063135) | 6229 | 6236 | **-7** | yes |
-| FP7oJQ h07 attempt_1 (070240 only) | 428 | 460 | -32 | n/a (single) |
-| PPDmUg h07 attempt_1 (070219, 070422) | 3595 | 3490 | **+105** | **no** |
-| PPDmUg h07 attempt_2 (070849...071850) | 10230 | 10156 | **+74** | **no** |
-| PPDmUg h07 attempt_3 (072126, 072328, 072528) | 5272 | 5272 | **+0** | yes, exactly |
-| FP7oJQ h29 attempt_1 (075243 only) | 554 | 600 | -46 | n/a (single) |
+| Attempt | sum input (old) | sum input (new) | sum output | Net (old) | Net (new) | Leading edge |
+|---------|----------------|----------------|------------|-----------|-----------|-------------|
+| FP7oJQ h06 attempt_1 | 6229 | **6276** | 6236 | -7 | **-40** | 47 |
+| FP7oJQ h07 attempt_1 (single) | 428 | — | 460 | -32 | — | not re-measured |
+| PPDmUg h07 attempt_1 | 3595 | **3599** | 3490 | +105 | **-109** | 4 |
+| PPDmUg h07 attempt_2 | 10230 | **10234** | 10156 | +74 | **-78** | 4 |
+| PPDmUg h07 attempt_3 | 5272 | **5281** | 5272 | +0 | **-9** | 9 |
+| FP7oJQ h29 attempt_1 (single) | 554 | — | 600 | -46 | — | not re-measured |
 
-Two attempts conserve (FP7oJQ h06, PPDmUg attempt_3), two do not (PPDmUg attempt_1 and 2).
-Both mechanisms are real and attempt-specific.
+**Every multi-segment attempt shows real frame loss.** The original finding that "two
+attempts conserve" was an artifact of the line-position split dropping leading-edge lines.
+PPDmUg attempt_3's "exactly 0" was 9 leading-edge lines being silently dropped. Loss is
+present in every attempt; magnitude varies (-9 to -109).
 
 **N6 correction:** RELIABILITY-1's FP7oJQ total row stated output = 6716. Column sum is
 1830 + 1800 + 1800 + 806 + 460 = **6696**. The stated +0.9% should be +0.59%. Transcription
@@ -94,13 +98,17 @@ error, not measurement error.
 
 **Result: PARTIAL.** Tracks on FP7oJQ; does not track on PPDmUg.
 
-| Attempt | Conservation net | PTS implied missing | Match? |
-|---------|-----------------|--------------------:|--------|
-| FP7oJQ h06 attempt_1 | -7 | 8 | yes |
-| FP7oJQ h07 attempt_1 | -32 | 33 | yes |
-| PPDmUg h07 attempt_1 | +105 | 3 | **no** |
-| PPDmUg h07 attempt_2 | +74 | 3 | **no** |
-| PPDmUg h07 attempt_3 | +0 | 0 | yes |
+| Attempt | Conservation net (old) | Conservation net (CP-R5) | PTS implied missing | Match? |
+|---------|----------------------|------------------------|--------------------:|--------|
+| FP7oJQ h06 attempt_1 | -7 | **-40** | 8 | ~~yes~~ **no** |
+| FP7oJQ h07 attempt_1 | -32 | — | 33 | yes |
+| PPDmUg h07 attempt_1 | +105 | **-109** | 3 | **no** |
+| PPDmUg h07 attempt_2 | +74 | **-78** | 3 | **no** |
+| PPDmUg h07 attempt_3 | +0 | **-9** | 0 | ~~yes~~ **no** |
+
+**CP-R5 correction:** PTS implied missing (from trimmed tick deltas) does not track
+conservation deficit on ANY attempt. The original FP7oJQ "yes" rested on the old -7 deficit;
+corrected to -40, it no longer matches 8.
 | FP7oJQ h29 attempt_1 | -46 | 46 | yes |
 
 This cleanly separates two mechanisms:
