@@ -348,8 +348,9 @@ Stage A sweeps — is held loosely for that reason.
 
 ## CP-R9 — Smoke harness + caffeinate wiring
 
-**Status:** 🔲 Not started
-**Evidence:** *(link to docs/evidence/... once it exists)*
+**Status:** ✅ Complete
+**Evidence:** `smoke_test.sh` default + rollback both passing (37 PASS / 0 FAIL / 1 SKIP
+per mode, 2026-08-05). `capture.sh` with `caffeinate -dim -t`. `run_process.sh` `-s` dropped.
 
 Two operational gaps that de-risk every checkpoint after them.
 

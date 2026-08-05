@@ -5,7 +5,7 @@ set -euo pipefail
 if [[ "${OSTYPE:-}" == darwin* ]] && command -v caffeinate >/dev/null 2>&1; then
   # -d: prevent display sleep, -i: prevent idle sleep, -m: prevent disk sleep
   # -s: only while on AC power (safe default), -w $$: hold until THIS script exits
-  caffeinate -dims -s -w $$ &
+  caffeinate -dim -w $$ &
 fi
 
 # Default diag script (override with first argument)

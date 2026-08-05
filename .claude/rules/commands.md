@@ -67,6 +67,18 @@ cd services/nest_recorder && docker compose up
 cd services/uploader && docker compose up
 ```
 
+## Recorder Smoke Test
+```bash
+cd services/nest_recorder && ./smoke_test.sh            # default (source-PTS passthrough)
+cd services/nest_recorder && ./smoke_test.sh --rollback  # arrival-PTS rollback
+```
+
+## Recorder Capture (sleep-protected)
+```bash
+cd services/nest_recorder && nohup ./capture.sh &                  # 65-min default
+cd services/nest_recorder && nohup ./capture.sh --window 1800 &    # 30-min validation
+```
+
 ## Processor (native Mac)
 ```bash
 caffeinate -is bash -c 'time bash services/processor/run_local.sh'

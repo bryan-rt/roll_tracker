@@ -38,24 +38,29 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml exec recorder \
 
 ## Capture Command (DETACHED)
 
-Use `nohup` + background so laptop sleep / terminal close won't kill it:
+Use `capture.sh` — it wraps `diag_v7_2.sh` with caffeinate (prevents macOS
+display/idle/disk sleep) and blocks until the capture completes. Use `nohup` to detach:
 
 ```bash
 cd services/nest_recorder
 
-# Start the container if not already running
-docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d recorder
+# 65-min evening window (default)
+nohup ./capture.sh &
 
-# Run the capture DETACHED inside the container
-# diag_v7_2.sh discovers all cameras and fans out to parallel diag_v6.sh workers
-docker compose -f docker-compose.yml -f docker-compose.dev.yml exec -d recorder \
-  bash -lc 'WINDOW_SECONDS=3900 SEG_SECONDS=120 SOURCE_PTS=1 /app/diag_v7_2.sh'  # SOURCE_PTS=1 explicit for clarity; now the default (CP-R3)
+# Shorter validation run
+nohup ./capture.sh --window 1800 &
+
+# Custom segments
+nohup ./capture.sh --window 3900 --seg 120 &
 ```
 
-`WINDOW_SECONDS=3900` covers the 65-min evening session window; adjust for shorter captures
-(e.g. `1800` for a 30-min validation run).
+`capture.sh` ensures the container is running, starts caffeinate with a self-terminating
+timeout (window + 5 min margin), and runs `diag_v7_2.sh` blocking. SOURCE_PTS=1 and
+FPS_PASSTHROUGH=1 are the defaults since CP-R3. Caffeinate terminates automatically when
+the capture ends or the timeout expires — no leaked processes.
 
-The `-d` flag detaches the exec so it survives terminal close.
+`WINDOW_SECONDS=3900` covers the 65-min evening session window; `1800` for a 30-min
+validation run.
 
 ## Verify It's Running
 
