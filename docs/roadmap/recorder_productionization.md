@@ -323,18 +323,28 @@ this checkpoint, not a separate item).
 
 ## CP-R7 — Hardening and operability
 
-**Status:** 🔲 Not started (coverage metric done — pulled forward into CP-R10)
-**Evidence:** *(link to docs/evidence/... once it exists)*
+**Status:** ⚠ Partial (three-camera smoke test pending — J_EDEw offline)
+**Evidence:** Open anomaly register at `docs/evidence/recorder_dupfix_1/findings.md` § Open Anomalies.
 
-- `N_CAMERAS=0` edge: the `-lt 1` floor at `diag_v6.sh:31` protects the retry interval, but
-  the division at line 30 still crashes if `N_CAMERAS=0` is set explicitly. One line.
-- ~~Per-camera coverage/uptime metric logged per session — currently assessed by reading
-  stderr by hand.~~ **Done (CP-R10).** `services/nest_recorder/coverage_report.py`. Session-scoped
-  via `--start-epoch` / `--window`, per-camera, named lead-in/tail gaps, attempt count from
-  `attempt_log.jsonl`. Validated on CP-R1 baseline.
-- J_EDEw intermittent offline: characterise, then decide actionable vs accepted.
-- Park open anomalies with named status: the 1867 mpdecimate count; the 0.18% PPDmUg
-  duplicates on empty-FOV footage.
+- ~~`N_CAMERAS=0` edge~~ **Done.** Floor `N_CAMERAS` at 1 before the division (line 28).
+- ~~Per-camera coverage/uptime metric~~ **Done (CP-R10).** `services/nest_recorder/coverage_report.py`.
+- ~~Park open anomalies~~ **Done.** Two entries in `docs/evidence/recorder_dupfix_1/findings.md`
+  § Open Anomalies: (A) 1867 mpdecimate count — PARKED UNEXPLAINED, `Frames - Dups == nb_frames`
+  pattern across 4 segments suggests column-semantics issue; (B) 0.18% PPDmUg dups — PARKED,
+  explained as encoder quantization on static scene.
+- ~~J_EDEw intermittent offline~~ **Resolved — outside recorder scope.** The camera has been
+  unavailable since 2026-05-31. Across both 65-min captures (CP-R1 2026-08-04, CP-R10
+  2026-08-05) and all smoke tests since, J_EDEw produced zero segments with 19-24 retry
+  attempts per session. Observed failure signature: `generate_stream` succeeds (API returns
+  RTSP URL), ffmpeg receives ~10-11s of data, stream terminates, session classified as dead.
+  Retry and backoff escalation (to 300s slow-poll after 5 consecutive failures) work correctly.
+  Availability is a hardware/network question outside the recorder's scope. **Forward test:**
+  if J_EDEw returns and works normally, the signature was what an offline camera looks like
+  through the SDM API. If it returns and STILL shows the ~11s-then-terminate pattern, that is
+  a camera-specific failure (not availability) and becomes worth investigating.
+- **Three-camera smoke test:** PENDING. Requires all three cameras online. Every smoke test in
+  this series has had at least one SKIP (J_EDEw). Zero-SKIP confirmation is the remaining
+  deliverable for CP-R7 completion.
 
 ---
 

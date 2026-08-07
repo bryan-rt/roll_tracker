@@ -199,6 +199,9 @@ segments (070219, 070849) correlate with elevated PTS stdev (~10ms vs 0.47ms nom
 | **FP7oJQ-200014** | **arrival-PTS** | **4530** | **255** | **5.6%** |
 | **PPDmUg-200019** | **arrival-PTS** | **4530** | **106** | **2.3%** |
 
+The `Frames` column discrepancy (e.g. 1867 vs nb_frames 1830 on FP7oJQ-062531) is tracked
+in `docs/evidence/recorder_dupfix_1/findings.md` § Open Anomalies.
+
 ### PTS Timing Smoothness (Source-PTS only)
 
 Clean source-PTS segments show PTS stdev of 0.47ms at 66.67ms mean delta (15fps, perfect

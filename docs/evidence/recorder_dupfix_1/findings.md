@@ -372,27 +372,6 @@ preferred. Under source-PTS adoption (where input == output frame count), the si
 
 ---
 
-## Open Anomalies
-
-### The 1867 mpdecimate Frames count
-
-RELIABILITY-1's mpdecimate table reports `Frames = 1867` for FP7oJQ-20260728-062531, but
-DUPFIX-1 measured `nb_read_frames = nb_frames = framehash_total = cv2_iterated = 1830` for
-the same mp4 file. C4's prediction (nb_read ≈ 1867) failed.
-
-The 1867 figure is unexplained by any current measurement. Possible sources: mpdecimate
-was run on a different copy of the file, or on a different file entirely (the arrival-PTS
-era original), or mpdecimate's internal frame counter includes frames that `nb_read_frames`
-does not. The RELIABILITY-1 table does not record the exact command used, so the provenance
-cannot be verified. Recorded as an open anomaly.
-
-### PPDmUg-070422: 3 pixel-identical adjacent frames on source-PTS
-
-The sole exception to the "zero exact dups on source-PTS" finding. Three adjacent-identical
-frame pairs (0.18%) on a mid-attempt segment with low stdev (1.71ms) and occupied scene.
-These may be genuine x264 output coincidences (two consecutive frames with identical
-quantized reconstructions) rather than input duplication. Not investigated further.
-
 ---
 
 ## Commands Run
@@ -438,3 +417,57 @@ possible; correction requires a boxmot fork (variable-dt Kalman step) not yet sc
    (13.85-15.86). Affects every frame uniformly. LIVE BUG, addressable without a fork.
 2. **False teleports from dropped frames** — 0-7.7% per attempt. Detectable via PTS gaps.
    Not correctable without a boxmot fork.
+
+---
+
+## Open Anomalies (CP-R7 register)
+
+Two measurements remain unexplained. Neither is blocking. Recorded here as the single
+findable register so they are not re-investigated.
+
+### A. The 1867 mpdecimate frame count (FP7oJQ-20260728-062531)
+
+**Status: PARKED — UNEXPLAINED.**
+
+RELIABILITY-1's mpdecimate table reported `Frames=1867` for FP7oJQ-062531. DUPFIX-1's C4
+prediction tested whether `nb_read_frames` would return ~1867: FAILED. All three output
+counts agree at 1830 (`nb_frames == nb_read_frames == cv2_iterated == framehash_total`).
+
+The pattern is consistent across all four mpdecimate-measured segments:
+
+| Segment | mpdecimate Frames | mpdecimate Dups | Frames - Dups | nb_frames |
+|---------|-------------------|-----------------|---------------|-----------|
+| FP7oJQ-062531 | 1867 | 37 | 1830 | 1830 |
+| FP7oJQ-070240 | 467 | 7 | 460 | 460 |
+| PPDmUg-070219 | 1832 | 2 | 1830 | 1830 |
+| PPDmUg-070849 | 1801 | 1 | 1800 | 1800 |
+
+`Frames - Dups == nb_frames` holds on all four. This exact, repeatable relationship
+constrains the explanation: a threshold artifact or a wrong-file error would not reproduce
+it four times. It points at a column-semantics or transcription issue in how the mpdecimate
+output was recorded rather than a real frame-count discrepancy.
+
+Not reproduced by DUPFIX's framehash instrument (which measured 1830 across all three of
+`nb_frames`, `nb_read_frames`, and cv2 iteration). The RELIABILITY-1 table does not record
+the exact mpdecimate command used, so the provenance cannot be independently verified.
+Reopen if the 1867-class figure recurs in a fresh mpdecimate run.
+
+### B. The 0.18% PPDmUg pixel-identical duplicates (PPDmUg-20260728-070422)
+
+**Status: PARKED — UNEXPLAINED (low severity).**
+
+3 framehash adjacent dups out of 1660 frames (0.18%). Sole source-PTS exception across 10
+segments. The scene was **occupied** (not empty FOV), with low PTS stdev (1.71ms) and stable
+14.99fps cadence. DUPFIX-1 characterized it as a mid-attempt segment.
+
+The static-scene encoder-quantization hypothesis (x264 at crf 23 quantizing consecutive
+frames to identical reconstructions) does not apply to occupied-scene footage — motion
+between frames makes identical quantized output unlikely. The mechanism producing 3
+pixel-identical adjacent frames on an occupied source-PTS segment is unknown.
+
+Mitigating factors: the count is tiny (3 / 1660 = 0.18%), the segment's +30 frame surplus
+cannot be explained by 3 duplicates, and the anomaly has not recurred on any other
+source-PTS segment (0 dups on the other 9).
+
+Reopen if pixel-identical adjacent dups recur on other source-PTS segments with occupied
+scenes.

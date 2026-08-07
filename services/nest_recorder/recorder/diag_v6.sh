@@ -25,6 +25,7 @@ RTSP_TIMEOUT_US=$(( RTSP_TIMEOUT_SEC * 1000000 ))
 # Source: developers.google.com/nest/device-access/project/limits
 SDM_USER_QPM=10
 N_CAMERAS="${N_CAMERAS:-3}"
+[ "$N_CAMERAS" -lt 1 ] && N_CAMERAS=1
 
 # Compute minimum retry interval dynamically from quota + camera count.
 # Target ~60-70% of quota to leave headroom for extends/stops/retried-429s.
