@@ -1,0 +1,12 @@
+{
+  "segment_id": "PPDmUg-20260805-162627",
+  "fast_centre": null,
+  "slow_centre": 6000,
+  "histogram": {
+    "0": 1,
+    "5940": 609,
+    "6030": 1219,
+    "11970": 1
+  },
+  "n_intervals": 1830
+}

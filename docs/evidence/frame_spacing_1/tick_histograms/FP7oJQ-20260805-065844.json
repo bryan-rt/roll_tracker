@@ -1,0 +1,13 @@
+{
+  "segment_id": "FP7oJQ-20260805-065844",
+  "fast_centre": null,
+  "slow_centre": 6000,
+  "histogram": {
+    "0": 1,
+    "5940": 103,
+    "6030": 201,
+    "11970": 12,
+    "12060": 9
+  },
+  "n_intervals": 326
+}

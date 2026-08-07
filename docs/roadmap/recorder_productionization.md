@@ -438,6 +438,29 @@ The recorder is done when all of these hold:
 
 CP-R1→R4 deliver 1, 2, 4, 5. CP-R5→R6 deliver 3. CP-R9 delivers 6 + enables unattended
 capture. CP-R7 delivers remaining hardening. CP-R10 delivers 8. CP-R8 delivers 7.
+CP-R11 delivers frame-spacing characterization (analysis only, no recorder changes).
+
+---
+
+## CP-R11 -- Definitive frame-spacing characterization
+
+**Status: COMPLETE (2026-08-07).**
+
+Analysis-only checkpoint. 283 source-PTS segments (247K intervals) across 3 days.
+
+**Key findings:**
+- Modes come in BLOCKS, not interleaved (supersedes CP-R1b Section 4).
+- 15fps cadence is genuine — PPDmUg 1,979 consecutive gap-free frames (supersedes CP-R1b
+  Section 5 "structurally undecidable").
+- FP7oJQ gaps are periodic (mode=12 spacing) from camera-internal grid mismatch, not
+  network loss. Gap rate ~8%, exactly predicted by grid-rate/effective-rate ratio.
+- PPDmUg: 0.45% gap rate, 47% of segments gap-free. Not gap-free across all segments.
+- Coast-step injection (1 step per gap) is the right approach. No boxmot fork needed.
+- V4 contract's `is_bimodal`, `nominal_dt_s`, and coast recipe work correctly as designed.
+  Only the explanatory text about "interleaving" needs updating.
+
+**Evidence:** `docs/evidence/frame_spacing_1/findings.md`
+**Tool:** `tools/analyze_frame_spacing.py`
 
 ---
 

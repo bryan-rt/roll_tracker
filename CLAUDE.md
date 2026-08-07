@@ -225,16 +225,17 @@ Evidence: `docs/evidence/purity_proxy_{1,2}/`.
   correctable.
 - **Stream fps VARIES per session AND mid-stream** (15fps and 30fps both observed from
   source PTS). SDP reports 30 when delivering 15. Cameras differ from each other (13.85
-  vs 15.00 measured in one session). **CP-R1b: bimodal frame-rate oscillation** —
-  FP7oJQ interleaves 33ms and 67ms inter-frame intervals within a single 33-min ffmpeg
-  invocation, with the short-mode proportion shifting from 0% to 99% over time. Whether
-  this is genuine rate change or relay-level frame loss is **structurally undecidable**
-  from PTS alone (the 15fps tick pattern is the algebraic pair-sum of the 30fps pattern).
-  Container metadata (`r_frame_rate`, `CAP_PROP_FPS`) is stale on bimodal segments.
-  `measured_fps` is broken on bimodal segments (**TRIM-BIMODAL defect**: trimmed mean
-  discards the minority mode as outliers — 36% discard on FP7oJQ transition segment).
-  Per-frame `dt_s` from the sidecar is the only reliable rate source.
-  Evidence: `docs/evidence/recorder_fps_adaptation_1/`.
+  vs 15.00 measured in one session). **CP-R11: frame-spacing characterization (supersedes
+  CP-R1b)** — Each camera delivers at a single cadence (~15fps, 67ms intervals) with
+  periodic single-frame gaps whose spacing is determined by a camera-internal grid mismatch.
+  FP7oJQ: gap every ~12 frames (~8% rate), PPDmUg: ~0.45% gap rate. On rare occasions the
+  cadence switches to ~30fps in sustained BLOCKS (not interleaved). The 15fps cadence is
+  genuine (proven: PPDmUg 1,979 consecutive gap-free frames; FP7oJQ periodic gap spacing
+  rules out random loss). CP-R1b's "structurally undecidable" and "bimodal interleaving"
+  verdicts are superseded. Container metadata and `measured_fps` remain unreliable on
+  bimodal segments (TRIM-BIMODAL defect still applies). Per-frame `dt_s` from the sidecar
+  is the only reliable rate source.
+  Evidence: `docs/evidence/frame_spacing_1/`, `docs/evidence/recorder_fps_adaptation_1/`.
   **Do not hardcode fps anywhere — use per-frame dt from sidecar.**
 - `frame_index` is a sequential `cap.read()` counter (frame_iterator.py), NOT PTS-derived.
   Works for any fps.
@@ -498,6 +499,7 @@ First trained model had FP7oJQ false positives from background memorization.
 | `tools/purity_proxy_2_analysis.py` | Masked-appearance purity proxy analysis |
 | `tools/analyze_recorder_timing.py` | Recorder per-frame timing extraction + analysis (subcommands: analyze, compare, dupfix) |
 | `tools/analyze_capture_timing.py` | Multi-camera timing diagnostic session analysis |
+| `tools/analyze_frame_spacing.py` | CP-R11: Frame-spacing characterization (blocked modes, gap periodicity, grid mismatch) |
 | `services/nest_recorder/recorder/diag_timing.sh` | Multi-camera timing diagnostic (source PTS, RTCP hunt) |
 
 ## Training Data Locations
@@ -587,11 +589,10 @@ First trained model had FP7oJQ false positives from background memorization.
    short-mode (~33ms intervals) during the CP-R1 capture, so the camera demonstrably can
    deliver 30fps. Most footage runs at half that. For BJJ, fast transitions are where
    tracklets break, so doubling temporal resolution attacks the dominant failure mode
-   directly. Whether it is reachable depends on resolving loss-vs-encode, which requires
-   RTP sequence numbers from a diagnostic capture (CP-R1b S5 — structurally undecidable
-   from PTS alone). Classification: **investigation is recorder-side** (requires
-   diagnostic capture with `-loglevel debug`); **benefit is pipeline-side** (doubles
-   temporal resolution for the tracker).
+   directly. **CP-R11 resolved the loss-vs-encode question:** the 15fps cadence is genuine
+   (not 30fps with loss), and FP7oJQ's ~8% gaps are a camera-internal grid mismatch. The
+   30fps opportunity depends on understanding what triggers the cadence switch (unresolved).
+   Classification: **investigation is recorder-side**; **benefit is pipeline-side**.
 4. A↔D contract fix: reliability-discount the penalty OR displacement-based D0.5 split.
 5. Per-clip measured-fps denominator for motion metrics.
    ⏳ blocked on CP-R5 (correctness) → CP-R6 (contract).
@@ -620,10 +621,10 @@ First trained model had FP7oJQ false positives from background memorization.
    divergence from upstream.
 4. **Consumer split:** per-frame dt + gap flags everywhere we control code; per-frame dt
    for BoT-SORT (boxmot hardcodes unit Kalman time-step; variable-dt requires forking).
-   **CP-R1b invalidated the per-clip scalar plan:** bimodal frame-rate oscillation
-   (interleaved 33/67ms intervals, short-mode proportion shifting mid-segment) means no
-   single scalar describes a clip. Additionally, `measured_fps` is broken on bimodal
-   segments (TRIM-BIMODAL: 36% discard on transition segment). Per-frame `dt_s` required.
+   **CP-R11 confirmed per-frame `dt_s` is required:** modes come in sustained blocks (not
+   interleaved), but FP7oJQ has ~8% periodic gaps (every ~12 frames) and the cadence can
+   switch mid-stream. `measured_fps` remains broken on bimodal segments (TRIM-BIMODAL).
+   Coast-step injection (1 step per gap) handles FP7oJQ's grid mismatch without forking.
    ⏳ blocked on CP-R5 (correctness) → CP-R6 (contract).
 5. **GT-join decision needed:** CVAT labels duplicate frames like any other. Decide whether
    GT2ACTUALS scores or excludes pipeline-flagged duplicates before analysis.
@@ -667,9 +668,11 @@ clip-level person_tracks, val-split, greedy IoU>=0.3, with pipeline state noted.
    signal discriminates real vs false splits (speed P95 overlaps; HSV Bhattacharyya
    ~identical). Stage A drift dominates. Appearance-in-solver addresses at most the
    ~26% misstitch share.
-4. **CAPTURE-TIME-1's "the camera is really 30fps" → CORRECTED.** Source PTS rate
-   VARIES per session (15fps and 30fps both measured). SDP unreliable. Use per-clip
-   measured fps.
+4. **CAPTURE-TIME-1's "the camera is really 30fps" → CORRECTED → CONFIRMED CORRECTED
+   (CP-R11).** The 15fps cadence is genuinely 15fps, not 30fps with loss. Proven by
+   PPDmUg 1,979 consecutive gap-free 67ms frames and FP7oJQ periodic (not random) gap
+   spacing. Source PTS rate varies per session (15fps default, 30fps observed rarely).
+   FP7oJQ's ~13.85fps effective rate is 15fps with ~8% grid-mismatch gaps.
 5. **Sidecar "exact per-frame timing" → QUALIFIED.** Under arrival-PTS it is a
    nearest-neighbor approximation (±500ms worst case). Under source-PTS it would be
    exact (input==output, no dup/drop) — not yet adopted in production.

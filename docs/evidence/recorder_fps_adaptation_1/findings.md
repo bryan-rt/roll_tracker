@@ -1,5 +1,13 @@
 # CP-R1b: Frame-Rate Bimodality and TRIM-BIMODAL Defect
 
+> **PARTIALLY SUPERSEDED 2026-08-07 (CP-R11).** Sections 4 and 5 corrected below.
+> The "bimodal interleaving" model is replaced by "blocked modes with periodic gaps."
+> The "structurally undecidable" verdict is qualified — sustained regularity over
+> 1,979 consecutive PPDmUg frames and periodic (not random) FP7oJQ gap spacing
+> resolve the ambiguity. See `docs/evidence/frame_spacing_1/findings.md` for the
+> full CP-R11 analysis (283 segments, 247K intervals vs 8 segments here).
+> Sections 1-3, 6-11 remain valid as written.
+
 **Date:** 2026-08-04
 **Code state:** `6112dc0` (CP-R3 + local-outside-function fix)
 **Footage:** CP-R1 capture (19:32-20:37 UTC) + smoke tests (hours 09-14)
@@ -92,6 +100,15 @@ as authoritative until resolved.
 
 ## 4. Short-Mode Proportion Shift (the real observation)
 
+> **SUPERSEDED 2026-08-07 (CP-R11).** The "oscillation" pattern reported below from
+> 100-frame sliding windows is a windowing artifact on blocked data. Per-interval
+> RLE analysis (CP-R11) shows clean blocks of fast (F194, F205, F370) and slow
+> (S10-S24) modes with sharp boundaries. A 100-frame window straddling a block
+> boundary reports intermediate proportions that appear as "oscillation" but are
+> actually window-averaged block transitions. The data below is not wrong at its
+> measurement resolution — the sliding window genuinely shows varying proportions —
+> but the underlying mechanism is blocked, not interleaved.
+
 ### FP7oJQ
 
 | Segment | Short-mode % | measured_fps | Discard % | Note |
@@ -138,6 +155,18 @@ Both modes show **instantaneous frame-level switching** — each individual dt i
 camera has two discrete rates and switches between them.
 
 ## 5. Is This Frame Loss or Genuine Rate Change? (Structurally Undecidable)
+
+> **QUALIFIED 2026-08-07 (CP-R11).** The pair-sum identity below is mathematically
+> valid for any single interval. However, the conclusion that 15fps vs 30fps+loss
+> is undecidable does not survive 283 segments of data:
+> (1) PPDmUg delivered 1,979 consecutive 15fps intervals with zero exceptions
+>     (probability 2^-1979 under alternate-frame loss).
+> (2) FP7oJQ's gaps have periodic spacing (mode=12 frames, doublet harmonic at
+>     7+17=24). Random loss produces geometric inter-gap spacings, not periodic.
+> (3) The gap count exactly matches the rate deficit predicted by the camera's
+>     grid-rate/effective-rate ratio (14.93/13.85 -> 1 gap per 12.4 frames).
+> The 15fps cadence is genuine, and FP7oJQ's gaps are a camera-internal grid
+> mismatch, not frame loss. See CP-R11 Sections 4.2, 4.3.
 
 ### The identity
 
