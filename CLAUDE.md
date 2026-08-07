@@ -575,12 +575,12 @@ First trained model had FP7oJQ false positives from background memorization.
 1. **[LIVE BUG] BoT-SORT `frame_rate` = per-clip MEASURED fps.** Currently hardcoded/
    assumed 30 while streams deliver 15–30 varying by session. `track_buffer`'s real-time
    lifespan is wrong, directly affecting the dominant drift damage.
-   ⏳ blocked on CP-R5 (correctness) → CP-R6 (contract).
+   Unblocked — CP-R6 shipped the sidecar contract this consumes.
 2. **[NEW AUDIT] Frame-rate & cross-camera assumption audit across Stages A–F.** Enumerate
    every place that assumes fixed/known fps, uniform frame spacing, or synchronized cameras
    (BoT-SORT frame_rate, velocity/`speed_mps_k`, `derive_clip_frame_offset`, Stage E
    temporal engagement windows, cross-camera evidence timing). Report where wrong.
-   ⏳ blocked on CP-R5 (correctness) → CP-R6 (contract).
+   Unblocked — CP-R6 shipped the sidecar contract this consumes.
 3. **Recorder productionization (CP-R1 through CP-R10):** see
    `docs/roadmap/recorder_productionization.md`. Covers source PTS adoption, passthrough
    build, default flip, Dockerfile pin, sidecar boundary fix, sidecar contract v2,
@@ -595,12 +595,12 @@ First trained model had FP7oJQ false positives from background memorization.
    Classification: **investigation is recorder-side**; **benefit is pipeline-side**.
 4. A↔D contract fix: reliability-discount the penalty OR displacement-based D0.5 split.
 5. Per-clip measured-fps denominator for motion metrics.
-   ⏳ blocked on CP-R5 (correctness) → CP-R6 (contract).
+   Unblocked — CP-R6 shipped the sidecar contract this consumes.
 6. D0.5 Tier 3: disable (interim, recovers -6.6pp regression) or redesign.
 7. Cross-camera sync via source PTS + host-clock lower envelope WITH per-camera drift
    correction (Tier 2, ±14–56ms). Consumes `pts_wallclock_offset_s`, `drift_ppm`, `drift_flat`
    from sidecar contract v2. The alignment work is Stage D.
-   ⏳ blocked on CP-R5 (correctness) → CP-R6 (contract).
+   Unblocked — CP-R6 shipped the sidecar contract this consumes.
 8. Productionize masked histograms (validated +0.09 AUC, not shipped).
 9. Stage A `match_thresh` sweep — AFTER the A↔D fix, since SWEEP-4 was measured against
    the un-fixed penalty.
@@ -609,23 +609,21 @@ First trained model had FP7oJQ false positives from background memorization.
 1. **Dynamic fps replaces hardcoded 30** everywhere: BoT-SORT `frame_rate`, `speed_mps_k`,
    `derive_clip_frame_offset`, Stage E temporal windows, cross-camera evidence timing.
    Source: per-clip measured fps from sidecar.
-   ⏳ blocked on CP-R5 (correctness) → CP-R6 (contract).
-2. **Consume sidecar gap flags in Stage A via coast-step injection.** When the sidecar
-   flags a gap of N nominal intervals, feed the tracker N detection-free frames before the
-   real one so Kalman predictions match real elapsed time. Requires no boxmot change.
-   Depends on CP-R6. Try before considering any variable-dt fork.
-   ⏳ blocked on CP-R5 (correctness) → CP-R6 (contract).
-3. **boxmot variable-dt (fork or subclass)** — contingent; open only if coast-step
-   injection (item 2) proves insufficient. Check whether boxmot permits Kalman injection
-   or subclassing first; the code change is a few lines, the cost is maintaining
-   divergence from upstream.
-4. **Consumer split:** per-frame dt + gap flags everywhere we control code; per-frame dt
-   for BoT-SORT (boxmot hardcodes unit Kalman time-step; variable-dt requires forking).
+   Unblocked — CP-R6 shipped the sidecar contract this consumes.
+2. **Variable-dt Kalman step consuming per-frame `dt_s`.** CP-R11 resolved the injection-
+   vs-variable-dt contingency: injection handles FP7oJQ's periodic gaps (0.70% minority-mode)
+   but cannot represent PPDmUg's sustained cadence switches (2.95% minority-mode across 12.5%
+   of segments). Variable dt handles both with one mechanism. See Active Decisions Log
+   "Coast architecture" row for the full decision and open scoping question.
+   Unblocked — CP-R6 shipped the sidecar contract this consumes
+   (`docs/reference/sidecar_contract.md`).
+3. **boxmot subclass-vs-fork scoping** — see Active Decisions Log "Coast architecture" row.
+4. **Consumer split:** per-frame dt everywhere we control code; per-frame dt for BoT-SORT
+   (boxmot hardcodes unit Kalman time-step; variable-dt requires forking or subclassing).
    **CP-R11 confirmed per-frame `dt_s` is required:** modes come in sustained blocks (not
    interleaved), but FP7oJQ has ~8% periodic gaps (every ~12 frames) and the cadence can
    switch mid-stream. `measured_fps` remains broken on bimodal segments (TRIM-BIMODAL).
-   Coast-step injection (1 step per gap) handles FP7oJQ's grid mismatch without forking.
-   ⏳ blocked on CP-R5 (correctness) → CP-R6 (contract).
+   Unblocked — CP-R6 shipped the sidecar contract this consumes.
 5. **GT-join decision needed:** CVAT labels duplicate frames like any other. Decide whether
    GT2ACTUALS scores or excludes pipeline-flagged duplicates before analysis.
 6. **A/B validation on SAME new footage:** Run new post-fix footage through pipeline twice
@@ -1240,6 +1238,7 @@ because detection under-segmentation gives it wrong input.
 | SOURCE-PTS-1: Source PTS capture | **Active — default** | `SOURCE_PTS` and `FPS_PASSTHROUGH` now default to `1` in diag_v6/v7_2/v8.sh (CP-R3). Preserves camera RTP capture timestamps (`-copyts`, no wallclock override) and VFR passthrough (no CFR resampling). Rollback: `SOURCE_PTS=0 FPS_PASSTHROUGH=0`. Sidecar includes `host_arrival_s`, lower-envelope `pts_wallclock_offset_s`, windowed drift (ppm). Per-attempt stderr files handle retry loop. Rehearsal (7 min, FP7oJQ + PPDmUg): PTS uniform 96-100%, 15fps measured, middle segments mismatch:false (exact 1:1), first/last segments boundary mismatch. Runbook: `docs/guides/runbook_cross_camera_capture.md`. **EXONERATED (RECORDER-RELIABILITY-1):** 16 segments across 3 cameras, zero timestamp/DTS errors. All failures were RTSP 404, session invalidation, or 401. Dup/drop reduced 10-50x vs arrival-PTS. |
 | RECORDER-RELIABILITY-1: Production reliability | **Complete** | Five fixes in `diag_v6.sh`: (1) RTSP socket timeout 10s (top fix — dead-stream gap 2m28s→~10s), (2) stop_stream before regenerating (prevents session orphaning), (3) access token refresh per attempt, (4) failure-type-aware backoff, (5) sidecar extraction backgrounded. Source-PTS dup/drop verdict: pixel-identical dups 10-50x lower — **camera-dependent** (PPDmUg exact at 15fps; FP7oJQ ~8% mismatch at 13.85fps). Evidence: `docs/evidence/recorder_reliability_1/`. |
 | RECORDER-RELIABILITY-2: API quota awareness | **Complete** | RELIABILITY-1 increased API calls to ~17/min, triggering 429 (SDM quota: 10 QPM per user per project, shared across all cameras). Fixes: (1) optimistic URL reuse (0 API calls when session valid), (2) conditional stop_stream (skip for dead sessions — 400 body confirms already terminated), (3) 429 backoff 60s→300s with Retry-After, (4) generate 404 fail-fast (3 retries), (5) consecutive failure escalation (5+ failures → slow-poll 120-300s), (6) cross-camera quota: N_CAMERAS from v7_2, dynamic min retry interval from 70%×10QPM/N, jitter on every backoff. Estimated: healthy ~1 QPM, 1-failing ~3-4 QPM, all-failing ~7 QPM (escalates to ~1-2). Evidence: `docs/evidence/recorder_reliability_2/`. |
+| Coast architecture: variable-dt Kalman | **Direction decided — scoping open** | CP-R11 measured minority-mode exposure: FP7oJQ 0.70% (1/139 segments with switches), PPDmUg 2.95% (18/144). Coast-step injection handles gaps (always single missed grid slot) but CANNOT represent mode switches — no mechanism for frames arriving early (dt < nominal). Variable dt handles both gaps and mode switches with one mechanism. **Direction: variable dt (fork or subclass).** Open scoping question: whether boxmot permits subclassing or injecting the Kalman filter instance. The constant-velocity state transition hardcodes `dt=1`; the code change is a few lines either way, the cost is maintaining divergence from upstream. Check before committing to a hard fork. Secondary benefit: variable dt preserves `frame_index` 1:1 with decoded frames, so GT2ACTUALS joins are unaffected — injection would insert synthetic rows into `detections.parquet` and force the GT-join decision. Evidence: `docs/evidence/frame_spacing_1/findings.md`. |
 
 ## Never Touch
 

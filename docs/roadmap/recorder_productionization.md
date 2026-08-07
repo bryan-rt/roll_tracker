@@ -365,6 +365,22 @@ Stage A sweeps — is held loosely for that reason.
 
 **Done when:** clean footage with GT exists, and drift attribution can be re-measured.
 
+**Mid-roll cadence-switch caveat (CP-R11/R12).** CP-R11 established that 30fps blocks last
+seconds to tens of seconds. A cadence switch landing mid-roll during GT footage is exactly
+the case coast-step injection handles worst, and produces a GT clip whose cadence changes
+partway through. Mitigations:
+
+- Check captured GT footage for mode switches **before** sending to CVAT. The `is_bimodal`
+  flag in the segment's `.timing.jsonl` sidecar makes this checkable without decoding.
+- If a switch lands mid-roll, note it -- that clip becomes a useful test case for the variable-
+  dt implementation, but a poor baseline for measuring drift attribution.
+- PPDmUg (primary GT camera, 95.9% coverage) has 12.5% of segments with mode switches --
+  this is not a tail event.
+- Capture more footage than the GT set requires, and select mode-switch-free clips for the
+  drift-attribution baseline. Both cameras carry exposure (FP7oJQ 0.7% of segments, PPDmUg
+  12.5%), so this is a selection problem, not an avoidance problem. Checking `is_bimodal`
+  across the captured set BEFORE annotation is cheap; re-annotating is not.
+
 ---
 
 ## CP-R9 — Smoke harness + caffeinate wiring
@@ -455,12 +471,32 @@ Analysis-only checkpoint. 283 source-PTS segments (247K intervals) across 3 days
 - FP7oJQ gaps are periodic (mode=12 spacing) from camera-internal grid mismatch, not
   network loss. Gap rate ~8%, exactly predicted by grid-rate/effective-rate ratio.
 - PPDmUg: 0.45% gap rate, 47% of segments gap-free. Not gap-free across all segments.
-- Coast-step injection (1 step per gap) is the right approach. No boxmot fork needed.
+- Coast-step injection handles gaps (1 step per gap) but cannot represent mode switches.
+  Variable dt is the direction (see CP-R12).
 - V4 contract's `is_bimodal`, `nominal_dt_s`, and coast recipe work correctly as designed.
   Only the explanatory text about "interleaving" needs updating.
 
 **Evidence:** `docs/evidence/frame_spacing_1/findings.md`
 **Tool:** `tools/analyze_frame_spacing.py`
+
+---
+
+## CP-R12 -- Contract prose correction + coast architecture decision
+
+**Status: COMPLETE (2026-08-07).**
+
+Documentation-only checkpoint. No code changes.
+
+- Sidecar contract Section 5 corrected: single cadence + sustained blocks + periodic grid-mismatch
+  gaps. "Structurally undecidable" retired with pair-sum identity preserved as historical note.
+- Section 6.1 coast guidance revised for the blocked model with measured exposure table.
+- Section 10 `gap_flag` rejection rationale updated (local-cadence argument replaces undecidability).
+- Coast architecture decision recorded in CLAUDE.md Active Decisions Log: variable dt is the
+  direction, subclass-vs-fork scoping is open.
+- CP-R8 mid-roll cadence-switch caveat added with practical mitigation (over-capture + select).
+- Seven stale `blocked on CP-R5/R6` markers cleared across CLAUDE.md (both complete).
+
+**Evidence:** No new evidence -- consumes CP-R11's findings.
 
 ---
 

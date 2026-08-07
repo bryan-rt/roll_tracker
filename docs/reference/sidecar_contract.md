@@ -87,7 +87,7 @@ Fields always present regardless of `source_pts`:
 | `nominal_dt_s` | float | Median-based expected inter-frame interval in seconds (`pts_tick_delta_median / pts_timebase`). **The reference value for gap detection.** See Section 6 for the consumer recipe. |
 | `measured_fps` | float | Trimmed mean of input capture cadence in fps (`pts_timebase / trimmed_mean_tick`). **Under bimodality, reports the majority mode only** -- see Section 5. |
 | `measured_fps_median` | float | `pts_timebase / pts_tick_delta_median`. Subject to tick-alternation quantization (e.g. 14.9254 instead of 15.0000 when ticks alternate 5940/6030). |
-| `is_bimodal` | bool | Whether the segment contains interleaved frame intervals at two discrete rates (~2x apart). See Section 5. |
+| `is_bimodal` | bool | Whether the segment contains frame intervals at two discrete rates (~2x apart) in sustained blocks. See Section 5. |
 | `pts_wallclock_offset_s` | float | Lower-envelope offset: `min(host_arrival - pts_time)` across all frames. Anchors segment-relative PTS to host wall-clock. **Estimated accuracy: +/-14-56ms** (CAPTURE-TIME-2). |
 | `offset_method` | string | `"lower_envelope"` -- the algorithm used. |
 | `drift_flat` | bool | `true` if drift is negligible (< 0.0001 s/s) or unmeasurable (< 4 windows). When `true` and `n_drift_windows >= 4`, drift is confirmed flat; when `true` and `n_drift_windows < 4`, drift is unknown (insufficient data). |
@@ -140,11 +140,28 @@ Fields always present regardless of `source_pts`:
 
 ### The phenomenon
 
-Nest cameras interleave frames at two discrete rates: ~33ms (~30fps) and ~67ms (~15fps),
-with the proportion shifting over time within a single recording attempt. The two modes are
-always at a 2:1 ratio (the 15fps tick pattern is the algebraic pair-sum of the 30fps
-pattern). Whether a 67ms interval represents "one frame at 15fps" or "two frames at 30fps
-with one dropped" is **structurally undecidable** from PTS alone (CP-R1b).
+Nest cameras deliver frames at a single cadence (~67ms / ~15fps) with two additional
+phenomena:
+
+1. **Periodic single-frame gaps.** FP7oJQ produces a doubled interval (~133ms) every ~12
+   frames, caused by a camera-internal grid mismatch between its real capture rate (~13.85fps)
+   and its PTS timestamp grid (~14.93fps). PPDmUg has a much lower gap rate (~0.45%).
+
+2. **Sustained cadence switches.** On rare occasions, the cadence switches to ~33ms (~30fps)
+   in sustained blocks lasting seconds to tens of seconds (CP-R11 measured blocks of 194, 205,
+   and 370 frames). The two cadences are always at a 2:1 ratio.
+
+The 15fps cadence is genuine camera-side encoding, not 30fps with frame loss. PPDmUg
+delivered 1,979 consecutive gap-free 67ms frames (131.9s) -- no physical loss mechanism
+produces zero-jitter alternation over that span (CP-R11). FP7oJQ's gaps are periodic (mode
+spacing = 12 frames), not random, and their count matches the grid-rate/effective-rate deficit
+exactly.
+
+**Historical note (pair-sum identity, CP-R1b).** For any single interval, the 15fps tick
+pattern [5940, 6030] is the algebraic pair-sum of the 30fps pattern [2970, 3060]:
+2970+2970=5940, 2970+3060=6030. This identity made the question appear structurally
+undecidable from a single interval. CP-R11 resolved it by examining 283 segments (247K
+intervals): sustained regularity and periodic gap structure are incompatible with frame loss.
 
 ### Detection
 
@@ -196,9 +213,9 @@ reference intervals independent of which won the median.
 
 ### 6.1 Gap Detection and Coast-Step Injection (Stage A)
 
-**The sidecar does not classify gaps.** Under bimodality, whether a 67ms interval is a gap
-(one missing frame at 33ms nominal) or a normal frame (at 67ms nominal) is structurally
-undecidable. The sidecar provides the raw timing; the consumer decides.
+**The sidecar does not classify gaps.** Whether an interval exceeds the expected cadence
+depends on the local block's baseline, which the segment-level `nominal_dt_s` cannot express
+when a mode switch has occurred. The sidecar provides the raw timing; the consumer decides.
 
 **Recommended recipe for unimodal segments (`is_bimodal: false`):**
 
@@ -209,21 +226,36 @@ For each frame i where dt_s is not null:
     # Insert coast_steps predict-without-update cycles before this frame
 ```
 
-**Bimodal segments (`is_bimodal: true`) -- known false-positive source:**
+This handles FP7oJQ's periodic grid-mismatch gaps correctly: at 15fps nominal (0.067s), the
+threshold is 0.1005s, and gaps at 0.133s produce exactly `coast_steps = 1`. Gaps are always
+single missed grid slots.
 
-Under bimodality, the recommended `1.5x` threshold will classify some real minority-mode
-frames as gaps. A consumer that coasts on these inserts **phantom time** and degrades the
-velocity estimate. The athlete moved 2x the usual distance in 2x the usual time -- velocity
-is correct; the filter needs only the right `dt`, which is precisely what `dt_s` provides.
+**Bimodal segments (`is_bimodal: true`) -- sustained-block exposure:**
 
-Consumers SHOULD check `is_bimodal` and consider **suppressing coast injection on bimodal
-segments**, relying on per-frame `dt_s` alone (passed to the Kalman filter as the actual
-elapsed time, when the tracker supports variable dt). This avoids inserting phantom
-predict-without-update cycles for frames that genuinely exist.
+Under the blocked model (CP-R11), a mode switch means an entire sustained block runs at a
+cadence the segment's `nominal_dt_s` does not describe. Coast injection has no mechanism for
+frames arriving EARLY (dt < nominal) -- it cannot inject negative time. Every frame in a
+minority-mode block is affected, not a scattered few.
 
-If coast suppression is not feasible (e.g. the tracker assumes unit time steps), the consumer
-should document the expected false-coast rate as `short_mode_fraction` (majority-long
-bimodal) or `1 - short_mode_fraction` (majority-short bimodal).
+Measured exposure (CP-R11, 283 segments):
+
+| Camera | Minority-mode frames | % of corpus | Segments with switches | % |
+|--------|---------------------|-------------|----------------------|---|
+| FP7oJQ | 833 | 0.70% | 1 / 139 | 0.7% |
+| PPDmUg | 3,812 | 2.95% | 18 / 144 | 12.5% |
+
+Consumers using coast-step injection SHOULD check `is_bimodal` and be aware that on bimodal
+segments, the `1.5x` threshold will classify real minority-mode frames as gaps -- inserting
+**phantom time** for an entire block's duration. The athlete moved 2x the usual distance in
+2x the usual time; velocity is correct, but the Kalman filter receives phantom predict-
+without-update cycles.
+
+The correct solution for bimodal segments is **variable-dt Kalman steps** consuming per-frame
+`dt_s` directly. This handles both gaps and mode switches with one mechanism. See the coast
+architecture decision in `CLAUDE.md` Active Decisions Log.
+
+If variable dt is not available, suppress coast injection on `is_bimodal: true` segments and
+accept the `nominal_dt_s` mismatch on minority-mode frames as a documented limitation.
 
 ### 6.2 BoT-SORT Frame Rate Scalar
 
@@ -312,6 +344,7 @@ and all host-arrival fields are absent.
 | 2 | 2026-08-02 | Integer tick precision via `pts` field. `measured_fps` from trimmed mean of tick deltas. `pts_stdev_delta_ms` added. |
 | 3 | 2026-08-05 | PTS-based segment boundary split (CP-R5). `pts_origin: "segment_relative"`. `input_frame_count` corrected. |
 | 4 | 2026-08-05 | Contract established (CP-R6). `source_pts` validity gate. `nominal_dt_s`, `dt_s`, `is_bimodal` + mode fields added. `measured_fps`/`measured_fps_median` omitted under `source_pts: false`. Drift fields gated at `n_drift_windows >= 4`. `input_n` deprecated. First production validation of bimodal emission (2026-08-05, CP-R10): 8 of 33 PPDmUg segments emitted `is_bimodal: true` with valid `short_mode_*` fields. |
+| 4 (prose) | 2026-08-07 | Sections 5 and 6.1 explanatory text corrected for blocked-mode model (CP-R11, CP-R12). No emission change -- `is_bimodal`, `nominal_dt_s`, and the detection logic are validated correct. "Structurally undecidable" retired. Section 10 `gap_flag` rationale updated. |
 
 ---
 
@@ -319,8 +352,8 @@ and all host-arrival fields are absent.
 
 | Field | Reason |
 |-------|--------|
-| `gap_flag` | The sidecar cannot classify gaps under bimodality (structurally undecidable). Consumer recipe documented instead (Section 6.1). |
-| `implied_missing_frames` | Same -- bakes an undecidable judgment into the data format. Consumer computes `round(dt_s / nominal_dt_s) - 1` when needed. |
+| `gap_flag` | Under the blocked model, whether an interval is a gap depends on the LOCAL cadence of the current block. The sidecar computes a segment-level `nominal_dt_s`, which cannot express a per-block baseline. A segment containing a mode switch has two valid baselines, so a single `gap_flag` would be wrong for one of the blocks. Consumers with block context can make the call; the sidecar cannot. Consumer recipe documented instead (Section 6.1). |
+| `implied_missing_frames` | Same rationale as `gap_flag` -- bakes a local-cadence-dependent judgment into a segment-level data format. Consumer computes `round(dt_s / nominal_dt_s) - 1` when needed. |
 | `is_duplicate` | Under passthrough + source-PTS, pixel-identical adjacent duplicates do not occur (DUPFIX-1: zero on 9/10 segments, 3 frames / 0.18% on one exception). A duplicate signal should be observation-based (framehash) if ever needed, not sidecar-derived. |
 | `dt_s` under CFR | Under `timing_mode: "cfr_grid"`, `pts_time_s` is a nearest-neighbour construction (each output grid point mapped to the closest input frame). Differencing adjacent `pts_time_s` values does not yield a real inter-frame interval -- it yields the spacing of the nearest-neighbour mapping, which can be zero (two grid points map to the same input) or jump by 2x (a grid point skipped). Per-frame timing under CFR is `1 / output_fps` (uniform grid), not a sidecar field. |
 
@@ -333,7 +366,8 @@ and all host-arrival fields are absent.
 | Source PTS = true capture timestamps | `docs/evidence/capture_time_1/findings.md`, `docs/evidence/capture_time_2/findings.md` |
 | RTCP absent, cross-camera offset +/-14-56ms | `docs/evidence/capture_time_2/findings.md` |
 | FP7oJQ drift -603 ppm | `docs/evidence/capture_time_2/findings.md` |
-| Bimodal frame-rate oscillation | `docs/evidence/recorder_fps_adaptation_1/findings.md` |
+| Frame-spacing characterization: blocked modes, periodic gaps, grid mismatch | `docs/evidence/frame_spacing_1/findings.md` (CP-R11, supersedes CP-R1b) |
+| ~~Bimodal frame-rate oscillation~~ | ~~`docs/evidence/recorder_fps_adaptation_1/findings.md`~~ (CP-R1b, partially superseded by CP-R11 -- Sections 4, 5 corrected in place) |
 | TRIM-BIMODAL defect (36% discard) | `docs/evidence/recorder_fps_adaptation_1/findings.md` |
 | Zero pixel-identical duplicates under source-PTS | `docs/evidence/recorder_dupfix_1/findings.md` |
 | Frame drops 0.1-7.7% (FP7oJQ), 0-3.0% (PPDmUg) | `docs/evidence/recorder_dupfix_1/findings.md` |
