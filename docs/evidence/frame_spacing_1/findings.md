@@ -35,7 +35,8 @@ Schema v2 sidecars carry `timing_mode: "passthrough"` and `pts_timebase: 90000` 
 confirming source-PTS data despite lacking the explicit `source_pts: true` field added in v4.
 Tick deltas recovered from `pts_time_s` via `round(pts_time_s * 90000)` — verified lossless.
 
-58 cfr_grid segments excluded (arrival-PTS).
+341 total sidecars on disk. 58 excluded (`timing_mode: "cfr_grid"`, arrival-PTS bursty
+deltas). 283 passthrough segments analyzed. Schema breakdown: 14 v1, 172 v2, 3 v3, 94 v4.
 
 ## 3. Tick-Level Distributions
 
@@ -101,9 +102,12 @@ per segment, interrupted by single-frame gaps every ~12 frames.
 | PPDmUg | 1,979 | 131.9 |
 
 PPDmUg delivered 1,979 consecutive 67ms intervals with zero exceptions. For the
-alternate-frame-loss hypothesis to hold, the camera would need to lose exactly every
-other frame for 132 seconds straight — 1,979 consecutive successes in a coin flip
-(probability 2^-1979). This is not frame loss.
+alternate-frame-loss hypothesis to hold, the loss process would need to drop exactly every
+other frame for 132 seconds straight with zero jitter — no occasional pair survival, no
+occasional double drop. No physical loss mechanism (network congestion, relay throttling,
+buffer overflow) produces this kind of perfect alternation over 132 seconds. Packet loss
+is bursty; throttling has transient edges. Perfect 50% decimation sustained across 1,979
+frames is a camera-side encoding decision, not a lossy channel.
 
 FP7oJQ's longest gap-free run (39.4s) is shorter because FP7oJQ has a systematic gap
 every ~12 frames (see H3). But even between gaps, the intervals are perfectly regular
@@ -111,8 +115,9 @@ at 5940/6030 ticks with zero intermediate values.
 
 **CP-R1b's "structurally undecidable" verdict is TOO STRONG.** The algebraic pair-sum
 identity (Section 5 of CP-R1b) is mathematically valid for any single interval, but it
-does not survive sustained perfect regularity over thousands of consecutive frames. PPDmUg's
-15fps cadence is genuinely 15fps, not 30fps with loss.
+does not survive sustained perfect regularity over thousands of consecutive frames. No
+physical loss mechanism produces zero-jitter alternation over 132 seconds. PPDmUg's 15fps
+cadence is genuinely 15fps, not 30fps with loss.
 
 The question of whether FP7oJQ's gaps represent lost frames or a camera-internal grid
 mismatch is addressed in H3.
@@ -141,10 +146,23 @@ not exactly commensurate. The skipped slot "walks" around the period. Most segme
 pure period-12 spacing; some show the slot splitting into alternating 7+17 = 24 doublets.
 
 **The decisive test (A1):** Predicted skip (from grid-rate/effective-rate ratio) vs observed
-skip across 137 FP7oJQ segments: Pearson r = 0.44 (p < 0.001). The correlation is moderate
-rather than strong because the predicted value is stable at ~12.4 while the observed mode
-oscillates between 7 and 12 depending on which phase the doublet splits into. The mean
-predicted (12.5) closely matches the mean observed (11.8).
+skip across all 137 FP7oJQ segments with gaps: Pearson r = 0.44. This is a moderate
+correlation, not a strong one. The per-segment prediction only weakly tracks across the
+full set.
+
+The residual structure explains why. Segments split into three groups:
+
+| Group | n | Observed mode | Mean |pred-obs| | Distinguishing feature |
+|-------|---|--------------|-------------------|----------------------|
+| Tight match | 70 (51%) | 12 | 0.89 | Predicted ~12.4, clean period-12 |
+| Doublet harmonic | 24 (18%) | 7 | 5.53 | Predicted ~12.1, but 7+17=24 doublet wins the mode |
+| Noisy | 43 (31%) | 10,14,16,18,20,21 | 5.27 | Mostly short segments (<300 intervals); 37/43 short |
+
+The mechanism is confirmed on 69% of segments (tight + doublet — both consistent with
+period ~12). The 31% with other observed values are dominated by short segments with
+fewer than 18 gaps, where the histogram mode is unstable. The prediction is stable at
+~12.4 regardless of segment length; the noise is in the OBSERVATION (insufficient gaps
+for a stable mode), not the mechanism.
 
 **Random network loss produces a geometric distribution** of inter-gap spacings, with the
 mode at 1 and exponential decay. The observed distribution has a sharp mode at 12 with
@@ -225,9 +243,10 @@ The coast recipe (Section 6.1) uses `1.5 * nominal_dt_s` as the gap threshold. W
 nominal=0.067s, threshold=0.1005s. FP7oJQ's gaps at 0.133s are correctly detected.
 PPDmUg's gaps at 0.133s are also correctly detected. **The recipe works as designed.**
 
-**One finding about the contract:** Section 5 describes the phenomenon as "interleaved
-frames at two discrete rates" with "proportion shifting over time." This should be corrected
-to "blocked runs at two discrete rates" (see Section 7 for impact statement).
+**No emission code change is needed.** The classifier, the field semantics, and the coast
+recipe are all correct. Only the explanatory text in Section 5 ("interleaves frames at two
+discrete rates") should be updated to "delivers frames at two discrete rates in sustained
+blocks." This is a documentation correction, not a code change.
 
 ## 7. Consequence Answers
 
@@ -266,18 +285,30 @@ stable segments).
 
 ### 4. Injection vs variable-dt
 
-**Coast-step injection is the right approach** for FP7oJQ's periodic gaps, and it is far
-simpler than a variable-dt Kalman fork. The gaps are:
-- Always exactly 1 missed frame
-- Predictable in frequency (~8% of intervals)
-- Detectable via simple threshold (`dt_s > 1.5 * nominal_dt_s`)
+Coast-step injection handles gaps well. Variable-dt handles both gaps AND mode switches.
+The question is how much traffic sits in mode-switch territory.
 
-Variable-dt would provide marginal benefit beyond injection (handling the exact 0.133s
-dt vs two 0.067s steps), but the coast injection is 95%+ of the value with zero boxmot
-changes.
+**Minority-mode frames across all segments:**
 
-For PPDmUg (0.45% gap rate), coast injection is still correct but low-value (affects
-<1 in 200 frames).
+| Camera | Minority-mode frames | % of corpus | Segments with switches | % |
+|--------|---------------------|-------------|----------------------|---|
+| FP7oJQ | 833 | 0.70% | 1/139 | 0.7% |
+| PPDmUg | 3,812 | 2.95% | 18/144 | 12.5% |
+
+FP7oJQ: injection handles 99.3% of frames correctly. Only 1 segment (0.7%) has mode
+switches, and 833 of 118,365 intervals sit in the minority mode. On those 833 frames,
+the tracker would use a nominal dt of 67ms when the real interval is 33ms — a 2x error
+in the Kalman prediction step.
+
+PPDmUg: 12.5% of segments have mode switches, with 2.95% of all intervals in the minority
+mode. Injection cannot represent "early" frames (dt < nominal) — there is no mechanism to
+inject negative time. Variable-dt handles this by construction.
+
+**Assessment:** For FP7oJQ, injection is defensible — 0.7% minority-mode exposure is
+negligible. For PPDmUg, the exposure is 3% and concentrated in 18 segments. Whether this
+matters depends on whether those segments overlap with GT capture windows. Coast-step
+injection is the correct first step (handles the dominant 7.5% gap problem on FP7oJQ);
+variable-dt remains the complete solution if PPDmUg's bimodal segments prove problematic.
 
 ### 5. Does this change the 30fps opportunity?
 
@@ -311,8 +342,8 @@ averaged by the window, not frame-level oscillation between modes.
 for any single interval and the derivation stands. However, the conclusion that 15fps vs
 30fps+loss is undecidable does not survive the full 283-segment dataset:
 
-1. PPDmUg delivered 1,979 consecutive 15fps intervals with zero exceptions. This rules out
-   alternate-frame loss (probability 2^-1979).
+1. PPDmUg delivered 1,979 consecutive 15fps intervals with zero exceptions over 132 seconds.
+   No physical loss mechanism produces zero-jitter alternation at this duration.
 2. FP7oJQ's gaps are periodic (mode=12 spacing), not random. Random loss produces geometric
    inter-gap spacings; periodic gaps are a camera-internal grid mismatch.
 3. The gap count exactly matches the rate deficit predicted by the grid-rate/effective-rate

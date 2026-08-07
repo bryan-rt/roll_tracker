@@ -160,7 +160,8 @@ camera has two discrete rates and switches between them.
 > valid for any single interval. However, the conclusion that 15fps vs 30fps+loss
 > is undecidable does not survive 283 segments of data:
 > (1) PPDmUg delivered 1,979 consecutive 15fps intervals with zero exceptions
->     (probability 2^-1979 under alternate-frame loss).
+>     over 132 seconds. No physical loss mechanism produces zero-jitter alternation
+>     at this duration.
 > (2) FP7oJQ's gaps have periodic spacing (mode=12 frames, doublet harmonic at
 >     7+17=24). Random loss produces geometric inter-gap spacings, not periodic.
 > (3) The gap count exactly matches the rate deficit predicted by the camera's
