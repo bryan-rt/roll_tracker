@@ -1,6 +1,6 @@
 # docs/ Catalog
 
-*Status-tagged index of every documentation file. Updated 2026-07-30.*
+*Status-tagged index of every documentation file. Updated 2026-08-07.*
 
 **Status tags:**
 - **CURRENT** — reflects present state, safe to act on
@@ -30,13 +30,13 @@
 
 | Path | Purpose | Status |
 |------|---------|--------|
-| `docs/roadmap/recorder_productionization.md` | Live plan for recorder productionization (CP-R1 through CP-R10) | **CURRENT** |
+| `docs/roadmap/recorder_productionization.md` | Live plan for recorder productionization | **CURRENT** |
 
 ## Reference & Audits
 
 | Path | Purpose | Status |
 |------|---------|--------|
-| `docs/reference/sidecar_contract.md` | Sidecar timing contract -- schema v4 (CP-R6). Authoritative spec for `.timing.jsonl`. | **CURRENT** |
+| `docs/reference/sidecar_contract.md` | Sidecar timing contract -- schema v4 (CP-R6). Authoritative spec for `.timing.jsonl`. Sections 5/6.1 corrected for blocked-mode model (CP-R12, no schema change). | **CURRENT** |
 | `docs/reference/eval_instrument_spec.md` | CP-EVAL-1 frozen instrument v1.0 spec | **CURRENT** |
 | `docs/reference/undistortion_audit.md` | All 9 undistortion code paths verified (2026-04-02) | **CURRENT** |
 | `docs/reference/stage_d_audit_findings.md` | CP0: Stage D config audit (7/8 penalty fields dead) | **HISTORICAL** |
@@ -51,7 +51,7 @@
 | `docs/evidence/recorder_timing_1/findings.md` | CFR+sidecar timing preservation analysis | **CURRENT** |
 | `docs/evidence/recorder_reliability_1/findings.md` | Five production recorder fixes + dup/drop verdict | **CORRECTED** — mpdecimate "255 dups" was near-identical (default thresholds), not pixel-identical. Pixel-identical on arrival-PTS is 34 (0.75%). See DUPFIX-1. |
 | `docs/evidence/recorder_reliability_2/findings.md` | API quota awareness + traffic reduction | **CURRENT** |
-| `docs/evidence/recorder_dupfix_1/findings.md` | DUPFIX-1/2: Duplicate contradiction resolved (0 pixel-identical dups); frame drops measured (FP7oJQ 0.1-7.7% PTS gaps, PPDmUg 0-3.0% CFR decimation); conservation test, boundary attribution, PTS gap analysis | **CURRENT** |
+| `docs/evidence/recorder_dupfix_1/findings.md` | DUPFIX-1/2: Duplicate contradiction resolved (0 pixel-identical dups); frame drops measured. Drop attribution refined by CP-R11: FP7oJQ ~8% is camera-internal grid mismatch (not network loss); PPDmUg residual 0.45% (CFR decimation eliminated by passthrough). | **CURRENT** |
 | `docs/evidence/frame_spacing_1/findings.md` | CP-R11: Definitive frame-spacing characterization (283 segments, 247K intervals). Modes come in blocks, not interleaved. 15fps is genuine (PPDmUg 1,979 gap-free frames). FP7oJQ gaps are periodic (every ~12 frames, grid mismatch). Supersedes CP-R1b interleaving/undecidability. | **CURRENT** |
 | `docs/evidence/recorder_fps_adaptation_1/findings.md` | CP-R1b: Bimodal frame-rate oscillation. TRIM-BIMODAL defect. Partially superseded by CP-R11 (Sections 4, 5 corrected; Sections 1-3, 6-11 valid). | **SUPERSEDED (partially)** |
 | `docs/evidence/recorder_boundary_fix_1/findings.md` | CP-R5: PTS-based segment boundary split replaces line-position split. PPDmUg seg1 residual -135 -> -109 (correct), +30 -> +0 (exact). FP7oJQ leading edge 47 frames recovered (3.1s of dropped data). Schema bumped to 3. | **CURRENT** |

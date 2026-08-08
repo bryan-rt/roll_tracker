@@ -40,7 +40,8 @@ CP-R4 is otherwise independent. Most CP-R7 items are standalone.
 **Design principle:** Upstream network loss cannot be prevented. Recorder-injected
 corruption can be eliminated entirely. Where loss is unavoidable, **preserve the evidence**
 rather than smoothing it away — a visible gap is information; a normalized gap is a silent
-false teleport.
+false teleport. (CP-R11: measured gaps are predominantly camera-internal grid mismatch, not
+transport loss — but genuine upstream loss remains unpreventable where it occurs.)
 
 **Architectural basis:** True timestamps can always be resampled downstream. A resampled
 grid can never be un-resampled. Collect at maximum fidelity; decide consumption later.

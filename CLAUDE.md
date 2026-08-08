@@ -283,17 +283,18 @@ Evidence: `docs/evidence/recorder_reliability_2/`.
 1. **Bursty arrival timestamps** → ffmpeg mis-inferred frame rate → dup/drop. **FIXED** by
    source PTS (pixel-identical dups reduced from 34/4530 = 0.75% to 0/segment; one exception
    PPDmUg-070422 3 frames / 0.18%).
-2. **CFR encode target ≠ actual capture rate** → encoder pads/drops to fill the grid. **STILL
-   PRESENT.** Padding: x264 re-encodes padded frames independently; they differ at pixel level
-   (framehash 0 adjacent-identical). `input_n` repetition is a count-mismatch artifact — NOT
-   safe as a duplicate flag. **Dropping: REAL and MEASURED (DUPFIX-2).** Two sub-mechanisms:
-   - **Upstream/network loss (FP7oJQ):** PTS gaps of 2x nominal, 0.1-7.7% per attempt.
-     Conservation deficit matches PTS gap count exactly. Concentrated in startup transients.
-   - **CFR decimation (PPDmUg):** Camera delivers >15fps (15.86, 15.63), ffmpeg drops excess.
-     0-3.0% per attempt. PTS stream gap-free — frames arrived but were not encoded.
+2. **Frame drops — REAL, CHARACTERIZED, DETECTABLE (DUPFIX-2 + CP-R11).** Correction is
+   pipeline-side (variable-dt Kalman step). DUPFIX-2 measured real frame drops. CP-R11
+   refined the attribution:
+   - **FP7oJQ (~8% gap rate):** Camera-internal grid mismatch, not network loss. The camera
+     captures at ~13.85fps on a ~14.93fps PTS grid, skipping a slot every ~12 frames. Periodic
+     (mode spacing = 12), not random. DUPFIX-2's "0.1-7.7%" figure was the same phenomenon
+     measured before the mechanism was understood.
+   - **PPDmUg (~0.45% gap rate):** Low-rate residual. 47% of segments gap-free. CFR decimation
+     was eliminated by passthrough (CP-R2/R3, defaulted CP-R3).
    Both produce false teleports in the Kalman filter. Detection via `pts_time_s` gaps;
-   correction requires variable-dt Kalman step (boxmot fork, not scoped).
-   Evidence: `docs/evidence/recorder_dupfix_1/`.
+   correction direction: variable-dt Kalman step (see Active Decisions Log "Coast architecture"
+   row). Evidence: `docs/evidence/recorder_dupfix_1/`, `docs/evidence/frame_spacing_1/`.
 
 **Timing capabilities (consolidated contract):**
 - **Relative per-frame timing: TRUE and camera-derived.** RTP timestamps from the sensor clock.
@@ -681,11 +682,14 @@ clip-level person_tracks, val-split, greedy IoU>=0.3, with pipeline state noted.
    mechanism 1 (arrival-timestamp jitter): zero pixel-identical adjacent frames on 9/10
    source-PTS segments (one exception: 3 frames / 0.18% on PPDmUg-070422). CFR-padded
    frames are re-encoded by x264 and differ at pixel level. `input_n` repetition is a
-   count-mismatch artifact. **Duplicates resolved; drops are NOT.** DUPFIX-2 measured real
-   frame drops on both cameras: upstream/network loss on FP7oJQ (0.1-7.7%, PTS gaps), CFR
-   decimation on PPDmUg (0-3.0%, camera >15fps). Both produce false teleports in the Kalman
-   filter. Detection via PTS gaps; correction requires boxmot fork (variable-dt).
-   Evidence: `docs/evidence/recorder_dupfix_1/findings.md`.
+   count-mismatch artifact. **Duplicates eliminated; drops characterized and detectable —
+   correction is pipeline-side.** DUPFIX-2 measured real frame drops, originally attributed
+   to upstream/network loss (FP7oJQ) and CFR decimation (PPDmUg). CP-R11 refined this:
+   FP7oJQ's gaps are a camera-internal grid mismatch (periodic, every ~12 frames, ~8% rate);
+   CFR decimation was eliminated by passthrough (CP-R2/R3); PPDmUg's residual rate is 0.45%.
+   Both produce false teleports in the Kalman filter. Detection via PTS gaps; correction
+   direction: variable-dt Kalman step (see Active Decisions Log "Coast architecture" row).
+   Evidence: `docs/evidence/recorder_dupfix_1/findings.md`, `docs/evidence/frame_spacing_1/`.
    RELIABILITY-1's mpdecimate "255 dups" used default thresholds (near-identical); true
    pixel-identical count on arrival-PTS control is 34 (0.75%).
 8. **Prior GT measurements made on CORRUPTED FOOTAGE.** All existing GT footage and
@@ -698,10 +702,13 @@ clip-level person_tracks, val-split, greedy IoU>=0.3, with pipeline state noted.
 9. **"Padded frames = duplicates, skip Kalman update" → DUPLICATE HALF RETIRED, DROP HALF
    OPEN (DUPFIX-1/2).** Framehash proves 0 pixel-identical adjacent frames on source-PTS
    segments (one 0.18% exception). x264 re-encodes padded frames independently. `input_n`
-   would drop ~7-8% of real frames — harmful. **But real frame drops exist** (0.1-7.7% on
-   FP7oJQ, 0-3.0% on PPDmUg) and produce false teleports. Drop detection via PTS gaps is
-   validated; drop correction requires variable-dt Kalman step (boxmot fork, unscoped).
-   Evidence: `docs/evidence/recorder_dupfix_1/findings.md`.
+   would drop ~7-8% of real frames — harmful. **But real frame drops exist** — originally
+   measured as 0.1-7.7% on FP7oJQ, 0-3.0% on PPDmUg. CP-R11 refined: FP7oJQ's ~8% is a
+   camera-internal grid mismatch (periodic, every ~12 frames); PPDmUg's residual is 0.45%
+   (CFR decimation eliminated by passthrough). Drops are characterized and detectable —
+   correction is pipeline-side. Detection via PTS gaps validated; correction direction:
+   variable-dt Kalman step (see Active Decisions Log "Coast architecture" row).
+   Evidence: `docs/evidence/recorder_dupfix_1/findings.md`, `docs/evidence/frame_spacing_1/`.
 
 ## Pipeline Validation Framework (TB-EVAL series, completed 2026-05-12)
 
@@ -1234,7 +1241,7 @@ because detection under-segmentation gives it wrong input.
 | CP-SPLIT-1: Post-D0 tracklet splitter | **Active — NET-NEGATIVE, TIER 3 DISABLE RECOMMENDED** | D0.5 net-negative on ALL cameras (CP-GT2ACTUALS-4+5). vid2: 35 correct / 317 false (net -282). Tier 3 owns 79% of damage (-222). CP-GT2ACTUALS-6 signal analysis: NO per-frame signal separates false from correct splits (HSV Bhatt 0.035 vs 0.040). Disabling Tier 3 removes 241 false splits at cost of 19 correct (5.4%). **Interim recommendation: disable Tier 3.** Current config: `stage_D.d05_split`, threshold 0.15, corroboration 2×, min_dwell 5. |
 | CP-GT2ACTUALS: Dense error map | **Complete** | Dense per-(frame, gt_track_id) error map with jump detection + D0.5 reconciliation. Family-aware split lookup fix (CP-3). Signal_trace has same bug but locked numbers safe (CP-3.5). Stage A (tracklet_drift) is #1 damage source at 41% of vid2 jumps (CP-6). Module: `src/pipeline_validation/gt2actuals/`. Evidence: `docs/evidence/cp_gt2actuals_*/`. |
 | RECORDER-TIMING-1/2: Per-frame timing preservation | **Complete** | Both VFR (REENCODE=0) and CFR+sidecar (REENCODE=1+showinfo) capture real per-frame timing (773+ unique deltas vs 2 for CFR baseline). Video byte-identical with/without showinfo (confirmed MD5). VFR breaks GT frame-comparability; CFR+sidecar is purely additive. Nest camera now 15fps (was 30fps Mar 2026). Evidence: `docs/evidence/recorder_timing_1/`. |
-| RECORDER-SIDECAR-1: Production timing sidecar | **Active — schema v4 (CP-R6)** | Per-segment `.timing.jsonl` sidecar alongside every mp4. Schema v4 contract: `docs/reference/sidecar_contract.md`. Key fields: `frame_index` (join key to Stage A), `pts_time_s`, `dt_s` (per-frame interval, null on frame 0), `nominal_dt_s` (median-based reference), `is_bimodal` + mode fields, `source_pts` validity gate. `measured_fps`/`measured_fps_median` omitted under `source_pts: false`. `input_n` deprecated (DUPFIX instrument only). COLLECTION ONLY — no CV pipeline stage consumes it yet. Deferred consumers: BoT-SORT frame_rate fix, dynamic-fps metrics, cross-camera sync, coast-step injection. |
+| RECORDER-SIDECAR-1: Production timing sidecar | **Active — schema v4 (CP-R6)** | Per-segment `.timing.jsonl` sidecar alongside every mp4. Schema v4 contract: `docs/reference/sidecar_contract.md`. Key fields: `frame_index` (join key to Stage A), `pts_time_s`, `dt_s` (per-frame interval, null on frame 0), `nominal_dt_s` (median-based reference), `is_bimodal` + mode fields, `source_pts` validity gate. `measured_fps`/`measured_fps_median` omitted under `source_pts: false`. `input_n` deprecated (DUPFIX instrument only). COLLECTION ONLY — no CV pipeline stage consumes it yet. Deferred consumers: BoT-SORT frame_rate fix, dynamic-fps metrics, cross-camera sync, variable-dt Kalman step. |
 | SOURCE-PTS-1: Source PTS capture | **Active — default** | `SOURCE_PTS` and `FPS_PASSTHROUGH` now default to `1` in diag_v6/v7_2/v8.sh (CP-R3). Preserves camera RTP capture timestamps (`-copyts`, no wallclock override) and VFR passthrough (no CFR resampling). Rollback: `SOURCE_PTS=0 FPS_PASSTHROUGH=0`. Sidecar includes `host_arrival_s`, lower-envelope `pts_wallclock_offset_s`, windowed drift (ppm). Per-attempt stderr files handle retry loop. Rehearsal (7 min, FP7oJQ + PPDmUg): PTS uniform 96-100%, 15fps measured, middle segments mismatch:false (exact 1:1), first/last segments boundary mismatch. Runbook: `docs/guides/runbook_cross_camera_capture.md`. **EXONERATED (RECORDER-RELIABILITY-1):** 16 segments across 3 cameras, zero timestamp/DTS errors. All failures were RTSP 404, session invalidation, or 401. Dup/drop reduced 10-50x vs arrival-PTS. |
 | RECORDER-RELIABILITY-1: Production reliability | **Complete** | Five fixes in `diag_v6.sh`: (1) RTSP socket timeout 10s (top fix — dead-stream gap 2m28s→~10s), (2) stop_stream before regenerating (prevents session orphaning), (3) access token refresh per attempt, (4) failure-type-aware backoff, (5) sidecar extraction backgrounded. Source-PTS dup/drop verdict: pixel-identical dups 10-50x lower — **camera-dependent** (PPDmUg exact at 15fps; FP7oJQ ~8% mismatch at 13.85fps). Evidence: `docs/evidence/recorder_reliability_1/`. |
 | RECORDER-RELIABILITY-2: API quota awareness | **Complete** | RELIABILITY-1 increased API calls to ~17/min, triggering 429 (SDM quota: 10 QPM per user per project, shared across all cameras). Fixes: (1) optimistic URL reuse (0 API calls when session valid), (2) conditional stop_stream (skip for dead sessions — 400 body confirms already terminated), (3) 429 backoff 60s→300s with Retry-After, (4) generate 404 fail-fast (3 retries), (5) consecutive failure escalation (5+ failures → slow-poll 120-300s), (6) cross-camera quota: N_CAMERAS from v7_2, dynamic min retry interval from 70%×10QPM/N, jitter on every backoff. Estimated: healthy ~1 QPM, 1-failing ~3-4 QPM, all-failing ~7 QPM (escalates to ~1-2). Evidence: `docs/evidence/recorder_reliability_2/`. |
