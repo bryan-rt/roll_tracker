@@ -582,10 +582,9 @@ First trained model had FP7oJQ false positives from background memorization.
    (BoT-SORT frame_rate, velocity/`speed_mps_k`, `derive_clip_frame_offset`, Stage E
    temporal engagement windows, cross-camera evidence timing). Report where wrong.
    Unblocked — CP-R6 shipped the sidecar contract this consumes.
-3. **Recorder productionization (CP-R1 through CP-R10):** see
-   `docs/roadmap/recorder_productionization.md`. Covers source PTS adoption, passthrough
-   build, default flip, Dockerfile pin, sidecar boundary fix, sidecar contract v2,
-   smoke harness, session churn, hardening, and clean-footage GT capture.
+3. **Recorder productionization:** see `docs/roadmap/recorder_productionization.md`.
+   Remaining: CP-R7 three-camera smoke test pending, CP-R8 manual capture and CVAT
+   annotation.
 3b. **Investigate whether consistent 30fps delivery is achievable.** FP7oJQ reached 99%
    short-mode (~33ms intervals) during the CP-R1 capture, so the camera demonstrably can
    deliver 30fps. Most footage runs at half that. For BJJ, fast transitions are where
@@ -625,8 +624,11 @@ First trained model had FP7oJQ false positives from background memorization.
    interleaved), but FP7oJQ has ~8% periodic gaps (every ~12 frames) and the cadence can
    switch mid-stream. `measured_fps` remains broken on bimodal segments (TRIM-BIMODAL).
    Unblocked — CP-R6 shipped the sidecar contract this consumes.
-5. **GT-join decision needed:** CVAT labels duplicate frames like any other. Decide whether
-   GT2ACTUALS scores or excludes pipeline-flagged duplicates before analysis.
+5. **GT-join decision: contingent on coast architecture scoping.** Under variable dt (the
+   recorded direction — see Active Decisions Log "Coast architecture" row), `frame_index`
+   stays 1:1 with decoded frames and GT2ACTUALS joins are unaffected. Under coast-step
+   injection, synthetic frames would break the `frame_index` join and force a decision on
+   how GT2ACTUALS handles inserted rows. Open only if variable dt proves impractical.
 6. **A/B validation on SAME new footage:** Run new post-fix footage through pipeline twice
    (old logic vs new logic) behind a config flag, against same CVAT GT. Keep old code path
    as a flag. Expectation: fps correction is the primary lever (~2x dt error today).
