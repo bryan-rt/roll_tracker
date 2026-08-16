@@ -577,11 +577,15 @@ First trained model had FP7oJQ false positives from background memorization.
    assumed 30 while streams deliver 15–30 varying by session. `track_buffer`'s real-time
    lifespan is wrong, directly affecting the dominant drift damage.
    Unblocked — CP-R6 shipped the sidecar contract this consumes.
-2. **[NEW AUDIT] Frame-rate & cross-camera assumption audit across Stages A–F.** Enumerate
-   every place that assumes fixed/known fps, uniform frame spacing, or synchronized cameras
-   (BoT-SORT frame_rate, velocity/`speed_mps_k`, `derive_clip_frame_offset`, Stage E
-   temporal engagement windows, cross-camera evidence timing). Report where wrong.
-   Unblocked — CP-R6 shipped the sidecar contract this consumes.
+2. **[COMPLETE] Frame-rate & cross-camera assumption audit across Stages A–F.**
+   Findings: `docs/evidence/timing_audit_1/findings.md`. 24 sites audited, 13 defects
+   found (P0–P2), propagation map, sidecar reachability confirmed, empirical checks on
+   passthrough VFR footage. Key findings: (a) BoT-SORT `frame_rate` never passed (buffer
+   2x intended), (b) session D takes first clip's fps for all cameras (up to 8% error
+   cross-camera), (c) Stage F seek arithmetic structurally correct on post-fix footage
+   but wrong under variable spacing, (d) FrameIterator timestamps already correct on
+   passthrough VFR containers (±0.4ms vs sidecar). Fix sequencing readable from §0
+   summary table.
 3. **Recorder productionization:** see `docs/roadmap/recorder_productionization.md`.
    Remaining: CP-R7 three-camera smoke test pending, CP-R8 manual capture and CVAT
    annotation.

@@ -17,7 +17,7 @@
 | `CLAUDE.md` | Primary CLI context: architecture, status, decisions, constraints | **CURRENT** |
 | `docs/CATALOG.md` | This file — status-tagged index of all docs | **CURRENT** |
 | `docs/decisions-archive.md` | Full historical decisions log + performance baselines + bug fixes | **CURRENT** |
-| `docs/project_instructions_proposed.md` | claude.ai web-session Project Instructions (paste target) | **CURRENT** |
+| `docs/project_instructions_proposed.md` | claude.ai web-session Project Instructions (paste target) | **HISTORICAL** — frozen at DOC-SYNC-3 (2026-07-29) |
 
 ## Guides & Runbooks
 
@@ -100,6 +100,7 @@
 |------|---------|--------|
 | `docs/evidence/storage_audit_1/proposal.md` | Storage cleanup proposal (eval baselines) | **HISTORICAL** |
 | `docs/evidence/session_churn_1/findings.md` | CP-R10: Session churn investigation — caffeinate vs display sleep | **CURRENT** |
+| `docs/evidence/timing_audit_1/findings.md` | Timing & cross-camera assumption audit: 24 sites, propagation map, sidecar reachability, empirical checks. Stage A→F + pipeline_validation. | **CURRENT** |
 
 ## Checkpoint Records
 
