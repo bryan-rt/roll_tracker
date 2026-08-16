@@ -25,9 +25,9 @@ see per-site subsections in Section 2 for the complete six-field record.*
 
 | # | Location | Assumption | Wrong? | Error magnitude | Priority |
 |---|----------|-----------|--------|----------------|----------|
-| 1 | `session_d_run.py:491` | First clip's fps applies to ALL clips and cameras | Yes | Up to 2x across cameras (13.85 vs 15.00 in same session) | P0 |
-| 2 | `ffmpeg.py:121-122` | `start_sec = start_frame / fps` | Conditional | On post-fix footage: correct (probe returns 15). On pre-fix CFR: correct (probe returns 30). Wrong if probe gives wrong value for VFR edge cases. | P0 |
-| 3 | `manifest.py:60-68` | `start_seconds = frame / fps` written to Supabase | Conditional | Same as #2. Values persist in `clips` table (`numeric` columns). | P0 |
+| 1 | `session_d_run.py:491` | First clip's fps applies to ALL clips and cameras | Yes | ~8% cross-camera (13.85 vs 15.00 in same session); up to 2x if a mode-switch block (15 vs 30 within one camera) sets the scalar | P0 |
+| 2 | `ffmpeg.py:121-122` | `start_sec = start_frame / fps` | Yes (FP7oJQ) | On FP7oJQ (8% gaps): error is ~8% of elapsed time, accumulating. Frame 1000: 5.7s offset. Frame 1800: 10.3s offset. On PPDmUg (0.45% gaps): near-correct. See §2.16. | P0 |
+| 3 | `manifest.py:60-68` | `start_seconds = frame / fps` written to Supabase | Yes (FP7oJQ) | Same as #2. Values persist in `clips` table (`numeric` columns). | P0 |
 | 4 | `tracker.py:63` | BoT-SORT `frame_rate` never passed; boxmot defaults to 30 | Yes | `buffer_size` 2x intended at 15fps (2.0s vs 1.0s wall-clock). | P1 |
 | 5 | `d0_bank.py:571` | `dt_s = df / fps` (scalar) | Yes | Every velocity/accel in `speed_mps_k`, `accel_mps2_k` wrong by fps ratio. D0.5 inherits. | P1 |
 | 6 | `costs.py:413` | `dt_s = dt_frames / fps` | Yes | Cost-layer velocity/time wrong by fps ratio. | P1 |
@@ -124,19 +124,35 @@ and a future change to one path will silently break the other.
 
 ### 1.4 Empirical Verification (Pass 3)
 
-Tested on `PPDmUg-20260807-102005.mp4` (passthrough, source_pts=true, 15fps):
+**PPDmUg** (0.45% gap rate) — `PPDmUg-20260807-102005.mp4` (passthrough, source_pts=true):
 
 | Probe | Value |
 |-------|-------|
 | ffprobe `r_frame_rate` | 15/1 |
-| ffprobe `avg_frame_rate` | 15/1 |
 | OpenCV `CAP_PROP_FPS` | 15.0 |
-| OpenCV `CAP_PROP_POS_MSEC` (frame 1) | 66.667 ms |
-| Sidecar `pts_time_s` (frame 1) | 67.000 ms (0.067 s) |
-| Delta (sidecar - OpenCV) | ±0.335 ms max over 6 frames |
+| OpenCV `CAP_PROP_POS_MSEC` vs sidecar `pts_time_s` | ±0.335 ms max over 6 frames |
 
-**On passthrough VFR footage, both ffprobe and OpenCV report the correct frame rate (15fps).**
-`CAP_PROP_POS_MSEC` tracks sidecar `pts_time_s` within ±0.4ms — effectively identical.
+**FP7oJQ** (8% gap rate) — `FP7oJQ-20260807-102006.mp4` (passthrough, source_pts=true):
+
+| Probe | Value |
+|-------|-------|
+| OpenCV `CAP_PROP_FPS` | **13.891** (effective rate, NOT 15.0) |
+| OpenCV `CAP_PROP_POS_MSEC` vs sidecar `pts_time_s` | **up to 67ms divergence** |
+| Sidecar gap frames (dt_s > 100ms) | 19 / 233 = 8.2% |
+| Sidecar mismatch (input != output frame count) | true (233 input, 238 output) |
+
+On FP7oJQ, OpenCV detects the effective frame rate (~13.89fps including gaps) and
+generates uniform `POS_MSEC` at that rate. But the real PTS has periodic 133ms gaps
+every ~12 frames. OpenCV's uniform timestamps diverge from the non-uniform real PTS
+by up to 67ms within a single 16-second segment, and the error oscillates as gaps
+accumulate.
+
+**Conclusion:** On PPDmUg (low gap rate), the manifest fps probe chain and
+`CAP_PROP_POS_MSEC` timestamps are correct. On FP7oJQ (8% gap rate), both are wrong:
+`CAP_PROP_FPS` returns 13.89 instead of the nominal 15.0, and `POS_MSEC` diverges from
+real PTS by up to 67ms. The structural defect — using a scalar fps where per-frame
+timing is needed — is confirmed empirically on both cameras, but only FP7oJQ has
+sufficient gap rate to produce material errors.
 
 Tested on `J_EDEw-20260318-200015.mp4` (pre-fix CFR, arrival-PTS):
 
@@ -239,23 +255,37 @@ state transition matrix per frame. Would affect all tracker-derived measurements
 
 **Assumption:** `CAP_PROP_POS_MSEC` returns real container PTS.
 
-**Currently wrong?** No — **correct on passthrough VFR containers.** Empirically verified:
-`CAP_PROP_POS_MSEC` tracks sidecar `pts_time_s` within ±0.4ms on
-`PPDmUg-20260807-102005.mp4` (passthrough, source_pts=true, 15fps). See Section 1.4.
+**Currently wrong?** Camera-dependent.
+
+- **PPDmUg (0.45% gaps):** `CAP_PROP_POS_MSEC` tracks sidecar `pts_time_s` within
+  ±0.4ms. Effectively correct. Empirically verified on `PPDmUg-20260807-102005.mp4`
+  (passthrough, source_pts=true, 15fps). See §7.1a.
+
+- **FP7oJQ (8% gaps):** `CAP_PROP_POS_MSEC` diverges from sidecar `pts_time_s` by up
+  to **67ms** within a single 16-second segment. OpenCV reports `CAP_PROP_FPS = 13.89`
+  (effective rate including gaps) and generates uniform POS_MSEC at that rate, but the
+  real PTS has periodic gaps (133ms every ~12 frames). OpenCV's uniform timestamps do
+  NOT track the non-uniform real PTS. Empirically verified on `FP7oJQ-20260807-102006.mp4`.
+  See §7.1b.
 
 On pre-fix CFR containers, `CAP_PROP_POS_MSEC` returns the synthetic CFR grid (uniform
 33ms), which is what the container declares. This is "correct for the container" but does
 not represent real capture timing (the real timing was discarded during CFR encoding).
 
-**Error magnitude:** ±0.4ms on passthrough footage — negligible. The `timestamp_ms`
-column in `detections.parquet` and `person_tracks.parquet` is effectively correct on
-post-fix footage.
+**Error magnitude:** PPDmUg: ±0.4ms (negligible). FP7oJQ: up to 67ms per gap, with
+the error oscillating as gaps accumulate and OpenCV's uniform grid drifts from the real
+PTS. The `timestamp_ms` column in `detections.parquet` and `person_tracks.parquet` is
+correct on PPDmUg but has up to 67ms error on FP7oJQ gap frames.
 
-**Sidecar replacement:** Not needed for passthrough footage. `CAP_PROP_POS_MSEC` already
-carries the real PTS. For higher precision or gap detection, per-frame `pts_time_s` from
-the sidecar could replace it, but the current path is not a defect.
+**Sidecar replacement:** For PPDmUg, not needed. For FP7oJQ, per-frame `pts_time_s`
+from the sidecar would provide exact timestamps. Alternatively, `CAP_PROP_POS_MSEC`
+could be replaced by sidecar lookup for all cameras uniformly.
 
-**Blast radius:** None. This is a "correct already" site.
+**Blast radius:** `timestamp_ms` propagates through `detections.parquet` →
+`person_tracks.parquet` → Stage E `_ts_for_frame` map → match session timestamps.
+On FP7oJQ, match session timestamps may be offset by up to 67ms. Low severity for
+match detection (proximity is frame-indexed, not timestamp-indexed) but affects
+any future timestamp-based cross-camera alignment.
 
 ### 2.4 Stage A — quality.py velocity computation
 
@@ -265,14 +295,20 @@ the sidecar could replace it, but the current path is not a defect.
 
 **Assumption:** `t_ms` differences represent real elapsed time.
 
-**Currently wrong?** No — on passthrough VFR containers, `FrameIterator.timestamp_ms`
-is effectively correct (§2.3). Velocities computed from these timestamps are correct.
+**Currently wrong?** Camera-dependent (inherits §2.3). On PPDmUg: velocities correct
+(±0.4ms timestamp error, <1% velocity error). On FP7oJQ: velocities across gap frames
+are wrong — the timestamp delta is ~67ms (OpenCV's uniform grid) when the real elapsed
+time is ~133ms, so velocity is **overestimated by ~2x** on gap-spanning frame pairs.
 
-**Error magnitude:** Negligible (±0.4ms per frame, <1% velocity error).
+**Error magnitude:** PPDmUg: negligible. FP7oJQ: ~2x velocity overestimate on ~8% of
+consecutive-frame pairs. Affects `is_physics_warning` threshold check (8.0 m/s
+effectively becomes 4.0 m/s on gap frames — more false warnings).
 
-**Sidecar replacement:** Not needed. Current path is correct on passthrough footage.
+**Sidecar replacement:** Per-frame `dt_s` from sidecar for real elapsed time between
+frames. Or inherit fix from §2.3.
 
-**Blast radius:** None. This is a "correct already" site.
+**Blast radius:** Affects physics warning audit events. Audit-only (does not gate
+tracking). Low severity.
 
 ### 2.5 Stage A — processor.py physics warnings
 
@@ -281,13 +317,13 @@ Uses `compute_velocity()` from `quality.py` with `timestamp_ms` from FrameIterat
 
 **Assumption:** Same as §2.4.
 
-**Currently wrong?** No — same "correct already" reasoning as §2.4.
+**Currently wrong?** Camera-dependent — same reasoning as §2.4.
 
-**Error magnitude:** Negligible.
+**Error magnitude:** Same as §2.4. Audit-only.
 
-**Sidecar replacement:** Not needed.
+**Sidecar replacement:** Same as §2.4.
 
-**Blast radius:** None.
+**Blast radius:** Audit-only physics warnings. Low severity.
 
 ### 2.6 Stage C — trigger engine velocity
 
@@ -297,15 +333,19 @@ with `timestamp_ms` from FrameIterator (`c0_triggers.py:67`).
 
 **Assumption:** `timestamp_ms` differences represent real elapsed time.
 
-**Currently wrong?** No — same reasoning as §2.4. The trigger computes velocity from
-`timestamp_ms` deltas, which are correct on passthrough containers.
+**Currently wrong?** Camera-dependent — same reasoning as §2.4. On FP7oJQ, gap frames
+produce overestimated velocities that may spuriously trigger tag scanning.
 
-**Error magnitude:** Negligible.
+**Error magnitude:** PPDmUg: negligible. FP7oJQ: ~2x velocity overestimate on ~8% of
+frame pairs. The `dv_thresh_mps = 2.5` threshold is effectively halved to ~1.25 m/s on
+gap frames, causing more motion triggers than intended. Thresholds are in physical units
+(m/s, m/s^2) so the values themselves are correct — it is the input velocity that is
+wrong.
 
-**Sidecar replacement:** Not needed.
+**Sidecar replacement:** Per-frame `dt_s` from sidecar. Or inherit fix from §2.3.
 
-**Blast radius:** None. The thresholds are in m/s and m/s^2 (physical units), not
-frame-rate-dependent.
+**Blast radius:** More tag scan triggers on FP7oJQ than intended. Low severity — tag
+scanning is cheap and extra scans do not harm identity.
 
 ### 2.7 Stage D — d0_bank kinematics
 
@@ -411,8 +451,9 @@ for mp4_path, clip_cam_id in session_clips:
 the same session. Even within a single camera, fps can vary between segments (sustained
 cadence switches). The first-clip-wins strategy applies one camera's rate to all.
 
-**Error magnitude:** Up to ~8% error (13.85 vs 15.00) across cameras. Up to 2x error
-if first clip happens to be from a 30fps block while others are 15fps (rare but possible).
+**Error magnitude:** ~8% cross-camera (15.00/13.85 = 1.083). If the first clip happens
+to be from a 30fps mode-switch block while other clips are 15fps, the error is up to
+2x — rare but structurally possible.
 
 This fps propagates to:
 - `aggregate_session_bank()` at `:514` → `derive_clip_frame_offset()` for frame offsets
@@ -550,18 +591,26 @@ duration_sec = max(1.0/fps, float(end_frame - start_frame + 1) / float(fps))
 on 15fps VFR containers). On pre-fix CFR footage, probe returns 30fps (correct for the
 container).
 
-The defect surfaces if the probe returns a wrong value. On current passthrough footage
-this does not happen. However, the computation is structurally wrong: it converts a
-frame INDEX (sequential counter from `FrameIterator`) to a seek TIME using a scalar fps,
-which only works if all frames are uniformly spaced. On a VFR container with gaps or
-mode switches, the seek time could be offset from the intended frame.
+The defect surfaces because `frame / fps` converts a sequential frame index to a
+seek time using a scalar fps. On a VFR container with gaps, the real PTS of a frame
+diverges from the uniform-rate assumption. Empirically confirmed on FP7oJQ (§7.1b):
+OpenCV returns `CAP_PROP_FPS = 13.89` (effective rate including gaps), and
+`CAP_PROP_POS_MSEC` diverges from sidecar `pts_time_s` by up to 67ms within a single
+16-second segment. The error accumulates proportionally to the gap rate.
 
-**Error magnitude:** On 15fps passthrough with uniform spacing: correct. With an 8%
-gap rate (FP7oJQ): the maximum offset accumulates over the clip. For a frame at index
-1000 on FP7oJQ (real elapsed ~72.3s due to gaps): `1000/14.93 = 66.98s` from the PTS
-grid rate, or `1000/15 = 66.67s` from the nominal rate. The actual elapsed time depends
-on how many gaps preceded. Maximum offset: ~0.5s per 1000 frames at 8% gap rate.
-**Customer-visible**: the exported clip starts at the wrong time.
+**Error magnitude:** On FP7oJQ (~8% gap rate, effective ~13.85fps vs PTS grid ~14.93fps):
+the error is ~8% of elapsed time and accumulates continuously.
+
+```
+frame 1000:  assumed 1000/13.89 = 72.0s  |  real ~72.4s  |  error ~0.4s
+             (using 15fps: 1000/15 = 66.7s  |  error ~5.7s)
+frame 1800:  assumed 1800/15 = 120.0s  |  real ~130.3s  |  error ~10.3s
+```
+
+On a 2-minute FP7oJQ segment, the exported clip starts ~10 seconds from the intended
+frame. **Customer-visible.**
+
+On PPDmUg (~0.45% gap rate): error is ~0.3s per 1000 frames. Near-correct but not exact.
 
 **Sidecar replacement:** `pts_time_s` from the sidecar frame row for `start_frame`
 directly provides the exact seek time. No fps conversion needed. Validity gate:
@@ -757,16 +806,17 @@ segment.
 
 ## 3. Correct-Already Sites
 
-| Site | Location | Why correct |
-|------|----------|-------------|
-| FrameIterator `CAP_PROP_POS_MSEC` | `frame_iterator.py:57-61` | Returns real container PTS on passthrough VFR. Empirically verified ±0.4ms vs sidecar. |
-| quality.py velocity | `quality.py:310-325` | Uses FrameIterator timestamps. Correct on passthrough footage. |
-| processor.py physics | `processor.py:404` | Same FrameIterator timestamps. Correct on passthrough footage. |
-| c0_triggers velocity | `c0_triggers.py:56-57,67` | Same FrameIterator timestamps. Thresholds in physical units. |
+| Site | Location | Why correct / not a defect |
+|------|----------|---------------------------|
+| FrameIterator `CAP_PROP_POS_MSEC` (PPDmUg) | `frame_iterator.py:57-61` | Returns real container PTS within ±0.4ms on PPDmUg (0.45% gaps). See §2.3. |
 | c0_scheduler `k_verify=30` | `c0_scheduler.py:82` | Pure frame count ("scan every 30th frame"). No fps semantics. |
 | cli.py `fps=0.0` | `cli.py:239,282` | Placeholder for status/validate commands. Never reaches pipeline consumers. |
 | d05_split.py | `d05_split.py` | No direct fps consumption. Reads pre-computed `speed_mps_k` from d0_bank (inherits error indirectly via §2.7). |
 | d1_graph_build `duration_ms` | `d1_graph_build.py:1954,2481` | Emitted to audit JSONL only. Not a computational input. |
+
+**Note:** FrameIterator, quality.py, processor.py, and c0_triggers are correct on
+PPDmUg but wrong on FP7oJQ (up to 67ms POS_MSEC error on gap frames). See §2.3–§2.6
+for the camera-dependent analysis.
 
 ---
 
@@ -885,9 +935,9 @@ session-level consumers.
 
 ## 7. Empirical Check Results
 
-### 7.1 Post-fix passthrough VFR mp4
+### 7.1a PPDmUg — low gap rate (0.45%)
 
-File: `PPDmUg-20260807-102005.mp4` (passthrough, source_pts=true, 15fps)
+File: `PPDmUg-20260807-102005.mp4` (passthrough, source_pts=true, 240 frames, 15fps)
 
 | Check | Result |
 |-------|--------|
@@ -895,6 +945,36 @@ File: `PPDmUg-20260807-102005.mp4` (passthrough, source_pts=true, 15fps)
 | ffprobe `avg_frame_rate` | `15/1` — **correct** |
 | OpenCV `CAP_PROP_FPS` | `15.0` — **correct** |
 | OpenCV `CAP_PROP_POS_MSEC` vs sidecar `pts_time_s` | ±0.335ms max — **effectively identical** |
+
+### 7.1b FP7oJQ — high gap rate (8%)
+
+File: `FP7oJQ-20260807-102006.mp4` (passthrough, source_pts=true, 233 input / 238 output frames)
+
+| Check | Result |
+|-------|--------|
+| OpenCV `CAP_PROP_FPS` | `13.891` — **effective rate including gaps, NOT nominal 15.0** |
+| OpenCV `CAP_PROP_POS_MSEC` vs sidecar `pts_time_s` | **up to 67ms divergence** |
+| Sidecar gap frames (dt_s > 100ms) | 19 / 233 = 8.2% |
+| Sidecar mismatch | true (233 input, 238 output) |
+
+**POS_MSEC vs sidecar detail (selected frames):**
+
+| frame_index | opencv_ms | sidecar_ms | delta_ms | dt_s |
+|-------------|-----------|------------|----------|------|
+| 0 | 0.000 | 0.000 | 0.0 | null |
+| 1 | 66.667 | 66.000 | -0.7 | 0.066 |
+| 12 | 800.000 | 866.000 | **+66.0** | 0.133 (gap) |
+| 24 | 1666.667 | 1733.000 | **+66.3** | 0.133 (gap) |
+| 50 | 3533.333 | 3600.000 | **+66.7** | 0.067 |
+| 100 | 7133.333 | 7200.000 | **+66.7** | 0.067 |
+| 150 | 10800.000 | 10800.000 | 0.0 | 0.067 |
+| 200 | 14400.000 | 14400.000 | 0.0 | 0.067 |
+| 228 | 16400.000 | 16466.000 | **+66.0** | 0.133 (gap) |
+
+The delta oscillates between 0 and ~67ms as gaps accumulate and OpenCV's uniform grid
+periodically realigns with the real PTS (at frames 150, 200 the delta returns to 0).
+This oscillation means OpenCV's timestamps are sometimes right and sometimes 67ms off
+— not a monotonically growing error, but a saw-tooth pattern with ~67ms amplitude.
 
 ### 7.2 Pre-fix CFR mp4
 
@@ -915,16 +995,21 @@ is always fully populated.
 
 **Do Stage A and Stage D currently compute different time bases for the same clip?**
 
-**Yes, structurally, but not in practice on current footage.**
+**Yes — they use different time bases and diverge on FP7oJQ.**
 
-- Stage A: `FrameIterator.timestamp_ms` from `CAP_PROP_POS_MSEC`. On passthrough VFR:
-  real container PTS (uniform ~67ms on 15fps footage).
-- Stage D: `dt_s = frame_delta / manifest.fps`. On the same 15fps footage: `1/15 = 0.0667s`.
+- Stage A: `FrameIterator.timestamp_ms` from `CAP_PROP_POS_MSEC`. On PPDmUg passthrough
+  VFR: real container PTS (uniform ~67ms). On FP7oJQ passthrough VFR: OpenCV returns
+  `CAP_PROP_FPS = 13.89` and generates uniform POS_MSEC at that rate. The real PTS has
+  periodic ~133ms gaps every ~12 frames; OpenCV's uniform timestamps diverge by up to
+  67ms (§7.1b).
+- Stage D: `dt_s = frame_delta / manifest.fps`. Manifest fps on FP7oJQ = 13.89 (from
+  the same OpenCV probe). `1/13.89 = 0.072s` per frame. The real inter-frame interval
+  alternates between ~67ms and ~133ms.
 
-These agree within ±0.4ms per frame on uniform-spacing segments. They diverge on gap
-frames: Stage A's `CAP_PROP_POS_MSEC` reports the real PTS (~133ms gap), while Stage D
-computes `1/15 = 67ms` (wrong by 67ms). **The divergence is real but localized to gap
-frames (~8% on FP7oJQ, ~0.45% on PPDmUg).**
+**Both are wrong on FP7oJQ, but in different ways.** Stage A's timestamps are a uniform
+approximation of a non-uniform reality (saw-tooth error, ±67ms). Stage D's `dt_s` is
+a fixed scalar that ignores gaps entirely. They agree with each other (both use the same
+~13.89fps basis) but both disagree with the sidecar's real per-frame timing.
 
 ---
 
@@ -942,8 +1027,9 @@ frames (~8% on FP7oJQ, ~0.45% on PPDmUg).**
   All quantitative error estimates in this document are computed from the timing model
   (CP-R11) and the sidecar contract, not from measured pipeline output.
 - **Whether `CAP_PROP_FPS` is correct on ALL VFR containers** — verified on one
-  PPDmUg passthrough segment. Edge cases (truncated segments, very short segments,
-  bimodal segments) not tested.
+  PPDmUg segment (correct, 15.0) and one FP7oJQ segment (13.89, effective rate
+  including gaps). Bimodal segments, truncated segments, and very short segments
+  not tested.
 - **boxmot Kalman internals beyond `dt=1`** — did not audit whether other boxmot
   internal computations (ECC, CMC, appearance) have fps assumptions.
 
