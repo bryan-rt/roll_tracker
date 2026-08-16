@@ -23,31 +23,94 @@ fixed fps, uniform frame spacing, synchronized cameras, or a specific numeric fr
 *Digest — ordered by severity. Omits "Sidecar replacement" and "Blast radius" fields;
 see per-site subsections in Section 2 for the complete six-field record.*
 
-| # | Location | Assumption | Wrong? | Error magnitude | Priority |
-|---|----------|-----------|--------|----------------|----------|
-| 1 | `session_d_run.py:491` | First clip's fps applies to ALL clips and cameras | Yes | ~8% cross-camera (13.85 vs 15.00 in same session); up to 2x if a mode-switch block (15 vs 30 within one camera) sets the scalar | P0 |
-| 2 | `ffmpeg.py:121-122` | `start_sec = start_frame / fps` | Yes (FP7oJQ) | On FP7oJQ (8% gaps): error is ~8% of elapsed time, accumulating. Frame 1000: 5.7s offset. Frame 1800: 10.3s offset. On PPDmUg (0.45% gaps): near-correct. See §2.16. | P0 |
-| 3 | `manifest.py:60-68` | `start_seconds = frame / fps` written to Supabase | Yes (FP7oJQ) | Same as #2. Values persist in `clips` table (`numeric` columns). | P0 |
-| 4 | `tracker.py:63` | BoT-SORT `frame_rate` never passed; boxmot defaults to 30 | Yes | `buffer_size` 2x intended at 15fps (2.0s vs 1.0s wall-clock). | P1 |
-| 5 | `d0_bank.py:571` | `dt_s = df / fps` (scalar) | Yes | Every velocity/accel in `speed_mps_k`, `accel_mps2_k` wrong by fps ratio. D0.5 inherits. | P1 |
-| 6 | `costs.py:413` | `dt_s = dt_frames / fps` | Yes | Cost-layer velocity/time wrong by fps ratio. | P1 |
-| 7 | `d1_graph_build.py:1408` | `dt_s = gap_frames / fps` | Yes | Reconnect speed gating wrong by fps ratio. | P1 |
-| 8 | `cross_camera_evidence.py:275` | `window_frames = temporal_window_s * fps` | Yes | Window/tolerance frame counts wrong by fps ratio. Inherits session-level fps (#1). | P1 |
-| 9 | `session_d_run.py:207-221` | `derive_clip_frame_offset` uses scalar fps | Yes | Frame offsets wrong by fps ratio. Compounds with #1. | P1 |
-| 10 | `session_f_run.py:88` | `derive_clip_frame_offset` in export | Yes | Same as #9, applied to Stage F source registry. | P1 |
-| 11 | `run.py:444-445` (Stage E) | `frame_index / fps * 1000` timestamp fallback | Dead code | `timestamp_ms` always present (verified: 0 nulls in production). | P3 |
-| 12 | `session_f_run.py:397` | `fps = video_meta.fps if > 0 else 30.0` | Conditional | Hardcoded 30.0 fallback. On post-fix footage, probe returns correct value. | P2 |
-| 13 | `multiplex_runner.py:406` | `fps = 30.0` fallback | Conditional | Same pattern as #12. | P2 |
-| 14 | `redact.py:387` | `cv2.VideoWriter(..., float(fps), ...)` | Conditional | Receives fps from caller. Correct if caller is correct. | P2 |
-| 15 | `run.py:331` (Stage F) | `fps = video_meta.fps if > 0 else manifest.fps` | Conditional | Re-probes from video. Diverges from manifest chain. | P2 |
-| 16 | `run.py:119-123` (Stage F) | `_infer_last_frame = floor(duration_sec * fps) - 1` | Conditional | Correct if probe returns correct fps. | P2 |
-| 17 | `pipeline.py:223` | `duration_ms = 1000 * frame_count / fps` | Conditional | Wrong if fps wrong. Not consumed by pipeline logic. | P3 |
-| 18 | `d1_graph_build.py:1954,2481` | `duration_ms` in audit JSONL | No (audit-only) | Emitted to `d1_graph_built` and `d1_reconnect_audit` events. Not a computational input. | P3 |
-| 19 | `visualize.py:327,351,408` | `cap_fps` from `CAP_PROP_FPS`; `timestamp_ms = fi * (1000/cap_fps)` | Yes | Eval preview timestamps wrong by fps ratio on VFR footage. Affects CP-2 A/B ruler. | P3 |
-| 20 | Kalman `dt=1` (boxmot) | Unit time-step per frame | Conditional | Self-consistent under constant cadence. Wrong under variable spacing (gaps, mode switches). Separate from #4. | P2 (coast arch.) |
-| 21 | `pairing.py:26` | `fps` parameter | Vestigial | Accepted but never used in function body. Dead parameter. | P4 |
-| 22 | `buzzer.py:74` | `fps` parameter | Vestigial | Accepted but not used in core logic. Dead parameter. | P4 |
-| 23 | `cache_detections.py:63` | `clip_fps` in sweep cache summary | Dead field | Written to JSON summary but never read by any consumer. | P4 |
+| # | Location | Assumption | Wrong? | Error magnitude | Priority | Fix class |
+|---|----------|-----------|--------|----------------|----------|-----------|
+| 1 | `session_d_run.py:491` | First clip's fps applies to ALL clips and cameras | Yes | ~8% cross-camera (13.85 vs 15.00 in same session); up to 2x if a mode-switch block (15 vs 30 within one camera) sets the scalar | P0 | DEL-CONV (consequent) — depends on #8, #9 |
+| 2 | `ffmpeg.py:121-122` | `start_sec = start_frame / fps` | Yes (FP7oJQ) | On FP7oJQ (8% gaps): error is ~8% of elapsed time, accumulating. Frame 1000: 5.7s offset. Frame 1800: 10.3s offset. On PPDmUg (0.45% gaps): near-correct. See §2.16. | P0 | DEL-CONV |
+| 3 | `manifest.py:60-68` | `start_seconds = frame / fps` written to Supabase | Yes (FP7oJQ) | Same as #2. Values persist in `clips` table (`numeric` columns). | P0 | DEL-CONV |
+| 4 | `tracker.py:63` | BoT-SORT `frame_rate` never passed; boxmot defaults to 30 | Yes | `buffer_size` 2x intended at 15fps (2.0s vs 1.0s wall-clock). | P1 | FIX-SCALAR |
+| 5 | `d0_bank.py:571` | `dt_s = df / fps` (scalar) | Yes | Every velocity/accel in `speed_mps_k`, `accel_mps2_k` wrong by fps ratio. D0.5 inherits. | P1 | DEL-CONV |
+| 6 | `costs.py:413` | `dt_s = dt_frames / fps` | Yes | Cost-layer velocity/time wrong by fps ratio. | P1 | DEL-CONV |
+| 7 | `d1_graph_build.py:1408` | `dt_s = gap_frames / fps` | Yes | Reconnect speed gating wrong by fps ratio. | P1 | DEL-CONV |
+| 8 | `cross_camera_evidence.py:275` | `window_frames = temporal_window_s * fps` | Yes | Window/tolerance frame counts wrong by fps ratio. Inherits session-level fps (#1). | P1 | DEL-CONV |
+| 9 | `session_d_run.py:207-221` | `derive_clip_frame_offset` uses scalar fps | Yes | Frame offsets wrong by fps ratio. Compounds with #1. | P1 | DEL-CONV |
+| 10 | `session_f_run.py:88` | `derive_clip_frame_offset` in export | Yes | Same as #9, applied to Stage F source registry. | P1 | DEL-CONV |
+| 11 | `run.py:444-445` (Stage E) | `frame_index / fps * 1000` timestamp fallback | Dead code | `timestamp_ms` always present (verified: 0 nulls in production). | P3 | DEAD-VESTIGIAL |
+| 12 | `session_f_run.py:397` | `fps = video_meta.fps if > 0 else 30.0` | Conditional | Hardcoded 30.0 fallback. On post-fix footage, probe returns correct value. | P2 | FIX-SCALAR |
+| 13 | `multiplex_runner.py:406` | `fps = 30.0` fallback | Conditional | Same pattern as #12. | P2 | FIX-SCALAR |
+| 14 | `redact.py:387` | `cv2.VideoWriter(..., float(fps), ...)` | Conditional | Receives fps from caller. Correct if caller is correct. | P2 | FIX-SCALAR |
+| 15 | `run.py:331` (Stage F) | `fps = video_meta.fps if > 0 else manifest.fps` | Conditional | Re-probes from video. Diverges from manifest chain. | P2 | FIX-SCALAR |
+| 16 | `run.py:119-123` (Stage F) | `_infer_last_frame = floor(duration_sec * fps) - 1` | Conditional | Correct if probe returns correct fps. | P2 | PROVISIONAL — see §0.5 |
+| 17 | `pipeline.py:223` | `duration_ms = 1000 * frame_count / fps` | Conditional | Wrong if fps wrong. Not consumed by pipeline logic. | P3 | DEL-CONV |
+| 18 | `d1_graph_build.py:1954,2481` | `duration_ms` in audit JSONL | No (audit-only) | Emitted to `d1_graph_built` and `d1_reconnect_audit` events. Not a computational input. | P3 | AUDIT-ONLY |
+| 19 | `visualize.py:327,351,408` | `cap_fps` from `CAP_PROP_FPS`; `timestamp_ms = fi * (1000/cap_fps)` | Yes | Eval preview timestamps wrong by fps ratio on VFR footage. Affects CP-2 A/B ruler. | P3 | DEL-CONV (timestamp) + FIX-SCALAR (writer) |
+| 20 | Kalman `dt=1` (boxmot) | Unit time-step per frame | Conditional | Self-consistent under constant cadence. Wrong under variable spacing (gaps, mode switches). Separate from #4. | P2 (coast arch.) | FORK |
+| 21 | `pairing.py:26` | `fps` parameter | Vestigial | Accepted but never used in function body. Dead parameter. | P4 | DEAD-VESTIGIAL |
+| 22 | `buzzer.py:74` | `fps` parameter | Vestigial | Accepted but not used in core logic. Dead parameter. | P4 | DEAD-VESTIGIAL |
+| 23 | `cache_detections.py:63` | `clip_fps` in sweep cache summary | Dead field | Written to JSON summary but never read by any consumer. | P4 | DEAD-VESTIGIAL |
+
+---
+
+## 0.5 Reframing: Read Time, Don't Convert
+
+*Added 2026-08-16 (TIMING-PRINCIPLE-1). Does not change any site entry, measurement,
+or severity. Reframes the fix strategy.*
+
+The audit above enumerated 23 sites and framed them as "sites using a wrong frame rate."
+That framing is too narrow and produces the wrong work breakdown. The stronger principle,
+recorded in `CLAUDE.md` Active Decisions Log (TIMING-PRINCIPLE-1):
+
+> **Anywhere the pipeline converts between frame counts and seconds, the conversion
+> itself is the defect. With real per-frame timestamps available from the sidecar
+> (`pts_time_s`, `dt_s`), the conversion is unnecessary — read time directly.**
+
+Examples:
+- `temporal_window_s * fps` (#8) converts a duration into a frame count for comparison.
+  With `pts_time_s` available, compare times directly. **Delete the conversion.**
+- `derive_clip_frame_offset` (#9, #10) computes `round(delta_sec * fps)`. Align on
+  `pts_time_s` + `segment_start_epoch` instead. **Delete the conversion.**
+- `start_sec = start_frame / fps` (#2, Stage F). `pts_time_s` for that frame IS the
+  seek time. **Delete the conversion.**
+
+The **Fix class** column in the §0 summary table classifies each site under this
+principle:
+
+| Fix class | Meaning | Count |
+|-----------|---------|-------|
+| **DEL-CONV** | Delete the frame↔time conversion; read sidecar timing directly. | 10 |
+| **DEL-CONV (consequent)** | Site disappears once its consumers stop needing the value it propagates. Not a conversion site itself. | 1 (#1) |
+| **FIX-SCALAR** | Consumer requires a scalar fps by construction (boxmot API, `cv2.VideoWriter`, CFR re-encode). Provide the correct scalar. | 5 |
+| **FORK** | Modify boxmot internals to accept per-frame `dt_s`. Same principle, applied inside a dependency. | 1 (#20) |
+| **DEAD-VESTIGIAL** | Remove dead code or vestigial parameters. | 4 |
+| **AUDIT-ONLY** | Not a computational input; no fix needed. | 1 (#18) |
+| **PROVISIONAL** | Proposed replacement depends on the open `frame_index` join prerequisite. | 1 (#16) |
+
+The distinction matters because "thread the correct fps through 23 sites" and "remove
+the frame↔time conversions" are different projects with different amounts of work and
+different risk profiles.
+
+**Two genuine exceptions** (FIX-SCALAR), both narrow:
+
+1. **boxmot `frame_rate`** (#4) — a scalar by construction. Sets `track_buffer` lifespan.
+   Provide `round(1.0 / nominal_dt_s)`. The deeper fix (variable-dt Kalman, #20 FORK)
+   is the same principle applied inside the dependency.
+
+2. **Stage F CFR output** (#12, #14, #15) — `cv2.VideoWriter` and ffmpeg output encoding
+   require a scalar fps. Athletes never receive VFR clips; Stage F re-encodes to CFR.
+   Provide the correct scalar from the sidecar.
+
+**Open prerequisite (TIMING-PRINCIPLE-1):** The entire principle rests on `frame_index`
+mapping 1:1 between sidecar rows and decoded mp4 frames. This is unverified on
+`mismatch: true` segments (FP7oJQ-20260807-102006: 233 sidecar rows vs 238 mp4 frames).
+If the join breaks, the `frame_index → dt_s` lookup is unsound and a different join key
+is needed. This prerequisite must be resolved before any DEL-CONV site can be implemented.
+
+**#16 (`_infer_last_frame`) is PROVISIONAL.** The proposed replacement
+(`output_frame_count` from the sidecar) has two problems: (a) sidecars are per-segment,
+not per-session — if Stage F operates on concatenated or session-level video, no single
+sidecar describes it; (b) `output_frame_count` is the field that disagreed with the
+decoded frame count on FP7oJQ (233 vs 238), and is under suspicion in the open
+prerequisite. The replacement is contingent on resolving both.
 
 ---
 

@@ -211,6 +211,13 @@ reference intervals independent of which won the median.
 
 ## 6. Consumer Recipes
 
+**Principle (TIMING-PRINCIPLE-1):** Consumers should prefer reading `pts_time_s` and `dt_s`
+directly over deriving a rate and converting between frames and seconds. Frame-to-time
+conversion via a scalar fps is itself the defect the sidecar exists to eliminate. Most
+pipeline sites that currently compute `frame_count / fps` or `frame_delta / fps` should
+**delete the conversion** and read the sidecar's per-frame timing instead. Sections 6.1–6.3
+below give recipes for the remaining cases where a scalar or derived value is needed.
+
 ### 6.1 Gap Detection and Coast-Step Injection (Stage A)
 
 **The sidecar does not classify gaps.** Whether an interval exceeds the expected cadence
@@ -257,10 +264,11 @@ architecture decision in `CLAUDE.md` Active Decisions Log.
 If variable dt is not available, suppress coast injection on `is_bimodal: true` segments and
 accept the `nominal_dt_s` mismatch on minority-mode frames as a documented limitation.
 
-### 6.2 BoT-SORT Frame Rate Scalar
+### 6.2 BoT-SORT Frame Rate Scalar (Exception to TIMING-PRINCIPLE-1)
 
 BoT-SORT requires one `frame_rate` scalar per clip because boxmot hardcodes a unit Kalman
-time step. The recommended value:
+time step. This is a **documented exception** to the read-time-don't-convert principle —
+boxmot's API requires a scalar by construction. The recommended value:
 
 ```
 frame_rate = 1.0 / nominal_dt_s
