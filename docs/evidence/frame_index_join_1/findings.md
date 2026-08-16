@@ -67,15 +67,39 @@ Convention: `residual = (b) - (d) = output - input` (CP-R5 sign convention).
 | PPDmUg | 47 | 8 | 8 | 31 |
 | **Total** | **94** | **28** | **21** | **45** |
 
-- **Positive residual** (mp4 has more frames than sidecar rows): the sidecar is short.
-  Frames at the tail of the mp4 have no corresponding sidecar row.
-- **Negative residual** (sidecar has more rows than mp4 frames): the sidecar is long.
-  Rows at the tail of the sidecar describe frames that are not in this mp4 (they belong
-  to the next segment or the inter-segment gap).
+- **Positive residual** (mp4 has more frames than sidecar rows): the sidecar is SHORT.
+  The mp4's tail frames have no corresponding sidecar row — their showinfo lines were
+  attributed to the previous segment. Under `min(a, c)` truncation: the sidecar covers
+  `a` frames correctly; the remaining `c - a` decoded frames at the tail **fall back to
+  `nominal_dt_s`** for timing (no `dt_s` available). Pieces 3–6 should use `nominal_dt_s`
+  for these frames, not drop them — the frames are real and Stage A indexes them.
+- **Negative residual** (sidecar has more rows than mp4 frames): the sidecar is LONG.
+  The sidecar's tail rows describe frames attributed to this segment but present in the
+  NEXT mp4. Under `min(a, c)` truncation: the sidecar is truncated to `c` rows; the
+  surplus `a - c` rows at the tail are **discarded** (they correspond to frames in a
+  different file). The PTS monotonicity violations (§5) are concentrated in these surplus
+  rows.
 - **Zero residual** (`mismatch: false`): perfect 1:1 correspondence.
 
 FP7oJQ has far more mismatches (33/47 = 70%) than PPDmUg (16/47 = 34%). PPDmUg's
 mid-attempt segments are overwhelmingly zero-residual.
+
+### Breakdown by segment length
+
+The 52% mismatch rate (49/94) overstates production impact. The sample is dominated by
+short smoke-test segments (SEG_SECONDS=20). Production runs SEG_SECONDS=120 (~1800 frames).
+
+| Segment length | Total | Break | Rate | Notes |
+|----------------|-------|-------|------|-------|
+| Short (<600 frames) | 35 | 29 | **83%** | Smoke-test segments (20s) |
+| Long (>=600 frames) | 59 | 20 | **34%** | Production-length segments (120s) |
+| Production (>=1500 frames) | 55 | 18 | **33%** | Most representative of deployment |
+
+By sign within production-length segments: +11 positive, -7 negative, 37 zero.
+
+The structural fragility is real regardless of rate — Option A (§8) is recommended
+either way — but the urgency is sized by the 33% production rate, not the 52% sample
+rate.
 
 ### Full per-segment data
 
@@ -317,16 +341,31 @@ The `frame_index → dt_s` lookup is sound **when `mismatch: false`**, which is:
 - All PPDmUg mid-attempt segments (26/30 = 87% in the largest attempt)
 - 14/47 FP7oJQ segments (30%)
 
-For `mismatch: true` segments, consumers should:
-1. Read `mismatch` from sidecar `_meta`.
-2. If `mismatch: true`, truncate the sidecar to `min(a, output_frame_count)` rows and
-   only look up `frame_index` values within that range.
-3. Frames beyond the sidecar's range lack `dt_s` — fall back to `nominal_dt_s` for those.
+For `mismatch: true` segments, the interim guard depends on residual sign:
+
+**Positive residual** (sidecar short, mp4 has extra frames at tail):
+1. All `a` sidecar rows are valid — look up `dt_s` for `frame_index` 0..a-1.
+2. The `c - a` decoded frames at the tail (typically 1–13, outlier 40) have no sidecar
+   row. **Fall back to `nominal_dt_s` for these frames** — do not drop them, they are
+   real frames that Stage A indexes.
+
+**Negative residual** (sidecar long, surplus rows at tail):
+1. Truncate the sidecar to `c` rows (= `output_frame_count`). The surplus `a - c` rows
+   describe frames in a different mp4 and must be **discarded**.
+2. All `c` retained rows are valid.
+
+**Guard implementation:**
+1. Read `mismatch` and `output_frame_count` from sidecar `_meta`.
+2. If `mismatch: true`, use only the first `min(a, output_frame_count)` sidecar rows.
+3. For decoded `frame_index` values beyond the sidecar's range, use `nominal_dt_s`.
 
 This is a viable interim guard while the recorder fix (Option A or B) is implemented.
 The fallback to `nominal_dt_s` on the tail frames introduces at most one frame interval
 of error on FP7oJQ gap frames — acceptable for the sizes observed (1–13 frames on most
-segments, 40 frames on one outlier).
+production-length segments, 40 frames on one outlier).
+
+Production-relevant rate: 33% of production-length segments (>=1500 frames) have
+`mismatch: true` (18/55). The guard fires on these; the other 67% use the sidecar as-is.
 
 ### Timing audit corrections
 
