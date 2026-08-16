@@ -101,6 +101,7 @@
 | `docs/evidence/storage_audit_1/proposal.md` | Storage cleanup proposal (eval baselines) | **HISTORICAL** |
 | `docs/evidence/session_churn_1/findings.md` | CP-R10: Session churn investigation — caffeinate vs display sleep | **CURRENT** |
 | `docs/evidence/timing_audit_1/findings.md` | Timing & cross-camera assumption audit: 24 sites, propagation map, sidecar reachability, empirical checks. Stage A→F + pipeline_validation. | **CURRENT** |
+| `docs/evidence/frame_index_join_1/findings.md` | Piece 0: `frame_index` join prerequisite. 94 segments, (a)↔(c) 1:1 when `mismatch: false` (45/94). Boundary attribution defect (CP-R5 residual). Option A recommended. C2 corrected: POS_MSEC tracks real PTS. | **CURRENT** |
 
 ## Checkpoint Records
 
