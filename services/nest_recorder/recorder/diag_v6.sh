@@ -301,8 +301,14 @@ build_ffmpeg_opts() {
   fi
 
   # Video path: REENCODE=1|2 (CFR + timing sidecar), 0 (VFR passthrough)
+  # -enc_time_base 1/90000: preserve RTP capture PTS precision through x264 re-encode.
+  # Without this, x264 requantizes all PTS onto a uniform 1/15360 grid, destroying the
+  # 5940/6030 tick alternation and producing zero-tick deltas on bimodal 30fps blocks.
+  # 90000 is the RTP timebase for H.264 (RFC 6184, §6.2). If the input stream uses a
+  # different timebase, the post-check in extract_timing_sidecars() will log a mismatch.
+  # Evidence: docs/evidence/mp4_timing_precision_1/findings.md (CP-R13a).
   if [ "$REENCODE" = "1" ] || [ "$REENCODE" = "2" ]; then
-    V_OPTS=(-c:v libx264 -preset veryfast -crf 23 -g 30 -keyint_min 30)
+    V_OPTS=(-c:v libx264 -preset veryfast -crf 23 -g 30 -keyint_min 30 -enc_time_base 1/90000)
     VF_OPTS=(-vf showinfo)
     if [ "$FPS_PASSTHROUGH" = "1" ]; then
       echo "[v6] REENCODE=$REENCODE + FPS_PASSTHROUGH=1 → libx264 veryfast + VFR passthrough + timing sidecar" | tee -a "$LOG"
@@ -317,7 +323,7 @@ build_ffmpeg_opts() {
     FPS_MODE_OPTS=(-fps_mode passthrough)
   else
     echo "[v6] REENCODE=$REENCODE unknown, falling back to CFR + timing sidecar" | tee -a "$LOG"
-    V_OPTS=(-c:v libx264 -preset veryfast -crf 23 -g 30 -keyint_min 30)
+    V_OPTS=(-c:v libx264 -preset veryfast -crf 23 -g 30 -keyint_min 30 -enc_time_base 1/90000)
     VF_OPTS=(-vf showinfo)
   fi
 
@@ -365,6 +371,16 @@ extract_timing_sidecars() {
   else
     timebase=90000
     log "[v6] ⚠ sidecar: timebase not found in showinfo config; fallback to 1/$timebase"
+  fi
+
+  # CP-R13a: verify parsed showinfo timebase matches the -enc_time_base value.
+  # If they disagree, mp4 PTS and sidecar PTS are in different timebases, which
+  # would break any future mp4-derived sidecar (CP-R13b).
+  local enc_tb_expected=90000
+  if [ "$timebase" -gt 0 ] 2>/dev/null && [ "$timebase" -ne "$enc_tb_expected" ]; then
+    log "[v6] ⚠ sidecar: showinfo timebase ($timebase) != enc_time_base ($enc_tb_expected) — mp4 PTS may not match sidecar PTS"
+  elif ! [ "$timebase" -gt 0 ] 2>/dev/null; then
+    log "[v6] ⚠ sidecar: timebase not numeric ('$timebase') — fell back to $enc_tb_expected; mp4 PTS may not match sidecar PTS"
   fi
 
   # Step 2: Build cumulative-duration boundaries from ffprobe.

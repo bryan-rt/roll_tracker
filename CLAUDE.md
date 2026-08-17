@@ -589,6 +589,15 @@ First trained model had FP7oJQ false positives from background memorization.
 3. **Recorder productionization:** see `docs/roadmap/recorder_productionization.md`.
    Remaining: CP-R7 three-camera smoke test pending, CP-R8 manual capture and CVAT
    annotation.
+   **CP-R13a (complete):** `-enc_time_base 1/90000` added to V_OPTS in `diag_v6.sh`.
+   Mp4 now carries real per-frame timing at the RTP 90000 timebase instead of x264's
+   default 1/15360 requantization. Verified: 5940/6030 alternation present in mp4,
+   0/299 disagreements vs sidecar frame-for-frame. CFR rollback unaffected. Bimodal
+   zero-delta pairs now genuinely from the source (not encoder artifact). Unblocks
+   CP-R13b (pure mp4-derived sidecars).
+   Evidence: `docs/evidence/mp4_timing_precision_1/findings.md`.
+   **CP-R13b (next):** pure mp4-derived sidecars. Row count = decode count by construction.
+   Showinfo retained only for `host_arrival_s` and drift fields.
 3b. **Investigate whether consistent 30fps delivery is achievable.** FP7oJQ reached 99%
    short-mode (~33ms intervals) during the CP-R1 capture, so the camera demonstrably can
    deliver 30fps. Most footage runs at half that. For BJJ, fast transitions are where
