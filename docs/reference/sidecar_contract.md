@@ -120,7 +120,7 @@ Fields always present regardless of `source_pts`:
 |-------|------|-------------|
 | `frame_index` | int | 0-indexed sequential counter. **Join key to Stage A** (`FrameIterator`'s `cap.read()` counter). |
 | `pts_time_s` | float | Segment-relative PTS in seconds. Under passthrough: the frame's actual capture PTS (base-subtracted). Under CFR: the nearest-neighbor input PTS mapped to this output grid point (approximate). |
-| `input_n` | int | **Deprecated.** Under passthrough: always equals `frame_index` (identity). Under CFR: nearest-neighbor input frame index. Retained for backward compatibility with the DUPFIX instrument only. The DUPFIX instrument itself treats `input_n` as an arithmetic construction, not a signal (DUPFIX-1/2). **New consumers MUST NOT use this field.** Use `dt_s` for gap detection. Will be removed when schema is next bumped. |
+| `input_n` | int | **Removed in schema 5.** Present in schema ≤4 only. Under passthrough: always equalled `frame_index` (identity). Under CFR: nearest-neighbor input frame index. Was deprecated since schema 4. |
 
 ### Present when `timing_mode: "passthrough"` AND `source_pts: true`
 
@@ -339,7 +339,7 @@ and all host-arrival fields are absent.
 
 | Value | Meaning | `dt_s` in frame rows | `output_fps` in `_meta` |
 |-------|---------|----------------------|-------------------------|
-| `"passthrough"` | Each output frame IS the input frame. 1:1 mapping. `input_n` = `frame_index`. | Yes (when `source_pts: true`) | No |
+| `"passthrough"` | Each output frame IS the input frame. 1:1 mapping. Under schema 5: frame rows derived from mp4 PTS; `input_n` removed. | Yes (when `source_pts: true`) | No |
 | `"cfr_grid"` | Output frames on a uniform grid. Each maps to nearest-neighbor input via two-pointer. `pts_time_s` is approximate. | No | Yes |
 
 ---
@@ -353,6 +353,7 @@ and all host-arrival fields are absent.
 | 3 | 2026-08-05 | PTS-based segment boundary split (CP-R5). `pts_origin: "segment_relative"`. `input_frame_count` corrected. |
 | 4 | 2026-08-05 | Contract established (CP-R6). `source_pts` validity gate. `nominal_dt_s`, `dt_s`, `is_bimodal` + mode fields added. `measured_fps`/`measured_fps_median` omitted under `source_pts: false`. Drift fields gated at `n_drift_windows >= 4`. `input_n` deprecated. First production validation of bimodal emission (2026-08-05, CP-R10): 8 of 33 PPDmUg segments emitted `is_bimodal: true` with valid `short_mode_*` fields. |
 | 4 (prose) | 2026-08-07 | Sections 5 and 6.1 explanatory text corrected for blocked-mode model (CP-R11, CP-R12). No emission change -- `is_bimodal`, `nominal_dt_s`, and the detection logic are validated correct. "Structurally undecidable" retired. Section 10 `gap_flag` rationale updated. |
+| 5 | 2026-08-17 | CP-R13b: frame rows and tick statistics derived from mp4 PTS (row count = decode count by construction). Showinfo retained only for `host_arrival_s` and drift, joined by PTS value. `input_n` removed. New fields: `row_source` (`"mp4"` / `"mp4_regenerated"` / `"showinfo_grid"`), `showinfo_frame_count`, `showinfo_residual` (drop signal), `showinfo_pts_offset`, `showinfo_matched_count`, `showinfo_unmatched_mp4_count`, `showinfo_surplus_count`, `showinfo_offset_status`. `mismatch` structurally false. `input_frame_count` = `output_frame_count` (mp4-driven). `host_arrival_s` may be absent on individual rows when the showinfo join has no match. Prerequisite: CP-R13a (`-enc_time_base 1/90000`). Pre-R13a footage cannot be regenerated (container timebase check). CFR path: row count from mp4, statistics from showinfo (describes input capture cadence, not output grid). |
 
 ---
 

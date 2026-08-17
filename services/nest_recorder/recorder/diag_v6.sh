@@ -515,12 +515,6 @@ extract_timing_sidecars() {
     local input_count
     input_count=$(wc -l < "$pairs_tmp" | tr -d ' ')
 
-    if [ "$input_count" -eq 0 ]; then
-      log "[v6] ⚠ sidecar: $(basename "$seg_path") — no showinfo data, skipping"
-      rm -f "$pairs_tmp"
-      continue
-    fi
-
     local output_count=0 output_fps=0
     if [ -f "$seg_path" ]; then
       output_count=$(ffprobe -hide_banner -select_streams v:0 \
@@ -537,119 +531,225 @@ extract_timing_sidecars() {
       continue
     fi
 
-    local mismatch="false"
-    [ "$input_count" -ne "$output_count" ] && mismatch="true"
+    # CP-R13b: Extract mp4 PTS ticks for frame-row derivation.
+    # The mp4 is the authoritative frame source. Row count = mp4 frame count by construction.
+    local mp4_pts_file="$DIAG_DIR/_mp4pts_${ATTEMPT}_${si}.tmp"
+    if [ -f "$seg_path" ]; then
+      ffprobe -v error -select_streams v:0 -show_entries frame=pts \
+        -of csv=p=0 "$seg_path" 2>/dev/null | tr -d ', \r' > "$mp4_pts_file"
+    fi
 
     local use_source_pts="$SOURCE_PTS"
     local fps_passthrough_mode="${FPS_PASSTHROUGH:-1}"
 
     if [ "$fps_passthrough_mode" = "1" ]; then
-    # Passthrough: 1:1 mapping, no CFR grid construction.
-    # Separate awk to keep the CFR path structurally untouched.
-    # Input: pairs_file has (host_arrival, pts_ticks) per line.
-    # All PTS arithmetic in integer ticks; convert to seconds after base subtraction.
+    # CP-R13b: Passthrough — frame rows from mp4, host_arrival from showinfo join.
+    # Mp4 PTS is the authoritative timing source (CP-R13a: -enc_time_base 1/90000).
+    # Showinfo is joined by PTS value for host_arrival_s and drift only.
+    # Row count = mp4 frame count by construction.
     awk -v output_count="$output_count" \
         -v epoch="$epoch" \
-        -v mismatch="$mismatch" \
         -v pairs_file="$pairs_tmp" \
+        -v mp4_file="$mp4_pts_file" \
         -v source_pts_mode="$use_source_pts" \
         -v attempt="$ATTEMPT" \
         -v timebase="$timebase" \
     '
     BEGIN {
-      # Read (host_arrival, pts_ticks) pairs
+      # ================================================================
+      # Phase 1: Read data from both sources
+      # ================================================================
+
+      # Read mp4 PTS ticks (one integer per line, decode order)
+      nm = 0
+      while ((getline line < mp4_file) > 0) {
+        mp4_pts[nm] = line + 0
+        nm++
+      }
+      close(mp4_file)
+
+      # Read showinfo (host_arrival, pts_ticks) pairs
       ni = 0
       while ((getline line < pairs_file) > 0) {
         split(line, parts, " ")
-        host_arr[ni] = parts[1] + 0.0
-        raw_ticks[ni] = parts[2] + 0    # integer ticks
+        si_host[ni] = parts[1] + 0.0
+        si_pts[ni] = parts[2] + 0
         ni++
       }
       close(pairs_file)
 
-      # Sort by ticks
+      # Sort showinfo by PTS (insertion sort)
       for (a = 1; a < ni; a++) {
-        kt = raw_ticks[a]; kh = host_arr[a]
+        kt = si_pts[a]; kh = si_host[a]
         b = a - 1
-        while (b >= 0 && raw_ticks[b] > kt) {
-          raw_ticks[b+1] = raw_ticks[b]; host_arr[b+1] = host_arr[b]
+        while (b >= 0 && si_pts[b] > kt) {
+          si_pts[b+1] = si_pts[b]; si_host[b+1] = si_host[b]
           b--
         }
-        raw_ticks[b+1] = kt; host_arr[b+1] = kh
+        si_pts[b+1] = kt; si_host[b+1] = kh
       }
 
-      # Integer base subtraction FIRST (exact), then convert to seconds
-      base_ticks = (ni > 0) ? raw_ticks[0] : 0
-      for (k = 0; k < ni; k++) {
-        raw_pts[k] = (raw_ticks[k] - base_ticks) / timebase
-      }
+      # ================================================================
+      # Phase 2: Compute tick deltas from mp4 PTS (authoritative source)
+      # ================================================================
 
-      # Tick deltas (integer exact — awk doubles hold integers exactly up to 2^53;
-      # at 90000 ticks/sec a 65-min session is ~351M ticks, far below 2^53)
       nd = 0
-      for (k = 1; k < ni; k++) {
-        tick_deltas[nd] = raw_ticks[k] - raw_ticks[k-1]
+      for (k = 1; k < nm; k++) {
+        mp4_deltas[nd] = mp4_pts[k] - mp4_pts[k-1]
         nd++
       }
 
-      # Sort tick deltas (insertion sort)
-      for (a = 1; a < nd; a++) {
-        kv = tick_deltas[a]
-        b = a - 1
-        while (b >= 0 && tick_deltas[b] > kv) {
-          tick_deltas[b+1] = tick_deltas[b]
-          b--
-        }
-        tick_deltas[b+1] = kv
+      # Showinfo deltas (for offset detection)
+      nsd = 0
+      for (k = 1; k < ni; k++) {
+        si_deltas[nsd] = si_pts[k] - si_pts[k-1]
+        nsd++
       }
 
-      # Median tick delta
+      # ================================================================
+      # Phase 3: Offset detection (K1: k=-10..+10, K2: margin check)
+      # ================================================================
+      # k>0: showinfo has k leading lines not in the mp4
+      # k<0: mp4 has |k| leading frames not in showinfo
+      # At shift k: mp4_deltas[i] should match si_deltas[i+k]
+
+      best_k = 0; best_disagree = nd + 1; second_disagree = nd + 1
+      offset_status = "undetermined"
+
+      if (nd > 0 && nsd > 0) {
+        for (k = -10; k <= 10; k++) {
+          disagree = 0; compared = 0
+          for (i = 0; i < nd; i++) {
+            j = i + k
+            if (j < 0 || j >= nsd) continue
+            compared++
+            if (mp4_deltas[i] != si_deltas[j]) disagree++
+          }
+          if (compared < 5) continue
+
+          if (disagree < best_disagree) {
+            second_disagree = best_disagree
+            best_disagree = disagree
+            best_k = k
+          } else if (disagree < second_disagree) {
+            second_disagree = disagree
+          }
+        }
+
+        # K2: Check if alignment is distinguishable
+        has_variation = 0
+        for (i = 0; i < nd && i < 200; i++) {
+          if (mp4_deltas[i] != mp4_deltas[0]) { has_variation = 1; break }
+        }
+
+        if (!has_variation && nd > 0) {
+          # All deltas uniform — no shift is distinguishable
+          offset_status = "uniform_assumed_k0"
+          best_k = 0
+        } else if (best_disagree == second_disagree) {
+          # Tie between shifts — alignment ambiguous
+          offset_status = "ambiguous_fallback_k0"
+          best_k = 0
+        } else if (best_disagree == 0 && second_disagree > 0) {
+          offset_status = "determined"
+        } else if (best_disagree == 0) {
+          offset_status = "determined_no_margin"
+        } else {
+          # Best k has disagreements — use it but flag
+          offset_status = "best_effort"
+        }
+      }
+
+      # Compute raw PTS offset from best_k
+      # offset: si_pts[j] + offset == mp4_pts[i] for corresponding frames
+      if (best_k >= 0) {
+        pts_offset = (nm > 0 && best_k < ni) ? mp4_pts[0] - si_pts[best_k] : 0
+      } else {
+        pts_offset = (-best_k < nm && ni > 0) ? mp4_pts[-best_k] - si_pts[0] : 0
+      }
+
+      # ================================================================
+      # Phase 4: Join showinfo to mp4 frames by raw PTS using offset
+      # ================================================================
+      # Two-pointer join (both sorted). Tolerance: ±1 tick.
+      matched = 0; unmatched_mp4 = 0
+      j = 0
+      for (i = 0; i < nm; i++) {
+        target = mp4_pts[i] - pts_offset  # expected showinfo PTS
+        # Advance pointer past entries below target
+        while (j < ni && si_pts[j] < target - 1) j++
+        if (j < ni && si_pts[j] >= target - 1 && si_pts[j] <= target + 1) {
+          frame_host[i] = si_host[j]
+          frame_has_host[i] = 1
+          matched++
+          j++
+        } else {
+          frame_has_host[i] = 0
+          unmatched_mp4++
+        }
+      }
+      surplus_si = ni - matched
+
+      # ================================================================
+      # Phase 5: Statistics from mp4 tick deltas
+      # ================================================================
+
+      # Sort mp4 tick deltas for median/trimmed-mean (copy to avoid reordering)
+      for (k = 0; k < nd; k++) sorted_deltas[k] = mp4_deltas[k]
+      for (a = 1; a < nd; a++) {
+        kv = sorted_deltas[a]
+        b = a - 1
+        while (b >= 0 && sorted_deltas[b] > kv) {
+          sorted_deltas[b+1] = sorted_deltas[b]
+          b--
+        }
+        sorted_deltas[b+1] = kv
+      }
+
+      # Median
       if (nd > 0) {
-        if (nd % 2 == 1) median_tick = tick_deltas[int(nd/2)]
-        else median_tick = (tick_deltas[nd/2 - 1] + tick_deltas[nd/2]) / 2.0
+        if (nd % 2 == 1) median_tick = sorted_deltas[int(nd/2)]
+        else median_tick = (sorted_deltas[nd/2 - 1] + sorted_deltas[nd/2]) / 2.0
       } else median_tick = 0
 
-      # Trimmed mean: discard deltas outside [0.5×, 1.5×] median (Z3)
+      # Trimmed mean: discard outside [0.5x, 1.5x] median
       trim_sum = 0; trim_n = 0
       lo_cutoff = median_tick * 0.5
       hi_cutoff = median_tick * 1.5
       for (k = 0; k < nd; k++) {
-        if (tick_deltas[k] >= lo_cutoff && tick_deltas[k] <= hi_cutoff) {
-          trim_sum += tick_deltas[k]
+        if (sorted_deltas[k] >= lo_cutoff && sorted_deltas[k] <= hi_cutoff) {
+          trim_sum += sorted_deltas[k]
           trim_n++
         }
       }
       trimmed_mean_tick = (trim_n > 0) ? trim_sum / trim_n : median_tick
 
-      # Mean tick delta
+      # Mean
       tick_sum = 0
-      for (k = 0; k < nd; k++) tick_sum += tick_deltas[k]
+      for (k = 0; k < nd; k++) tick_sum += sorted_deltas[k]
       mean_tick = (nd > 0) ? tick_sum / nd : 0
 
-      # FPS from each method
+      # FPS
       measured_fps = (trimmed_mean_tick > 0) ? timebase / trimmed_mean_tick : 0
       measured_fps_median = (median_tick > 0) ? timebase / median_tick : 0
-      measured_fps_mean = 0
-      if (ni > 1 && raw_pts[ni-1] > 0) {
-        measured_fps_mean = (ni - 1) / raw_pts[ni-1]
-      }
+      mp4_base = (nm > 0) ? mp4_pts[0] : 0
+      mp4_last_s = (nm > 1) ? (mp4_pts[nm-1] - mp4_base) / timebase : 0
+      measured_fps_mean = (nm > 1 && mp4_last_s > 0) ? (nm - 1) / mp4_last_s : 0
 
-      # PTS delta stats (from ticks, converted to ms)
+      # PTS delta stats (ms)
       sum_d = 0; sum_d2 = 0
       for (k = 0; k < nd; k++) {
-        d_ms = tick_deltas[k] * 1000.0 / timebase
+        d_ms = sorted_deltas[k] * 1000.0 / timebase
         sum_d += d_ms; sum_d2 += d_ms * d_ms
       }
       mean_d = (nd > 0) ? sum_d / nd : 0
       stdev_d = (nd > 0) ? sqrt(sum_d2/nd - mean_d*mean_d) : 0
 
-      # Bimodal detection — structural test on trimmed-mean discards.
-      # Below-cutoff discards indicate a short-mode cluster (bimodal).
-      # Gap-induced discards scatter above the high cutoff.
+      # Bimodal detection
       discard_below = 0; discard_above = 0
       for (k = 0; k < nd; k++) {
-        if (tick_deltas[k] < lo_cutoff) discard_below++
-        else if (tick_deltas[k] > hi_cutoff) discard_above++
+        if (sorted_deltas[k] < lo_cutoff) discard_below++
+        else if (sorted_deltas[k] > hi_cutoff) discard_above++
       }
       total_discard = discard_below + discard_above
       is_bimodal_val = "false"
@@ -659,8 +759,8 @@ extract_timing_sidecars() {
         short_thresh = median_tick * 0.75
         s_n = 0; s_sum = 0; l_n = 0; l_sum = 0
         for (k = 0; k < nd; k++) {
-          if (tick_deltas[k] < short_thresh) { s_n++; s_sum += tick_deltas[k] }
-          else { l_n++; l_sum += tick_deltas[k] }
+          if (sorted_deltas[k] < short_thresh) { s_n++; s_sum += sorted_deltas[k] }
+          else { l_n++; l_sum += sorted_deltas[k] }
         }
         short_mode_frac = (nd > 0) ? s_n / nd : 0
         sm_tick = (s_n > 0) ? s_sum / s_n : 0
@@ -670,28 +770,36 @@ extract_timing_sidecars() {
         lm_dt = (lm_tick > 0) ? lm_tick / timebase : 0
       }
 
-      # nominal_dt_s: median-based reference interval for consumer gap detection
       nominal_dt_val = (median_tick > 0) ? median_tick / timebase : 0
 
-      # Drift (operates on raw_pts seconds + host_arr, same as before)
+      # ================================================================
+      # Phase 6: Drift from MATCHED (mp4_pts, host_arrival) pairs only
+      # ================================================================
       global_min_offset = 0; drift_rate = 0; drift_flat = "true"; drift_ppm = 0
       n_windows = 0
 
-      if (source_pts_mode == "1" && ni > 0) {
+      if (source_pts_mode == "1" && matched > 0) {
+        # Build matched-pair arrays (base-subtracted mp4 PTS in seconds)
+        mn = 0
         global_min_offset = 1e18
-        for (k = 0; k < ni; k++) {
-          off = host_arr[k] - raw_pts[k]
-          if (off < global_min_offset) global_min_offset = off
+        for (i = 0; i < nm; i++) {
+          if (frame_has_host[i]) {
+            m_pts_s[mn] = (mp4_pts[i] - mp4_base) / timebase
+            m_host[mn] = frame_host[i]
+            off = m_host[mn] - m_pts_s[mn]
+            if (off < global_min_offset) global_min_offset = off
+            mn++
+          }
         }
 
         win_size = 10.0
-        for (w = 0; w < 60 && ni > 0; w++) {
+        for (w = 0; w < 60 && mn > 0; w++) {
           ws = w * win_size; we = (w + 1) * win_size
-          if (ws >= raw_pts[ni-1]) break
+          if (ws >= m_pts_s[mn-1]) break
           wmin = 1e18; wmid = (ws + we) / 2.0; found = 0
-          for (k = 0; k < ni; k++) {
-            if (raw_pts[k] >= ws && raw_pts[k] < we) {
-              off = host_arr[k] - raw_pts[k]
+          for (k = 0; k < mn; k++) {
+            if (m_pts_s[k] >= ws && m_pts_s[k] < we) {
+              off = m_host[k] - m_pts_s[k]
               if (off < wmin) wmin = off
               found = 1
             }
@@ -715,16 +823,26 @@ extract_timing_sidecars() {
         drift_flat = (n_windows<2 || (drift_rate>-0.0001 && drift_rate<0.0001)) ? "true" : "false"
       }
 
-      # _meta — passthrough mode (string-built for conditional fields)
-      m = "{\"_meta\":true,\"sidecar_schema\":4"
+      # ================================================================
+      # Phase 7: Emit _meta (schema 5)
+      # ================================================================
+      m = "{\"_meta\":true,\"sidecar_schema\":5"
       m = m ",\"timing_mode\":\"passthrough\""
       m = m ",\"source_pts\":" (source_pts_mode == "1" ? "true" : "false")
       m = m ",\"pts_origin\":\"segment_relative\""
       m = m ",\"fps_method\":\"trimmed_mean\""
+      m = m ",\"row_source\":\"mp4\""
       m = m sprintf(",\"segment_start_epoch\":%s", epoch)
       m = m sprintf(",\"attempt\":%d", attempt)
-      m = m sprintf(",\"input_frame_count\":%d", ni)
-      m = m sprintf(",\"output_frame_count\":%d", output_count)
+      m = m sprintf(",\"input_frame_count\":%d", nm)
+      m = m sprintf(",\"output_frame_count\":%d", nm)
+      m = m sprintf(",\"showinfo_frame_count\":%d", ni)
+      m = m sprintf(",\"showinfo_residual\":%d", nm - ni)
+      m = m sprintf(",\"showinfo_pts_offset\":%d", pts_offset)
+      m = m sprintf(",\"showinfo_matched_count\":%d", matched)
+      m = m sprintf(",\"showinfo_unmatched_mp4_count\":%d", unmatched_mp4)
+      m = m sprintf(",\"showinfo_surplus_count\":%d", surplus_si)
+      m = m sprintf(",\"showinfo_offset_status\":\"%s\"", offset_status)
       if (source_pts_mode == "1") {
         m = m sprintf(",\"nominal_dt_s\":%.6f", nominal_dt_val)
         m = m sprintf(",\"measured_fps\":%.4f", measured_fps)
@@ -736,7 +854,7 @@ extract_timing_sidecars() {
       m = m sprintf(",\"pts_tick_delta_mean\":%.1f", mean_tick)
       m = m sprintf(",\"pts_delta_trim_kept\":%d", trim_n)
       m = m sprintf(",\"pts_delta_trim_total\":%d", nd)
-      m = m sprintf(",\"mismatch\":%s", mismatch)
+      m = m ",\"mismatch\":false"
       if (source_pts_mode == "1") {
         m = m sprintf(",\"is_bimodal\":%s", is_bimodal_val)
         if (is_bimodal_val == "true") {
@@ -759,15 +877,23 @@ extract_timing_sidecars() {
       m = m "}"
       print m
 
-      # 1:1 mapping — each output frame IS the input frame
-      for (i = 0; i < ni; i++) {
-        r = sprintf("{\"frame_index\":%d,\"pts_time_s\":%.6f", i, raw_pts[i])
+      # ================================================================
+      # Phase 8: Emit frame rows from mp4 PTS
+      # ================================================================
+      for (i = 0; i < nm; i++) {
+        pts_s = (mp4_pts[i] - mp4_base) / timebase
+        r = sprintf("{\"frame_index\":%d,\"pts_time_s\":%.6f", i, pts_s)
         if (source_pts_mode == "1") {
           if (i == 0) r = r ",\"dt_s\":null"
-          else r = r sprintf(",\"dt_s\":%.6f", raw_pts[i] - raw_pts[i-1])
-          r = r sprintf(",\"host_arrival_s\":%.6f", host_arr[i])
+          else {
+            dt_val = (mp4_pts[i] - mp4_pts[i-1]) / timebase
+            r = r sprintf(",\"dt_s\":%.6f", dt_val)
+          }
+          if (frame_has_host[i]) {
+            r = r sprintf(",\"host_arrival_s\":%.6f", frame_host[i])
+          }
         }
-        r = r sprintf(",\"input_n\":%d}", i)
+        r = r "}"
         print r
       }
     }
@@ -955,16 +1081,21 @@ extract_timing_sidecars() {
         drift_flat = (n_windows<2 || (drift_rate>-0.0001 && drift_rate<0.0001)) ? "true" : "false"
       }
 
-      # _meta — CFR grid mode (string-built for conditional fields)
-      m = "{\"_meta\":true,\"sidecar_schema\":4"
+      # _meta — CFR grid mode (schema 5)
+      # CFR statistics come from SHOWINFO (input capture cadence), not mp4 output grid.
+      # The output grid is a resampling artifact; showinfo describes the camera.
+      m = "{\"_meta\":true,\"sidecar_schema\":5"
       m = m ",\"timing_mode\":\"cfr_grid\""
       m = m ",\"source_pts\":" (source_pts_mode == "1" ? "true" : "false")
       m = m ",\"pts_origin\":\"segment_relative\""
       m = m ",\"fps_method\":\"trimmed_mean\""
+      m = m ",\"row_source\":\"mp4\""
       m = m sprintf(",\"segment_start_epoch\":%s", epoch)
       m = m sprintf(",\"attempt\":%d", attempt)
-      m = m sprintf(",\"input_frame_count\":%d", ni)
+      m = m sprintf(",\"input_frame_count\":%d", output_count)
       m = m sprintf(",\"output_frame_count\":%d", output_count)
+      m = m sprintf(",\"showinfo_frame_count\":%d", ni)
+      m = m sprintf(",\"showinfo_residual\":%d", output_count - ni)
       m = m sprintf(",\"output_fps\":%.4f", fps_val)
       if (source_pts_mode == "1") {
         m = m sprintf(",\"nominal_dt_s\":%.6f", nominal_dt_val)
@@ -977,7 +1108,7 @@ extract_timing_sidecars() {
       m = m sprintf(",\"pts_tick_delta_mean\":%.1f", mean_tick)
       m = m sprintf(",\"pts_delta_trim_kept\":%d", trim_n)
       m = m sprintf(",\"pts_delta_trim_total\":%d", nd)
-      m = m sprintf(",\"mismatch\":%s", mismatch)
+      m = m ",\"mismatch\":false"
       if (source_pts_mode == "1") {
         m = m sprintf(",\"is_bimodal\":%s", is_bimodal_val)
         if (is_bimodal_val == "true") {
@@ -1001,6 +1132,7 @@ extract_timing_sidecars() {
       print m
 
       # CFR grid: nearest-neighbour mapping (no dt_s — grid spacing is 1/output_fps)
+      # input_n removed in schema 5.
       j = 0
       for (i = 0; i < output_count; i++) {
         t_out = i * interval
@@ -1011,11 +1143,11 @@ extract_timing_sidecars() {
           else break
         }
         if (source_pts_mode == "1") {
-          printf "{\"frame_index\":%d,\"pts_time_s\":%.6f,\"host_arrival_s\":%.6f,\"input_n\":%d}\n", \
-            i, raw_pts[j], host_arr[j], j
+          printf "{\"frame_index\":%d,\"pts_time_s\":%.6f,\"host_arrival_s\":%.6f}\n", \
+            i, raw_pts[j], host_arr[j]
         } else {
-          printf "{\"frame_index\":%d,\"pts_time_s\":%.6f,\"input_n\":%d}\n", \
-            i, raw_pts[j], j
+          printf "{\"frame_index\":%d,\"pts_time_s\":%.6f}\n", \
+            i, raw_pts[j]
         }
       }
     }
@@ -1023,18 +1155,24 @@ extract_timing_sidecars() {
 
     fi
 
-    rm -f "$pairs_tmp"
+    rm -f "$pairs_tmp" "$mp4_pts_file"
 
+    # CP-R13b: Assert sidecar row count equals mp4 frame count.
+    # Structurally impossible to violate under mp4-derived generation — regression canary.
     local sidecar_lines
     sidecar_lines=$(( $(wc -l < "$sidecar") - 1 ))
+    if [ "$sidecar_lines" -ne "$output_count" ]; then
+      log "[v6] FATAL: sidecar row count ($sidecar_lines) != output frame count ($output_count) for $(basename "$seg_path")"
+    fi
+
     local fps_info=""
     fps_info=$(head -1 "$sidecar" | grep -oE '"measured_fps":[0-9.]+' | cut -d: -f2 || true)
+    local si_residual=""
+    si_residual=$(head -1 "$sidecar" | grep -oE '"showinfo_residual":-?[0-9]+' | cut -d: -f2 || true)
+    local offset_status=""
+    offset_status=$(head -1 "$sidecar" | grep -oE '"showinfo_offset_status":"[^"]*"' | cut -d'"' -f4 || true)
 
-    if [ "$mismatch" = "true" ]; then
-      log "[v6] ⚠ MISMATCH sidecar: $(basename "$sidecar") input=$input_count output=$output_count fps=${fps_info:-?}"
-    else
-      log "[v6] sidecar: $(basename "$sidecar") $sidecar_lines/$output_count ✓ fps=${fps_info:-?} (epoch=$epoch)"
-    fi
+    log "[v6] sidecar: $(basename "$sidecar") $sidecar_lines/$output_count ✓ fps=${fps_info:-?} si_residual=${si_residual:-0} offset=${offset_status:-?} (epoch=$epoch)"
   done
 }
 
