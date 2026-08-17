@@ -531,16 +531,17 @@ extract_timing_sidecars() {
       continue
     fi
 
-    # CP-R13b: Extract mp4 PTS ticks for frame-row derivation.
+    local use_source_pts="$SOURCE_PTS"
+    local fps_passthrough_mode="${FPS_PASSTHROUGH:-1}"
+
+    # CP-R13b: Extract mp4 PTS ticks for frame-row derivation (passthrough path only).
     # The mp4 is the authoritative frame source. Row count = mp4 frame count by construction.
+    # CFR path uses showinfo for statistics and nearest-neighbour mapping; mp4 PTS not needed.
     local mp4_pts_file="$DIAG_DIR/_mp4pts_${ATTEMPT}_${si}.tmp"
-    if [ -f "$seg_path" ]; then
+    if [ "$fps_passthrough_mode" = "1" ] && [ -f "$seg_path" ]; then
       ffprobe -v error -select_streams v:0 -show_entries frame=pts \
         -of csv=p=0 "$seg_path" 2>/dev/null | tr -d ', \r' > "$mp4_pts_file"
     fi
-
-    local use_source_pts="$SOURCE_PTS"
-    local fps_passthrough_mode="${FPS_PASSTHROUGH:-1}"
 
     if [ "$fps_passthrough_mode" = "1" ]; then
     # CP-R13b: Passthrough — frame rows from mp4, host_arrival from showinfo join.
@@ -902,9 +903,15 @@ extract_timing_sidecars() {
     else
     # CFR grid: nearest-neighbour mapping of uniform output grid to input PTS.
     # Input: pairs_file has (host_arrival, pts_ticks) per line.
+    # CFR path requires showinfo for statistics and nearest-neighbour mapping.
     # Same tick-based precision as passthrough; CFR grid structure unchanged.
     # measured_fps here describes INPUT capture cadence, not the output grid rate
     # (which is output_fps from ffprobe). Same semantics as before, better precision.
+    if [ "$input_count" -eq 0 ]; then
+      log "[v6] ⚠ sidecar: $(basename "$seg_path") — no showinfo data for CFR, skipping"
+      rm -f "$pairs_tmp" "$mp4_pts_file"
+      continue
+    fi
     awk -v output_count="$output_count" \
         -v output_fps="$output_fps" \
         -v epoch="$epoch" \
