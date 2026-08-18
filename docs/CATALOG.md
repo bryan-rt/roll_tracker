@@ -56,7 +56,7 @@
 | `docs/evidence/recorder_fps_adaptation_1/findings.md` | CP-R1b: Bimodal frame-rate oscillation. TRIM-BIMODAL defect. Partially superseded by CP-R11 (Sections 4, 5 corrected; Sections 1-3, 6-11 valid). | **SUPERSEDED (partially)** |
 | `docs/evidence/recorder_boundary_fix_1/findings.md` | CP-R5: PTS-based segment boundary split replaces line-position split. PPDmUg seg1 residual -135 -> -109 (correct), +30 -> +0 (exact). FP7oJQ leading edge 47 frames recovered (3.1s of dropped data). Schema bumped to 3. | **CURRENT** |
 | `docs/evidence/wallclock_1/findings.md` | Container PTS is synthetic (CFR discards wall-clock) | **HISTORICAL** |
-| `docs/evidence/mp4_timing_precision_1/findings.md` | MP4 timing precision: x264 requantizes PTS to 1/15360 without `-enc_time_base`. Fix: `-enc_time_base 1/90000` preserves 5940/6030 alternation. CP-R13a verified on live capture. CP-R13b: sidecar schema 5, mp4-derived rows. | **CURRENT** |
+| `docs/evidence/mp4_timing_precision_1/findings.md` | MP4 timing precision: x264 requantizes PTS to 1/15360 without `-enc_time_base`. Fix: `-enc_time_base 1/90000` preserves 5940/6030 alternation. CP-R13a verified on live capture. CP-R13b: sidecar schema 5, mp4-derived rows. §5 CFR rollback verification **superseded** — CFR was broken, fixed in `34a9a72`. | **CORRECTED** — §5 CFR claim superseded (see correction in document) |
 
 ## Evidence — Identity Investigation Arc
 

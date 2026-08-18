@@ -586,16 +586,23 @@ First trained model had FP7oJQ false positives from background memorization.
    but wrong under variable spacing, (d) FrameIterator timestamps already correct on
    passthrough VFR containers (±0.4ms vs sidecar). Fix sequencing readable from §0
    summary table.
+2b. **[LIVE — FIRST QUESTION] Stage F fps selection.** The timing audit found Stage F
+   re-probes fps independently (`run.py:331`, site #15) rather than reading the manifest.
+   If it picks 30 for a 15fps clip, athletes currently receive a duplicate-every-other-frame
+   export. Confirm what it selects before any format decision — this is a single ffprobe
+   check against a real export, not a project.
 3. **Recorder productionization:** see `docs/roadmap/recorder_productionization.md`.
    Remaining: CP-R7 three-camera smoke test pending, CP-R8 manual capture and CVAT
    annotation.
-   **CP-R13a (complete):** `-enc_time_base 1/90000` added to V_OPTS in `diag_v6.sh`.
+   **CP-R13a (complete):** `-enc_time_base 1/90000` added to V_OPTS, **passthrough only**.
    Mp4 now carries real per-frame timing at the RTP 90000 timebase instead of x264's
    default 1/15360 requantization. Verified: 5940/6030 alternation present in mp4,
-   0/299 disagreements vs sidecar frame-for-frame. CFR rollback unaffected. Bimodal
-   zero-delta pairs now genuinely from the source (not encoder artifact). Unblocks
-   CP-R13b (pure mp4-derived sidecars).
-   Evidence: `docs/evidence/mp4_timing_precision_1/findings.md`.
+   0/299 disagreements vs sidecar frame-for-frame. Bimodal zero-delta pairs now
+   genuinely from the source (not encoder artifact). CFR rollback was BROKEN by
+   `-enc_time_base` on the CFR path (segment muxer cut-point failure, 152K-frame
+   unsegmented files, captures running hours past deadline). Fixed in `34a9a72` by
+   scoping to passthrough only. See `docs/evidence/mp4_timing_precision_1/findings.md`
+   §5 (superseded) for details and the lesson on rollback assertions.
    **CP-R13b (complete):** pure mp4-derived sidecars (schema 5). Frame rows and tick
    statistics from mp4 PTS. Showinfo retained only for `host_arrival_s` and drift,
    joined by PTS value with offset detection (k=-10..+10). `input_n` removed.
@@ -660,6 +667,13 @@ First trained model had FP7oJQ false positives from background memorization.
    pre-fix footage. ⏳ blocked on CP-R8.
 
 **Deferred (lower priority):**
+- **Stage F export format (deferred until checkpoint-2 dt_s work lands).** Stage F currently
+  re-encodes every clip to CFR. Passthrough plays smoothly on desktop; mobile player VFR
+  support is **untested** (Flutter's `video_player` wraps AVPlayer/ExoPlayer — may differ).
+  Three-way choice: passthrough, CFR at the measured rate, CFR at a fixed rate. **CFR from
+  bursty arrival-PTS is what produced the observed jitter** (2026-08-17); CFR from honest
+  passthrough PTS at the correct target is a different case and may be acceptable. The player
+  test determines which options are available.
 - CP23b remaining: empty frame injection, bbox size tier filtering, tracklet deduplication
 - CP23c: custom data flywheel (background subtraction, pseudo-labeling, active learning)
 - CP22c: ROI mask geometry fix (parked)
@@ -1267,6 +1281,7 @@ because detection under-segmentation gives it wrong input.
 | RECORDER-RELIABILITY-1: Production reliability | **Complete** | Five fixes in `diag_v6.sh`: (1) RTSP socket timeout 10s (top fix — dead-stream gap 2m28s→~10s), (2) stop_stream before regenerating (prevents session orphaning), (3) access token refresh per attempt, (4) failure-type-aware backoff, (5) sidecar extraction backgrounded. Source-PTS dup/drop verdict: pixel-identical dups 10-50x lower — **camera-dependent** (PPDmUg exact at 15fps; FP7oJQ ~8% mismatch at 13.85fps). Evidence: `docs/evidence/recorder_reliability_1/`. |
 | RECORDER-RELIABILITY-2: API quota awareness | **Complete** | RELIABILITY-1 increased API calls to ~17/min, triggering 429 (SDM quota: 10 QPM per user per project, shared across all cameras). Fixes: (1) optimistic URL reuse (0 API calls when session valid), (2) conditional stop_stream (skip for dead sessions — 400 body confirms already terminated), (3) 429 backoff 60s→300s with Retry-After, (4) generate 404 fail-fast (3 retries), (5) consecutive failure escalation (5+ failures → slow-poll 120-300s), (6) cross-camera quota: N_CAMERAS from v7_2, dynamic min retry interval from 70%×10QPM/N, jitter on every backoff. Estimated: healthy ~1 QPM, 1-failing ~3-4 QPM, all-failing ~7 QPM (escalates to ~1-2). Evidence: `docs/evidence/recorder_reliability_2/`. |
 | Coast architecture: variable-dt Kalman | **Direction decided — scoping open** | CP-R11 measured minority-mode exposure: FP7oJQ 0.70% (1/139 segments with switches), PPDmUg 2.95% (18/144). Coast-step injection handles gaps (always single missed grid slot) but CANNOT represent mode switches — no mechanism for frames arriving early (dt < nominal). Variable dt handles both gaps and mode switches with one mechanism. **Direction: variable dt (fork or subclass).** Open scoping question: whether boxmot permits subclassing or injecting the Kalman filter instance. The constant-velocity state transition hardcodes `dt=1`; the code change is a few lines either way, the cost is maintaining divergence from upstream. Check before committing to a hard fork. Secondary benefit: variable dt preserves `frame_index` 1:1 with decoded frames, so GT2ACTUALS joins are unaffected — injection would insert synthetic rows into `detections.parquet` and force the GT-join decision. The fork is the same timing consumption principle (TIMING-PRINCIPLE-1) applied inside a dependency: boxmot's constant-velocity Kalman hardcodes `dt=1` in its state transition matrix, so position updates as `x + v·1` in frame units. The fork makes that matrix accept the real interval from the sidecar's per-frame `dt_s`, so it becomes `x + v·dt_s`. This and the pipeline-side DELETE-CONVERSION sites are one concept with two implementation targets — our code reads `pts_time_s` directly, the fork reads `dt_s` into the Kalman step. Evidence: `docs/evidence/frame_spacing_1/findings.md`. |
+| CFR rollback path (SOURCE_PTS=0, FPS_PASSTHROUGH=0) | **Retained — last-resort escape hatch, degraded output** | CFR rollback records with arrival timestamps and resamples onto a uniform grid. Produces visibly jittery footage (user observation 2026-08-17: passthrough segments play smoothly, CFR rollback segments show lag-then-speedup from frame duplication/dropping by the encoder filling a uniform grid from bursty input). Broke silently for a full day during CP-R13a (segment muxer failure, found only by bisecting). Retained because degraded footage is recoverable (the sidecar still carries showinfo timing); no footage is not. The passthrough path depends on `-enc_time_base 1/90000` + `-fps_mode passthrough` + `-copyts` — a three-option combination whose interaction with future ffmpeg versions is not guaranteed (same class as `-stimeout` disappearing in 7.x). If passthrough fails, CFR rollback gets recording working — but footage should not be used for GT or athlete-facing clips without re-evaluation. Rollback: `SOURCE_PTS=0 FPS_PASSTHROUGH=0`. |
 | TIMING-PRINCIPLE-1: Read time, don't convert | **Decided — prerequisite RESOLVED (CP-R13b)** | The pipeline should read time from the sidecar (`pts_time_s`, `dt_s`) rather than converting between frames and seconds via an fps scalar. Frame↔time conversion is itself the defect; with per-frame timing available, most conversions should be **deleted, not corrected**. Two exceptions: (1) boxmot `frame_rate` — a scalar by construction, sets `track_buffer` lifespan; addressed by the variable-dt fork (same principle, applied inside a dependency — see Coast architecture row). (2) `cv2.VideoWriter` / Stage F CFR re-encode — requires a scalar output fps; athletes never receive VFR clips. Fix taxonomy (DELETE-CONVERSION / FIX-SCALAR / FORK / DEAD-VESTIGIAL / AUDIT-ONLY) applied per site in `docs/evidence/timing_audit_1/findings.md` §0. **Prerequisite RESOLVED (CP-R13b):** Sidecar frame rows now derived from mp4 PTS. Row count = decode count by construction. `frame_index` maps 1:1 unconditionally — no `min(a, c)` guard needed. Showinfo retained only for `host_arrival_s` and drift, joined by PTS value. Schema 5. `a_eq_c = True` verified on all 6 fresh segments. DEL-CONV pieces 3–6, 10, 11 unblocked. Evidence: `docs/evidence/frame_index_join_1/findings.md`, `docs/evidence/mp4_timing_precision_1/findings.md`. |
 
 ## Never Touch

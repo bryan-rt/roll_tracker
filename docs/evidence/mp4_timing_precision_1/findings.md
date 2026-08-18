@@ -160,9 +160,20 @@ The mp4 and sidecar now carry identical per-frame timing.
 
 ### CFR rollback (T2)
 
-FP7oJQ-20260817-110127 (`--rollback` mode): `timing_mode: "cfr_grid"`,
-`source_pts: false`, `sidecar_schema: 4`, `time_base: 1/90000`. Segment produced,
-sidecar emitted. CFR rollback path unaffected by the change.
+*Superseded 2026-08-17 (`34a9a72`).* CP-R13a's rollback verification confirmed only that
+a segment was produced and that a sidecar carried `timing_mode: "cfr_grid"`. It did NOT
+check segment count or duration. CFR was in fact broken: `-enc_time_base 1/90000` on the
+CFR path broke the segment muxer's cut-point calculation, producing a single unsegmented
+file (FP7oJQ-20260817-110127: 145,757 frames; FP7oJQ-20260817-134258: 152,933 frames) and
+captures that ran hours past their `WINDOW_SECONDS` deadline. The defect persisted from
+`f3e2450` (CP-R13a) until `34a9a72` and was found by bisecting the smoke test failure, not
+by the original verification.
+
+Fixed by scoping `-enc_time_base 1/90000` to the passthrough path only (`FPS_PASSTHROUGH=1`).
+CFR resamples to a uniform grid and does not need PTS precision preserved.
+
+**Lesson:** "segments produced" is not a rollback assertion. Segment count and duration are
+the checks that would have caught this.
 
 ### Segment durations and file sizes (T3)
 
@@ -200,4 +211,4 @@ the mp4-derived sidecar will correctly represent them.
 | `-c:v copy` incompatible with `-vf showinfo` | ffmpeg error: "Filtergraph was specified, but codec copy was selected" |
 | x264 is NOT inherently destructive | `-enc_time_base` controls the behaviour; missing option, not encoder limitation |
 | Before/after baseline | FP7oJQ-104848 (pre-fix, 1/15360, uniform 1024) vs FP7oJQ-105755 (post-fix, 1/90000, 5940/6030) |
-| CFR rollback unaffected | FP7oJQ-110127 (rollback): `timing_mode: "cfr_grid"`, `source_pts: false`, segments produced correctly |
+| CFR rollback **BROKEN then fixed** | FP7oJQ-110127 (rollback): single unsegmented 145K-frame file. Fixed in `34a9a72` by scoping `-enc_time_base` to passthrough only. Original "unaffected" claim superseded — see §5 correction above. |

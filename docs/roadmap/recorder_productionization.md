@@ -23,6 +23,8 @@ Checkpoint IDs are labels, not sequence. Work proceeds in this order:
 | 4 | CP-R6 — Sidecar contract v2 (incl. TRIM-BIMODAL) | The payoff — where recorder work becomes usable downstream. |
 | 5 | CP-R10 — Session churn investigation | 1-3 min gaps are unacceptable during a GT session. Must resolve before CP-R8. |
 | 6 | CP-R7 — Hardening remainder | Low priority, no dependents. |
+| 8 | CP-R13a — Encoder timebase fix | Prerequisite for CP-R13b. Preserves real PTS through x264. |
+| 9 | CP-R13b — Mp4-derived sidecars | The sidecar join guarantee. Schema 5. |
 | 7 | CP-R8 — Clean-footage GT capture | Depends on all of the above. |
 
 **Hard dependencies:**
@@ -445,16 +447,18 @@ The recorder is done when all of these hold:
 
 1. Recorder-injected corruption is **zero**: no duplicates, no CFR decimation.
 2. Unavoidable upstream loss is **detected and flagged**, not concealed.
-3. True per-frame timing and an authoritative per-clip fps are **emitted in a documented
-   contract**.
+3. True per-frame timing reaches the **container** (CP-R13a) and the **sidecar** (CP-R6/R13b).
+   The sidecar's `frame_index` join to Stage A is guaranteed by construction (row count =
+   decode count, schema 5). Per-frame `dt_s` is the authoritative timing source, not a
+   per-clip fps scalar.
 4. A rebuild **cannot silently** invalidate required ffmpeg options.
 5. Correct behaviour is the **default**, with rollback switches retained.
 6. A **single command** regression-tests the whole path.
 7. Clean GT footage exists for downstream re-measurement.
 8. Sustained coverage without systematic multi-minute gaps.
 
-CP-R1→R4 deliver 1, 2, 4, 5. CP-R5→R6 deliver 3. CP-R9 delivers 6 + enables unattended
-capture. CP-R7 delivers remaining hardening. CP-R10 delivers 8. CP-R8 delivers 7.
+CP-R1→R4 deliver 1, 2, 4, 5. CP-R5→R6 + CP-R13a/b deliver 3. CP-R9 delivers 6 + enables
+unattended capture. CP-R7 delivers remaining hardening. CP-R10 delivers 8. CP-R8 delivers 7.
 CP-R11 delivers frame-spacing characterization (analysis only, no recorder changes).
 
 ---
@@ -501,17 +505,70 @@ Documentation-only checkpoint. No code changes.
 
 ---
 
+## CP-R13a — Encoder timebase fix
+
+**Status:** ✅ Complete
+**Evidence:** `docs/evidence/mp4_timing_precision_1/findings.md`
+
+Added `-enc_time_base 1/90000` to the passthrough libx264 encode path. Without it, x264
+requantized all PTS onto a uniform 1/15360 grid, destroying the 5940/6030 tick alternation
+and producing zero-tick pairs on 30fps blocks. After it, the mp4 carries real capture timing
+at the RTP 90000 timebase. 90000 is the RTP timebase for H.264 (RFC 6184, §6.2).
+
+Verified: 5940/6030 alternation present in mp4, 0 disagreements across 299 frame-for-frame
+comparisons against the sidecar.
+
+**Scoped to passthrough only.** Under CFR, `-enc_time_base 1/90000` breaks the segment
+muxer's cut-point calculation, producing a single unsegmented file (152,933 frames in one
+case) instead of `SEG_SECONDS` segments. Captures ran hours past their `WINDOW_SECONDS`
+deadline. Found by bisecting the rollback test failure — the CP-R13a smoke test confirmed
+"segments produced" but did not check segment count or duration, which would have caught it.
+Fixed in `34a9a72` by scoping to passthrough only. CFR resamples to a uniform grid and does
+not need PTS precision preserved.
+
+**Lesson:** "segments produced" is not a sufficient rollback assertion. Segment count and
+duration are the checks that would have caught this.
+
+---
+
+## CP-R13b — Mp4-derived sidecars (schema 5)
+
+**Status:** ✅ Complete
+**Evidence:** `docs/evidence/mp4_timing_precision_1/findings.md`, `docs/evidence/frame_index_join_1/findings.md`
+
+Sidecar frame rows and tick statistics derived from the mp4's PTS rather than reconstructed
+from ffmpeg stderr. Row count equals decode count by construction — the boundary attribution
+defect (Piece 0: 33% of production-length segments) is eliminated.
+
+Showinfo retained only for `host_arrival_s` and drift, joined by PTS value with delta-pattern
+offset detection (k=-10..+10, bidirectional, margin-checked).
+
+Schema 5 changes: `input_n` removed. `row_source` added (`"mp4"` / `"mp4_regenerated"` /
+`"showinfo_grid"`). `showinfo_frame_count` and `showinfo_residual` preserve the drop signal.
+`mismatch` structurally false. Assertion: row count = decode count, fail loudly.
+
+Regeneration tool: `tools/regenerate_sidecar.py`. Refuses pre-CP-R13a footage (container
+timebase check — 1/15360 would produce degraded timing).
+
+**Regression found and fixed (`34a9a72`):** `$mismatch` variable was passed to the CFR awk
+but never defined. Under `set -u` (nounset) this silently killed sidecar extraction — same
+class as the `local`-outside-function bug (`6112dc0`) that cost the CP-R1 capture.
+
+Verified: `a_eq_c` true on all 6 fresh segments. Smoke test both modes passing.
+
+---
+
 ## Explicitly not recorder work (checkpoint 2)
 
-Flagged so it isn't lost. Items 3 and 4 are **not currently on the pending list**.
+Flagged so it isn't lost. Reframed under TIMING-PRINCIPLE-1: most of these are now
+DELETE-CONVERSION sites (read time from sidecar, don't convert). See
+`docs/evidence/timing_audit_1/findings.md` §0 for the full taxonomy.
 
-1. **Dynamic fps replaces hardcoded 30** — BoT-SORT `frame_rate`, `speed_mps_k`, Stage E
-   windows. Largest single error in the system today; independent of all recorder work.
-2. **Consume `gap_flag` in Stage A** — detection is recorder-side, response is pipeline-side.
-3. **Coast-step injection** — feed the tracker N detection-free frames across a flagged gap
-   so predictions match real elapsed time. Requires no boxmot change. Try this before any
-   fork.
-4. **boxmot variable-dt (fork or subclass)** — contingent. Open only if measurement shows
-   coasting insufficient. Check whether boxmot permits Kalman injection/subclassing first;
-   the code change is a few lines, the cost is maintaining divergence from upstream.
-5. **Re-measure drift attribution on clean footage** — after CP-R8.
+1. **Timing consumption across Stages A–F.** 23 sites enumerated and classified
+   (DELETE-CONVERSION / FIX-SCALAR / FORK / DEAD-VESTIGIAL / AUDIT-ONLY) in
+   `docs/evidence/timing_audit_1/findings.md` §0. Most conversions are deleted rather than
+   corrected — see TIMING-PRINCIPLE-1 in the Active Decisions Log.
+2. **Variable-dt Kalman step (FORK)** — the decided direction (Active Decisions Log, "Coast
+   architecture" row). Coast-step injection was evaluated (CP-R11) and found insufficient for
+   mode switches (cannot inject negative time). Only subclass-vs-fork scoping remains open.
+3. **Re-measure drift attribution on clean footage** — after CP-R8.
