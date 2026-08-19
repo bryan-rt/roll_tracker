@@ -24,24 +24,39 @@ All lines are independent JSON objects (JSONL format). No array wrapper.
 produced from camera-derived RTP capture timestamps (`true`) or from bursty network-arrival
 timestamps (`false`). It is the sole validity gate for all derived fields.
 
-**Omission means invalid.** Fields that depend on source-PTS fidelity are **absent** from
-the JSON when `source_pts: false`. A consumer that reads a field that exists can trust it
-within its stated precision. A consumer that looks for a field and finds it absent knows the
-sidecar was produced under conditions where that field has no meaning.
+**Omission means invalid.** Fields that depend on a specific condition are **absent** from
+the JSON when that condition is not met. A consumer that reads a field that exists can trust
+it within its stated precision. A consumer that looks for a field and finds it absent knows
+the sidecar was produced under conditions where that field has no meaning.
 
-Fields gated on `source_pts: true`:
+**Three validity axes** (schema 5):
+
+**1. `source_pts` gate** — fields that require camera-derived RTP timestamps:
 - `_meta`: `nominal_dt_s`, `measured_fps`, `measured_fps_median`, `is_bimodal` (and its
   sub-fields), `pts_wallclock_offset_s`, `offset_method`, `drift_rate_s_per_s`, `drift_flat`,
   `drift_ppm`, `n_drift_windows`
-- Frame rows: `dt_s`, `host_arrival_s`
+- Frame rows: `dt_s`
 
-Fields always present regardless of `source_pts`:
+**2. Showinfo availability gate** — fields that require the showinfo stderr log. Absent when
+`row_source: "mp4_regenerated"` (offline regeneration without showinfo):
+- `_meta`: `showinfo_frame_count`, `showinfo_residual`, `showinfo_pts_offset`,
+  `showinfo_matched_count`, `showinfo_unmatched_mp4_count`, `showinfo_surplus_count`,
+  `showinfo_offset_status`
+- Frame rows: `host_arrival_s` (wholesale absent when showinfo unavailable; **also absent
+  per-row** on individual frames where the showinfo-to-mp4 PTS join found no match, even
+  when showinfo is available for the segment)
+
+Note: `host_arrival_s` has three absence conditions: (a) `source_pts: false` → absent on
+all rows, (b) `row_source: "mp4_regenerated"` → absent on all rows, (c) showinfo join
+miss → absent on individual rows while present on others in the same segment.
+
+**3. Always present** regardless of `source_pts` or `row_source`:
 - `_meta`: `_meta`, `sidecar_schema`, `timing_mode`, `source_pts`, `pts_origin`,
-  `fps_method`, `segment_start_epoch`, `attempt`, `input_frame_count`, `output_frame_count`,
-  `measured_fps_mean`, `pts_timebase`, `pts_tick_delta_median`, `pts_tick_delta_mean`,
-  `pts_delta_trim_kept`, `pts_delta_trim_total`, `mismatch`, `pts_mean_delta_ms`,
-  `pts_stdev_delta_ms`
-- Frame rows: `frame_index`, `pts_time_s`, `input_n`
+  `fps_method`, `row_source`, `segment_start_epoch`, `attempt`, `input_frame_count`,
+  `output_frame_count`, `measured_fps_mean`, `pts_timebase`, `pts_tick_delta_median`,
+  `pts_tick_delta_mean`, `pts_delta_trim_kept`, `pts_delta_trim_total`, `mismatch`,
+  `pts_mean_delta_ms`, `pts_stdev_delta_ms`
+- Frame rows: `frame_index`, `pts_time_s`
 
 **Additional gating rules:**
 - `drift_rate_s_per_s` and `drift_ppm` are **omitted** when `n_drift_windows < 4` (unstable
