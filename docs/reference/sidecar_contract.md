@@ -61,22 +61,23 @@ Fields always present regardless of `source_pts`:
 | Field | Type | Description |
 |-------|------|-------------|
 | `_meta` | `true` | Literal marker identifying this as the metadata line. |
-| `sidecar_schema` | int | Schema version. This document specifies version **4**. |
+| `sidecar_schema` | int | Schema version. This document specifies version **5**. |
 | `timing_mode` | string | `"passthrough"` (1:1 input-to-output, no resampling) or `"cfr_grid"` (uniform output grid, nearest-neighbor mapped from input). |
 | `source_pts` | bool | `true` if produced from camera RTP capture timestamps; `false` if from network-arrival timestamps. **The validity gate.** |
 | `pts_origin` | string | `"segment_relative"` -- all PTS values are zero-based from the first frame of this segment. |
 | `fps_method` | string | `"trimmed_mean"` -- the algorithm used for `measured_fps`. |
 | `segment_start_epoch` | int | Unix epoch (seconds) of segment start, parsed from the segment filename. |
 | `attempt` | int | Retry attempt counter within the recording window (1-indexed). |
-| `input_frame_count` | int | Count of showinfo lines (input frames) attributed to this segment. |
-| `output_frame_count` | int | Count of output frames in the segment mp4 (from ffprobe `nb_frames`). |
-| `measured_fps_mean` | float | Span-based fps: `(input_frame_count - 1) / pts_span_seconds`. Approximately correct even under arrival-PTS; useful as a sanity check. |
+| `input_frame_count` | int | Under schema 5: equals `output_frame_count` (mp4-driven). Under schema ≤4: count of showinfo lines attributed to this segment. |
+| `output_frame_count` | int | Count of output frames in the segment mp4 (from ffprobe `nb_frames`). Under schema 5: also the sidecar row count (by construction). |
+| `row_source` | string | **Schema 5+.** Provenance of frame rows: `"mp4"` (live capture, mp4-derived rows + showinfo join for host_arrival), `"mp4_regenerated"` (offline regeneration, mp4 only, no showinfo fields), `"showinfo_grid"` (legacy schema ≤4). |
+| `measured_fps_mean` | float | Span-based fps: `(output_frame_count - 1) / pts_span_seconds`. Approximately correct even under arrival-PTS; useful as a sanity check. |
 | `pts_timebase` | int | PTS tick rate (typically 90000 for RTSP). Ticks-to-seconds: `ticks / pts_timebase`. |
 | `pts_tick_delta_median` | float | Median of inter-frame tick deltas (sorted). |
 | `pts_tick_delta_mean` | float | Arithmetic mean of inter-frame tick deltas. |
 | `pts_delta_trim_kept` | int | Count of tick deltas within the trimmed-mean window `[0.5x, 1.5x]` of the median. |
 | `pts_delta_trim_total` | int | Total count of tick deltas (`input_frame_count - 1`). |
-| `mismatch` | bool | `true` when `input_frame_count != output_frame_count`. Under passthrough this should be `false`; under CFR it is the normal condition. |
+| `mismatch` | bool | Under schema 5: structurally `false` (`input_frame_count == output_frame_count` by construction). Under schema ≤4: `true` when showinfo count ≠ output count. Consumers should read `showinfo_residual` (schema 5) for the drop signal. |
 | `pts_mean_delta_ms` | float | Mean of tick deltas converted to milliseconds. |
 | `pts_stdev_delta_ms` | float | Standard deviation of tick deltas in milliseconds. **Caveat:** measures the camera's tick-distribution pattern (alternation of e.g. 5940/6030 ticks), not jitter. Do not use as a jitter proxy. |
 
@@ -110,6 +111,18 @@ Fields always present regardless of `source_pts`:
 |-------|------|-------------|
 | `output_fps` | float | Output grid rate from ffprobe `r_frame_rate`. The uniform spacing of output frames. |
 
+### Present when `row_source: "mp4"` (schema 5+, showinfo available)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `showinfo_frame_count` | int | Count of showinfo lines attributed to this segment by the boundary split. This is the recorder's own count of frames it saw pass through the filter graph — distinct from the mp4's decoded frame count. |
+| `showinfo_residual` | int | `output_frame_count - showinfo_frame_count`. **The drop signal.** Positive = mp4 has frames showinfo missed (attributed to a neighbouring segment). Negative = showinfo has surplus lines (frames attributed here but present in a neighbouring mp4). Replaces `mismatch` as the diagnostic for boundary attribution and real frame loss. |
+| `showinfo_pts_offset` | int | PTS tick offset computed during the showinfo-to-mp4 join (`mp4_pts[0] - showinfo_pts[best_k]`). Diagnostic — consumers do not need this value. |
+| `showinfo_matched_count` | int | Count of mp4 frames matched to a showinfo line during the PTS join. Frames with a match carry `host_arrival_s`; unmatched frames do not. |
+| `showinfo_unmatched_mp4_count` | int | Count of mp4 frames with no showinfo match. These rows lack `host_arrival_s`. |
+| `showinfo_surplus_count` | int | Count of showinfo lines with no corresponding mp4 frame (discarded during the join). |
+| `showinfo_offset_status` | string | Join quality indicator: `"determined"` (unique best shift with margin), `"best_effort"` (best shift has nonzero disagreements), `"ambiguous_fallback_k0"` (uniform deltas, no shift distinguishable — assumed k=0), `"uniform_assumed_k0"` (zero variation in deltas), `"undetermined"` (insufficient data). |
+
 ---
 
 ## 4. Frame Row Field Reference
@@ -118,9 +131,14 @@ Fields always present regardless of `source_pts`:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `frame_index` | int | 0-indexed sequential counter. **Join key to Stage A** (`FrameIterator`'s `cap.read()` counter). |
+| `frame_index` | int | 0-indexed sequential counter. **Join key to Stage A** (`FrameIterator`'s `cap.read()` counter). Under schema 5, row count = mp4 decoded frame count by construction. |
 | `pts_time_s` | float | Segment-relative PTS in seconds. Under passthrough: the frame's actual capture PTS (base-subtracted). Under CFR: the nearest-neighbor input PTS mapped to this output grid point (approximate). |
-| `input_n` | int | **Removed in schema 5.** Present in schema ≤4 only. Under passthrough: always equalled `frame_index` (identity). Under CFR: nearest-neighbor input frame index. Was deprecated since schema 4. |
+
+### Removed in schema 5
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `input_n` | int | **Removed.** Present in schema ≤4 only. Under passthrough: always equalled `frame_index` (identity). Under CFR: nearest-neighbor input frame index. Deprecated since schema 4. |
 
 ### Present when `timing_mode: "passthrough"` AND `source_pts: true`
 
@@ -132,7 +150,7 @@ Fields always present regardless of `source_pts`:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `host_arrival_s` | float | Host-side `$EPOCHREALTIME` when this frame's showinfo line was written to stderr. Used with `pts_time_s` for the lower-envelope offset calculation. Not useful to pipeline consumers directly. |
+| `host_arrival_s` | float | Host-side `$EPOCHREALTIME` when this frame's showinfo line was written to stderr. Used with `pts_time_s` for the lower-envelope offset calculation. Not useful to pipeline consumers directly. **Under schema 5:** may be **absent on individual rows** when the showinfo-to-mp4 PTS join found no matching showinfo line for that frame. This is distinct from being absent wholesale under `source_pts: false`. A missing `host_arrival_s` on a single row within an otherwise-present segment means the recorder's boundary attribution assigned that showinfo line to a different segment. |
 
 ---
 
@@ -300,38 +318,56 @@ clock is unavailable from the stream.
 
 ---
 
-## 7. Worked Example
+## 7. Worked Examples (schema 5)
+
+*All examples below are from real production sidecars captured 2026-08-17.*
 
 ### `_meta` line (passthrough, source_pts=true, unimodal 15fps)
 
+Source: PPDmUg-20260817-133829 (300 frames, 15fps, perfect showinfo match).
+
 ```json
-{"_meta":true,"sidecar_schema":4,"timing_mode":"passthrough","source_pts":true,"pts_origin":"segment_relative","fps_method":"trimmed_mean","segment_start_epoch":1722787200,"attempt":1,"input_frame_count":1830,"output_frame_count":1830,"nominal_dt_s":0.066667,"measured_fps":15.0000,"measured_fps_median":14.9254,"measured_fps_mean":14.9900,"pts_timebase":90000,"pts_tick_delta_median":6000.0,"pts_tick_delta_mean":6001.2,"pts_delta_trim_kept":1800,"pts_delta_trim_total":1829,"mismatch":false,"is_bimodal":false,"pts_wallclock_offset_s":1722787200.123456,"offset_method":"lower_envelope","drift_rate_s_per_s":-0.000000603,"drift_flat":false,"drift_ppm":-0.603,"n_drift_windows":6,"pts_mean_delta_ms":66.6845,"pts_stdev_delta_ms":0.4700}
+{"_meta":true,"sidecar_schema":5,"timing_mode":"passthrough","source_pts":true,"pts_origin":"segment_relative","fps_method":"trimmed_mean","row_source":"mp4","segment_start_epoch":1786988309,"attempt":1,"input_frame_count":300,"output_frame_count":300,"showinfo_frame_count":300,"showinfo_residual":0,"showinfo_pts_offset":-1805490,"showinfo_matched_count":300,"showinfo_unmatched_mp4_count":0,"showinfo_surplus_count":0,"showinfo_offset_status":"ambiguous_fallback_k0","nominal_dt_s":0.067000,"measured_fps":15.0003,"measured_fps_median":14.9254,"measured_fps_mean":15.0003,"pts_timebase":90000,"pts_tick_delta_median":6030.0,"pts_tick_delta_mean":5999.9,"pts_delta_trim_kept":299,"pts_delta_trim_total":299,"mismatch":false,"is_bimodal":false,"pts_wallclock_offset_s":1786988308.163707,"offset_method":"lower_envelope","drift_flat":false,"n_drift_windows":2,"pts_mean_delta_ms":66.6656,"pts_stdev_delta_ms":0.4718}
 ```
+
+Note: `drift_rate_s_per_s` and `drift_ppm` are absent because `n_drift_windows < 4`.
+`showinfo_offset_status: "ambiguous_fallback_k0"` — PPDmUg has uniform deltas (all 6030),
+so no shift is distinguishable from the delta pattern; k=0 assumed.
 
 ### Frame rows (first 3 frames)
 
 ```json
-{"frame_index":0,"pts_time_s":0.000000,"dt_s":null,"host_arrival_s":1722787200.123456,"input_n":0}
-{"frame_index":1,"pts_time_s":0.067000,"dt_s":0.067000,"host_arrival_s":1722787200.190456,"input_n":1}
-{"frame_index":2,"pts_time_s":0.133000,"dt_s":0.066000,"host_arrival_s":1722787200.256456,"input_n":2}
+{"frame_index":0,"pts_time_s":0.000000,"dt_s":null,"host_arrival_s":1786988309.096267}
+{"frame_index":1,"pts_time_s":0.067000,"dt_s":0.067000,"host_arrival_s":1786988309.105819}
+{"frame_index":2,"pts_time_s":0.133000,"dt_s":0.066000,"host_arrival_s":1786988309.107861}
 ```
 
-### `_meta` line (passthrough, source_pts=true, bimodal segment)
+Note: `input_n` removed in schema 5. `host_arrival_s` present on all rows (perfect match).
+
+### `_meta` line (cfr_grid, source_pts=false — rollback)
+
+Source: FP7oJQ-20260817-193321 (630 frames, 30fps CFR, arrival-PTS).
 
 ```json
-{"_meta":true,"sidecar_schema":4,"timing_mode":"passthrough","source_pts":true,"pts_origin":"segment_relative","fps_method":"trimmed_mean","segment_start_epoch":1722787200,"attempt":1,"input_frame_count":1800,"output_frame_count":1800,"nominal_dt_s":0.066667,"measured_fps":15.0000,"measured_fps_median":14.9254,"measured_fps_mean":17.5000,"pts_timebase":90000,"pts_tick_delta_median":6000.0,"pts_tick_delta_mean":4800.0,"pts_delta_trim_kept":1200,"pts_delta_trim_total":1799,"mismatch":false,"is_bimodal":true,"short_mode_fraction":0.3300,"short_mode_fps":30.0000,"short_mode_dt_s":0.033333,"long_mode_dt_s":0.066667,"pts_wallclock_offset_s":1722787200.123456,"offset_method":"lower_envelope","drift_flat":true,"n_drift_windows":2,"pts_mean_delta_ms":53.3333,"pts_stdev_delta_ms":16.5000}
-```
-
-Note: `drift_rate_s_per_s` and `drift_ppm` are absent because `n_drift_windows < 4`.
-
-### `_meta` line (cfr_grid, source_pts=false -- rollback)
-
-```json
-{"_meta":true,"sidecar_schema":4,"timing_mode":"cfr_grid","source_pts":false,"pts_origin":"segment_relative","fps_method":"trimmed_mean","segment_start_epoch":1722787200,"attempt":1,"input_frame_count":1857,"output_frame_count":1830,"output_fps":15.0000,"measured_fps_mean":14.9900,"pts_timebase":90000,"pts_tick_delta_median":6.0,"pts_tick_delta_mean":6.1,"pts_delta_trim_kept":1800,"pts_delta_trim_total":1856,"mismatch":true,"pts_mean_delta_ms":0.0678,"pts_stdev_delta_ms":0.0200}
+{"_meta":true,"sidecar_schema":5,"timing_mode":"cfr_grid","source_pts":false,"pts_origin":"segment_relative","fps_method":"trimmed_mean","row_source":"mp4","segment_start_epoch":1787009601,"attempt":1,"input_frame_count":630,"output_frame_count":630,"showinfo_frame_count":154,"showinfo_residual":476,"output_fps":30.0000,"measured_fps_mean":7.5614,"pts_timebase":90000,"pts_tick_delta_median":6.0,"pts_tick_delta_mean":11902.5,"pts_delta_trim_kept":33,"pts_delta_trim_total":153,"mismatch":false,"pts_mean_delta_ms":132.2500,"pts_stdev_delta_ms":555.9970}
 ```
 
 Note: `nominal_dt_s`, `measured_fps`, `measured_fps_median`, `is_bimodal`, all drift fields,
-and all host-arrival fields are absent.
+and `host_arrival_s` are absent (arrival-PTS). `showinfo_residual: 476` — encoder produced
+630 output frames from 154 showinfo input frames (arrival-PTS duplication). CFR statistics
+describe the INPUT capture cadence (bursty arrival), not the output 30fps grid.
+
+### `_meta` line (regenerated, no showinfo)
+
+Source: regenerated from FP7oJQ-20260817-133817.mp4 via `tools/regenerate_sidecar.py`.
+
+```json
+{"_meta":true,"sidecar_schema":5,"timing_mode":"passthrough","source_pts":true,"pts_origin":"segment_relative","fps_method":"trimmed_mean","row_source":"mp4_regenerated","segment_start_epoch":1786988297,"attempt":0,"input_frame_count":300,"output_frame_count":300,"nominal_dt_s":0.067,"measured_fps":14.9994,"measured_fps_median":14.9254,"measured_fps_mean":13.8426,"pts_timebase":90000,"pts_tick_delta_median":6030,"pts_tick_delta_mean":6501.7,"pts_delta_trim_kept":272,"pts_delta_trim_total":299,"mismatch":false,"is_bimodal":false,"pts_mean_delta_ms":72.2408,"pts_stdev_delta_ms":19.2403}
+```
+
+Note: `showinfo_frame_count`, `showinfo_residual`, all showinfo join fields, `host_arrival_s`,
+drift fields, and `pts_wallclock_offset_s` are absent — showinfo was not available during
+regeneration. `row_source: "mp4_regenerated"` identifies this provenance.
 
 ---
 
