@@ -31,6 +31,7 @@
 | Path | Purpose | Status |
 |------|---------|--------|
 | `docs/roadmap/recorder_productionization.md` | Live plan for recorder productionization | **CURRENT** |
+| `docs/roadmap/checkpoint2_breakdown.md` | Checkpoint 2 timing work: 12-piece sequence, landing groups, validation tiers, re-cut rationale (DOC-SYNC-7) | **CURRENT** |
 
 ## Reference & Audits
 
@@ -101,7 +102,7 @@
 |------|---------|--------|
 | `docs/evidence/storage_audit_1/proposal.md` | Storage cleanup proposal (eval baselines) | **HISTORICAL** |
 | `docs/evidence/session_churn_1/findings.md` | CP-R10: Session churn investigation — caffeinate vs display sleep | **CURRENT** |
-| `docs/evidence/timing_audit_1/findings.md` | Timing & cross-camera assumption audit: 24 sites, propagation map, sidecar reachability, empirical checks. Stage A→F + pipeline_validation. | **CURRENT** |
+| `docs/evidence/timing_audit_1/findings.md` | Timing & cross-camera assumption audit: 24 sites, propagation map, sidecar reachability, empirical checks. Stage A->F + pipeline_validation. §0.5 amended with piece assignments and sidecar-required decision (DOC-SYNC-7, 2026-08-19). | **CURRENT** |
 | `docs/evidence/frame_index_join_1/findings.md` | Piece 0: `frame_index` join prerequisite. 94 segments, (a)↔(c) 1:1 when `mismatch: false` (45/94). Boundary attribution defect (CP-R5 residual). Option A recommended. C2 corrected: POS_MSEC tracks real PTS. §10: Post-R13b verification (a_eq_c true on 9 segments, POS_MSEC zero deviation, int-ms lossless, sweep corpus invalid). | **CURRENT** |
 
 ## Checkpoint Records

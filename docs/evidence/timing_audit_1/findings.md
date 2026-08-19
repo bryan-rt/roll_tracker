@@ -112,6 +112,44 @@ sidecar describes it; (b) `output_frame_count` is the field that disagreed with 
 decoded frame count on FP7oJQ (233 vs 238), and is under suspicion in the open
 prerequisite. The replacement is contingent on resolving both.
 
+### Piece assignments (updated 2026-08-19, DOC-SYNC-7)
+
+*Records which checkpoint-2 piece owns each site. Does not change any site entry,
+measurement, severity, or fix class. See `docs/roadmap/checkpoint2_breakdown.md` for
+piece definitions and sequencing rationale.*
+
+**Sidecar-required decision (2026-08-19):** the pipeline requires a valid schema-5 sidecar
+for all timing. No filename-anchor fallback. Session alignment anchors on
+`pts_wallclock_offset_s` (+/-14-56ms), not `parse_clip_timestamp` (1-second resolution).
+See CLAUDE.md Active Decisions Log "Sidecar required for pipeline timing" for the
+rejected-alternative rationale.
+
+| Site | Piece | Notes |
+|------|-------|-------|
+| #1 | 4 (dissolves) | DEL-CONV consequent — disappears once #9 and #8 stop requesting a session-wide scalar |
+| #2 | 6 | |
+| #3 | 6 | |
+| #4 | 8 | |
+| #5 | 4 | Originally Piece 4 (unchanged by re-cut) |
+| #6 | 4 | Originally Piece 4 (unchanged by re-cut) |
+| #7 | 4 | Originally Piece 4 (unchanged by re-cut) |
+| #8 | 5 | Cross-camera only; separated from session alignment by re-cut |
+| #9 | 4 | Moved from Piece 5 to Piece 4 by re-cut (session alignment, not cross-camera) |
+| #10 | 4 | Moved from Piece 5 to Piece 4 by re-cut (session alignment, not cross-camera) |
+| #11 | 1 | RESOLVED |
+| #12 | 7 | |
+| #13 | 7 | |
+| #14 | 7 | |
+| #15 | 7 | |
+| #16 | 6 | PROVISIONAL — contingent on Piece 0 clearing `output_frame_count` |
+| #17 | 6 | |
+| #18 | — | AUDIT-ONLY, no fix needed |
+| #19 | 9 | |
+| #20 | 10 (scoping) / 11 (implementation) | |
+| #21 | 1 | RESOLVED |
+| #22 | 1 | RESOLVED |
+| #23 | 1 | RESOLVED |
+
 ---
 
 ## 1. Propagation Map

@@ -320,7 +320,9 @@ case). Duplicate frames inject FALSE ZERO-MOTION into BoT-SORT's Kalman filter; 
 frames inject FALSE TELEPORTS. An unknown fraction of the measured "Stage A tracklet_drift"
 (41%) may be RECORDER-INJECTED rather than a tracking limitation. **Hold GT2ACTUALS drift
 attribution, purity-proxy results, and Stage A sweep conclusions LOOSELY until re-measured
-on clean footage.** Keep old GT clips as a regression baseline.
+on clean footage.** Keep old GT clips as a regression baseline. Legacy GT is also
+**structurally excluded from pipeline timing measurement** — see "Sidecar required for
+pipeline timing" in the Active Decisions Log.
 
 **CP22 (completed):** Default detection model updated to yolo26n-pose (STAL loss, better
 small-object detection). ultralytics upgraded 8.3.252 → 8.4.33 (`--no-deps`).
@@ -572,103 +574,12 @@ First trained model had FP7oJQ false positives from background memorization.
 **Evidence-economy principle (from this arc):** tags = hard constraint; clean appearance
 = cost/veto, never hard; distinctiveness-weighted; only one tier may be hard.
 
-**Immediate (ordered by impact):**
-1. **[LIVE BUG] BoT-SORT `frame_rate` = per-clip MEASURED fps.** Currently hardcoded/
-   assumed 30 while streams deliver 15–30 varying by session. `track_buffer`'s real-time
-   lifespan is wrong, directly affecting the dominant drift damage.
-   Unblocked — CP-R6 shipped the sidecar contract this consumes.
-2. **[COMPLETE] Frame-rate & cross-camera assumption audit across Stages A–F.**
-   Findings: `docs/evidence/timing_audit_1/findings.md`. 24 sites audited, 13 defects
-   found (P0–P2), propagation map, sidecar reachability confirmed, empirical checks on
-   passthrough VFR footage. Key findings: (a) BoT-SORT `frame_rate` never passed (buffer
-   2x intended), (b) session D takes first clip's fps for all cameras (up to 8% error
-   cross-camera), (c) Stage F seek arithmetic structurally correct on post-fix footage
-   but wrong under variable spacing, (d) FrameIterator timestamps already correct on
-   passthrough VFR containers (±0.4ms vs sidecar). Fix sequencing readable from §0
-   summary table.
-2b. **[LIVE — FIRST QUESTION] Stage F fps selection.** The timing audit found Stage F
-   re-probes fps independently (`run.py:331`, site #15) rather than reading the manifest.
-   If it picks 30 for a 15fps clip, athletes currently receive a duplicate-every-other-frame
-   export. Confirm what it selects before any format decision — this is a single ffprobe
-   check against a real export, not a project.
-3. **Recorder productionization:** see `docs/roadmap/recorder_productionization.md`.
-   Remaining: CP-R7 three-camera smoke test pending, CP-R8 manual capture and CVAT
-   annotation.
-   **CP-R13a (complete):** `-enc_time_base 1/90000` added to V_OPTS, **passthrough only**.
-   Mp4 now carries real per-frame timing at the RTP 90000 timebase instead of x264's
-   default 1/15360 requantization. Verified: 5940/6030 alternation present in mp4,
-   0/299 disagreements vs sidecar frame-for-frame. Bimodal zero-delta pairs now
-   genuinely from the source (not encoder artifact). CFR rollback was BROKEN by
-   `-enc_time_base` on the CFR path (segment muxer cut-point failure, 152K-frame
-   unsegmented files, captures running hours past deadline). Fixed in `34a9a72` by
-   scoping to passthrough only. See `docs/evidence/mp4_timing_precision_1/findings.md`
-   §5 (superseded) for details and the lesson on rollback assertions.
-   **CP-R13b (complete):** pure mp4-derived sidecars (schema 5). Frame rows and tick
-   statistics from mp4 PTS. Showinfo retained only for `host_arrival_s` and drift,
-   joined by PTS value with offset detection (k=-10..+10). `input_n` removed.
-   `showinfo_residual` preserves the drop signal. `row_source` distinguishes
-   `"mp4"` / `"mp4_regenerated"` / `"showinfo_grid"` (legacy). Assertion: row count
-   = decode count, fail loudly. Regeneration tool at `tools/regenerate_sidecar.py`
-   (refuses pre-CP-R13a footage via container timebase check). Verified: `a_eq_c`
-   true on all 6 fresh segments. Evidence: `docs/evidence/mp4_timing_precision_1/findings.md`.
-3b. **Investigate whether consistent 30fps delivery is achievable.** FP7oJQ reached 99%
-   short-mode (~33ms intervals) during the CP-R1 capture, so the camera demonstrably can
-   deliver 30fps. Most footage runs at half that. For BJJ, fast transitions are where
-   tracklets break, so doubling temporal resolution attacks the dominant failure mode
-   directly. **CP-R11 resolved the loss-vs-encode question:** the 15fps cadence is genuine
-   (not 30fps with loss), and FP7oJQ's ~8% gaps are a camera-internal grid mismatch. The
-   30fps opportunity depends on understanding what triggers the cadence switch (unresolved).
-   Classification: **investigation is recorder-side**; **benefit is pipeline-side**.
-4. A↔D contract fix: reliability-discount the penalty OR displacement-based D0.5 split.
-5. Per-clip measured-fps denominator for motion metrics.
-   Unblocked — CP-R6 shipped the sidecar contract this consumes.
-6. D0.5 Tier 3: disable (interim, recovers -6.6pp regression) or redesign.
-7. Cross-camera sync via source PTS + host-clock lower envelope WITH per-camera drift
-   correction (Tier 2, ±14–56ms). Consumes `pts_wallclock_offset_s`, `drift_ppm`, `drift_flat`
-   from sidecar contract v2. The alignment work is Stage D.
-   Unblocked — CP-R6 shipped the sidecar contract this consumes.
-8. Productionize masked histograms (validated +0.09 AUC, not shipped).
-9. Stage A `match_thresh` sweep — AFTER the A↔D fix, since SWEEP-4 was measured against
-   the un-fixed penalty.
-
-**Forward pipeline direction (PLANNED, not built):**
-1. **Dynamic fps replaces hardcoded 30** everywhere: BoT-SORT `frame_rate`, `speed_mps_k`,
-   `derive_clip_frame_offset`, Stage E temporal windows, cross-camera evidence timing.
-   Source: per-clip measured fps from sidecar.
-   Unblocked — CP-R6 shipped the sidecar contract this consumes.
-2. **Variable-dt Kalman step consuming per-frame `dt_s`.** CP-R11 resolved the injection-
-   vs-variable-dt contingency: injection handles FP7oJQ's periodic gaps (0.70% minority-mode)
-   but cannot represent PPDmUg's sustained cadence switches (2.95% minority-mode across 12.5%
-   of segments). Variable dt handles both with one mechanism. See Active Decisions Log
-   "Coast architecture" row for the full decision and open scoping question.
-   Unblocked — CP-R6 shipped the sidecar contract this consumes
-   (`docs/reference/sidecar_contract.md`).
-3. **boxmot subclass-vs-fork scoping** — see Active Decisions Log "Coast architecture" row.
-4. **Consumer split:** per-frame dt everywhere we control code; per-frame dt for BoT-SORT
-   (boxmot hardcodes unit Kalman time-step; variable-dt requires forking or subclassing).
-   **CP-R11 confirmed per-frame `dt_s` is required:** modes come in sustained blocks (not
-   interleaved), but FP7oJQ has ~8% periodic gaps (every ~12 frames) and the cadence can
-   switch mid-stream. `measured_fps` remains broken on bimodal segments (TRIM-BIMODAL).
-   Unblocked — CP-R6 shipped the sidecar contract this consumes.
-5. **GT-join decision: contingent on coast architecture scoping.** Under variable dt (the
-   recorded direction — see Active Decisions Log "Coast architecture" row), `frame_index`
-   stays 1:1 with decoded frames and GT2ACTUALS joins are unaffected. Under coast-step
-   injection, synthetic frames would break the `frame_index` join and force a decision on
-   how GT2ACTUALS handles inserted rows. Open only if variable dt proves impractical.
-6. **A/B validation on SAME new footage:** Run new post-fix footage through pipeline twice
-   (old logic vs new logic) behind a config flag, against same CVAT GT. Keep old code path
-   as a flag. Expectation: fps correction is the primary lever (~2x dt error today).
-   Coast-step drop handling is secondary, sized by the measured per-camera gap rate.
-   Duplicate exclusion is **moot on post-fix footage** — DUPFIX measured zero exact
-   duplicates on source-PTS segments, and passthrough removes the padding mechanism
-   entirely.
-7. **Re-measure drift attribution on clean footage** — after CP-R8 delivers clean GT.
-   The 41% "Stage A tracklet_drift" and all purity-proxy/sweep results rest on corrupted
-   pre-fix footage. ⏳ blocked on CP-R8.
-8. **Sweep corpus invalid** — OFAT sweep baseline and backlog item 11 (match_thresh sweep)
-   were measured under the wrong `frame_rate` (boxmot default 30 on pre-R13a footage).
-   `_eval_gt` footage has no sidecars and cannot be given schema-5 ones. Sweep re-run is
-   gated on post-R13a re-capture alongside CP-R8 and drift re-measurement.
+**Checkpoint-2 timing work:** sequenced in `docs/roadmap/checkpoint2_breakdown.md`.
+Twelve pieces (0–11 + CP-R8), ordered by dependency and risk. Pieces 0–2 complete;
+3+4 next (atomic pair). See the roadmap for piece definitions, landing groups, and
+the re-cut that separated session alignment (Piece 5) from cross-camera work (Piece 5
+cross-camera subsection). The "Immediate" list that previously occupied this space is
+retired — it conflicted with the sequenced breakdown on ordering and descriptions.
 
 **Deferred (lower priority):**
 - **Stage F export format (deferred until checkpoint-2 dt_s work lands).** Stage F currently
@@ -737,7 +648,10 @@ clip-level person_tracks, val-split, greedy IoU>=0.3, with pipeline state noted.
    zero-motion; dropped frames → false teleports. An unknown fraction of measured
    "Stage A tracklet_drift" (41%) may be recorder-injected. Hold GT2ACTUALS drift
    attribution, purity-proxy results, and Stage A sweep LOOSELY until re-measured on
-   clean footage.
+   clean footage. Legacy GT is **structurally excluded from pipeline timing measurement**
+   — see "Sidecar required for pipeline timing" in the Active Decisions Log. CP-R8
+   (clean re-capture + CVAT annotation) is on the critical path for all checkpoint-2
+   outcome validation.
 9. **"Padded frames = duplicates, skip Kalman update" → DUPLICATE HALF RETIRED, DROP HALF
    OPEN (DUPFIX-1/2).** Framehash proves 0 pixel-identical adjacent frames on source-PTS
    segments (one 0.18% exception). x264 re-encodes padded frames independently. `input_n`
@@ -1289,6 +1203,8 @@ because detection under-segmentation gives it wrong input.
 | Pipeline CFR refusal policy | **Decided** | If a clip's sidecar has `timing_mode: "cfr_grid"` or `source_pts: false`, the pipeline refuses the clip with a typed exception (`SidecarValidityError`). **No fallback path.** Falling back to `1/nominal_dt_s` reintroduces the scalar assumption TIMING-PRINCIPLE-1 exists to remove; falling back to the old frame-to-time conversion produces plausible-looking wrong velocities — the worse failure because nothing surfaces it. CFR rollback is already documented as producing degraded footage (see CFR rollback path row). A clip the pipeline cannot time correctly must fail visibly. Implemented in `f0_sidecar.load_sidecar()`. |
 | Sidecar schema-4 policy | **Decided** | Pipeline reader (`f0_sidecar.load_sidecar()`) refuses schema <5 with `SidecarSchemaError`. `parse_sidecar()` accepts schema 4 for tooling (probe, analysis). Between versions: `input_n` removed, `mismatch` semantics inverted, drop signal relocated to `showinfo_residual`. Schema-4 footage **remains valid at the gap level and as a regression baseline** — refusing it in the pipeline reader is a timing-path policy, not a statement that the footage has no value. Schema-4 footage cannot be regenerated to schema 5 (`regenerate_sidecar.py` refuses pre-R13a containers). |
 | TIMING-PRINCIPLE-1: Read time, don't convert | **Decided — prerequisite RESOLVED (CP-R13b)** | The pipeline should read time from the sidecar (`pts_time_s`, `dt_s`) rather than converting between frames and seconds via an fps scalar. Frame↔time conversion is itself the defect; with per-frame timing available, most conversions should be **deleted, not corrected**. Two exceptions: (1) boxmot `frame_rate` — a scalar by construction, sets `track_buffer` lifespan; addressed by the variable-dt fork (same principle, applied inside a dependency — see Coast architecture row). (2) `cv2.VideoWriter` / Stage F CFR re-encode — requires a scalar output fps; athletes never receive VFR clips. Fix taxonomy (DELETE-CONVERSION / FIX-SCALAR / FORK / DEAD-VESTIGIAL / AUDIT-ONLY) applied per site in `docs/evidence/timing_audit_1/findings.md` §0. **Prerequisite RESOLVED (CP-R13b):** Sidecar frame rows now derived from mp4 PTS. Row count = decode count by construction. `frame_index` maps 1:1 unconditionally — no `min(a, c)` guard needed. Showinfo retained only for `host_arrival_s` and drift, joined by PTS value. Schema 5. `a_eq_c = True` verified on all 6 fresh segments. DEL-CONV pieces 3–6, 10, 11 unblocked. Evidence: `docs/evidence/frame_index_join_1/findings.md`, `docs/evidence/mp4_timing_precision_1/findings.md`. |
+| Sidecar required for pipeline timing | **Decided** | The pipeline requires a valid schema-5 sidecar for all timing. No filename-anchor fallback, no legacy-footage timing path. **Rejected alternative:** anchoring session timestamps on `parse_clip_timestamp` (1-second filename resolution) — fails on the most common cross-clip stitch (person crossing a segment cut, real gap ~67ms, overestimated ~15× by a 1s anchor, rejecting valid reconnects via `dt_max_s`). `pts_wallclock_offset_s` (±14–56ms) is the right order of magnitude. **Cost:** legacy footage cannot score timing correctness. It **can** still run for T1 equivalence and T2 regression via the synthetic-sidecar generator (`f0_sidecar_testutil.py`) with constant-`dt` timing, clearly marked as synthetic. Consistent with `load_sidecar()` refusing schema <5 and with the pipeline CFR refusal policy. **Enforcement: gate at ingest** — one check when a clip enters the pipeline, so a clip fails before Stage A compute rather than halfway through Stage D. |
+| Checkpoint-2 Piece 4/5 re-cut | **Decided** | Original split conflated session alignment with cross-camera work. Re-cut: **Piece 4** — Stage D reads time, clip and session, anchored on `pts_wallclock_offset_s`. Absorbs audit sites #5, #6, #7, #9, #10. Site #1 (`session_d_run.py:491`) dissolves here (DEL-CONV consequent — disappears once #9 and #8 stop requesting a session-wide scalar). **Piece 5** — purely cross-camera: site #8 (`cross_camera_evidence.py:275`) and Tier 2 enabling work. Piece 4 must read and log `showinfo_offset_status` per clip — the sidecar anchor is better than filename timestamps, not unimpeachable, and the offset status must be available for post-hoc diagnosis if session stitching looks wrong. **Parked idea (Piece 5 / Tier 2):** gym buzzer as cross-camera sync anchor — a genuinely simultaneous physical event across all cameras. Not wired today (`buzzer.py` is a Stage E soft gate, downstream of D). Candidate signal if `pts_wallclock_offset_s` accuracy proves insufficient. Do not implement or schedule. Roadmap: `docs/roadmap/checkpoint2_breakdown.md`. |
 
 ## Never Touch
 
