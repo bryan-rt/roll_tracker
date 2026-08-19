@@ -71,7 +71,6 @@ def apply_buzzer_soft_gate(
     intervals: List[EngagementInterval],
     audio_events: List[Dict],
     *,
-    fps: float,
     buzzer_boundary_window_frames: int,
     pair_distances_df: pd.DataFrame,
     disengage_dist_m: float,

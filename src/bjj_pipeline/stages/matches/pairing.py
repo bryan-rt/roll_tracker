@@ -22,8 +22,6 @@ def _empty_pair_distances() -> pd.DataFrame:
 
 def compute_pair_distances(
     person_tracks_df: pd.DataFrame,
-    *,
-    fps: float,
 ) -> pd.DataFrame:
     """Compute per-frame pairwise distances between all person_id pairs.
 

@@ -35,7 +35,7 @@ see per-site subsections in Section 2 for the complete six-field record.*
 | 8 | `cross_camera_evidence.py:275` | `window_frames = temporal_window_s * fps` | Yes | Window/tolerance frame counts wrong by fps ratio. Inherits session-level fps (#1). | P1 | DEL-CONV |
 | 9 | `session_d_run.py:207-221` | `derive_clip_frame_offset` uses scalar fps | Yes | Frame offsets wrong by fps ratio. Compounds with #1. | P1 | DEL-CONV |
 | 10 | `session_f_run.py:88` | `derive_clip_frame_offset` in export | Yes | Same as #9, applied to Stage F source registry. | P1 | DEL-CONV |
-| 11 | `run.py:444-445` (Stage E) | `frame_index / fps * 1000` timestamp fallback | Dead code | `timestamp_ms` always present (verified: 0 nulls in production). | P3 | DEAD-VESTIGIAL |
+| 11 | `run.py:444-445` (Stage E) | `frame_index / fps * 1000` timestamp fallback | Dead code | **RESOLVED (Piece 1).** Fallback replaced with PipelineError raise. | P3 | DEAD-VESTIGIAL |
 | 12 | `session_f_run.py:397` | `fps = video_meta.fps if > 0 else 30.0` | Conditional | Hardcoded 30.0 fallback. On post-fix footage, probe returns correct value. | P2 | FIX-SCALAR |
 | 13 | `multiplex_runner.py:406` | `fps = 30.0` fallback | Conditional | Same pattern as #12. | P2 | FIX-SCALAR |
 | 14 | `redact.py:387` | `cv2.VideoWriter(..., float(fps), ...)` | Conditional | Receives fps from caller. Correct if caller is correct. | P2 | FIX-SCALAR |
@@ -45,9 +45,9 @@ see per-site subsections in Section 2 for the complete six-field record.*
 | 18 | `d1_graph_build.py:1954,2481` | `duration_ms` in audit JSONL | No (audit-only) | Emitted to `d1_graph_built` and `d1_reconnect_audit` events. Not a computational input. | P3 | AUDIT-ONLY |
 | 19 | `visualize.py:327,351,408` | `cap_fps` from `CAP_PROP_FPS`; `timestamp_ms = fi * (1000/cap_fps)` | Yes | Eval preview timestamps wrong by fps ratio on VFR footage. Affects CP-2 A/B ruler. | P3 | DEL-CONV (timestamp) + FIX-SCALAR (writer) |
 | 20 | Kalman `dt=1` (boxmot) | Unit time-step per frame | Conditional | Self-consistent under constant cadence. Wrong under variable spacing (gaps, mode switches). Separate from #4. | P2 (coast arch.) | FORK |
-| 21 | `pairing.py:26` | `fps` parameter | Vestigial | Accepted but never used in function body. Dead parameter. | P4 | DEAD-VESTIGIAL |
-| 22 | `buzzer.py:74` | `fps` parameter | Vestigial | Accepted but not used in core logic. Dead parameter. | P4 | DEAD-VESTIGIAL |
-| 23 | `cache_detections.py:63` | `clip_fps` in sweep cache summary | Dead field | Written to JSON summary but never read by any consumer. | P4 | DEAD-VESTIGIAL |
+| 21 | `pairing.py:26` | `fps` parameter | Vestigial | **RESOLVED (Piece 1).** Parameter removed. | P4 | DEAD-VESTIGIAL |
+| 22 | `buzzer.py:74` | `fps` parameter | Vestigial | **RESOLVED (Piece 1).** Parameter removed. | P4 | DEAD-VESTIGIAL |
+| 23 | `cache_detections.py:63` | `clip_fps` in sweep cache summary | Dead field | **RESOLVED (Piece 1).** Field and probe block removed. | P4 | DEAD-VESTIGIAL |
 
 ---
 

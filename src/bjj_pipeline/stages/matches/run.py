@@ -441,8 +441,17 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 	def _ts_for_frame(frame_index: int) -> int:
 		if frame_index in frame_to_ts:
 			return int(frame_to_ts[frame_index])
-		# fallback: derive from fps
-		return int(round((frame_index / float(manifest.fps)) * 1000.0))
+		# timestamp_ms is a required column in person_tracks (contract f0_validate).
+		# Every frame_index reaching here comes from pair_distances_df (derived from
+		# person_tracks) or from buzzer end-frame adjustment (guarded by the
+		# dist-is-None check in buzzer.py:_try_adjust_end, which requires both persons
+		# tracked at that frame). If this fires, the first suspect is a buzzer path
+		# that bypassed the dist guard — check buzzer.py _try_adjust_end.
+		raise PipelineError(
+			f"Stage E: timestamp_ms lookup miss for frame_index={frame_index}. "
+			f"This frame is not in person_tracks — possible buzzer end-frame adjustment "
+			f"to an untracked frame. Check buzzer.py _try_adjust_end dist guard."
+		)
 
 	# Config values
 	confidence = _seed_confidence(stage_cfg)
@@ -470,7 +479,7 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 	pair_dist_df = pd.DataFrame(columns=["frame_index", "person_id_a", "person_id_b", "dist_m"])
 
 	if tracks_df is not None:
-		pair_dist_df = compute_pair_distances(tracks_df, fps=manifest.fps)
+		pair_dist_df = compute_pair_distances(tracks_df)
 		if not pair_dist_df.empty:
 			proximity_intervals = run_proximity_hysteresis(
 				pair_dist_df,
@@ -504,7 +513,6 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 	if audio_events:
 		merged = apply_buzzer_soft_gate(
 			merged, audio_events,
-			fps=manifest.fps,
 			buzzer_boundary_window_frames=buzzer_boundary_window_frames,
 			pair_distances_df=pair_dist_df,
 			disengage_dist_m=disengage_dist_m,
@@ -687,7 +695,7 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 			"n_buzzer_events": len(audio_events),
 			"min_clip_duration_frames": min_clip_duration_frames,
 			"match_sessions_written": str(out_path),
-			"timestamp_source": "person_tracks_parquet" if frame_to_ts else "fps_fallback",
+			"timestamp_source": "person_tracks_parquet" if frame_to_ts else "empty_tracks",
 		},
 	)
 

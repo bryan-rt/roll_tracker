@@ -42,17 +42,6 @@ def cache_clip(clip_id: str, camera_id: str) -> dict:
     df = pd.read_parquet(dest, columns=["frame_index"])
     counts = df["frame_index"].value_counts()
 
-    # Probe clip FPS
-    import cv2
-    video_path = EVAL_GT_BASE / clip_id / ".." / ".." / ".." / ".." / ".." / ".." / "data" / "raw" / "nest" / "_eval_gt" / "J_EDEw" / "2026-03-18" / "20" / f"{clip_id}.mp4"
-    # Use the known video path directly
-    video_path = REPO_ROOT / "data" / "raw" / "nest" / "_eval_gt" / "J_EDEw" / "2026-03-18" / "20" / f"{clip_id}.mp4"
-    clip_fps = 30.0  # default
-    if video_path.exists():
-        cap = cv2.VideoCapture(str(video_path))
-        clip_fps = cap.get(cv2.CAP_PROP_FPS)
-        cap.release()
-
     summary = {
         "clip_id": clip_id,
         "camera_id": camera_id,
@@ -60,7 +49,6 @@ def cache_clip(clip_id: str, camera_id: str) -> dict:
         "content_hash_sha256": content_hash,
         "n_frames": int(counts.shape[0]),
         "n_detections": int(len(df)),
-        "clip_fps": clip_fps,
         "bbox_per_frame": {
             "min": int(counts.min()),
             "max": int(counts.max()),
