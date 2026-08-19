@@ -558,3 +558,37 @@ class TestSchema4NoRowSource:
         generate_synthetic_sidecar(tmp_dir / "s4.timing.jsonl", 10, schema=4)
         with pytest.raises(SidecarSchemaError):
             load_sidecar(tmp_dir / "s4.mp4")
+
+
+# ---------------------------------------------------------------------------
+# Table-driven enforcement: adding a field to the table enforces it
+# ---------------------------------------------------------------------------
+
+class TestTableDrivenEnforcement:
+    def test_field_in_table_is_enforced(self, tmp_dir):
+        """A field listed in _ALWAYS_REQUIRED_META is actually enforced on parse.
+
+        Guards against the tables and the validation loop diverging — the failure
+        mode that created this fix."""
+        from bjj_pipeline.contracts.f0_sidecar import _ALWAYS_REQUIRED_META
+
+        path = tmp_dir / "table_test.timing.jsonl"
+        # Build a valid meta then delete each required field in turn
+        base_meta = {
+            "_meta": True, "sidecar_schema": 5, "timing_mode": "passthrough",
+            "source_pts": True, "pts_origin": "segment_relative", "fps_method": "trimmed_mean",
+            "row_source": "mp4", "segment_start_epoch": 0, "attempt": 1,
+            "input_frame_count": 0, "output_frame_count": 0, "mismatch": False,
+            "measured_fps_mean": 15.0, "pts_timebase": 90000,
+            "pts_tick_delta_median": 6000, "pts_tick_delta_mean": 6000,
+            "pts_delta_trim_kept": 0, "pts_delta_trim_total": 0,
+            "pts_mean_delta_ms": 66.7, "pts_stdev_delta_ms": 0.0,
+        }
+
+        for field_name, _ in _ALWAYS_REQUIRED_META:
+            meta = dict(base_meta)
+            del meta[field_name]
+            with open(path, "w") as f:
+                f.write(json.dumps(meta) + "\n")
+            with pytest.raises(SidecarMalformedError, match=field_name):
+                parse_sidecar(path)

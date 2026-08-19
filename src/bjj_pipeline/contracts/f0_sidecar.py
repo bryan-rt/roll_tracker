@@ -383,57 +383,44 @@ _SCHEMA5_REQUIRED_META = [
 # Parsing
 # ---------------------------------------------------------------------------
 
+_REQUIRE_DISPATCH = {
+    "int": _require_int,
+    "float": _require_float,
+    "bool": _require_bool,
+    "str": _require_str,
+}
+
+
 def _parse_meta(meta: Dict[str, Any], path: Path) -> Dict[str, Any]:
     """Extract typed fields from _meta dict. Raises SidecarMalformedError on missing
-    always-present fields or type failures."""
+    always-present fields or type failures.
+
+    Validation is driven from _ALWAYS_REQUIRED_META and _SCHEMA5_REQUIRED_META tables.
+    Adding a field to those tables is sufficient to enforce it."""
 
     # Determine schema first (needed for conditional required set)
     schema = _require_int(meta, "sidecar_schema", path)
 
-    # Build the required set for this schema
-    required = list(_ALWAYS_REQUIRED_META)
+    # Build and validate the required set for this schema — table-driven
+    required_fields = list(_ALWAYS_REQUIRED_META)
     if schema >= 5:
-        required.extend(_SCHEMA5_REQUIRED_META)
+        required_fields.extend(_SCHEMA5_REQUIRED_META)
 
-    # Validate and extract required fields
-    _require_str(meta, "timing_mode", path)
-    _require_bool(meta, "source_pts", path)
-    if schema >= 5:
-        _require_str(meta, "row_source", path)
-    _require_int(meta, "segment_start_epoch", path)
-    _require_int(meta, "attempt", path)
-    _require_int(meta, "input_frame_count", path)
-    _require_int(meta, "output_frame_count", path)
-    _require_bool(meta, "mismatch", path)
-    _require_int(meta, "pts_timebase", path)
-    _require_float(meta, "measured_fps_mean", path)
-    _require_float(meta, "pts_tick_delta_median", path)
-    _require_float(meta, "pts_tick_delta_mean", path)
-    _require_int(meta, "pts_delta_trim_kept", path)
-    _require_int(meta, "pts_delta_trim_total", path)
-    _require_float(meta, "pts_mean_delta_ms", path)
-    _require_float(meta, "pts_stdev_delta_ms", path)
+    validated: Dict[str, Any] = {"sidecar_schema": schema}
+    for field_name, type_name in required_fields:
+        if field_name == "sidecar_schema":
+            continue  # already read above
+        validated[field_name] = _REQUIRE_DISPATCH[type_name](meta, field_name, path)
 
+    # Schema < 5: row_source defaults to "showinfo_grid" (not present in schema 4)
+    if "row_source" not in validated:
+        validated["row_source"] = meta.get("row_source", "showinfo_grid")
+
+    validated["raw_meta"] = dict(meta)
+
+    # Gated fields — None if absent, raises if present but malformed
     return dict(
-        sidecar_schema=schema,
-        timing_mode=meta["timing_mode"],
-        source_pts=meta["source_pts"],
-        row_source=meta.get("row_source", "showinfo_grid"),  # default for schema < 5
-        segment_start_epoch=int(meta["segment_start_epoch"]),
-        attempt=int(meta["attempt"]),
-        input_frame_count=int(meta["input_frame_count"]),
-        output_frame_count=int(meta["output_frame_count"]),
-        mismatch=meta["mismatch"],
-        pts_timebase=int(meta["pts_timebase"]),
-        measured_fps_mean=float(meta["measured_fps_mean"]),
-        pts_tick_delta_median=float(meta["pts_tick_delta_median"]),
-        pts_tick_delta_mean=float(meta["pts_tick_delta_mean"]),
-        pts_delta_trim_kept=int(meta["pts_delta_trim_kept"]),
-        pts_delta_trim_total=int(meta["pts_delta_trim_total"]),
-        pts_mean_delta_ms=float(meta["pts_mean_delta_ms"]),
-        pts_stdev_delta_ms=float(meta["pts_stdev_delta_ms"]),
-        raw_meta=dict(meta),
-        # Gated fields — None if absent, raises if present but malformed
+        **validated,
         nominal_dt_s=_optional_float(meta, "nominal_dt_s", path),
         measured_fps=_optional_float(meta, "measured_fps", path),
         measured_fps_median=_optional_float(meta, "measured_fps_median", path),
