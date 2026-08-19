@@ -1,9 +1,9 @@
-# Sidecar Timing Contract -- Schema v4
+# Sidecar Timing Contract -- Schema v5
 
 *Authoritative specification for `.timing.jsonl` sidecars produced by the Nest recorder.
 Pipeline consumers code against this document, not the recorder implementation.*
 
-*Established: 2026-08-05 (CP-R6). Schema version: 4.*
+*Established: 2026-08-05 (CP-R6). Schema version: 5 (2026-08-17, CP-R13b).*
 
 ---
 

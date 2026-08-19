@@ -61,6 +61,9 @@ paths:
 - `f0_projection.py` — `project_to_world()` with optional cv2.undistortPoints before H.
   CameraProjection NamedTuple. **Only permitted projection path.**
 - `f0_validate.py` — Post-stage validators.
+- `f0_sidecar.py` — Schema-5 sidecar reader. `parse_sidecar(path)` (permissive, for tooling),
+  `load_sidecar(mp4_path)` (strict, enforces schema 5 + passthrough + source_pts). Refuses
+  CFR and schema <5 in strict mode. `f0_sidecar_testutil.py` for synthetic sidecar generation.
 - Ingest: `validate_ingest_path()` → IngestPathInfo. `compute_output_root()` for gym-scoped output.
   Accepts both `{gym_id}/{cam_id}/{date}/{hour}/` and legacy `{cam_id}/{date}/{hour}/`.
 

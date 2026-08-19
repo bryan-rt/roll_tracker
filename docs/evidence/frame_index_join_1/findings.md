@@ -381,3 +381,54 @@ The C2 answer changes the timing audit's FrameIterator verdict:
 The timing audit's **§7.1b** FP7oJQ comparison should carry a correction note: the
 67ms divergence was between sidecar `pts_time_s` and a uniform-grid computation, not
 between sidecar and `POS_MSEC`. `POS_MSEC` itself shows the real gap structure.
+
+---
+
+## 10. Post-R13b Verification (2026-08-19, Piece 2)
+
+### A1: Join invariant on post-R13b multi-segment captures
+
+`a_eq_c = True` on all 9 post-R13b passthrough segments across 3 multi-segment attempts
+(FP7oJQ: 133817-133856, 191838-191919; PPDmUg: 133809-133849). Both cameras. `showinfo_residual`
+shows expected boundary redistribution (-14/+1/+12, -12/0/+11, -20/+1/+18).
+
+**Open residual:** All segments are smoke-test length (~300 frames). Production-length
+(~1800 frames) verification arrives with CP-R8. The structural argument (row count = mp4
+frame count by construction) is strong, and boundary redistribution confirms multi-segment
+boundaries are exercised.
+
+### A2: POS_MSEC fidelity on post-R13a footage
+
+| Camera | Segment | Max deviation | 5940/6030 alternation visible? |
+|--------|---------|--------------|-------------------------------|
+| FP7oJQ | 133817 | **0.000ms** | **Yes** — 66ms (90), 67ms (182) |
+| PPDmUg | 133829 | **0.000ms** | **Yes** — 66ms (100), 67ms (199) |
+
+`CAP_PROP_POS_MSEC` matches sidecar `pts_time_s` with zero deviation. The 5940/6030 tick
+alternation is fully visible as distinct 66ms/67ms deltas in POS_MSEC.
+
+**Consequence:** Stage A does NOT need to read the sidecar for per-frame timestamps.
+`FrameIterator.timestamp_ms` already provides exact capture PTS on post-R13a footage.
+
+### Precision finding
+
+All `pts_time_s` values land on exact integer milliseconds: 5940/90=66, 6030/90=67,
+11970/90=133, 12060/90=134. `int(timestamp_ms)` rounding is lossless for post-R13a
+footage. **Piece 11 precision decision: closed.**
+
+### A3: Sidecar reachability
+
+- **Production:** reachable (sibling to mp4).
+- **Processor (`run_local.sh`):** reachable (same path).
+- **Sweep (`_eval_gt`):** NOT reachable — pre-R13a footage has no sidecars. Backlog item 11
+  (match_thresh sweep) is invalid on the current corpus; gated on post-R13a re-capture.
+
+### Known risks for downstream pieces
+
+- **Piece 5 (cross-camera sync):** `pts_wallclock_offset_s` derives from `host_arrival_s`,
+  which is the field affected by the showinfo boundary defect. The contract's ±14–56ms sync
+  figure predates this evidence. `showinfo_offset_status` is the signal Piece 5 should check
+  to judge reliability. Residuals sum to -1 per attempt (consistent with one real drop,
+  not pure redistribution).
+- **Sweep corpus:** OFAT sweep baseline runs a different `frame_rate` than production
+  will post-fix. Third item gated on CP-R8 alongside drift re-measurement.
