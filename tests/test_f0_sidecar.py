@@ -10,6 +10,7 @@ import pytest
 from bjj_pipeline.contracts.f0_sidecar import (
     SidecarData,
     SidecarError,
+    SidecarMalformedError,
     SidecarSchemaError,
     SidecarValidityError,
     load_sidecar,
@@ -137,7 +138,7 @@ class TestSourcePtsFalse:
             tmp_dir / "test.timing.jsonl", 10, source_pts=False, timing_mode="cfr_grid"
         )
         data = parse_sidecar(sc)
-        with pytest.raises(SidecarValidityError, match="timing_mode"):
+        with pytest.raises(SidecarValidityError, match="source_pts"):
             data.dt_s(1)
 
     def test_nominal_fps_raises(self, tmp_dir):
@@ -310,7 +311,7 @@ class TestContiguity:
             f.write(json.dumps({"frame_index": 1, "pts_time_s": 0.067, "dt_s": 0.067}) + "\n")
             # Skip frame_index 2, emit 3
             f.write(json.dumps({"frame_index": 3, "pts_time_s": 0.200, "dt_s": 0.066}) + "\n")
-        with pytest.raises(SidecarError, match="contiguity"):
+        with pytest.raises(SidecarMalformedError, match="frame_index"):
             parse_sidecar(path)
 
     def test_duplicate_raises(self, tmp_dir):
@@ -330,7 +331,7 @@ class TestContiguity:
             f.write(json.dumps({"frame_index": 1, "pts_time_s": 0.067, "dt_s": 0.067}) + "\n")
             # Duplicate frame_index 1
             f.write(json.dumps({"frame_index": 1, "pts_time_s": 0.134, "dt_s": 0.067}) + "\n")
-        with pytest.raises(SidecarError, match="contiguity"):
+        with pytest.raises(SidecarMalformedError, match="frame_index"):
             parse_sidecar(path)
 
 
@@ -355,7 +356,7 @@ class TestRowCountMismatch:
             for i in range(3):
                 f.write(json.dumps({"frame_index": i, "pts_time_s": i * 0.067,
                                     "dt_s": None if i == 0 else 0.067}) + "\n")
-        with pytest.raises(SidecarError, match="Row count.*output_frame_count"):
+        with pytest.raises(SidecarMalformedError, match="row count.*output_frame_count"):
             parse_sidecar(path)
 
 
@@ -384,3 +385,176 @@ class TestRoundTrip:
         data = load_sidecar(mp4)
         assert data.sidecar_schema == 5
         assert data.frame_count == 10
+
+
+# ---------------------------------------------------------------------------
+# F1: Always-present fields raise on absence
+# ---------------------------------------------------------------------------
+
+class TestRequiredFieldsMissing:
+    """Fields contract §2 declares always-present must raise on absence."""
+
+    def _make_meta(self, **overrides):
+        base = {"_meta": True, "sidecar_schema": 5, "timing_mode": "passthrough",
+                "source_pts": True, "pts_origin": "segment_relative", "fps_method": "trimmed_mean",
+                "row_source": "mp4", "segment_start_epoch": 0, "attempt": 1,
+                "input_frame_count": 0, "output_frame_count": 0, "mismatch": False,
+                "measured_fps_mean": 15.0, "pts_timebase": 90000,
+                "pts_tick_delta_median": 6000, "pts_tick_delta_mean": 6000,
+                "pts_delta_trim_kept": 0, "pts_delta_trim_total": 0,
+                "pts_mean_delta_ms": 66.7, "pts_stdev_delta_ms": 0.0}
+        base.update(overrides)
+        return base
+
+    def test_missing_output_frame_count(self, tmp_dir):
+        path = tmp_dir / "missing_ofc.timing.jsonl"
+        meta = self._make_meta()
+        del meta["output_frame_count"]
+        with open(path, "w") as f:
+            f.write(json.dumps(meta) + "\n")
+        with pytest.raises(SidecarMalformedError, match="output_frame_count"):
+            parse_sidecar(path)
+
+    def test_missing_timing_mode(self, tmp_dir):
+        path = tmp_dir / "missing_tm.timing.jsonl"
+        meta = self._make_meta()
+        del meta["timing_mode"]
+        with open(path, "w") as f:
+            f.write(json.dumps(meta) + "\n")
+        with pytest.raises(SidecarMalformedError, match="timing_mode"):
+            parse_sidecar(path)
+
+    def test_missing_pts_time_s_in_row(self, tmp_dir):
+        path = tmp_dir / "missing_pts.timing.jsonl"
+        meta = self._make_meta(input_frame_count=2, output_frame_count=2)
+        with open(path, "w") as f:
+            f.write(json.dumps(meta) + "\n")
+            f.write(json.dumps({"frame_index": 0, "pts_time_s": 0.0}) + "\n")
+            # Row missing pts_time_s
+            f.write(json.dumps({"frame_index": 1}) + "\n")
+        with pytest.raises(SidecarMalformedError, match="pts_time_s"):
+            parse_sidecar(path)
+
+    def test_missing_frame_index_in_row(self, tmp_dir):
+        """Row missing frame_index must raise — not pass contiguity trivially."""
+        path = tmp_dir / "missing_fi.timing.jsonl"
+        meta = self._make_meta(input_frame_count=2, output_frame_count=2)
+        with open(path, "w") as f:
+            f.write(json.dumps(meta) + "\n")
+            f.write(json.dumps({"frame_index": 0, "pts_time_s": 0.0}) + "\n")
+            # Row missing frame_index
+            f.write(json.dumps({"pts_time_s": 0.067}) + "\n")
+        with pytest.raises(SidecarMalformedError, match="frame_index"):
+            parse_sidecar(path)
+
+    def test_blank_line_with_correct_frame_index(self, tmp_dir):
+        """A file with a blank line but correct frame_index throughout parses cleanly."""
+        path = tmp_dir / "blank_line.timing.jsonl"
+        meta = self._make_meta(input_frame_count=3, output_frame_count=3)
+        with open(path, "w") as f:
+            f.write(json.dumps(meta) + "\n")
+            f.write(json.dumps({"frame_index": 0, "pts_time_s": 0.0}) + "\n")
+            f.write("\n")  # blank line
+            f.write(json.dumps({"frame_index": 1, "pts_time_s": 0.067}) + "\n")
+            f.write(json.dumps({"frame_index": 2, "pts_time_s": 0.134}) + "\n")
+        data = parse_sidecar(path)
+        assert data.frame_count == 3
+
+
+# ---------------------------------------------------------------------------
+# F3: Malformed JSON rows raise
+# ---------------------------------------------------------------------------
+
+class TestMalformedJsonRow:
+    def test_raises_naming_line(self, tmp_dir):
+        path = tmp_dir / "bad_json.timing.jsonl"
+        meta = {"_meta": True, "sidecar_schema": 5, "timing_mode": "passthrough",
+                "source_pts": True, "pts_origin": "segment_relative", "fps_method": "trimmed_mean",
+                "row_source": "mp4", "segment_start_epoch": 0, "attempt": 1,
+                "input_frame_count": 2, "output_frame_count": 2, "mismatch": False,
+                "measured_fps_mean": 15.0, "pts_timebase": 90000,
+                "pts_tick_delta_median": 6000, "pts_tick_delta_mean": 6000,
+                "pts_delta_trim_kept": 1, "pts_delta_trim_total": 1,
+                "pts_mean_delta_ms": 66.7, "pts_stdev_delta_ms": 0.0}
+        with open(path, "w") as f:
+            f.write(json.dumps(meta) + "\n")
+            f.write(json.dumps({"frame_index": 0, "pts_time_s": 0.0}) + "\n")
+            f.write("this is not valid json\n")
+        with pytest.raises(SidecarMalformedError, match="cannot parse frame row"):
+            parse_sidecar(path)
+
+
+# ---------------------------------------------------------------------------
+# F4: Coercion failures
+# ---------------------------------------------------------------------------
+
+class TestCoercionFailures:
+    def test_meta_field_malformed_value(self, tmp_dir):
+        """pts_timebase: 'abc' raises naming the field and value."""
+        path = tmp_dir / "bad_coerce.timing.jsonl"
+        meta = {"_meta": True, "sidecar_schema": 5, "timing_mode": "passthrough",
+                "source_pts": True, "pts_origin": "segment_relative", "fps_method": "trimmed_mean",
+                "row_source": "mp4", "segment_start_epoch": 0, "attempt": 1,
+                "input_frame_count": 0, "output_frame_count": 0, "mismatch": False,
+                "measured_fps_mean": 15.0, "pts_timebase": "abc",
+                "pts_tick_delta_median": 6000, "pts_tick_delta_mean": 6000,
+                "pts_delta_trim_kept": 0, "pts_delta_trim_total": 0,
+                "pts_mean_delta_ms": 66.7, "pts_stdev_delta_ms": 0.0}
+        with open(path, "w") as f:
+            f.write(json.dumps(meta) + "\n")
+        with pytest.raises(SidecarMalformedError, match="pts_timebase.*abc"):
+            parse_sidecar(path)
+
+    def test_gated_field_malformed_value(self, tmp_dir):
+        """nominal_dt_s: 'xyz' raises naming the field and value."""
+        path = tmp_dir / "bad_gated.timing.jsonl"
+        meta = {"_meta": True, "sidecar_schema": 5, "timing_mode": "passthrough",
+                "source_pts": True, "pts_origin": "segment_relative", "fps_method": "trimmed_mean",
+                "row_source": "mp4", "segment_start_epoch": 0, "attempt": 1,
+                "input_frame_count": 0, "output_frame_count": 0, "mismatch": False,
+                "measured_fps_mean": 15.0, "pts_timebase": 90000,
+                "pts_tick_delta_median": 6000, "pts_tick_delta_mean": 6000,
+                "pts_delta_trim_kept": 0, "pts_delta_trim_total": 0,
+                "pts_mean_delta_ms": 66.7, "pts_stdev_delta_ms": 0.0,
+                "nominal_dt_s": "xyz"}
+        with open(path, "w") as f:
+            f.write(json.dumps(meta) + "\n")
+        with pytest.raises(SidecarMalformedError, match="nominal_dt_s.*xyz"):
+            parse_sidecar(path)
+
+    def test_bool_coercion_source_pts_string(self, tmp_dir):
+        """source_pts: 'false' (string) must NOT coerce to True."""
+        path = tmp_dir / "bad_bool.timing.jsonl"
+        meta = {"_meta": True, "sidecar_schema": 5, "timing_mode": "passthrough",
+                "source_pts": "false", "pts_origin": "segment_relative", "fps_method": "trimmed_mean",
+                "row_source": "mp4", "segment_start_epoch": 0, "attempt": 1,
+                "input_frame_count": 0, "output_frame_count": 0, "mismatch": False,
+                "measured_fps_mean": 15.0, "pts_timebase": 90000,
+                "pts_tick_delta_median": 6000, "pts_tick_delta_mean": 6000,
+                "pts_delta_trim_kept": 0, "pts_delta_trim_total": 0,
+                "pts_mean_delta_ms": 66.7, "pts_stdev_delta_ms": 0.0}
+        with open(path, "w") as f:
+            f.write(json.dumps(meta) + "\n")
+        with pytest.raises(SidecarMalformedError, match="source_pts.*bool"):
+            parse_sidecar(path)
+
+
+# ---------------------------------------------------------------------------
+# Schema-4 without row_source parses permissively
+# ---------------------------------------------------------------------------
+
+class TestSchema4NoRowSource:
+    def test_parse_succeeds(self, tmp_dir):
+        """Schema-4 sidecar without row_source parses cleanly under parse_sidecar."""
+        sc = generate_synthetic_sidecar(
+            tmp_dir / "s4.timing.jsonl", 10, schema=4
+        )
+        data = parse_sidecar(sc)
+        assert data.sidecar_schema == 4
+        assert data.row_source == "showinfo_grid"  # default for schema < 5
+
+    def test_load_raises_schema_error(self, tmp_dir):
+        """Schema-4 still raises SidecarSchemaError under load_sidecar."""
+        generate_synthetic_sidecar(tmp_dir / "s4.timing.jsonl", 10, schema=4)
+        with pytest.raises(SidecarSchemaError):
+            load_sidecar(tmp_dir / "s4.mp4")

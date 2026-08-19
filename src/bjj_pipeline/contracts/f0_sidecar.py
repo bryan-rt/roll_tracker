@@ -3,8 +3,12 @@
 Codes against docs/reference/sidecar_contract.md (schema 5, CP-R13b).
 Two entry points:
 
-  parse_sidecar(path)  — permissive, for tooling. Validity queryable, never raises on content.
-  load_sidecar(mp4_path) — strict, for pipeline consumers. Enforces schema 5 + passthrough + source_pts.
+  parse_sidecar(path)  — permissive about schema version and validity mode (accepts
+      schema 4, source_pts=false, cfr_grid — all queryable). Strict about structural
+      malformation (missing always-present fields, non-contiguous frame_index, unparseable
+      rows — raises regardless of schema).
+  load_sidecar(mp4_path) — strict about everything: schema 5 + passthrough + source_pts,
+      plus all structural checks from parse_sidecar.
 
 Schema-4 policy: parse_sidecar accepts (for tooling like probe_frame_index_join.py).
 load_sidecar refuses with SidecarSchemaError. Schema-4 footage remains valid at the gap
@@ -32,8 +36,181 @@ class SidecarSchemaError(SidecarError):
     """Sidecar schema version not supported by this reader."""
 
 
+class SidecarMalformedError(SidecarError):
+    """Sidecar is structurally malformed — missing required fields, non-contiguous
+    frame_index, or unparseable rows. Distinct from old-schema or wrong-mode: a
+    malformed file cannot be used by anyone, not just the pipeline."""
+
+
 class SidecarValidityError(SidecarError):
     """A required validity gate is not met (names the gate)."""
+
+
+# ---------------------------------------------------------------------------
+# Type-safe field readers
+# ---------------------------------------------------------------------------
+
+def _require_int(meta: dict, key: str, path: Path) -> int:
+    if key not in meta:
+        raise SidecarMalformedError(
+            f"Sidecar malformed: required _meta field missing "
+            f"(field={key!r}, value=<missing>, path={path})"
+        )
+    raw = meta[key]
+    if isinstance(raw, bool):
+        raise SidecarMalformedError(
+            f"Sidecar malformed: _meta field must be int, got bool "
+            f"(field={key!r}, value={raw!r}, path={path})"
+        )
+    if not isinstance(raw, (int, float)):
+        raise SidecarMalformedError(
+            f"Sidecar malformed: cannot convert _meta field to int "
+            f"(field={key!r}, value={str(raw)[:50]!r}, path={path})"
+        )
+    if isinstance(raw, float) and raw != int(raw):
+        raise SidecarMalformedError(
+            f"Sidecar malformed: _meta field is non-integral float "
+            f"(field={key!r}, value={raw!r}, path={path})"
+        )
+    return int(raw)
+
+
+def _require_float(meta: dict, key: str, path: Path) -> float:
+    if key not in meta:
+        raise SidecarMalformedError(
+            f"Sidecar malformed: required _meta field missing "
+            f"(field={key!r}, value=<missing>, path={path})"
+        )
+    raw = meta[key]
+    if isinstance(raw, bool):
+        raise SidecarMalformedError(
+            f"Sidecar malformed: _meta field must be numeric, got bool "
+            f"(field={key!r}, value={raw!r}, path={path})"
+        )
+    if not isinstance(raw, (int, float)):
+        raise SidecarMalformedError(
+            f"Sidecar malformed: cannot convert _meta field to float "
+            f"(field={key!r}, value={str(raw)[:50]!r}, path={path})"
+        )
+    return float(raw)
+
+
+def _require_bool(meta: dict, key: str, path: Path) -> bool:
+    if key not in meta:
+        raise SidecarMalformedError(
+            f"Sidecar malformed: required _meta field missing "
+            f"(field={key!r}, value=<missing>, path={path})"
+        )
+    raw = meta[key]
+    if not isinstance(raw, bool):
+        raise SidecarMalformedError(
+            f"Sidecar malformed: _meta field must be bool (true/false), got {type(raw).__name__} "
+            f"(field={key!r}, value={str(raw)[:50]!r}, path={path})"
+        )
+    return raw
+
+
+def _require_str(meta: dict, key: str, path: Path) -> str:
+    if key not in meta:
+        raise SidecarMalformedError(
+            f"Sidecar malformed: required _meta field missing "
+            f"(field={key!r}, value=<missing>, path={path})"
+        )
+    raw = meta[key]
+    if not isinstance(raw, str):
+        raise SidecarMalformedError(
+            f"Sidecar malformed: _meta field must be string, got {type(raw).__name__} "
+            f"(field={key!r}, value={str(raw)[:50]!r}, path={path})"
+        )
+    return raw
+
+
+def _optional_int(meta: dict, key: str, path: Path) -> Optional[int]:
+    if key not in meta:
+        return None
+    raw = meta[key]
+    if isinstance(raw, bool):
+        raise SidecarMalformedError(
+            f"Sidecar malformed: _meta field must be int, got bool "
+            f"(field={key!r}, value={raw!r}, path={path})"
+        )
+    if not isinstance(raw, (int, float)):
+        raise SidecarMalformedError(
+            f"Sidecar malformed: cannot convert _meta field to int "
+            f"(field={key!r}, value={str(raw)[:50]!r}, path={path})"
+        )
+    return int(raw)
+
+
+def _optional_float(meta: dict, key: str, path: Path) -> Optional[float]:
+    if key not in meta:
+        return None
+    raw = meta[key]
+    if isinstance(raw, bool):
+        raise SidecarMalformedError(
+            f"Sidecar malformed: _meta field must be numeric, got bool "
+            f"(field={key!r}, value={raw!r}, path={path})"
+        )
+    if not isinstance(raw, (int, float)):
+        raise SidecarMalformedError(
+            f"Sidecar malformed: cannot convert _meta field to float "
+            f"(field={key!r}, value={str(raw)[:50]!r}, path={path})"
+        )
+    return float(raw)
+
+
+def _optional_bool(meta: dict, key: str, path: Path) -> Optional[bool]:
+    if key not in meta:
+        return None
+    raw = meta[key]
+    if not isinstance(raw, bool):
+        raise SidecarMalformedError(
+            f"Sidecar malformed: _meta field must be bool (true/false), got {type(raw).__name__} "
+            f"(field={key!r}, value={str(raw)[:50]!r}, path={path})"
+        )
+    return raw
+
+
+def _optional_str(meta: dict, key: str, path: Path) -> Optional[str]:
+    if key not in meta:
+        return None
+    raw = meta[key]
+    if not isinstance(raw, str):
+        raise SidecarMalformedError(
+            f"Sidecar malformed: _meta field must be string, got {type(raw).__name__} "
+            f"(field={key!r}, value={str(raw)[:50]!r}, path={path})"
+        )
+    return raw
+
+
+def _require_row_int(row: dict, key: str, line_num: int, path: Path) -> int:
+    if key not in row:
+        raise SidecarMalformedError(
+            f"Sidecar malformed: required frame-row field missing "
+            f"(field={key!r}, row={line_num}, value=<missing>, path={path})"
+        )
+    raw = row[key]
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        raise SidecarMalformedError(
+            f"Sidecar malformed: cannot convert frame-row field to int "
+            f"(field={key!r}, row={line_num}, value={str(raw)[:50]!r}, path={path})"
+        )
+    return int(raw)
+
+
+def _require_row_float(row: dict, key: str, line_num: int, path: Path) -> float:
+    if key not in row:
+        raise SidecarMalformedError(
+            f"Sidecar malformed: required frame-row field missing "
+            f"(field={key!r}, row={line_num}, value=<missing>, path={path})"
+        )
+    raw = row[key]
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        raise SidecarMalformedError(
+            f"Sidecar malformed: cannot convert frame-row field to float "
+            f"(field={key!r}, row={line_num}, value={str(raw)[:50]!r}, path={path})"
+        )
+    return float(raw)
 
 
 # ---------------------------------------------------------------------------
@@ -72,6 +249,9 @@ class SidecarData:
     measured_fps: Optional[float] = None
     measured_fps_median: Optional[float] = None
     is_bimodal: Optional[bool] = None
+    """Advisory, not authoritative. Structurally cannot fire when the majority mode is the
+    short one (contract section 5, 'Known limitation'). Consumers handling critical bimodal cases
+    should also inspect the raw dt_s distribution."""
 
     # --- _meta: gated on showinfo availability ---
     showinfo_frame_count: Optional[int] = None
@@ -149,7 +329,7 @@ class SidecarData:
             raise IndexError(
                 f"frame_index {frame_index} out of range [0, {len(self._frame_dt_s)})"
             )
-        if not self._frame_dt_s and not self.has_source_pts:
+        if not self.has_source_pts:
             raise SidecarValidityError(
                 "dt_s not available: source_pts=false"
             )
@@ -170,55 +350,124 @@ class SidecarData:
 
 
 # ---------------------------------------------------------------------------
+# Schema-conditional required fields
+# ---------------------------------------------------------------------------
+
+# Fields always present regardless of schema (contract §2 "Always present", cross-schema)
+_ALWAYS_REQUIRED_META = [
+    ("sidecar_schema", "int"),
+    ("timing_mode", "str"),
+    ("source_pts", "bool"),
+    ("segment_start_epoch", "int"),
+    ("attempt", "int"),
+    ("input_frame_count", "int"),
+    ("output_frame_count", "int"),
+    ("mismatch", "bool"),
+    ("pts_timebase", "int"),
+    ("measured_fps_mean", "float"),
+    ("pts_tick_delta_median", "float"),
+    ("pts_tick_delta_mean", "float"),
+    ("pts_delta_trim_kept", "int"),
+    ("pts_delta_trim_total", "int"),
+    ("pts_mean_delta_ms", "float"),
+    ("pts_stdev_delta_ms", "float"),
+]
+
+# Fields required ONLY in schema >= 5 (contract §3 "Schema 5+")
+_SCHEMA5_REQUIRED_META = [
+    ("row_source", "str"),
+]
+
+
+# ---------------------------------------------------------------------------
 # Parsing
 # ---------------------------------------------------------------------------
 
-def _parse_meta(meta: Dict[str, Any]) -> Dict[str, Any]:
-    """Extract typed fields from _meta dict."""
+def _parse_meta(meta: Dict[str, Any], path: Path) -> Dict[str, Any]:
+    """Extract typed fields from _meta dict. Raises SidecarMalformedError on missing
+    always-present fields or type failures."""
+
+    # Determine schema first (needed for conditional required set)
+    schema = _require_int(meta, "sidecar_schema", path)
+
+    # Build the required set for this schema
+    required = list(_ALWAYS_REQUIRED_META)
+    if schema >= 5:
+        required.extend(_SCHEMA5_REQUIRED_META)
+
+    # Validate and extract required fields
+    _require_str(meta, "timing_mode", path)
+    _require_bool(meta, "source_pts", path)
+    if schema >= 5:
+        _require_str(meta, "row_source", path)
+    _require_int(meta, "segment_start_epoch", path)
+    _require_int(meta, "attempt", path)
+    _require_int(meta, "input_frame_count", path)
+    _require_int(meta, "output_frame_count", path)
+    _require_bool(meta, "mismatch", path)
+    _require_int(meta, "pts_timebase", path)
+    _require_float(meta, "measured_fps_mean", path)
+    _require_float(meta, "pts_tick_delta_median", path)
+    _require_float(meta, "pts_tick_delta_mean", path)
+    _require_int(meta, "pts_delta_trim_kept", path)
+    _require_int(meta, "pts_delta_trim_total", path)
+    _require_float(meta, "pts_mean_delta_ms", path)
+    _require_float(meta, "pts_stdev_delta_ms", path)
+
     return dict(
-        sidecar_schema=int(meta.get("sidecar_schema", 0)),
-        timing_mode=str(meta.get("timing_mode", "")),
-        source_pts=bool(meta.get("source_pts", False)),
-        row_source=str(meta.get("row_source", "showinfo_grid")),
-        segment_start_epoch=int(meta.get("segment_start_epoch", 0)),
-        attempt=int(meta.get("attempt", 0)),
-        input_frame_count=int(meta.get("input_frame_count", 0)),
-        output_frame_count=int(meta.get("output_frame_count", 0)),
-        mismatch=bool(meta.get("mismatch", False)),
-        pts_timebase=int(meta.get("pts_timebase", 0)),
-        measured_fps_mean=float(meta.get("measured_fps_mean", 0.0)),
-        pts_tick_delta_median=float(meta.get("pts_tick_delta_median", 0.0)),
-        pts_tick_delta_mean=float(meta.get("pts_tick_delta_mean", 0.0)),
-        pts_delta_trim_kept=int(meta.get("pts_delta_trim_kept", 0)),
-        pts_delta_trim_total=int(meta.get("pts_delta_trim_total", 0)),
-        pts_mean_delta_ms=float(meta.get("pts_mean_delta_ms", 0.0)),
-        pts_stdev_delta_ms=float(meta.get("pts_stdev_delta_ms", 0.0)),
+        sidecar_schema=schema,
+        timing_mode=meta["timing_mode"],
+        source_pts=meta["source_pts"],
+        row_source=meta.get("row_source", "showinfo_grid"),  # default for schema < 5
+        segment_start_epoch=int(meta["segment_start_epoch"]),
+        attempt=int(meta["attempt"]),
+        input_frame_count=int(meta["input_frame_count"]),
+        output_frame_count=int(meta["output_frame_count"]),
+        mismatch=meta["mismatch"],
+        pts_timebase=int(meta["pts_timebase"]),
+        measured_fps_mean=float(meta["measured_fps_mean"]),
+        pts_tick_delta_median=float(meta["pts_tick_delta_median"]),
+        pts_tick_delta_mean=float(meta["pts_tick_delta_mean"]),
+        pts_delta_trim_kept=int(meta["pts_delta_trim_kept"]),
+        pts_delta_trim_total=int(meta["pts_delta_trim_total"]),
+        pts_mean_delta_ms=float(meta["pts_mean_delta_ms"]),
+        pts_stdev_delta_ms=float(meta["pts_stdev_delta_ms"]),
         raw_meta=dict(meta),
-        # Gated fields — None if absent
-        nominal_dt_s=float(meta["nominal_dt_s"]) if "nominal_dt_s" in meta else None,
-        measured_fps=float(meta["measured_fps"]) if "measured_fps" in meta else None,
-        measured_fps_median=float(meta["measured_fps_median"]) if "measured_fps_median" in meta else None,
-        is_bimodal=bool(meta["is_bimodal"]) if "is_bimodal" in meta else None,
-        showinfo_frame_count=int(meta["showinfo_frame_count"]) if "showinfo_frame_count" in meta else None,
-        showinfo_residual=int(meta["showinfo_residual"]) if "showinfo_residual" in meta else None,
-        showinfo_pts_offset=int(meta["showinfo_pts_offset"]) if "showinfo_pts_offset" in meta else None,
-        showinfo_matched_count=int(meta["showinfo_matched_count"]) if "showinfo_matched_count" in meta else None,
-        showinfo_unmatched_mp4_count=int(meta["showinfo_unmatched_mp4_count"]) if "showinfo_unmatched_mp4_count" in meta else None,
-        showinfo_surplus_count=int(meta["showinfo_surplus_count"]) if "showinfo_surplus_count" in meta else None,
-        showinfo_offset_status=str(meta["showinfo_offset_status"]) if "showinfo_offset_status" in meta else None,
-        pts_wallclock_offset_s=float(meta["pts_wallclock_offset_s"]) if "pts_wallclock_offset_s" in meta else None,
-        drift_rate_s_per_s=float(meta["drift_rate_s_per_s"]) if "drift_rate_s_per_s" in meta else None,
-        drift_ppm=float(meta["drift_ppm"]) if "drift_ppm" in meta else None,
-        drift_flat=bool(meta["drift_flat"]) if "drift_flat" in meta else None,
-        n_drift_windows=int(meta["n_drift_windows"]) if "n_drift_windows" in meta else None,
+        # Gated fields — None if absent, raises if present but malformed
+        nominal_dt_s=_optional_float(meta, "nominal_dt_s", path),
+        measured_fps=_optional_float(meta, "measured_fps", path),
+        measured_fps_median=_optional_float(meta, "measured_fps_median", path),
+        is_bimodal=_optional_bool(meta, "is_bimodal", path),
+        showinfo_frame_count=_optional_int(meta, "showinfo_frame_count", path),
+        showinfo_residual=_optional_int(meta, "showinfo_residual", path),
+        showinfo_pts_offset=_optional_int(meta, "showinfo_pts_offset", path),
+        showinfo_matched_count=_optional_int(meta, "showinfo_matched_count", path),
+        showinfo_unmatched_mp4_count=_optional_int(meta, "showinfo_unmatched_mp4_count", path),
+        showinfo_surplus_count=_optional_int(meta, "showinfo_surplus_count", path),
+        showinfo_offset_status=_optional_str(meta, "showinfo_offset_status", path),
+        pts_wallclock_offset_s=_optional_float(meta, "pts_wallclock_offset_s", path),
+        drift_rate_s_per_s=_optional_float(meta, "drift_rate_s_per_s", path),
+        drift_ppm=_optional_float(meta, "drift_ppm", path),
+        drift_flat=_optional_bool(meta, "drift_flat", path),
+        n_drift_windows=_optional_int(meta, "n_drift_windows", path),
     )
 
 
 def parse_sidecar(path: Path) -> SidecarData:
     """Permissive parse — for tooling. Accepts any schema/mode. Validity queryable.
 
-    Raises SidecarError only if the file is missing or unparseable.
-    Never raises on content (schema version, timing_mode, source_pts).
+    Permissive about schema version and validity mode: accepts schema 4,
+    source_pts=false, cfr_grid, and makes their status queryable via has_source_pts,
+    is_passthrough, etc.
+
+    Strict about structural malformation: a file missing an always-present field,
+    with non-contiguous frame_index values, or with unparseable rows is broken
+    regardless of schema, and raises SidecarMalformedError.
+
+    Raises:
+        SidecarError: file missing or unreadable.
+        SidecarMalformedError: structurally malformed (missing required field,
+            non-contiguous frame_index, unparseable row, type mismatch).
     """
     path = Path(path)
     if not path.exists():
@@ -236,12 +485,12 @@ def parse_sidecar(path: Path) -> SidecarData:
     try:
         meta = json.loads(lines[0])
     except json.JSONDecodeError as exc:
-        raise SidecarError(f"Cannot parse _meta line: {path}: {exc}") from exc
+        raise SidecarMalformedError(f"Cannot parse _meta line: {path}: {exc}") from exc
 
     if not meta.get("_meta"):
-        raise SidecarError(f"First line is not a _meta line: {path}")
+        raise SidecarMalformedError(f"First line is not a _meta line: {path}")
 
-    meta_fields = _parse_meta(meta)
+    meta_fields = _parse_meta(meta, path)
 
     # Parse frame rows
     frame_pts: List[float] = []
@@ -254,28 +503,34 @@ def parse_sidecar(path: Path) -> SidecarData:
             continue
         try:
             row = json.loads(line)
-        except json.JSONDecodeError:
-            continue
+        except json.JSONDecodeError as exc:
+            raise SidecarMalformedError(
+                f"Sidecar malformed: cannot parse frame row as JSON "
+                f"(row={i}, path={path}): {exc}"
+            ) from exc
 
-        fi = int(row.get("frame_index", i - 1))
+        fi = _require_row_int(row, "frame_index", i, path)
+        pts = _require_row_float(row, "pts_time_s", i, path)
 
         # Validate contiguity: frame_index must equal position
         expected_fi = len(frame_pts)
         if fi != expected_fi:
-            raise SidecarError(
-                f"frame_index discontinuity at row {i}: expected {expected_fi}, got {fi} "
-                f"(contiguity violation — no gaps, no duplicates, monotonic required)"
+            raise SidecarMalformedError(
+                f"Sidecar malformed: frame_index discontinuity "
+                f"(field='frame_index', row={i}, expected={expected_fi}, got={fi}, path={path}) "
+                f"— no gaps, no duplicates, monotonic required"
             )
 
-        frame_pts.append(float(row.get("pts_time_s", 0.0)))
-        frame_dt.append(row.get("dt_s"))  # None if absent or null
-        frame_host.append(row.get("host_arrival_s"))  # None if absent
+        frame_pts.append(pts)
+        frame_dt.append(row.get("dt_s"))  # None if absent or null — gated field
+        frame_host.append(row.get("host_arrival_s"))  # None if absent — gated field
 
-    # Assert row_count == output_frame_count (schema 5 guarantees by construction)
+    # Assert row_count == output_frame_count (unconditional — field is guaranteed present)
     output_fc = meta_fields["output_frame_count"]
-    if output_fc > 0 and len(frame_pts) != output_fc:
-        raise SidecarError(
-            f"Row count ({len(frame_pts)}) != output_frame_count ({output_fc}) in {path}"
+    if len(frame_pts) != output_fc:
+        raise SidecarMalformedError(
+            f"Sidecar malformed: row count ({len(frame_pts)}) != output_frame_count ({output_fc}) "
+            f"(path={path})"
         )
 
     return SidecarData(
@@ -297,7 +552,8 @@ def load_sidecar(mp4_path: Path) -> SidecarData:
     Does NOT require the mp4 to exist — only derives the sidecar path from it.
 
     Raises:
-        SidecarError: file missing or unparseable
+        SidecarError: file missing or unreadable
+        SidecarMalformedError: structurally malformed
         SidecarSchemaError: schema < 5
         SidecarValidityError: source_pts=false or timing_mode != passthrough
     """

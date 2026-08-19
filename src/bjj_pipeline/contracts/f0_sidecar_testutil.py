@@ -124,7 +124,6 @@ def generate_synthetic_sidecar(
         "source_pts": source_pts,
         "pts_origin": "segment_relative",
         "fps_method": "trimmed_mean",
-        "row_source": row_source,
         "segment_start_epoch": segment_start_epoch,
         "attempt": 1,
         "input_frame_count": frame_count,
@@ -139,6 +138,10 @@ def generate_synthetic_sidecar(
         "pts_mean_delta_ms": round(mean_d_ms, 4),
         "pts_stdev_delta_ms": round(stdev_d_ms, 4),
     }
+
+    # row_source is schema-5-only (contract §3 "Schema 5+")
+    if schema >= 5:
+        meta["row_source"] = row_source
 
     if source_pts:
         meta["nominal_dt_s"] = round(nominal_dt, 6)
