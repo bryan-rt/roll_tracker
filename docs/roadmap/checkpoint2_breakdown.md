@@ -294,29 +294,13 @@ divergence closed or documented as intentional.
 
 ---
 
-### Piece 8 — BoT-SORT `frame_rate` scalar
-**Class:** FIX-SCALAR | **Site:** #4 | **Ships:** alone | **Depends:** 2
-**Status:** NOT STARTED
+### Piece 8 — ~~BoT-SORT `frame_rate` scalar~~ DISSOLVED INTO PIECE 11
+**Status:** DISSOLVED
 
-**Scope.** Pass `frame_rate = round(1.0 / nominal_dt_s)` to `BotSortTracker`. Documented
-exception — scalar by construction (`boxmot==16.0.8`, `requirements.txt:50`;
-`buffer_size = int(frame_rate / 30.0 * track_buffer)` at `botsort.py:94`).
-
-**Done.** `frame_rate` verified to arrive at the boxmot constructor (not merely set in
-config — the carrying path is exactly where checkpoint 1 lost values four times); OFAT
-rescaling hypothesis recorded.
-
-**Validation.** T2 + T3. **T1 does not apply** — this changes tracker behavior by design.
-
-**Expectation management.** Current `buffer_size` is 30 frames = **2.0s** at true 15fps.
-Passing 15 gives 15 frames = 1.0s. This **shortens** effective track lifespan, which the
-OFAT screen associates with *more* fragmentation. `correct_id` may get worse before the
-checkpoint's other pieces land. The rescaling hypothesis (`track_buffer=60` reproduces
-today's 2.0s) is the thing to test — **after** CP-R8, not now.
-
-**Sequencing note.** Independent of the join question, so it *could* run early. Held until
-after Piece 6: it is the only piece expected to move the metric in a confusing direction,
-and running it while other timing work is unvalidated makes attribution harder.
+Piece 8's scope (fix `frame_rate` scalar) is fully absorbed by Piece 11 (variable-dt
+tracker). Doing Piece 8 alone would shorten effective track lifespan from 2.0s to 1.0s,
+which the OFAT screen associates with more fragmentation — a metric movement in the wrong
+direction that Piece 11 would then partly undo. One change, one measurement.
 
 ---
 
@@ -357,24 +341,29 @@ parallel with Pieces 5-9.
 
 ---
 
-### Piece 11 — Variable-dt Kalman step
-**Class:** FORK (implementation) | **Site:** #20 | **Ships:** alone | **Depends:** 0, 2, 3, 10
-**Status:** NOT STARTED
+### Piece 11 — Variable-dt Kalman step (absorbs Piece 8)
+**Class:** FORK (implementation) | **Sites:** #4, #20 | **Ships:** alone | **Depends:** 0, 2
+**Status:** COMPLETE
 
-**Scope.** Make the constant-velocity state transition accept the real interval:
-`x + v*1` -> `x + v*dt_s`, reading `dt_s` from the sidecar per frame (not reconstructed from
-int-ms differencing — see section 0.2). Handles gaps and mode switches with one mechanism.
+**Scope.** Subclass (not fork) boxmot's `KalmanFilterXYWH` and `BotSort`. The KF subclass
+rebuilds `_motion_mat` per step from a dt *ratio* (`dt_s / nominal_dt_s`), keeping velocity
+in pixels-per-nominal-frame (all noise constants remain calibrated). The BotSort subclass
+replaces both KF sites (`self.kalman_filter` and `STrack.shared_kalman`) and overrides
+`_update_track_states` with wall-time `max_lost_seconds` (default 2.0 = today's behavior),
+eliminating `frame_rate` entirely. Piece 8 dissolved into this piece.
 
-**Done.** Kalman step consumes real `dt_s`; behavior verified on a `is_bimodal: true` segment
-and on a high-gap FP7oJQ segment; old path retained under a flag.
+Module: `src/bjj_pipeline/tracking/` (subclasses, not vendored copy).
+Toggle: `stages.stage_A.tracker.variable_dt: true/false` (default false).
+Config: `stages.stage_A.tracker.max_lost_seconds: 2.0`.
 
-**Validation.** T1 (constant-dt synthetic sidecar must reproduce stock boxmot behavior
-exactly — this is the strongest available correctness proof for the fork) + T2. T3 blocked.
+**Done.** T1 PASS (constant-cadence segment matches stock bit-for-bit, 500 comparisons, 0
+mismatches). Bimodal segment (200 frames, dt ratios 0.0–2.0) runs without error. Runtime
+assertion proves `STrack.shared_kalman` is the subclassed filter. `dt_s=0.0` (same-PTS
+frames on bimodal segments) handled as ratio 0.0 → Kalman position no-op.
 
-**Note.** Measured exposure is small — FP7oJQ 0.70% minority-mode frames, PPDmUg 2.95%
-across 12.5% of segments — but coast injection *cannot* represent mode switches at all, and
-FP7oJQ's ~8% periodic gaps are pervasive. The gap handling is the larger near-term win; the
-mode-switch handling is why variable dt was chosen over injection.
+**Note.** CP-R8 bimodal exposure (3/11 segments) is higher than CP-R11's 1/139 — the pre-fix
+requantization was erasing the signal. Variable dt is more urgent than the original exposure
+figures suggested.
 
 ---
 
@@ -401,10 +390,11 @@ parallel with Pieces 1-2, since it is manual work that blocks nothing upstream.
 | **Parallel-safe, start now** | 0, 1, 2, CP-R8 | Independent of each other and of the join verdict |
 | **Gated on join verdict** | 3+4 (together), 5, 6, 11 | Re-plan required if (a)<->(c) is not 1:1 |
 | **Atomic pair** | 3 + 4 | Must land in one commit — see Piece 3 rationale |
-| **Independent scalars** | 7, 8, 9 | Depend only on Piece 2 |
+| **Independent scalars** | 7, ~~8~~, 9 | Depend only on Piece 2 (8 dissolved into 11) |
 | **Scoping** | 10 | Parallel with 5-9 |
 
-**Ordering recommendation:** 0 || 1 || 2 || CP-R8 -> (3+4) -> 6 -> 5 -> 7 -> 9 -> 10 -> 8 -> 11.
+**Ordering recommendation:** 0 || 1 || 2 || CP-R8 -> (3+4) -> 6 -> 5 -> 7 -> 9 -> 10 -> 11.
+(Piece 8 dissolved into 11.)
 
 Piece 6 before Piece 5 because it is the customer-visible defect and is independent of the
 session work. Piece 8 late because it is the only piece expected to move `correct_id` in a

@@ -11,11 +11,14 @@ This module is structured so that:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Protocol
+from typing import Any, Dict, Optional, Protocol, TYPE_CHECKING
 
 import numpy as np
 
 from bjj_pipeline.stages.detect_track.types import Detection, TrackedDetection
+
+if TYPE_CHECKING:
+	from bjj_pipeline.contracts.f0_sidecar import SidecarData
 
 
 class TrackerBackend(Protocol):
@@ -34,12 +37,31 @@ class BotSortTracker(TrackerBackend):
 	  - We keep this adapter minimal: StageAProcessor decides which bbox to pass
 		(mask-tight vs raw) and whether to include an image for appearance cues.
 	  - If boxmot is not installed, this will raise at runtime when constructed.
+	  - When variable_dt=True, constructs VariableDtBotSort and delivers per-frame
+		dt from the sidecar before each update() call.
 	"""
 
-	def __init__(self, *, with_reid: bool, params: Optional[Dict[str, Any]] = None) -> None:
+	def __init__(
+		self,
+		*,
+		with_reid: bool,
+		params: Optional[Dict[str, Any]] = None,
+		variable_dt: bool = False,
+		sidecar_data: Optional[SidecarData] = None,
+		max_lost_seconds: float = 2.0,
+	) -> None:
 		self.with_reid = bool(with_reid)
 		# Allow None for convenience in local debugging; treat as empty dict.
 		self.params = dict(params or {})
+		self._variable_dt = bool(variable_dt)
+		self._sidecar = sidecar_data
+		self._max_lost_seconds = max_lost_seconds
+
+		if self._variable_dt and self._sidecar is None:
+			raise ValueError(
+				"BotSortTracker: variable_dt=True requires sidecar_data. "
+				"No sidecar available — cannot deliver per-frame dt."
+			)
 
 		self._tracker = None
 		self._lazy_init()
@@ -47,41 +69,57 @@ class BotSortTracker(TrackerBackend):
 	def _lazy_init(self) -> None:
 		if self._tracker is not None:
 			return
-		try:
-			# BoxMOT API can vary by version; we keep this encapsulated here.
-			# Most versions support:
-			#   from boxmot import BotSort
-			#   tracker = BotSort(reid_weights=..., device=..., ...)
-			from boxmot import BotSort  # type: ignore
-		except Exception as e:  # pragma: no cover
-			raise RuntimeError(
-				"boxmot is not installed. Install 'boxmot' to use tracker.mode='botsort'."
-			) from e
 
-		# Params pass-through with sensible defaults for BoxMOT v16+.
-		# We include defaults so construction doesn't fail when params are omitted.
 		cfg = dict(self.params)
 		cfg["with_reid"] = self.with_reid
-		# Normalize required args for boxmot>=16 (required even when with_reid=False).
 		cfg["device"] = str(cfg.get("device") or "cpu")
 		cfg["half"] = bool(cfg.get("half", False))
-		# Even if with_reid=False, some versions still require the argument to exist.
 		cfg["reid_weights"] = str(cfg.get("reid_weights") or "")
 
-		try:
-			self._tracker = BotSort(**cfg)
-		except TypeError as e:
+		if self._variable_dt:
+			from bjj_pipeline.tracking.variable_dt_botsort import VariableDtBotSort
+
+			assert self._sidecar is not None
+			nominal_dt = self._sidecar.nominal_dt_s
+			if nominal_dt is None or nominal_dt <= 0:
+				raise ValueError(
+					f"BotSortTracker: sidecar nominal_dt_s is {nominal_dt!r} — "
+					f"cannot construct variable-dt tracker without a valid nominal interval."
+				)
+
 			try:
-				import boxmot  # type: ignore
-				boxmot_ver = getattr(boxmot, "__version__", "unknown")
-			except Exception:
-				boxmot_ver = "unknown"
-			raise TypeError(
-				f"Failed to construct BoxMOT BotSort (boxmot=={boxmot_ver}). "
-				f"Original error: {e}. "
-				f"Provided params keys={sorted(self.params.keys())}, expanded cfg keys={sorted(cfg.keys())}. "
-				f"Common fix: include tracker params like 'reid_weights', 'device', 'half'."
-			) from e
+				self._tracker = VariableDtBotSort(
+					max_lost_seconds=self._max_lost_seconds,
+					nominal_dt_s=nominal_dt,
+					**cfg,
+				)
+			except TypeError as e:
+				self._raise_construction_error(e, cfg)
+		else:
+			try:
+				from boxmot import BotSort  # type: ignore
+			except Exception as e:  # pragma: no cover
+				raise RuntimeError(
+					"boxmot is not installed. Install 'boxmot' to use tracker.mode='botsort'."
+				) from e
+
+			try:
+				self._tracker = BotSort(**cfg)
+			except TypeError as e:
+				self._raise_construction_error(e, cfg)
+
+	def _raise_construction_error(self, e: TypeError, cfg: dict) -> None:
+		try:
+			import boxmot  # type: ignore
+			boxmot_ver = getattr(boxmot, "__version__", "unknown")
+		except Exception:
+			boxmot_ver = "unknown"
+		raise TypeError(
+			f"Failed to construct BoxMOT BotSort (boxmot=={boxmot_ver}). "
+			f"Original error: {e}. "
+			f"Provided params keys={sorted(self.params.keys())}, expanded cfg keys={sorted(cfg.keys())}. "
+			f"Common fix: include tracker params like 'reid_weights', 'device', 'half'."
+		) from e
 
 	def update(
 		self,
@@ -125,6 +163,30 @@ class BotSortTracker(TrackerBackend):
 		if det_arr.shape[0] > 0:
 			valid = (det_arr[:, 2] > det_arr[:, 0]) & (det_arr[:, 3] > det_arr[:, 1])
 			det_arr = det_arr[valid]
+
+		# Variable-dt: deliver per-frame dt before update.
+		if self._variable_dt:
+			from bjj_pipeline.tracking.variable_dt_botsort import VariableDtBotSort
+
+			assert isinstance(self._tracker, VariableDtBotSort)
+			assert self._sidecar is not None
+
+			if frame_index == 0:
+				dt_s = self._sidecar.nominal_dt_s
+				assert dt_s is not None and dt_s > 0
+				self._tracker.set_dt(dt_s, is_first_frame=True)
+			else:
+				dt_s = self._sidecar.dt_s(frame_index)
+				if dt_s is None or dt_s < 0:
+					raise ValueError(
+						f"BotSortTracker: sidecar dt_s is {dt_s!r} at "
+						f"frame_index={frame_index}. Variable-dt tracker "
+						f"requires valid per-frame intervals."
+					)
+				# dt_s=0.0 is valid (same-PTS frames on bimodal segments).
+				# Ratio 0.0 makes the Kalman step a position no-op — correct
+				# physics for zero elapsed time.
+				self._tracker.set_dt(dt_s, is_first_frame=False)
 
 		# Update tracker; common signature: update(dets, img, embs=None)
 		tracks = self._tracker.update(det_arr, frame_bgr)  # type: ignore[attr-defined]

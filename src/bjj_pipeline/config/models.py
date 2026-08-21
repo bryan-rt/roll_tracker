@@ -146,6 +146,8 @@ class StageAConfig(BaseModel):
         mode: str = Field(default="botsort", description="Tracker backend mode")
         with_reid: bool = Field(default=False, description="Enable appearance/ReID matching where supported")
         use_mask_bbox: bool = Field(default=True, description="Use mask-tight bbox for tracker association")
+        variable_dt: bool = Field(default=False, description="Use variable-dt Kalman filter from sidecar timing (requires schema-5 sidecar)")
+        max_lost_seconds: float = Field(default=2.0, gt=0.0, description="Wall-time track lifetime when variable_dt=True (2.0 = today's stock behavior)")
         params: dict = Field(default_factory=dict, description="Backend-specific tracker parameters")
         physics: "StageAConfig.PhysicsConfig" = Field(default_factory=lambda: StageAConfig.PhysicsConfig())
 

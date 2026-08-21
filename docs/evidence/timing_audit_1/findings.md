@@ -28,7 +28,7 @@ see per-site subsections in Section 2 for the complete six-field record.*
 | 1 | `session_d_run.py:491` | First clip's fps applies to ALL clips and cameras | Yes | ~8% cross-camera (13.85 vs 15.00 in same session); up to 2x if a mode-switch block (15 vs 30 within one camera) sets the scalar | P0 | DEL-CONV (consequent) — depends on #8, #9 |
 | 2 | `ffmpeg.py:121-122` | `start_sec = start_frame / fps` | Yes (FP7oJQ) | On FP7oJQ (8% gaps): error is ~8% of elapsed time, accumulating. Frame 1000: 5.7s offset. Frame 1800: 10.3s offset. On PPDmUg (0.45% gaps): near-correct. See §2.16. | P0 | DEL-CONV |
 | 3 | `manifest.py:60-68` | `start_seconds = frame / fps` written to Supabase | Yes (FP7oJQ) | Same as #2. Values persist in `clips` table (`numeric` columns). | P0 | DEL-CONV |
-| 4 | `tracker.py:63` | BoT-SORT `frame_rate` never passed; boxmot defaults to 30 | Yes | `buffer_size` 2x intended at 15fps (2.0s vs 1.0s wall-clock). | P1 | FIX-SCALAR |
+| 4 | `tracker.py:63` | BoT-SORT `frame_rate` never passed; boxmot defaults to 30 | Yes | **RESOLVED (Piece 11).** `VariableDtBotSort._update_track_states` uses wall-time `max_lost_seconds` (default 2.0s = today's behavior). `frame_rate` eliminated. Piece 8 dissolved into Piece 11. | P1 | FIX-SCALAR |
 | 5 | `d0_bank.py:571` | `dt_s = df / fps` (scalar) | Yes | Every velocity/accel in `speed_mps_k`, `accel_mps2_k` wrong by fps ratio. D0.5 inherits. | P1 | DEL-CONV |
 | 6 | `costs.py:413` | `dt_s = dt_frames / fps` | Yes | Cost-layer velocity/time wrong by fps ratio. | P1 | DEL-CONV |
 | 7 | `d1_graph_build.py:1408` | `dt_s = gap_frames / fps` | Yes | Reconnect speed gating wrong by fps ratio. | P1 | DEL-CONV |
@@ -44,7 +44,7 @@ see per-site subsections in Section 2 for the complete six-field record.*
 | 17 | `pipeline.py:223` | `duration_ms = 1000 * frame_count / fps` | Conditional | Wrong if fps wrong. Not consumed by pipeline logic. | P3 | DEL-CONV |
 | 18 | `d1_graph_build.py:1954,2481` | `duration_ms` in audit JSONL | No (audit-only) | Emitted to `d1_graph_built` and `d1_reconnect_audit` events. Not a computational input. | P3 | AUDIT-ONLY |
 | 19 | `visualize.py:327,351,408` | `cap_fps` from `CAP_PROP_FPS`; `timestamp_ms = fi * (1000/cap_fps)` | Yes | Eval preview timestamps wrong by fps ratio on VFR footage. Affects CP-2 A/B ruler. | P3 | DEL-CONV (timestamp) + FIX-SCALAR (writer) |
-| 20 | Kalman `dt=1` (boxmot) | Unit time-step per frame | Conditional | Self-consistent under constant cadence. Wrong under variable spacing (gaps, mode switches). Separate from #4. | P2 (coast arch.) | FORK |
+| 20 | Kalman `dt=1` (boxmot) | Unit time-step per frame | Conditional | **RESOLVED (Piece 11).** `VariableDtKalmanFilterXYWH` rebuilds `_motion_mat` per step from `dt_s / nominal_dt_s` ratio. Velocity stays in px/nominal-frame (noise constants remain calibrated). `dt_s` from schema-5 sidecar. Piece 8 dissolved into Piece 11. | P2 (coast arch.) | FORK |
 | 21 | `pairing.py:26` | `fps` parameter | Vestigial | **RESOLVED (Piece 1).** Parameter removed. | P4 | DEAD-VESTIGIAL |
 | 22 | `buzzer.py:74` | `fps` parameter | Vestigial | **RESOLVED (Piece 1).** Parameter removed. | P4 | DEAD-VESTIGIAL |
 | 23 | `cache_detections.py:63` | `clip_fps` in sweep cache summary | Dead field | **RESOLVED (Piece 1).** Field and probe block removed. | P4 | DEAD-VESTIGIAL |

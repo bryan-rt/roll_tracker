@@ -518,7 +518,30 @@ def run_multiplex_AC(*,
                     if not isinstance(params, dict):
                         params = dict(params)
                     params = _botsort_params_with_defaults(resolved_config, params, with_reid=with_reid)
-                    tracker = BotSortTracker(with_reid=with_reid, params=params)
+
+                    # Variable-dt tracker: load sidecar and pass to adapter.
+                    variable_dt = bool(_cfg_get(
+                        resolved_config,
+                        "stages.stage_A.tracker.variable_dt",
+                        _cfg_get(resolved_config, "tracker.variable_dt", False),
+                    ))
+                    sidecar_data = None
+                    if variable_dt:
+                        from bjj_pipeline.contracts.f0_sidecar import load_sidecar
+                        sidecar_data = load_sidecar(ingest_path)
+                    max_lost_seconds = float(_cfg_get(
+                        resolved_config,
+                        "stages.stage_A.tracker.max_lost_seconds",
+                        _cfg_get(resolved_config, "tracker.max_lost_seconds", 2.0),
+                    ))
+
+                    tracker = BotSortTracker(
+                        with_reid=with_reid,
+                        params=params,
+                        variable_dt=variable_dt,
+                        sidecar_data=sidecar_data,
+                        max_lost_seconds=max_lost_seconds,
+                    )
 
                     stage_a_processor = StageAProcessor(
                         config=resolved_config,

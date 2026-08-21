@@ -55,7 +55,10 @@ def get_git_sha() -> str:
         return "unknown"
 
 
-def _run_tracker_replay(clip_id: str, camera_id: str, params: dict) -> pd.DataFrame:
+def _run_tracker_replay(
+    clip_id: str, camera_id: str, params: dict,
+    *, variable_dt: bool = False, max_lost_seconds: float = 2.0,
+) -> pd.DataFrame:
     """Run BotSort on cached detections, return (detection_id -> tracklet_id) mapping."""
     det_df = pd.read_parquet(CACHE_BASE / clip_id / "detections.parquet")
     video_path = VIDEO_BASE / f"{clip_id}.mp4"
@@ -67,7 +70,18 @@ def _run_tracker_replay(clip_id: str, camera_id: str, params: dict) -> pd.DataFr
     merged_params.setdefault("half", False)
     merged_params.setdefault("reid_weights", "")
 
-    tracker = BotSortTracker(with_reid=False, params=merged_params)
+    sidecar_data = None
+    if variable_dt:
+        from bjj_pipeline.contracts.f0_sidecar import load_sidecar
+        sidecar_data = load_sidecar(video_path)
+
+    tracker = BotSortTracker(
+        with_reid=False,
+        params=merged_params,
+        variable_dt=variable_dt,
+        sidecar_data=sidecar_data,
+        max_lost_seconds=max_lost_seconds,
+    )
 
     # Group detections by frame_index
     grouped: dict[int, list] = {}
