@@ -182,7 +182,7 @@ specify `1.0 / nominal_dt_s`. Do not read `input_n` (deprecated).
 ---
 
 ### Piece 3 — Stage A becomes the timing source of truth
-**Class:** DEL-CONV | **Ships:** **with Piece 4** | **Depends:** 0, 2 | **Blocks:** 4,5,6,10,11
+**Class:** DEL-CONV | **Ships:** alone | **Depends:** 0, 2 | **Blocks:** 4,5,6,10,11
 **Status:** NOT STARTED
 
 **Scope.** Populate `timestamp_ms` in Stage A outputs from sidecar `pts_time_s` instead of
@@ -197,24 +197,27 @@ correct in the edited file, dropped by the carrying path).
 **Validation.** T1 (synthetic-sidecar equivalence: constant-dt sidecar must reproduce old
 `timestamp_ms` within tolerance) + T2. T3 blocked on CP-R8.
 
-**Why it ships with Piece 4.** Stage A emitting real time while Stage D still computes
-`df / fps` puts two disagreeing time bases in one pipeline — a *new* inconsistency, not a
-partial improvement. The hop must close in one landing.
+**Why it originally shipped with Piece 4 (DOC-SYNC-7 re-cut dissolved this constraint).**
+Stage A emitting real time while Stage D still computes `df / fps` puts two disagreeing
+time bases in one pipeline. This motivated an atomic 3+4 landing in the original plan.
+The constraint is real but manageable: Piece 3 can land alone if the config flag keeps
+the old path available, and Piece 4 follows immediately.
 
 ---
 
-### Piece 4 — Stage D per-clip kinematics read time
-**Class:** DEL-CONV | **Sites:** #5, #6, #7 | **Ships:** **with Piece 3** | **Depends:** 0, 2, 3
+### Piece 4 — Stage D reads real time (clip + session)
+**Class:** DEL-CONV | **Sites:** #5, #6, #7, #9, #10 | **Ships:** alone | **Depends:** 0, 2, 3
 **Status:** NOT STARTED
 
 **Scope.** Delete the `dt_s = frames / fps` conversions in `d0_bank.py:571`,
-`costs.py:413`, `d1_graph_build.py:1408`. Read `timestamp_ms` from the parquet instead.
-D0.5 inherits automatically (indirect dependency, no separate change).
+`costs.py:413`, `d1_graph_build.py:1408` (#5, #6, #7). Read `timestamp_ms` from the
+parquet instead. D0.5 inherits automatically (indirect dependency, no separate change).
 
-Also absorbs session-level alignment: replace `derive_clip_frame_offset`'s
-`round(delta_sec * fps)` (#9 `session_d_run.py:207-221`, #10 `session_f_run.py:88`) with
-alignment on `pts_time_s` + `pts_wallclock_offset_s`. Site #1 (`session_d_run.py:491`)
-dissolves once #9 and #8 stop requesting a session-wide scalar.
+Also absorbs session-level alignment (DOC-SYNC-7 re-cut, see §4): replace
+`derive_clip_frame_offset`'s `round(delta_sec * fps)` (#9 `session_d_run.py:207-221`,
+#10 `session_f_run.py:88`) with alignment on `pts_time_s` + `pts_wallclock_offset_s`.
+Site #1 (`session_d_run.py:491`) dissolves once #9 and #8 stop requesting a session-wide
+scalar.
 
 **Piece 4 must read and log `showinfo_offset_status` per clip.** The sidecar anchor
 (`pts_wallclock_offset_s`) derives from `host_arrival_s`, which comes from the showinfo
@@ -279,13 +282,17 @@ work — it can ship before Piece 5 if that is preferred.
 
 ### Piece 7 — Stage F CFR output scalar
 **Class:** FIX-SCALAR | **Sites:** #12, #14, #15 | **Ships:** alone | **Depends:** 2
-**Status:** NOT STARTED
+**Status:** NOT STARTED — **gated on player VFR test (objective 4)**
 
-**Scope.** The documented exception: `cv2.VideoWriter` and the ffmpeg CFR re-encode require a
-scalar; athletes never receive VFR. Supply `1.0 / nominal_dt_s` from the sidecar. Remove the
-hardcoded `30.0` fallbacks (#12 `session_f_run.py:397`, #13 `multiplex_runner.py:406`) and
-reconcile #15 (`run.py:331`) — Stage F currently **re-probes fps from `video_meta` rather
-than reading the manifest**, an independent fps source that would survive a manifest-only fix.
+**Gate.** If Flutter's `video_player` handles VFR passthrough correctly, Stage F may not
+need CFR conversion at all — in which case Piece 7's scope changes (remove the conversion
+entirely) or dissolves. The player test (objective 4 in §5) determines which outcome.
+
+**Scope (assuming CFR is still needed).** `cv2.VideoWriter` and the ffmpeg CFR re-encode
+require a scalar. Supply `1.0 / nominal_dt_s` from the sidecar. Remove the hardcoded `30.0`
+fallbacks (#12 `session_f_run.py:397`, #13 `multiplex_runner.py:406`) and reconcile #15
+(`run.py:331`) — Stage F currently **re-probes fps from `video_meta` rather than reading the
+manifest**, an independent fps source that would survive a manifest-only fix.
 
 **Done.** One resolution path for the output scalar; no hardcoded 30.0 remains; #15's
 divergence closed or documented as intentional.
@@ -402,18 +409,16 @@ parallel with Pieces 1-2, since it is manual work that blocks nothing upstream.
 
 | Group | Pieces | Constraint |
 |---|---|---|
-| **Parallel-safe, start now** | 0, 1, 2, CP-R8 | Independent of each other and of the join verdict |
-| **Gated on join verdict** | 3+4 (together), 5, 6, 11 | Re-plan required if (a)<->(c) is not 1:1 |
-| **Atomic pair** | 3 + 4 | Must land in one commit — see Piece 3 rationale |
-| **Independent scalars** | 7, ~~8~~, 9 | Depend only on Piece 2 (8 dissolved into 11) |
+| **Complete** | 0, 1, 2, 11 | Implemented. 11 is T1+T2 PASS, T3 pending annotation. |
+| **Gated on join verdict** | 3, 4, 5, 6 | Re-plan required if (a)<->(c) is not 1:1 |
+| **Gated on player VFR test** | 7 | Scope changes or dissolves depending on test outcome |
+| **Independent scalars** | 9 | Depends only on Piece 2 (8 dissolved into 11) |
 | **Scoping** | 10 | Parallel with 5-9 |
+| **Dissolved** | 8 | Absorbed into Piece 11 |
 
-**Ordering recommendation:** 0 || 1 || 2 || CP-R8 -> (3+4) -> 6 -> 5 -> 7 -> 9 -> 10 -> 11.
-(Piece 8 dissolved into 11.)
-
-Piece 6 before Piece 5 because it is the customer-visible defect and is independent of the
-session work. Piece 8 late because it is the only piece expected to move `correct_id` in a
-confusing direction.
+**Ordering:** superseded by the six-objective execution plan in §5. The original sequence
+(`0 -> 1 -> 2 -> (3+4) -> 6 -> 5 -> 7 -> 9 -> 10 -> 11`) was written before the recorder
+coverage gap was observed and before Piece 11 was implemented. §5 is the current plan.
 
 ---
 
@@ -436,25 +441,66 @@ confusing direction.
 
 ## 4. Piece 4/5 re-cut rationale (DOC-SYNC-7)
 
-*Added 2026-08-19. Records the decision that reshaped Pieces 4 and 5.*
+*Added 2026-08-19. Decision record — operative boundaries are in the piece bodies above.*
 
-The original Piece 4 was "Stage D per-clip kinematics read time" (sites #5, #6, #7). The
-original Piece 5 was "session alignment and cross-camera timing" (sites #1, #8, #9, #10).
-This conflated two problems: putting clips on one timeline (session alignment) and
-reconciling two cameras (cross-camera sync).
+The original split conflated two problems: putting clips on one timeline (session alignment)
+and reconciling two cameras (cross-camera sync). The re-cut separated them:
 
-Under the sidecar-required decision (see CLAUDE.md Active Decisions Log), session alignment
-anchors on `pts_wallclock_offset_s`, which requires a valid schema-5 sidecar. The filename-
-anchor fallback was rejected: `parse_clip_timestamp` has 1-second resolution, and the most
-common cross-clip stitch — a person crossing a segment cut — has a real gap of ~67ms. A 1s
-anchor overestimates that by ~15x, which would reject valid reconnects via `dt_max_s`.
+- **Piece 4** absorbed session alignment (sites #5, #6, #7, #9, #10) — "put clips on one
+  timeline." The original 3+4 atomic-pair constraint was dissolved (Piece 3 can land alone
+  with a config flag; Piece 4 follows immediately).
+- **Piece 5** became purely cross-camera: site #8 and Tier 2 enabling.
 
-Re-cut:
+The filename-anchor fallback for session alignment was rejected: `parse_clip_timestamp` has
+1-second resolution vs ~67ms real gap at segment cuts (15x overestimate, rejects valid
+reconnects). Session alignment anchors on `pts_wallclock_offset_s` instead.
 
-- **Piece 4** absorbs session alignment (sites #5, #6, #7, #9, #10). Site #1 dissolves here
-  as a DEL-CONV consequent. "Put clips on one timeline" is one problem.
-- **Piece 5** becomes purely cross-camera: site #8 and whatever Tier 2 enabling requires.
-  "Reconcile two cameras" is a different problem.
+---
 
-The `showinfo_offset_status` logging requirement belongs to Piece 4 because that is where
-the anchor is consumed. The buzzer cross-camera sync idea is parked against Piece 5 / Tier 2.
+## 5. Six-objective execution plan (DOC-SYNC-8)
+
+*Added 2026-08-22. Supersedes the §2 ordering recommendation. Pieces 0, 1, 2, 11 are
+complete (implementation); this plan covers the remaining work.*
+
+| # | Objective | Type | Pieces | Blocks / blocked by |
+|---|-----------|------|--------|---------------------|
+| 1 | **Recorder coverage investigation** — old-vs-new comparison, diagnose the inter-segment gaps (RECORDER-COVERAGE-1) | Investigation | — | Gates annotation. Biggest unknown. |
+| 2 | **RECORDER-MUXER-PTS-1 fix** — duplicate PTS at frame index 2, first segment of each attempt | Small fix | — | Fold into objective 1's recorder work; must land before next capture |
+| 3 | **Pieces 4 + 6** — Stage D reads real time (clip + session) + Stage F export timing | Build | 4, 6 | **Independent of all recorder work; can run in parallel with objectives 1-2** |
+| 4 | **Player VFR test → Stage F format decision** | Test, then decide | 7 (gated) | Test first: if Flutter player handles VFR, Stage F never converts and Piece 7 dissolves |
+| 5 | **CP22 NAType Stage E fix** | Small fix | — | Needed before annotation — blocks Stage E on 201606 (high-dispersion clip) |
+| 6 | **Annotate** | Manual | CP-R8 | After the recorder is fixed and a clean session is captured |
+
+### Ordering rationale
+
+**Annotation is last** because Wednesday's footage is 44% coverage from a recorder about to
+change (RECORDER-COVERAGE-1). Annotating this footage risks doing expensive CVAT work twice
+if the recorder fix changes segment structure.
+
+**Objective 3 is parallel** because Pieces 4 and 6 are pure DEL-CONV — they touch Stage D
+and Stage F timing conversions, not recorder code. Both are independent of the recorder
+investigation and of the player test. Piece 6 is the customer-visible defect (~10s seek
+offset by frame 1800 on FP7oJQ, where gaps accumulate).
+
+**Objective 4 is test-then-decide** rather than build. Flutter's `video_player` wraps
+AVPlayer (iOS) and ExoPlayer (Android) — both support VFR natively, but the Flutter wrapper
+may not pass through VFR timestamps. If the player handles VFR, Stage F should stop
+re-encoding and Piece 7 dissolves. If it does not, Piece 7 supplies `1.0 / nominal_dt_s`
+as the CFR target. The test determines which path.
+
+**Objective 5 (CP22 NAType)** is a small fix to `Stage E` that causes a crash on 201606
+(one of the high-dispersion clips from TIMING-DISPERSION-1). It must land before annotation
+produces results that run through Stage E.
+
+### Relationship to piece definitions
+
+The piece definitions in §1 describe scope of work. This plan describes execution order
+and grouping. Pieces not listed in the plan (3, 5, 9, 10) are not cancelled — they are
+sequenced after the six objectives or folded into them:
+
+- **Piece 3** is a prerequisite for Piece 4 (objective 3). It can land independently.
+- **Piece 5** (cross-camera) is downstream of objective 3 and not on the critical path.
+- **Piece 9** (A/B instrument fix) gates human review of preview video, not numeric
+  measurement. Sequenced after objective 3.
+- **Piece 10** (boxmot subclass-vs-fork scoping) is a housekeeping item, parallel with
+  anything.
