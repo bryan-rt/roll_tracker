@@ -1461,10 +1461,17 @@ while :; do
   log "[v6] attempt $ATTEMPT: ${attempt_content_s}s content (total ${CONTENT_CAPTURED_S}s)"
 
   # --- Termination checks ---
-  # Content target reached?
-  if [ "$TARGET_CONTENT_SECONDS" -gt 0 ] && [ "$CONTENT_CAPTURED_S" -ge "$TARGET_CONTENT_SECONDS" ]; then
-    log "[v6] content target reached: ${CONTENT_CAPTURED_S}s captured (target ${TARGET_CONTENT_SECONDS}s)"
-    break
+  # Content target reached (within tolerance)?
+  # Tolerance: 10s. Without this, the last few seconds create a degenerate loop:
+  # ffmpeg starts with -t 2, runs ~10s wall time for codec startup, but time= never
+  # gets past 00:00:00.xx → parse returns 0 → camera retries forever. 10s is smaller
+  # than any single segment (SEG_SECONDS=120) so no meaningful footage is lost.
+  if [ "$TARGET_CONTENT_SECONDS" -gt 0 ]; then
+    content_shortfall=$(( TARGET_CONTENT_SECONDS - CONTENT_CAPTURED_S ))
+    if [ "$content_shortfall" -le 10 ]; then
+      log "[v6] content target reached: ${CONTENT_CAPTURED_S}s captured (target ${TARGET_CONTENT_SECONDS}s, shortfall ${content_shortfall}s within tolerance)"
+      break
+    fi
   fi
 
   # Wall-clock cap?
@@ -1547,12 +1554,13 @@ done
 # ========== end-of-run summary ==========
 ELAPSED_WALL=$(( $(date -u +%s) - START_EPOCH ))
 if [ "$TARGET_CONTENT_SECONDS" -gt 0 ]; then
-  if [ "$CONTENT_CAPTURED_S" -ge "$TARGET_CONTENT_SECONDS" ]; then
+  FINAL_SHORTFALL=$(( TARGET_CONTENT_SECONDS - CONTENT_CAPTURED_S ))
+  [ "$FINAL_SHORTFALL" -lt 0 ] && FINAL_SHORTFALL=0
+  if [ "$FINAL_SHORTFALL" -le 10 ]; then
     TERMINATION="content_target"
   else
     TERMINATION="wallclock_cap"
-    SHORTFALL=$(( TARGET_CONTENT_SECONDS - CONTENT_CAPTURED_S ))
-    log "[v6] SHORTFALL: captured ${CONTENT_CAPTURED_S}s of ${TARGET_CONTENT_SECONDS}s target (${SHORTFALL}s short)"
+    log "[v6] SHORTFALL: captured ${CONTENT_CAPTURED_S}s of ${TARGET_CONTENT_SECONDS}s target (${FINAL_SHORTFALL}s short)"
   fi
   EFF_SPEED="N/A"
   if [ "$ELAPSED_WALL" -gt 0 ]; then
