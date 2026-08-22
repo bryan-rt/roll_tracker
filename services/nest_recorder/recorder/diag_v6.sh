@@ -4,6 +4,8 @@ set -euo pipefail
 # ========== config (env overridable) ==========
 SEG_SECONDS="${SEG_SECONDS:-120}"           # segment length
 WINDOW_SECONDS="${WINDOW_SECONDS:-900}"     # total wall-clock window (default 15 min)
+TARGET_CONTENT_SECONDS="${TARGET_CONTENT_SECONDS:-0}"  # content-duration target (0 = legacy wall-clock mode)
+MAX_WALLCLOCK_SECONDS="${MAX_WALLCLOCK_SECONDS:-0}"    # wall-clock safety cap (0 = auto from target, or WINDOW_SECONDS in legacy)
 FIRST_EXT_DELAY="${FIRST_EXT_DELAY_SEC:-120}"  # first extend ~2 min after start
 EXT_EARLY_SEC="${EXT_EARLY_SEC:-120}"         # schedule next extend at (expiresAt - this)
 CAM_ID="${CAM_ID_1:-cam1}"
@@ -60,10 +62,30 @@ echo "[v6] writing to $DIAG_DIR" | tee -a "$LOG"
 ACCESS_TOKEN="" URL="" EXT_TOKEN="" STOP_TOKEN=""
 FFMPEG_PID="" EXT_PID=""
 START_EPOCH="$(date -u +%s)"
-DEADLINE="$(( START_EPOCH + WINDOW_SECONDS ))"
 ATTEMPT=0
 BACKOFF=$BACKOFF_INITIAL
 SIDECAR_PIDS=()   # background sidecar extraction PIDs
+
+# --- Termination mode ---
+# Content-target mode: TARGET_CONTENT_SECONDS > 0. Run until that much content is
+# captured, with MAX_WALLCLOCK_SECONDS as a hard wall-clock cap.
+# Legacy mode: TARGET_CONTENT_SECONDS = 0. WINDOW_SECONDS is the wall-clock cap and
+# -t = DEADLINE - now (original behavior — accidentally correct under arrival-PTS
+# where content time = wall-clock time; see RECORDER-BACKLOG-1).
+CONTENT_CAPTURED_S=0
+
+if [ "$TARGET_CONTENT_SECONDS" -gt 0 ]; then
+  if [ "$MAX_WALLCLOCK_SECONDS" -le 0 ]; then
+    # Auto-size: 5x target. Covers two reconnects with ramp cost (each reconnect
+    # resets delivery speed to ~0.10x and must re-climb). Two reconnects + ramp
+    # + backoff averages ~0.20x, so 5x provides margin.
+    MAX_WALLCLOCK_SECONDS=$(( TARGET_CONTENT_SECONDS * 5 ))
+  fi
+  DEADLINE=$(( START_EPOCH + MAX_WALLCLOCK_SECONDS ))
+  log "[v6] content-target mode: target=${TARGET_CONTENT_SECONDS}s, wall-clock cap=${MAX_WALLCLOCK_SECONDS}s"
+else
+  DEADLINE=$(( START_EPOCH + WINDOW_SECONDS ))
+fi
 
 # Session state
 NEED_NEW_SESSION=true   # first iteration must generate
@@ -1238,7 +1260,28 @@ classify_failure() {
 start_ffmpeg() {
   mkdir -p "$DIAG_DIR"
   local out_tmpl="$DIAG_DIR/${CAM_ID}-%Y%m%d-%H%M%S.mp4"
-  log "[v6] recording until $(date -u -d "@$DEADLINE" +%H:%M:%S) in ${SEG_SECONDS}s segments → $out_tmpl"
+
+  # Compute -t: the lesser of content remaining and wall-clock remaining.
+  # -t is content seconds (output duration), DEADLINE - now is wall seconds.
+  # Using the lesser means: in content-target mode the wall-clock cap can cut a
+  # fast-delivery run short (conservative); the between-attempt check picks up
+  # the remainder on the next iteration. In legacy mode both values are wall seconds
+  # and the expression reduces to the original DEADLINE - now.
+  local wall_remaining=$(( DEADLINE - $(date -u +%s) ))
+  [ "$wall_remaining" -le 0 ] && wall_remaining=1
+  if [ "$TARGET_CONTENT_SECONDS" -gt 0 ]; then
+    local content_remaining=$(( TARGET_CONTENT_SECONDS - CONTENT_CAPTURED_S ))
+    if [ "$content_remaining" -le 0 ]; then
+      log "[v6] BUG: start_ffmpeg called with content target already met (captured=${CONTENT_CAPTURED_S}s >= target=${TARGET_CONTENT_SECONDS}s)"
+      return 1
+    fi
+    local t_val="$content_remaining"
+    [ "$wall_remaining" -lt "$t_val" ] && t_val="$wall_remaining"
+    log "[v6] recording: content_remaining=${content_remaining}s wall_remaining=${wall_remaining}s -t=${t_val}s (cap=$(date -u -d "@$DEADLINE" +%H:%M:%S))"
+  else
+    local t_val="$wall_remaining"
+    log "[v6] recording until $(date -u -d "@$DEADLINE" +%H:%M:%S) in ${SEG_SECONDS}s segments → $out_tmpl"
+  fi
 
   # Per-attempt stderr file (supports retry loop — each attempt gets its own file)
   local stderr_file="$DIAG_DIR/ffmpeg_attempt_${ATTEMPT}.stderr"
@@ -1260,10 +1303,11 @@ start_ffmpeg() {
 
   # Record attempt metadata
   local ffmpeg_start_epoch="$EPOCHREALTIME"
-  printf '{"attempt":%d,"generate_epoch":"%s","ffmpeg_start_epoch":"%s","reuse":%s}\n' \
+  printf '{"attempt":%d,"generate_epoch":"%s","ffmpeg_start_epoch":"%s","reuse":%s,"content_captured_s":%d}\n' \
     "$ATTEMPT" "$(cat "$DIAG_DIR/generated_at_epoch.txt" 2>/dev/null || echo 0)" \
     "$ffmpeg_start_epoch" \
     "$WAS_REUSE" \
+    "$CONTENT_CAPTURED_S" \
     >> "$DIAG_DIR/attempt_log.jsonl"
 
   ffmpeg -hide_banner -loglevel info -nostdin -y \
@@ -1279,7 +1323,7 @@ start_ffmpeg() {
     "${V_OPTS[@]}" \
     -c:a aac -ar 48000 -ac 1 -b:a 64k \
     -max_muxing_queue_size 1024 \
-    -t "$(( DEADLINE - $(date -u +%s) ))" \
+    -t "$t_val" \
     "${SEG_OPTS[@]}" \
     "$out_tmpl" \
     1> "$DIAG_DIR/ffmpeg.stdout" 2> "$stderr_target" &
@@ -1379,8 +1423,53 @@ while :; do
   extract_timing_sidecars "$DIAG_DIR/ffmpeg_attempt_${ATTEMPT}.stderr" &
   SIDECAR_PIDS+=($!)
 
-  # Done if time is up
-  [ "$(date -u +%s)" -ge "$DEADLINE" ] && { log "[v6] window elapsed after attempt #$ATTEMPT"; break; }
+  # --- Content accounting ---
+  # Parse content duration from ffmpeg's last progress line (time=HH:MM:SS.ss).
+  # ffmpeg writes progress with \r (carriage return) under SOURCE_PTS=0; under
+  # SOURCE_PTS=1 the timestamper's read -r converts \r to \n. Handle both.
+  local attempt_content_s=0
+  local last_time
+  last_time=$(tr '\r' '\n' < "$DIAG_DIR/ffmpeg_attempt_${ATTEMPT}.stderr" \
+    | grep -o 'time=[0-9:.]*' | tail -1 | sed 's/time=//' || true)
+  if [ -n "$last_time" ]; then
+    attempt_content_s=$(echo "$last_time" | awk -F: '{
+      s = $1*3600 + $2*60; split($3, a, "."); s += a[1]; print int(s)
+    }')
+  fi
+
+  # Cross-check: if attempt ran >30s wall time but yielded no parseable time=,
+  # that is a parse failure, not zero content. Fall back to ffprobe.
+  if [ "$attempt_content_s" -eq 0 ] && [ "$run_duration" -gt 30 ]; then
+    log "[v6] WARNING: attempt $ATTEMPT ran ${run_duration}s but time= parse yielded 0s — trying ffprobe fallback"
+    local probe_total=0 probe_dur
+    for seg_f in "$DIAG_DIR/${CAM_ID}"-*.mp4; do
+      [ -f "$seg_f" ] || continue
+      probe_dur=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$seg_f" 2>/dev/null || echo 0)
+      probe_total=$(awk "BEGIN{printf \"%d\", $probe_total + $probe_dur}")
+    done
+    if [ "$probe_total" -gt 0 ]; then
+      # ffprobe sums ALL segments including prior attempts; subtract what we already had
+      local probe_this_attempt=$(( probe_total - CONTENT_CAPTURED_S ))
+      [ "$probe_this_attempt" -lt 0 ] && probe_this_attempt=0
+      attempt_content_s=$probe_this_attempt
+      log "[v6] WARNING: ffprobe fallback: ${attempt_content_s}s for attempt $ATTEMPT"
+    else
+      log "[v6] ERROR: cannot determine content duration for attempt $ATTEMPT — time= parse and ffprobe both failed"
+    fi
+  fi
+
+  CONTENT_CAPTURED_S=$(( CONTENT_CAPTURED_S + attempt_content_s ))
+  log "[v6] attempt $ATTEMPT: ${attempt_content_s}s content (total ${CONTENT_CAPTURED_S}s)"
+
+  # --- Termination checks ---
+  # Content target reached?
+  if [ "$TARGET_CONTENT_SECONDS" -gt 0 ] && [ "$CONTENT_CAPTURED_S" -ge "$TARGET_CONTENT_SECONDS" ]; then
+    log "[v6] content target reached: ${CONTENT_CAPTURED_S}s captured (target ${TARGET_CONTENT_SECONDS}s)"
+    break
+  fi
+
+  # Wall-clock cap?
+  [ "$(date -u +%s)" -ge "$DEADLINE" ] && { log "[v6] wall-clock cap reached after attempt #$ATTEMPT"; break; }
 
   # Classify the failure and update session state
   classify_failure "$DIAG_DIR/ffmpeg_attempt_${ATTEMPT}.stderr" "$run_duration"
@@ -1455,6 +1544,25 @@ while :; do
       ;;
   esac
 done
+
+# ========== end-of-run summary ==========
+ELAPSED_WALL=$(( $(date -u +%s) - START_EPOCH ))
+if [ "$TARGET_CONTENT_SECONDS" -gt 0 ]; then
+  if [ "$CONTENT_CAPTURED_S" -ge "$TARGET_CONTENT_SECONDS" ]; then
+    TERMINATION="content_target"
+  else
+    TERMINATION="wallclock_cap"
+    SHORTFALL=$(( TARGET_CONTENT_SECONDS - CONTENT_CAPTURED_S ))
+    log "[v6] SHORTFALL: captured ${CONTENT_CAPTURED_S}s of ${TARGET_CONTENT_SECONDS}s target (${SHORTFALL}s short)"
+  fi
+  EFF_SPEED="N/A"
+  if [ "$ELAPSED_WALL" -gt 0 ]; then
+    EFF_SPEED=$(awk "BEGIN{printf \"%.2f\", $CONTENT_CAPTURED_S / $ELAPSED_WALL}")
+  fi
+  log "[v6] summary: content=${CONTENT_CAPTURED_S}s target=${TARGET_CONTENT_SECONDS}s wall=${ELAPSED_WALL}s speed=${EFF_SPEED}x attempts=${ATTEMPT} termination=${TERMINATION}"
+else
+  log "[v6] summary: wall=${ELAPSED_WALL}s attempts=${ATTEMPT} (legacy wall-clock mode)"
+fi
 
 # Wait for any background sidecar extractions to finish
 for pid in "${SIDECAR_PIDS[@]}"; do
