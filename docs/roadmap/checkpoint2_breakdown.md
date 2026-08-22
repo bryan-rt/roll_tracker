@@ -357,9 +357,10 @@ Toggle: `stages.stage_A.tracker.variable_dt: true/false` (default false).
 Config: `stages.stage_A.tracker.max_lost_seconds: 2.0`.
 
 **Done.** T1 PASS (constant-cadence segment matches stock bit-for-bit, 500 comparisons, 0
-mismatches). T2 PASS: A→F on unimodal 202832 (1710 frames, 14 exports); A→D on bimodal
-201606 (1950 frames, 9 persons); Stage E failure on 201606 is pre-existing CP22 NAType
-(confirmed: fails identically with variable_dt=false).
+mismatches). T2 PASS: A→F on low-dispersion 202832 (1710 frames, 4.3% dispersion, 14
+exports); A→D on high-dispersion 201606 (1950 frames, 29.8% dispersion, 9 persons); Stage E
+failure on 201606 is pre-existing CP22 NAType (confirmed: fails identically with
+variable_dt=false).
 
 **Blocked:** 2 of 11 CP-R8 segments (200827, 202356) have a duplicate-PTS muxer artifact at
 frame index 2 (first segment of each attempt). `dt_s=0.0` → raises under variable_dt=true.
@@ -371,6 +372,13 @@ until the fix lands and they are re-captured.
 **Note.** CP-R8 bimodal exposure (3/11 segments) is higher than CP-R11's 1/139 — the pre-fix
 requantization was erasing the signal. Variable dt is more urgent than the original exposure
 figures suggested.
+
+**T3 sanity check:** effect size should increase with per-segment dt dispersion (fraction
+of frames with `|dt_s/nominal_dt_s - 1| > 0.25`). A flat relationship across dispersion
+indicates a wiring fault, regardless of which direction the metric moved. **Do not group by
+`is_bimodal`** — the flag is advisory, cannot fire when the majority mode is the short one,
+and does not track dispersion (the most dispersed CP-R8 segment, 202148 at 48.3%, is flagged
+`is_bimodal=False`). See `docs/evidence/timing_dispersion_1/findings.md`.
 
 ---
 

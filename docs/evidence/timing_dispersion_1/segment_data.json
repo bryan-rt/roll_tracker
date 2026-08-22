@@ -1,0 +1,427 @@
+[
+  {
+    "segment_name": "FP7oJQ-20260819-200827",
+    "frame_count": 1980,
+    "nominal_dt_s": 0.067,
+    "is_bimodal": true,
+    "excluded_frames": [
+      [
+        2,
+        0.0,
+        "MUXER-PTS-1: duplicate PTS at frame 2"
+      ]
+    ],
+    "n_ratios": 1978,
+    "mean_r": 0.9107646801382371,
+    "stdev_r": 0.33758407230286147,
+    "min_r": 0.4925373134328358,
+    "max_r": 2.985074626865672,
+    "p5": 0.4925373134328358,
+    "p50": 1.0,
+    "p95": 1.0,
+    "dispersion_frac": 0.2871587462082912,
+    "band_counts": {
+      "nominal": 1410,
+      "gap": 48,
+      "short_mode": 501,
+      "unclassified": 19
+    },
+    "band_fracs": {
+      "nominal": 0.7128412537917088,
+      "gap": 0.024266936299292215,
+      "short_mode": 0.2532861476238625,
+      "unclassified": 0.009605662285136502
+    },
+    "short_mode_run_lengths": [
+      103,
+      17,
+      12,
+      5,
+      4,
+      5,
+      28,
+      16,
+      27,
+      20,
+      15,
+      17,
+      28,
+      7,
+      5,
+      125,
+      12,
+      19,
+      20,
+      13,
+      3
+    ],
+    "nominal_band_stdev": 0.007032136913331493,
+    "large_gaps": []
+  },
+  {
+    "segment_name": "FP7oJQ-20260819-201606",
+    "frame_count": 1950,
+    "nominal_dt_s": 0.067,
+    "is_bimodal": true,
+    "excluded_frames": [],
+    "n_ratios": 1949,
+    "mean_r": 0.9222793166032331,
+    "stdev_r": 0.3292221190496625,
+    "min_r": 0.4925373134328358,
+    "max_r": 2.985074626865672,
+    "p5": 0.4925373134328358,
+    "p50": 1.0,
+    "p95": 1.0,
+    "dispersion_frac": 0.297588506926629,
+    "band_counts": {
+      "nominal": 1369,
+      "gap": 95,
+      "short_mode": 483,
+      "unclassified": 2
+    },
+    "band_fracs": {
+      "nominal": 0.7024114930733709,
+      "gap": 0.04874294510005131,
+      "short_mode": 0.2478193945613135,
+      "unclassified": 0.001026167265264238
+    },
+    "short_mode_run_lengths": [
+      16,
+      139,
+      1,
+      76,
+      72,
+      9,
+      5,
+      5,
+      5,
+      10,
+      8,
+      30,
+      16,
+      5,
+      86
+    ],
+    "nominal_band_stdev": 0.007019006335343756,
+    "large_gaps": []
+  },
+  {
+    "segment_name": "FP7oJQ-20260819-202148",
+    "frame_count": 548,
+    "nominal_dt_s": 0.066,
+    "is_bimodal": false,
+    "excluded_frames": [],
+    "n_ratios": 547,
+    "mean_r": 0.7820619356268351,
+    "stdev_r": 0.2794893078586458,
+    "min_r": 0.5,
+    "max_r": 2.0303030303030303,
+    "p5": 0.5,
+    "p50": 1.0,
+    "p95": 1.0151515151515151,
+    "dispersion_frac": 0.4826325411334552,
+    "band_counts": {
+      "nominal": 283,
+      "gap": 5,
+      "short_mode": 258,
+      "unclassified": 1
+    },
+    "band_fracs": {
+      "nominal": 0.5173674588665448,
+      "gap": 0.009140767824497258,
+      "short_mode": 0.4716636197440585,
+      "unclassified": 0.0018281535648994515
+    },
+    "short_mode_run_lengths": [
+      113,
+      107,
+      12,
+      5,
+      5,
+      13,
+      3
+    ],
+    "nominal_band_stdev": 0.007116851495752154,
+    "large_gaps": []
+  },
+  {
+    "segment_name": "FP7oJQ-20260819-202356",
+    "frame_count": 1740,
+    "nominal_dt_s": 0.067,
+    "is_bimodal": false,
+    "excluded_frames": [
+      [
+        2,
+        0.0,
+        "MUXER-PTS-1: duplicate PTS at frame 2"
+      ]
+    ],
+    "n_ratios": 1738,
+    "mean_r": 1.0408257904951652,
+    "stdev_r": 0.20839266446535376,
+    "min_r": 0.9850746268656716,
+    "max_r": 2.0,
+    "p5": 0.9850746268656716,
+    "p50": 1.0,
+    "p95": 1.0,
+    "dispersion_frac": 0.04602991944764097,
+    "band_counts": {
+      "nominal": 1658,
+      "gap": 80,
+      "short_mode": 0,
+      "unclassified": 0
+    },
+    "band_fracs": {
+      "nominal": 0.953970080552359,
+      "gap": 0.04602991944764097,
+      "short_mode": 0.0,
+      "unclassified": 0.0
+    },
+    "short_mode_run_lengths": [],
+    "nominal_band_stdev": 0.007017644496534281,
+    "large_gaps": []
+  },
+  {
+    "segment_name": "FP7oJQ-20260819-202832",
+    "frame_count": 1710,
+    "nominal_dt_s": 0.067,
+    "is_bimodal": false,
+    "excluded_frames": [],
+    "n_ratios": 1709,
+    "mean_r": 1.0386976760434223,
+    "stdev_r": 0.20662114756677838,
+    "min_r": 0.9850746268656716,
+    "max_r": 2.985074626865672,
+    "p5": 0.9850746268656716,
+    "p50": 1.0,
+    "p95": 1.0,
+    "dispersion_frac": 0.04330017554125219,
+    "band_counts": {
+      "nominal": 1635,
+      "gap": 73,
+      "short_mode": 0,
+      "unclassified": 1
+    },
+    "band_fracs": {
+      "nominal": 0.9566998244587478,
+      "gap": 0.042715038033937974,
+      "short_mode": 0.0,
+      "unclassified": 0.0005851375073142189
+    },
+    "short_mode_run_lengths": [],
+    "nominal_band_stdev": 0.007022871690942027,
+    "large_gaps": []
+  },
+  {
+    "segment_name": "FP7oJQ-20260819-203224",
+    "frame_count": 1680,
+    "nominal_dt_s": 0.067,
+    "is_bimodal": false,
+    "excluded_frames": [],
+    "n_ratios": 1679,
+    "mean_r": 1.0708844105855475,
+    "stdev_r": 0.2833500355126709,
+    "min_r": 0.9850746268656716,
+    "max_r": 2.985074626865672,
+    "p5": 0.9850746268656716,
+    "p50": 1.0,
+    "p95": 1.9850746268656716,
+    "dispersion_frac": 0.07087552114353782,
+    "band_counts": {
+      "nominal": 1560,
+      "gap": 110,
+      "short_mode": 0,
+      "unclassified": 9
+    },
+    "band_fracs": {
+      "nominal": 0.9291244788564622,
+      "gap": 0.06551518761167362,
+      "short_mode": 0.0,
+      "unclassified": 0.005360333531864205
+    },
+    "short_mode_run_lengths": [],
+    "nominal_band_stdev": 0.007015328315527443,
+    "large_gaps": []
+  },
+  {
+    "segment_name": "FP7oJQ-20260819-203612",
+    "frame_count": 1680,
+    "nominal_dt_s": 0.067,
+    "is_bimodal": false,
+    "excluded_frames": [],
+    "n_ratios": 1679,
+    "mean_r": 1.0732490021601344,
+    "stdev_r": 0.2890909608896181,
+    "min_r": 0.9850746268656716,
+    "max_r": 2.985074626865672,
+    "p5": 0.9850746268656716,
+    "p50": 1.0,
+    "p95": 1.9850746268656716,
+    "dispersion_frac": 0.07266229898749256,
+    "band_counts": {
+      "nominal": 1557,
+      "gap": 112,
+      "short_mode": 0,
+      "unclassified": 10
+    },
+    "band_fracs": {
+      "nominal": 0.9273377010125075,
+      "gap": 0.06670637284097677,
+      "short_mode": 0.0,
+      "unclassified": 0.005955926146515783
+    },
+    "short_mode_run_lengths": [],
+    "nominal_band_stdev": 0.007039270183359277,
+    "large_gaps": []
+  },
+  {
+    "segment_name": "FP7oJQ-20260819-204034",
+    "frame_count": 1890,
+    "nominal_dt_s": 0.067,
+    "is_bimodal": true,
+    "excluded_frames": [],
+    "n_ratios": 1889,
+    "mean_r": 0.9384022186579015,
+    "stdev_r": 0.2973828811563776,
+    "min_r": 0.4925373134328358,
+    "max_r": 2.985074626865672,
+    "p5": 0.4925373134328358,
+    "p50": 1.0,
+    "p95": 1.0,
+    "dispersion_frac": 0.22869242985706723,
+    "band_counts": {
+      "nominal": 1457,
+      "gap": 64,
+      "short_mode": 363,
+      "unclassified": 5
+    },
+    "band_fracs": {
+      "nominal": 0.7713075701429327,
+      "gap": 0.03388035997882478,
+      "short_mode": 0.19216516675489678,
+      "unclassified": 0.0026469031233456856
+    },
+    "short_mode_run_lengths": [
+      4,
+      7,
+      86,
+      5,
+      13,
+      20,
+      15,
+      10,
+      20,
+      15,
+      17,
+      13,
+      20,
+      15,
+      10,
+      20,
+      15,
+      22,
+      36
+    ],
+    "nominal_band_stdev": 0.0070188036385507415,
+    "large_gaps": []
+  },
+  {
+    "segment_name": "FP7oJQ-20260819-204502",
+    "frame_count": 1620,
+    "nominal_dt_s": 0.067,
+    "is_bimodal": false,
+    "excluded_frames": [],
+    "n_ratios": 1619,
+    "mean_r": 1.1050399638619748,
+    "stdev_r": 1.2391339025181234,
+    "min_r": 0.9850746268656716,
+    "max_r": 49.74626865671642,
+    "p5": 0.9850746268656716,
+    "p50": 1.0,
+    "p95": 1.9850746268656716,
+    "dispersion_frac": 0.08091414453366276,
+    "band_counts": {
+      "nominal": 1488,
+      "gap": 130,
+      "short_mode": 0,
+      "unclassified": 1
+    },
+    "band_fracs": {
+      "nominal": 0.9190858554663373,
+      "gap": 0.08029647930821494,
+      "short_mode": 0.0,
+      "unclassified": 0.0006176652254478073
+    },
+    "short_mode_run_lengths": [],
+    "nominal_band_stdev": 0.007035888370015418,
+    "large_gaps": [
+      {
+        "frame_index": 1122,
+        "dt_s": 3.333,
+        "ratio": 49.74626865671642
+      }
+    ]
+  },
+  {
+    "segment_name": "FP7oJQ-20260819-204744",
+    "frame_count": 1680,
+    "nominal_dt_s": 0.067,
+    "is_bimodal": false,
+    "excluded_frames": [],
+    "n_ratios": 1679,
+    "mean_r": 1.0779870747513178,
+    "stdev_r": 0.27515505231808546,
+    "min_r": 0.9850746268656716,
+    "max_r": 2.0,
+    "p5": 0.9850746268656716,
+    "p50": 1.0,
+    "p95": 1.9850746268656716,
+    "dispersion_frac": 0.08338296605122096,
+    "band_counts": {
+      "nominal": 1539,
+      "gap": 140,
+      "short_mode": 0,
+      "unclassified": 0
+    },
+    "band_fracs": {
+      "nominal": 0.916617033948779,
+      "gap": 0.08338296605122096,
+      "short_mode": 0.0,
+      "unclassified": 0.0
+    },
+    "short_mode_run_lengths": [],
+    "nominal_band_stdev": 0.007035888370015418,
+    "large_gaps": []
+  },
+  {
+    "segment_name": "FP7oJQ-20260819-205036",
+    "frame_count": 321,
+    "nominal_dt_s": 0.067,
+    "is_bimodal": false,
+    "excluded_frames": [],
+    "n_ratios": 320,
+    "mean_r": 1.078964552238806,
+    "stdev_r": 0.2766608898340576,
+    "min_r": 0.9850746268656716,
+    "max_r": 2.0,
+    "p5": 0.9850746268656716,
+    "p50": 1.0,
+    "p95": 1.9850746268656716,
+    "dispersion_frac": 0.084375,
+    "band_counts": {
+      "nominal": 293,
+      "gap": 27,
+      "short_mode": 0,
+      "unclassified": 0
+    },
+    "band_fracs": {
+      "nominal": 0.915625,
+      "gap": 0.084375,
+      "short_mode": 0.0,
+      "unclassified": 0.0
+    },
+    "short_mode_run_lengths": [],
+    "nominal_band_stdev": 0.0070418686570689676,
+    "large_gaps": []
+  }
+]
