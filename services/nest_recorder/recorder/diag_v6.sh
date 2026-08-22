@@ -82,7 +82,7 @@ if [ "$TARGET_CONTENT_SECONDS" -gt 0 ]; then
     MAX_WALLCLOCK_SECONDS=$(( TARGET_CONTENT_SECONDS * 5 ))
   fi
   DEADLINE=$(( START_EPOCH + MAX_WALLCLOCK_SECONDS ))
-  log "[v6] content-target mode: target=${TARGET_CONTENT_SECONDS}s, wall-clock cap=${MAX_WALLCLOCK_SECONDS}s"
+  echo "[v6] content-target mode: target=${TARGET_CONTENT_SECONDS}s, wall-clock cap=${MAX_WALLCLOCK_SECONDS}s" | tee -a "$LOG"
 else
   DEADLINE=$(( START_EPOCH + WINDOW_SECONDS ))
 fi
