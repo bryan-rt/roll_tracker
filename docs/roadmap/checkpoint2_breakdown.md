@@ -343,7 +343,7 @@ parallel with Pieces 5-9.
 
 ### Piece 11 — Variable-dt Kalman step (absorbs Piece 8)
 **Class:** FORK (implementation) | **Sites:** #4, #20 | **Ships:** alone | **Depends:** 0, 2
-**Status:** COMPLETE
+**Status:** IMPLEMENTED — T1+T2 PASS, blocked on muxer PTS fix for full corpus
 
 **Scope.** Subclass (not fork) boxmot's `KalmanFilterXYWH` and `BotSort`. The KF subclass
 rebuilds `_motion_mat` per step from a dt *ratio* (`dt_s / nominal_dt_s`), keeping velocity
@@ -357,9 +357,16 @@ Toggle: `stages.stage_A.tracker.variable_dt: true/false` (default false).
 Config: `stages.stage_A.tracker.max_lost_seconds: 2.0`.
 
 **Done.** T1 PASS (constant-cadence segment matches stock bit-for-bit, 500 comparisons, 0
-mismatches). Bimodal segment (200 frames, dt ratios 0.0–2.0) runs without error. Runtime
-assertion proves `STrack.shared_kalman` is the subclassed filter. `dt_s=0.0` (same-PTS
-frames on bimodal segments) handled as ratio 0.0 → Kalman position no-op.
+mismatches). T2 PASS: A→F on unimodal 202832 (1710 frames, 14 exports); A→D on bimodal
+201606 (1950 frames, 9 persons); Stage E failure on 201606 is pre-existing CP22 NAType
+(confirmed: fails identically with variable_dt=false).
+
+**Blocked:** 2 of 11 CP-R8 segments (200827, 202356) have a duplicate-PTS muxer artifact at
+frame index 2 (first segment of each attempt). `dt_s=0.0` → raises under variable_dt=true.
+These are 18% of CP-R8 footage. The frames are NOT pixel-identical (distinct content, wrong
+PTS). See RECORDER-MUXER-PTS-1 finding. **Decision: fix the muxer and re-capture the two
+affected segments.** The remaining 9 segments are clean. Do not annotate 200827 or 202356
+until the fix lands and they are re-captured.
 
 **Note.** CP-R8 bimodal exposure (3/11 segments) is higher than CP-R11's 1/139 — the pre-fix
 requantization was erasing the signal. Variable dt is more urgent than the original exposure
@@ -369,7 +376,7 @@ figures suggested.
 
 ### CP-R8 — Clean GT capture and annotation
 **Class:** manual | **Ships:** alone | **Blocks:** all T3 validation
-**Status:** NOT STARTED — promoted to critical path
+**Status:** CAPTURED — 11 segments, 9 clean, 2 blocked on MUXER-PTS-1
 
 **Scope.** Manual capture on the fixed recorder + CVAT annotation. Unchanged in content from
 the existing backlog item — **changed in priority**.
