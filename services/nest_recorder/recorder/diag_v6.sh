@@ -1427,8 +1427,7 @@ while :; do
   # Parse content duration from ffmpeg's last progress line (time=HH:MM:SS.ss).
   # ffmpeg writes progress with \r (carriage return) under SOURCE_PTS=0; under
   # SOURCE_PTS=1 the timestamper's read -r converts \r to \n. Handle both.
-  local attempt_content_s=0
-  local last_time
+  attempt_content_s=0
   last_time=$(tr '\r' '\n' < "$DIAG_DIR/ffmpeg_attempt_${ATTEMPT}.stderr" \
     | grep -o 'time=[0-9:.]*' | tail -1 | sed 's/time=//' || true)
   if [ -n "$last_time" ]; then
@@ -1441,7 +1440,7 @@ while :; do
   # that is a parse failure, not zero content. Fall back to ffprobe.
   if [ "$attempt_content_s" -eq 0 ] && [ "$run_duration" -gt 30 ]; then
     log "[v6] WARNING: attempt $ATTEMPT ran ${run_duration}s but time= parse yielded 0s — trying ffprobe fallback"
-    local probe_total=0 probe_dur
+    probe_total=0
     for seg_f in "$DIAG_DIR/${CAM_ID}"-*.mp4; do
       [ -f "$seg_f" ] || continue
       probe_dur=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$seg_f" 2>/dev/null || echo 0)
@@ -1449,7 +1448,7 @@ while :; do
     done
     if [ "$probe_total" -gt 0 ]; then
       # ffprobe sums ALL segments including prior attempts; subtract what we already had
-      local probe_this_attempt=$(( probe_total - CONTENT_CAPTURED_S ))
+      probe_this_attempt=$(( probe_total - CONTENT_CAPTURED_S ))
       [ "$probe_this_attempt" -lt 0 ] && probe_this_attempt=0
       attempt_content_s=$probe_this_attempt
       log "[v6] WARNING: ffprobe fallback: ${attempt_content_s}s for attempt $ATTEMPT"
