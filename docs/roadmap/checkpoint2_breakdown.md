@@ -227,6 +227,15 @@ contract's own worked example (line 345) shows
 possible to tell whether the anchor was confident or a fallback if session stitching later
 looks wrong. Cheap now, expensive to reconstruct later.
 
+**Piece 4 must treat `attempt` changes as hard breaks (RECORDER-COVERAGE-2).** Session
+aggregation must treat an `attempt` change between consecutive clips as a discontinuity of
+unknown duration: no reconnect edges across it, no cross-clip tracklet joins. Without this
+the pipeline stitches tracklets across a genuine teleport in space and time.
+`f0_sidecar.py:231` exposes `attempt`; nothing in `src/bjj_pipeline/stages/` reads it yet.
+PPDmUg Aug 23 (5 segments across 5 different attempts, 183s content in 7,243s wall)
+demonstrates that wall-clock spacing alone cannot distinguish delivery lag (within an
+attempt) from genuine discontinuity (between attempts).
+
 **Done.** No `/ fps` remains in the three sites; velocities derived from real per-frame time;
 D0.5 speed/accel inputs verified to change consistently. Session alignment uses
 `pts_wallclock_offset_s`. `showinfo_offset_status` logged per clip.
@@ -245,6 +254,13 @@ longer applies one scalar across cameras that measure differently (13.85 vs 15.0
 same session).
 
 Cross-camera sync accuracy is +/-14-56ms per the contract; record the residual.
+
+**Open question (RECORDER-COVERAGE-2):** `pts_wallclock_offset_s` derives from
+`host_arrival_s`. Under sub-real-time delivery, arrival lags capture by the accumulated
+delivery delay, and that delay grows through a run. Two cameras at different delivery rates
+(observed: FP7oJQ 0.94× and PPDmUg 0.25× on Aug 22) would diverge by minutes. The
+contract's ±14–56ms accuracy figure (CAPTURE-TIME-2) predates this observation. **Verify
+before planning Piece 5.** This may partly explain historically weak cross-camera evidence.
 
 **Done.** #8 reads time directly; cross-camera sync verified on the 3-camera session corpus.
 
@@ -369,12 +385,11 @@ exports); A→D on high-dispersion 201606 (1950 frames, 29.8% dispersion, 9 pers
 failure on 201606 is pre-existing CP22 NAType (confirmed: fails identically with
 variable_dt=false).
 
-**Blocked:** 2 of 11 CP-R8 segments (200827, 202356) have a duplicate-PTS muxer artifact at
-frame index 2 (first segment of each attempt). `dt_s=0.0` → raises under variable_dt=true.
-These are 18% of CP-R8 footage. The frames are NOT pixel-identical (distinct content, wrong
-PTS). See RECORDER-MUXER-PTS-1 finding. **Decision: fix the muxer and re-capture the two
-affected segments.** The remaining 9 segments are clean. Do not annotate 200827 or 202356
-until the fix lands and they are re-captured.
+**Blocked:** Duplicate-PTS muxer artifact at frame index 2 on attempt-first segments
+(RECORDER-MUXER-PTS-1). `dt_s=0.0` → raises under variable_dt=true. Second reproduction
+(Aug 23): FP7oJQ 3/17 segments affected (attempt-first only, attempts >1 deterministic);
+PPDmUg 5/5 (every segment is attempt-first). **Decision: fix the muxer and re-capture
+affected segments.** Do not annotate affected segments until fixed.
 
 **Note.** CP-R8 bimodal exposure (3/11 segments) is higher than CP-R11's 1/139 — the pre-fix
 requantization was erasing the signal. Variable dt is more urgent than the original exposure
@@ -391,7 +406,7 @@ and does not track dispersion (the most dispersed CP-R8 segment, 202148 at 48.3%
 
 ### CP-R8 — Clean GT capture and annotation
 **Class:** manual | **Ships:** alone | **Blocks:** all T3 validation
-**Status:** CAPTURED — 11 segments, 9 clean, 2 blocked on MUXER-PTS-1
+**Status:** CAPTURED — CP-R8 (11 segments, 9 clean, 2 blocked on MUXER-PTS-1) + Aug 23 (17 segments, 14 clean, 3 blocked on MUXER-PTS-1)
 
 **Scope.** Manual capture on the fixed recorder + CVAT annotation. Unchanged in content from
 the existing backlog item — **changed in priority**.
@@ -464,7 +479,7 @@ complete (implementation); this plan covers the remaining work.*
 
 | # | Objective | Type | Pieces | Blocks / blocked by |
 |---|-----------|------|--------|---------------------|
-| 1 | **Recorder coverage investigation** — old-vs-new comparison, diagnose the inter-segment gaps (RECORDER-COVERAGE-1) | Investigation | — | Gates annotation. Biggest unknown. |
+| 1 | **Recorder coverage investigation** — RESOLVED (RECORDER-COVERAGE-2). Delivery ~1.0× steady state; "inter-segment gaps" were delivery lag (within attempt) and genuine discontinuities (between attempts). BACKLOG-1 validated at 1,800s scale. | Investigation | — | **Resolved.** Remaining recorder work: MUXER-PTS-1 fix (objective 2). Camera fleet health blocks multi-camera GT independently. |
 | 2 | **RECORDER-MUXER-PTS-1 fix** — duplicate PTS at frame index 2, first segment of each attempt | Small fix | — | Fold into objective 1's recorder work; must land before next capture |
 | 3 | **Pieces 4 + 6** — Stage D reads real time (clip + session) + Stage F export timing | Build | 4, 6 | **Independent of all recorder work; can run in parallel with objectives 1-2** |
 | 4 | **Player VFR test → Stage F format decision** | Test, then decide | 7 (gated) | Test first: if Flutter player handles VFR, Stage F never converts and Piece 7 dissolves |
@@ -473,9 +488,10 @@ complete (implementation); this plan covers the remaining work.*
 
 ### Ordering rationale
 
-**Annotation is last** because Wednesday's footage is 44% coverage from a recorder about to
-change (RECORDER-COVERAGE-1). Annotating this footage risks doing expensive CVAT work twice
-if the recorder fix changes segment structure.
+**Annotation is last** because MUXER-PTS-1 must be fixed before the next capture, and the
+camera fleet health issue (J_EDEw offline, PPDmUg flickering) blocks multi-camera GT. The
+RECORDER-COVERAGE-1 "44% coverage" concern is resolved — delivery is ~1.0× in steady state
+(RECORDER-COVERAGE-2) and the BACKLOG-1 fix handles sub-real-time delivery correctly.
 
 **Objective 3 is parallel** because Pieces 4 and 6 are pure DEL-CONV — they touch Stage D
 and Stage F timing conversions, not recorder code. Both are independent of the recorder

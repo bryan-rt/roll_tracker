@@ -1,6 +1,6 @@
 # docs/ Catalog
 
-*Status-tagged index of every documentation file. Updated 2026-08-07.*
+*Status-tagged index of every documentation file. Updated 2026-08-23.*
 
 **Status tags:**
 - **CURRENT** — reflects present state, safe to act on
@@ -55,7 +55,8 @@
 | `docs/evidence/recorder_dupfix_1/findings.md` | DUPFIX-1/2: Duplicate contradiction resolved (0 pixel-identical dups); frame drops measured. Drop attribution refined by CP-R11: FP7oJQ ~8% is camera-internal grid mismatch (not network loss); PPDmUg residual 0.45% (CFR decimation eliminated by passthrough). | **CURRENT** |
 | `docs/evidence/frame_spacing_1/findings.md` | CP-R11: Definitive frame-spacing characterization (283 segments, 247K intervals). Modes come in blocks, not interleaved. 15fps is genuine (PPDmUg 1,979 gap-free frames). FP7oJQ gaps are periodic (every ~12 frames, grid mismatch). Supersedes CP-R1b interleaving/undecidability. | **CURRENT** |
 | `docs/evidence/timing_dispersion_1/findings.md` | TIMING-DISPERSION-1: Per-segment dt ratio dispersion on CP-R8 corpus (11 FP7oJQ segments). `is_bimodal` does not track dispersion (202148 at 48.3% flagged False). Nominal-band stdev 0.007 confirms mode structure. 204502 3.3s recording gap: host_arrival validates real, variable-dt composes correctly with max_lost_seconds. Near-miss: Piece 11 DoD bimodal grouping corrected to dispersion correlation. | **CURRENT** |
-| `docs/evidence/recorder_coverage_1/findings.md` | RECORDER-COVERAGE-1: CP-R8 capture coverage is 44.4% (1,134s footage in 2,552s elapsed). Inter-segment gaps of 42-338s within healthy attempts. Untested hypothesis: pre-passthrough recorder did not produce these gaps. Consequence: annotation sequenced after recorder investigation. | **CURRENT** |
+| `docs/evidence/recorder_coverage_1/findings.md` | RECORDER-COVERAGE-1: CP-R8 capture investigation. Delivery rate model (0.10-0.53× from ffmpeg `speed=`) and "44% coverage" framing superseded by RECORDER-COVERAGE-2. Retained as investigation record. | **HISTORICAL** |
+| `docs/evidence/recorder_coverage_2/findings.md` | RECORDER-COVERAGE-2: Aug 23 full-scale validation. BACKLOG-1 validated (1,798s/1,800s target). Delivery ~1.0× steady state (per-segment rates 0.995-1.006×, cumulative `speed=` ramp was artifact). Attempt boundaries as hard breaks (Piece 4 requirement). `pts_wallclock_offset_s` lag question (Piece 5). MUXER-PTS-1 second reproduction. Camera fleet health. `measured_fps` audit. | **CURRENT** |
 | `docs/evidence/recorder_fps_adaptation_1/findings.md` | CP-R1b: Bimodal frame-rate oscillation. TRIM-BIMODAL defect. Partially superseded by CP-R11 (Sections 4, 5 corrected; Sections 1-3, 6-11 valid). | **SUPERSEDED (partially)** |
 | `docs/evidence/recorder_boundary_fix_1/findings.md` | CP-R5: PTS-based segment boundary split replaces line-position split. PPDmUg seg1 residual -135 -> -109 (correct), +30 -> +0 (exact). FP7oJQ leading edge 47 frames recovered (3.1s of dropped data). Schema bumped to 3. | **CURRENT** |
 | `docs/evidence/wallclock_1/findings.md` | Container PTS is synthetic (CFR discards wall-clock) | **HISTORICAL** |

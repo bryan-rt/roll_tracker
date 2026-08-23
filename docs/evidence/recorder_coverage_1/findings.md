@@ -1,5 +1,11 @@
 # RECORDER-COVERAGE-1: Content delivery lag, not inter-segment gaps
 
+> **SUPERSEDED by `docs/evidence/recorder_coverage_2/findings.md`.** The delivery rate model
+> below (0.10–0.53× from ffmpeg `speed=`) was an artifact of using a cumulative metric.
+> Per-segment instantaneous rates show steady ~1.0× delivery. The coverage framing (44.4%,
+> inter-segment gaps) was also superseded — gaps are delivery lag within attempts and genuine
+> discontinuities between attempts. Retained as an investigation record.
+
 **Camera:** FP7oJQ
 **Session:** 2026-08-19 (CP-R8 capture)
 **Recorder:** `diag_v8.sh` with SOURCE_PTS=1, FPS_PASSTHROUGH=1 (post-RELIABILITY-1/2)
