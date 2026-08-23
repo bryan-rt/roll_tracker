@@ -101,8 +101,8 @@ miss → absent on individual rows while present on others in the same segment.
 | Field | Type | Description |
 |-------|------|-------------|
 | `nominal_dt_s` | float | Median-based expected inter-frame interval in seconds (`pts_tick_delta_median / pts_timebase`). **The reference value for gap detection.** See Section 6 for the consumer recipe. |
-| `measured_fps` | float | Trimmed mean of input capture cadence in fps (`pts_timebase / trimmed_mean_tick`). **Under bimodality, reports the majority mode only** -- see Section 5. |
-| `measured_fps_median` | float | `pts_timebase / pts_tick_delta_median`. Subject to tick-alternation quantization (e.g. 14.9254 instead of 15.0000 when ticks alternate 5940/6030). |
+| `measured_fps` | float | Trimmed mean of input capture cadence in fps (`pts_timebase / trimmed_mean_tick`). **Under bimodality, reports the majority mode only** -- see Section 5. **Advisory: this summarizes this segment's majority inter-frame interval, not a property of the camera. The camera's cadence varies across sessions. Do not use as a rate; read per-frame `dt_s` instead.** |
+| `measured_fps_median` | float | `pts_timebase / pts_tick_delta_median`. Subject to tick-alternation quantization (e.g. 14.9254 instead of 15.0000 when ticks alternate 5940/6030). Same advisory as `measured_fps`. |
 | `is_bimodal` | bool | Whether the segment contains frame intervals at two discrete rates (~2x apart) in sustained blocks. See Section 5. |
 | `pts_wallclock_offset_s` | float | Lower-envelope offset: `min(host_arrival - pts_time)` across all frames. Anchors segment-relative PTS to host wall-clock. **Estimated accuracy: +/-14-56ms** (CAPTURE-TIME-2). |
 | `offset_method` | string | `"lower_envelope"` -- the algorithm used. |
