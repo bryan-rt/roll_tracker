@@ -1462,10 +1462,12 @@ while :; do
 
   # --- Termination checks ---
   # Content target reached (within tolerance)?
-  # Tolerance: 10s. Without this, the last few seconds create a degenerate loop:
-  # ffmpeg starts with -t 2, runs ~10s wall time for codec startup, but time= never
-  # gets past 00:00:00.xx → parse returns 0 → camera retries forever. 10s is smaller
-  # than any single segment (SEG_SECONDS=120) so no meaningful footage is lost.
+  # Tolerance: 10s. Root cause: when content_remaining < ~10s, the resulting -t value
+  # produces a micro-segment whose time= in ffmpeg progress never advances past
+  # 00:00:00.xx during codec startup (~10s wall time). The time= parse returns 0,
+  # which is indistinguishable from a genuine parse failure, so the camera retries
+  # forever with backoff. This tolerance sidesteps rather than closes the ambiguity —
+  # do not remove it without fixing the time= parse for sub-10s segments.
   if [ "$TARGET_CONTENT_SECONDS" -gt 0 ]; then
     content_shortfall=$(( TARGET_CONTENT_SECONDS - CONTENT_CAPTURED_S ))
     if [ "$content_shortfall" -le 10 ]; then
