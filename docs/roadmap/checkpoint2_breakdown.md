@@ -490,8 +490,10 @@ complete (implementation); this plan covers the remaining work.*
 
 **Annotation is last** because MUXER-PTS-1 must be fixed before the next capture, and the
 camera fleet health issue (J_EDEw offline, PPDmUg flickering) blocks multi-camera GT. The
-RECORDER-COVERAGE-1 "44% coverage" concern is resolved — delivery is ~1.0× in steady state
-(RECORDER-COVERAGE-2) and the BACKLOG-1 fix handles sub-real-time delivery correctly.
+RECORDER-COVERAGE-1 "44% coverage" symptom is handled by the BACKLOG-1 fix (it keeps
+pulling until content arrives), but the cause of sustained sub-real-time delivery (Wednesday
+0.53×) is still unexplained (RECORDER-COVERAGE-2). A session can still take far longer than
+the target content duration; the fix ensures it captures the content regardless.
 
 **Objective 3 is parallel** because Pieces 4 and 6 are pure DEL-CONV — they touch Stage D
 and Stage F timing conversions, not recorder code. Both are independent of the recorder
