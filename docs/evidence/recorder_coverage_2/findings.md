@@ -61,7 +61,11 @@ Segments 1–11: all between **0.995× and 1.006×**. Flat near 1.0× across 24 
 
 Segment 12 has no valid rate (it is followed by segment 13, its last same-attempt peer,
 with no further segment to provide a wall-clock endpoint). Segment 13 is a partial
-(49.5s) — the attempt ended because content_target was nearly reached.
+(49.5s) — the session died mid-segment (run.log shows session death and backoff). Attempt 1
+delivered 1,489s against an 1,800s target (311s short); attempts 5, 7, and 9 collected the
+remainder. This is why there are three attempt boundaries and three MUXER-PTS-1 segments in
+this capture: steady 1.0× delivery for 24 minutes, then a session drop, then three
+reconnects to collect the remaining ~310s.
 
 ### The cumulative `speed=` artifact
 
@@ -218,8 +222,11 @@ segment-first in general. Attempt 1's first segment is exempt (123642 here, 2008
 affected in CP-R8 — not perfectly deterministic on attempt 1, but deterministic on attempts
 >1).
 
-Combined: 6 of 6 attempt-first segments for attempts >1 are affected. 1 of 2 attempt-1
-first segments are affected (CP-R8 200827 yes, this capture 123642 no).
+Combined across CP-R8 + Aug 23: **9 of 9** attempt-first segments for attempts >1 are
+affected (CP-R8 202356; Aug 23 FP7oJQ 130325/130549/130817; Aug 23 PPDmUg all 5). 1 of 2
+attempt-1 first segments are affected (CP-R8 200827 yes, this capture 123642 no).
+**Deterministic on attempts >1; the muxer fix is immediately verifiable** — a single capture
+with multiple attempts will confirm or deny.
 
 ---
 

@@ -479,7 +479,7 @@ complete (implementation); this plan covers the remaining work.*
 
 | # | Objective | Type | Pieces | Blocks / blocked by |
 |---|-----------|------|--------|---------------------|
-| 1 | **Recorder coverage investigation** — RESOLVED (RECORDER-COVERAGE-2). Delivery ~1.0× steady state; "inter-segment gaps" were delivery lag (within attempt) and genuine discontinuities (between attempts). BACKLOG-1 validated at 1,800s scale. | Investigation | — | **Resolved.** Remaining recorder work: MUXER-PTS-1 fix (objective 2). Camera fleet health blocks multi-camera GT independently. |
+| 1 | **Recorder coverage investigation** — delivery rate model corrected, fix validated (RECORDER-COVERAGE-2). Delivery ~1.0× steady state; "inter-segment gaps" were delivery lag (within attempt) and genuine discontinuities (between attempts). BACKLOG-1 validated at 1,800s scale. Sustained sub-real-time delivery (Wednesday 0.53×) cause still open. | Investigation | — | Model corrected, fix validated. Remaining recorder work: MUXER-PTS-1 fix (objective 2). Camera fleet health blocks multi-camera GT independently. |
 | 2 | **RECORDER-MUXER-PTS-1 fix** — duplicate PTS at frame index 2, first segment of each attempt | Small fix | — | Fold into objective 1's recorder work; must land before next capture |
 | 3 | **Pieces 4 + 6** — Stage D reads real time (clip + session) + Stage F export timing | Build | 4, 6 | **Independent of all recorder work; can run in parallel with objectives 1-2** |
 | 4 | **Player VFR test → Stage F format decision** | Test, then decide | 7 (gated) | Test first: if Flutter player handles VFR, Stage F never converts and Piece 7 dissolves |
