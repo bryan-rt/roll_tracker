@@ -32,6 +32,9 @@ def make_ingest_path(tmp_path: Path, cam: str, stem: str) -> Path:
     p.mkdir(parents=True, exist_ok=True)
     clip = p / f"{stem}.mp4"
     clip.write_bytes(b"\x00\x00\x00")
+    # CP4.A ingest gate requires a schema-5 sidecar sibling
+    from bjj_pipeline.contracts.f0_sidecar_testutil import generate_synthetic_sidecar
+    generate_synthetic_sidecar(p / f"{stem}.timing.jsonl", frame_count=60)
     return clip
 
 

@@ -528,15 +528,23 @@ def parse_sidecar(path: Path) -> SidecarData:
     )
 
 
-def load_sidecar(mp4_path: Path) -> SidecarData:
+def load_sidecar(mp4_path: Path, *, sidecar_path: Optional[Path] = None) -> SidecarData:
     """Strict entry point — for pipeline consumers.
 
-    Locates the sibling .timing.jsonl, parses, and enforces:
+    Locates the sibling .timing.jsonl (or uses an explicit override), parses,
+    and enforces:
       - Schema >= 5
       - timing_mode == "passthrough"
       - source_pts == true
 
     Does NOT require the mp4 to exist — only derives the sidecar path from it.
+
+    Args:
+        mp4_path: Path to the mp4. Used to derive sibling sidecar path when
+            sidecar_path is not provided.
+        sidecar_path: Explicit sidecar path override. When provided, used
+            instead of the derived sibling path. The policy checks (schema,
+            timing_mode, source_pts) are applied identically regardless.
 
     Raises:
         SidecarError: file missing or unreadable
@@ -545,7 +553,8 @@ def load_sidecar(mp4_path: Path) -> SidecarData:
         SidecarValidityError: source_pts=false or timing_mode != passthrough
     """
     mp4_path = Path(mp4_path)
-    sidecar_path = mp4_path.parent / (mp4_path.stem + ".timing.jsonl")
+    if sidecar_path is None:
+        sidecar_path = mp4_path.parent / (mp4_path.stem + ".timing.jsonl")
 
     data = parse_sidecar(sidecar_path)
 

@@ -28,6 +28,7 @@ def generate_synthetic_sidecar(
     host_arrival_missing: Optional[List[int]] = None,
     n_drift_windows: int = 6,
     segment_start_epoch: int = 1786988297,
+    pts_wallclock_offset_s_override: Optional[float] = None,
 ) -> Path:
     """Write a synthetic sidecar JSONL file.
 
@@ -153,7 +154,10 @@ def generate_synthetic_sidecar(
             meta["short_mode_fps"] = 30.0
             meta["short_mode_dt_s"] = 0.033333
             meta["long_mode_dt_s"] = round(dt_s, 6)
-        meta["pts_wallclock_offset_s"] = float(segment_start_epoch)
+        if pts_wallclock_offset_s_override is not None:
+            meta["pts_wallclock_offset_s"] = pts_wallclock_offset_s_override
+        else:
+            meta["pts_wallclock_offset_s"] = float(segment_start_epoch)
         meta["offset_method"] = "lower_envelope"
         if n_drift_windows >= 4:
             meta["drift_rate_s_per_s"] = -0.000000603

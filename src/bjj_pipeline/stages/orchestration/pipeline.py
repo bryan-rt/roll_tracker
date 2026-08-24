@@ -644,6 +644,45 @@ def _resolve_inputs_for_stage(manifest: ClipManifest, layout: ClipOutputLayout, 
     return {"layout": layout, "manifest": manifest}
 
 
+def _validate_sidecar_ingest(
+    *,
+    ingest_path: Path,
+    clip_id: str,
+    resolved_config: Dict[str, Any],
+    out_root: Optional[Path],
+) -> Tuple[str, str]:
+    """Validate sidecar at ingest, before any stage runs.
+
+    Returns (provenance, resolved_sidecar_path) where provenance is "real" or
+    "synthetic".
+
+    Raises PipelineError with an actionable message if validation fails.
+    """
+    from bjj_pipeline.contracts.f0_sidecar import load_sidecar, SidecarError
+
+    allow_synthetic = _cfg_get(resolved_config, "stages.ingest.allow_synthetic_sidecars", False)
+    base_output = out_root or Path("outputs")
+    synthetic_dir = base_output / "_synthetic_sidecars"
+    synthetic_path = synthetic_dir / (ingest_path.stem + ".timing.jsonl")
+
+    try:
+        if allow_synthetic and synthetic_path.exists():
+            load_sidecar(ingest_path, sidecar_path=synthetic_path)
+            return "synthetic", str(synthetic_path)
+        else:
+            sidecar_data = load_sidecar(ingest_path)
+            real_path = str(ingest_path.parent / (ingest_path.stem + ".timing.jsonl"))
+            return "real", real_path
+    except SidecarError as exc:
+        raise PipelineError(
+            f"Sidecar ingest gate failed for {clip_id}: {exc}\n"
+            f"  mp4: {ingest_path}\n"
+            f"  Action: re-capture with the fixed recorder, or generate a synthetic "
+            f"sidecar under {synthetic_dir}/ and set "
+            f"stages.ingest.allow_synthetic_sidecars: true in config."
+        ) from exc
+
+
 def run_pipeline(ingest_path: Path, camera_id: str, config: Dict[str, Any], *,
                  out_root: Optional[Path] = None,
                  force_stages: Optional[List[StageLetter]] = None,
@@ -694,6 +733,26 @@ def run_pipeline(ingest_path: Path, camera_id: str, config: Dict[str, Any], *,
         "clip_id": clip_id,
         "camera_id": camera_id,
         "config_hash": cfg_hash,
+    })
+
+    # --- Sidecar ingest gate (CP4.A) ---
+    # Validates a usable sidecar exists before any stage runs. For legacy footage
+    # without sidecars, stages.ingest.allow_synthetic_sidecars enables synthetic
+    # sidecars from {out_root}/_synthetic_sidecars/.
+    from bjj_pipeline.contracts.f0_sidecar import load_sidecar, SidecarError
+    sidecar_provenance, resolved_sidecar_path = _validate_sidecar_ingest(
+        ingest_path=ingest_path,
+        clip_id=clip_id,
+        resolved_config=resolved_config,
+        out_root=out_root,
+    )
+    append_audit(layout, {
+        "event": "sidecar_validated",
+        "timestamp": _now_ms(),
+        "clip_id": clip_id,
+        "camera_id": camera_id,
+        "sidecar_provenance": sidecar_provenance,
+        "sidecar_path": resolved_sidecar_path,
     })
 
     try:

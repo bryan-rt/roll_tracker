@@ -48,18 +48,24 @@ class FrameIterator:
     def __iter__(self) -> Iterator[FramePacket]:
         cap = self._cap or self._open()
         frame_index = 0
-        fps = self._fps or 0.0
         while True:
             ok, frame = cap.read()
             if not ok or frame is None:
                 break
-            # Prefer container timestamp if available; fall back to fps-derived timebase.
+            # POS_MSEC delivers exact capture PTS on post-R13a footage (Piece 0b, §10 A2).
+            # Frame 0: POS_MSEC returns 0.0 (falsy) — exempt by index, yields ts_ms=0.
+            # Frames >0: POS_MSEC must be positive; if not, the container is untimeable.
+            # RuntimeError (not PipelineError) because core/ must not depend on stages/.
             pos_msec = cap.get(cv2.CAP_PROP_POS_MSEC)
-            if pos_msec and pos_msec > 0:
+            if frame_index == 0:
+                ts_ms = int(round(pos_msec)) if pos_msec > 0 else 0
+            elif pos_msec > 0:
                 ts_ms = int(round(pos_msec))
-            elif fps and fps > 0:
-                ts_ms = int(round(1000.0 * frame_index / fps))
             else:
-                ts_ms = 0
+                raise RuntimeError(
+                    f"CAP_PROP_POS_MSEC={pos_msec} at frame_index={frame_index} "
+                    f"in {self.ingest_path.name} — container has no usable timestamps. "
+                    f"Post-R13a footage is required for pipeline timing."
+                )
             yield FramePacket(frame_index=frame_index, timestamp_ms=ts_ms, image_bgr=frame)
             frame_index += 1
