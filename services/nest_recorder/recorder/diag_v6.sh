@@ -324,7 +324,16 @@ build_ffmpeg_opts() {
 
   # Video path: REENCODE=1|2 (CFR + timing sidecar), 0 (VFR passthrough)
   if [ "$REENCODE" = "1" ] || [ "$REENCODE" = "2" ]; then
-    VF_OPTS=(-vf showinfo)
+    # MUXER-PTS-1 fix: drop frames with duplicate PTS at stream start.
+    # When the RTSP relay sends its initial burst on reconnection, the H.264
+    # bitstream contains two frames (a B-frame and an IDR) at the same RTP
+    # timestamp. The decoder outputs both, creating a duplicate PTS that
+    # produces dt_s=0.0 in the sidecar and makes the segment unusable.
+    # The two frames represent the same camera capture moment (identical
+    # mean/stdev, same RTP timestamp); dropping one loses zero temporal
+    # coverage. The select filter is a no-op when no duplicate PTS exists.
+    # Evidence: docs/evidence/muxer_pts_1/findings.md
+    VF_OPTS=(-vf "select='isnan(prev_pts)+not(eq(pts\,prev_pts))',showinfo")
     if [ "$FPS_PASSTHROUGH" = "1" ]; then
       # -enc_time_base 1/90000: preserve RTP capture PTS precision through x264 re-encode.
       # Without this, x264 requantizes all PTS onto a uniform 1/15360 grid, destroying the

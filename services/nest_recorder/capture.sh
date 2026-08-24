@@ -12,6 +12,7 @@ set -euo pipefail
 #   ./capture.sh --target 1800            # capture 30 min of content (auto wall cap: 5x)
 #   ./capture.sh --target 1800 --window 5400  # 30 min content, 90 min wall cap
 #   ./capture.sh --window 3900 --seg 120
+#   ./capture.sh --cams "FP7oJQ:enterprises/.../devices/AAA"  # pin to one camera
 #
 # --target N  Capture N seconds of content. The run continues until that much
 #             footage arrives, regardless of delivery speed. A wall-clock safety
@@ -32,12 +33,14 @@ WINDOW_SECONDS=3900
 SEG_SECONDS=120
 TARGET_CONTENT_SECONDS=0
 EXPLICIT_WINDOW=false
+CAMS=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --window) WINDOW_SECONDS="$2"; EXPLICIT_WINDOW=true; shift 2 ;;
     --target) TARGET_CONTENT_SECONDS="$2"; shift 2 ;;
     --seg)    SEG_SECONDS="$2"; shift 2 ;;
+    --cams)   CAMS="$2"; shift 2 ;;
     *)        echo "Unknown argument: $1"; exit 1 ;;
   esac
 done
@@ -94,8 +97,13 @@ fi
 echo "[capture] SOURCE_PTS and FPS_PASSTHROUGH use defaults (both 1 since CP-R3)"
 echo ""
 
-$COMPOSE exec recorder bash -lc \
-  "WINDOW_SECONDS=$WINDOW_SECONDS SEG_SECONDS=$SEG_SECONDS TARGET_CONTENT_SECONDS=$TARGET_CONTENT_SECONDS MAX_WALLCLOCK_SECONDS=$MAX_WALLCLOCK_SECONDS /app/diag_v7_2.sh"
+EXEC_ENV="WINDOW_SECONDS=$WINDOW_SECONDS SEG_SECONDS=$SEG_SECONDS TARGET_CONTENT_SECONDS=$TARGET_CONTENT_SECONDS MAX_WALLCLOCK_SECONDS=$MAX_WALLCLOCK_SECONDS"
+if [[ -n "$CAMS" ]]; then
+  EXEC_ENV="$EXEC_ENV CAMS='$CAMS'"
+  echo "[capture] CAMS=$CAMS"
+fi
+
+$COMPOSE exec recorder bash -lc "$EXEC_ENV /app/diag_v7_2.sh"
 
 echo ""
 echo "[capture] Done."
