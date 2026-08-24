@@ -99,18 +99,23 @@ different risk profiles.
    require a scalar fps. Athletes never receive VFR clips; Stage F re-encodes to CFR.
    Provide the correct scalar from the sidecar.
 
-**Open prerequisite (TIMING-PRINCIPLE-1):** The entire principle rests on `frame_index`
-mapping 1:1 between sidecar rows and decoded mp4 frames. This is unverified on
-`mismatch: true` segments (FP7oJQ-20260807-102006: 233 sidecar rows vs 238 mp4 frames).
-If the join breaks, the `frame_index → dt_s` lookup is unsound and a different join key
-is needed. This prerequisite must be resolved before any DEL-CONV site can be implemented.
+**Prerequisite RESOLVED (Piece 0, CP-R13b).** The prerequisite is the (a)<->(c) join —
+sidecar rows to decoded frames. On the pre-R13b corpus it held on 45 of 94 segments,
+because sidecar rows came from showinfo attribution. CP-R13b removed the failure mode
+structurally: frame rows are now derived from mp4 PTS, so row count = decode count by
+construction. Verified on 9 post-R13b passthrough segments (`a_eq_c = True`, §10 A1),
+both cameras, across 3 multi-segment attempts. Open residual: all 9 are smoke-test
+length (~300 frames); production-length (~1800 frames) verification arrives with CP-R8.
+DEL-CONV sites are unblocked.
 
-**#16 (`_infer_last_frame`) is PROVISIONAL.** The proposed replacement
-(`output_frame_count` from the sidecar) has two problems: (a) sidecars are per-segment,
-not per-session — if Stage F operates on concatenated or session-level video, no single
-sidecar describes it; (b) `output_frame_count` is the field that disagreed with the
-decoded frame count on FP7oJQ (233 vs 238), and is under suspicion in the open
-prerequisite. The replacement is contingent on resolving both.
+**#16 (`_infer_last_frame`) remains PROVISIONAL on objection (a) only.** Of the two
+original objections: (b) `output_frame_count` reliability is resolved — §7 verified
+(b)=(c)=(e) on all 94 segments, so `output_frame_count` is truthful as a decode count.
+Under schema 5, `mismatch` is structurally false and row count equals
+`output_frame_count` by construction, so the boundary-residual divergence of §7
+residual 2 cannot arise on schema-5 footage. (a) Sidecars are per-segment, not
+per-session — if Stage F operates on concatenated or session-level video, no single
+sidecar describes it. This remains unresolved. #16 is PROVISIONAL on (a) alone.
 
 ### Piece assignments (updated 2026-08-19, DOC-SYNC-7)
 
@@ -126,7 +131,7 @@ rejected-alternative rationale.
 
 | Site | Piece | Notes |
 |------|-------|-------|
-| #1 | 4 (dissolves) | DEL-CONV consequent — disappears once #9 and #8 stop requesting a session-wide scalar |
+| #1 | 4 (reduced) / 5 (eliminated) | DEL-CONV consequent. Piece 4 removes #9's scalar demand, reducing #1 to a single consumer (#8, `cross_camera_evidence.py:252`). Piece 5 removes #8, eliminating #1 entirely. |
 | #2 | 6 | |
 | #3 | 6 | |
 | #4 | 8 | |
@@ -149,6 +154,38 @@ rejected-alternative rationale.
 | #21 | 1 | RESOLVED |
 | #22 | 1 | RESOLVED |
 | #23 | 1 | RESOLVED |
+
+### Addendum: `frame_iterator.py` fps fallback (discovered 2026-08-24, CP4 planning)
+
+*Not renumbered into the §0 table. Owned by CP4.A.*
+
+`frame_iterator.py:60-62` contains a live frame→time conversion not covered by the
+23-site audit:
+
+```python
+pos_msec = cap.get(cv2.CAP_PROP_POS_MSEC)
+if pos_msec and pos_msec > 0:
+    ts_ms = int(round(pos_msec))
+elif fps and fps > 0:
+    ts_ms = int(round(1000.0 * frame_index / fps))   # silently manufactures uniform time
+```
+
+**Frame-0 behavior constrains the fix.** On `frame_index == 0`, `POS_MSEC` returns
+`0.0`, which is **falsy** (`if pos_msec and pos_msec > 0` → False). Frame 0 always
+takes the fallback branch and computes `1000.0 * 0 / fps` = `0` — correct by
+coincidence, but every clip reaches the fallback at least once. A hard error on the
+fallback path that does not exempt frame 0 fires on every clip in the corpus.
+
+Constraint for the fix (not the fix itself): the discriminator must be `frame_index`,
+not the value of `pos_msec`. `cap.get()` returns a float, never `None`, and returns
+`0.0` both for a legitimate frame-0 timestamp and for an unsupported property — so no
+test on `pos_msec` alone can separate the two. Frame 0 must be exempted explicitly;
+frames after it must fail loudly rather than fall back to a computed grid. CP4.A owns
+the exact condition.
+
+The fallback is not harmful today — `POS_MSEC` delivers exact capture PTS on all
+post-R13a footage (§10 A2). But it silently substitutes uniform-grid time when
+`POS_MSEC` is unavailable (e.g., corrupted container, legacy footage without sidecars).
 
 ---
 

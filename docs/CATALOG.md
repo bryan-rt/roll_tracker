@@ -37,7 +37,7 @@
 
 | Path | Purpose | Status |
 |------|---------|--------|
-| `docs/reference/sidecar_contract.md` | Sidecar timing contract -- schema v4 (CP-R6). Authoritative spec for `.timing.jsonl`. Sections 5/6.1 corrected for blocked-mode model (CP-R12, no schema change). | **CURRENT** |
+| `docs/reference/sidecar_contract.md` | Sidecar timing contract — schema v5 (CP-R13b, 2026-08-17). Authoritative spec for `.timing.jsonl`. Frame rows derived from mp4 PTS (not showinfo); `row_source: "mp4"`, `input_n` removed, `mismatch` semantics inverted to structural `false`. Earlier: established CP-R6 (schema 4), blocked-mode correction CP-R12, PTS precision fix CP-R13a. | **CURRENT** |
 | `docs/reference/eval_instrument_spec.md` | CP-EVAL-1 frozen instrument v1.0 spec | **CURRENT** |
 | `docs/reference/undistortion_audit.md` | All 9 undistortion code paths verified (2026-04-02) | **CURRENT** |
 | `docs/reference/stage_d_audit_findings.md` | CP0: Stage D config audit (7/8 penalty fields dead) | **HISTORICAL** |

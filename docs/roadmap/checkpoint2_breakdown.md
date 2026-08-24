@@ -51,20 +51,29 @@ Consequences:
 artifacts. `f0_validate.py:342,590` enforce it as a join key. `d4_*.py:434` carries it into
 `person_tracks`. Stage A is the only stage that decodes video.
 
-Therefore DEL-CONV does **not** mean "every stage reads the sidecar." It means:
+Therefore DEL-CONV does **not** mean "every stage reads the sidecar." The delivery
+architecture is:
 
-> Stage A populates `timestamp_ms` from the sidecar's `pts_time_s`. Downstream stages delete
-> their `frame/fps` conversions and read the column that is already present.
+> **Read the parquet for per-frame time; read the sidecar for segment-level timeline
+> facts.** Stage A is the only stage that decodes video, so `timestamp_ms` (via
+> `POS_MSEC`, proven equivalent to sidecar `pts_time_s` by Piece 0b) carries per-frame
+> capture time to every downstream consumer. Segment-scoped facts with no parquet
+> carrier — `attempt`, `pts_wallclock_offset_s`, `showinfo_offset_status`,
+> `nominal_dt_s`, per-frame `dt_s` — are read from the sidecar directly. Piece 4 does
+> both.
 
-This shrinks the work substantially and narrows the partial-application window to a single
-hop (A->D) rather than five independent adoptions.
+This shrinks the work substantially: downstream stages delete their `frame/fps`
+conversions and read the `timestamp_ms` column already present in the parquet.
 
 **Precision decision this forces.** `timestamp_ms` is int milliseconds; `pts_time_s` at a
 90kHz timebase resolves to ~11us. Rounding to ms is fine for Stage F seek arithmetic and
 Stage D velocities (+/-1ms on a 67ms interval = 1.5%). It is marginal for reconstructing
 `dt_s` by differencing for a Kalman step. **Recommended:** do not add a float column; have
 the fork (Piece 10/11) read `dt_s` from the sidecar directly. Keeps the parquet schema
-untouched. Decide in Piece 3.
+untouched. **Decision closed (Piece 0b, §10 precision finding):** all `pts_time_s` values
+land on exact integer milliseconds (5940/90=66, 6030/90=67), so `int(timestamp_ms)`
+rounding is lossless on post-R13a footage. No float column needed; Piece 11 reads `dt_s`
+from the sidecar as recommended.
 
 ### 0.3 The planned A/B cannot run on existing GT — CP-R8 is promoted
 
@@ -108,7 +117,7 @@ Legend — **Ships:** `alone` = independently shippable; `with N` = must land in
 commit/PR as piece N.
 
 ### Piece 0 — Resolve the `frame_index` join prerequisite
-**Class:** MEASUREMENT (not a fix) | **Ships:** alone | **Blocks:** 3,4,5,6,10,11
+**Class:** MEASUREMENT (not a fix) | **Ships:** alone | **Blocks:** 4,5,6,10,11
 **Status:** COMPLETE
 
 **Scope.** Determine empirically whether sidecar row `frame_index` maps 1:1 to
@@ -154,7 +163,7 @@ later piece has to reason about.
 ---
 
 ### Piece 2 — Sidecar reader module + synthetic-sidecar test harness
-**Class:** foundation (no behavior change) | **Ships:** alone | **Blocks:** 3,6,7,8
+**Class:** foundation (no behavior change) | **Ships:** alone | **Blocks:** 6,7,8
 **Status:** COMPLETE
 
 **Scope.** A contracts-layer module that locates a segment's `.timing.jsonl`, parses `_meta`
@@ -181,32 +190,31 @@ specify `1.0 / nominal_dt_s`. Do not read `input_n` (deprecated).
 
 ---
 
-### Piece 3 — Stage A becomes the timing source of truth
-**Class:** DEL-CONV | **Ships:** alone | **Depends:** 0, 2 | **Blocks:** 4,5,6,10,11
-**Status:** NOT STARTED
+### Piece 3 — ~~Stage A becomes the timing source of truth~~ DISSOLVED (Piece 0b)
+**Status:** DISSOLVED
 
-**Scope.** Populate `timestamp_ms` in Stage A outputs from sidecar `pts_time_s` instead of
-`CAP_PROP_POS_MSEC` / fps fallback. Behind a config flag with the old path retained. Resolve
-the int-ms precision decision from section 0.2 and record it.
+Piece 3's scope was "populate `timestamp_ms` from sidecar `pts_time_s` instead of
+`CAP_PROP_POS_MSEC`." Piece 0b (§10 A2) proved this unnecessary: `CAP_PROP_POS_MSEC`
+matches sidecar `pts_time_s` with **0.000ms** max deviation on post-R13a footage
+(FP7oJQ 133817, PPDmUg 133829), with the 5940/6030 tick alternation fully visible as
+distinct 66/67ms deltas. `FrameIterator.timestamp_ms` already provides exact capture
+PTS — no sidecar read needed for per-frame timestamps.
 
-**Done.** `timestamp_ms` provably sourced from the sidecar when one is present and valid;
-old path preserved under the flag; flag documented in CLAUDE.md; **the value verified to
-arrive in the written parquet**, not merely at the call site (the checkpoint-1 failure mode —
-correct in the edited file, dropped by the carrying path).
+The int-ms precision decision this piece was to settle is also closed (§10 precision
+finding): all `pts_time_s` values land on exact integer milliseconds, so
+`int(timestamp_ms)` rounding is lossless. No float column needed.
 
-**Validation.** T1 (synthetic-sidecar equivalence: constant-dt sidecar must reproduce old
-`timestamp_ms` within tolerance) + T2. T3 blocked on CP-R8.
+**Verified in live code:** `frame_iterator.py:57` reads `POS_MSEC`; `load_sidecar` is
+called only from `multiplex_runner.py:530` (under `variable_dt`) and
+`tools/sweep/replay_tracker.py:75`. Piece 3 was never implemented and does not need
+to be.
 
-**Why it originally shipped with Piece 4 (DOC-SYNC-7 re-cut dissolved this constraint).**
-Stage A emitting real time while Stage D still computes `df / fps` puts two disagreeing
-time bases in one pipeline. This motivated an atomic 3+4 landing in the original plan.
-The constraint is real but manageable: Piece 3 can land alone if the config flag keeps
-the old path available, and Piece 4 follows immediately.
+Evidence: `docs/evidence/frame_index_join_1/findings.md` §10 A2 and precision finding.
 
 ---
 
 ### Piece 4 — Stage D reads real time (clip + session)
-**Class:** DEL-CONV | **Sites:** #5, #6, #7, #9, #10 | **Ships:** alone | **Depends:** 0, 2, 3
+**Class:** DEL-CONV | **Sites:** #5, #6, #7, #9, #10 | **Ships:** alone | **Depends:** 0, 2
 **Status:** NOT STARTED
 
 **Scope.** Delete the `dt_s = frames / fps` conversions in `d0_bank.py:571`,
@@ -242,10 +250,36 @@ D0.5 speed/accel inputs verified to change consistently. Session alignment uses
 
 **Validation.** T1 (equivalence under synthetic constant-dt sidecar) + T2. T3 blocked.
 
+### Approved checkpoint sequence (2026-08-24)
+
+| CP | Scope | Depends | Ships |
+|---|---|---|---|
+| CP4.A | Sidecar ingest gate + per-clip timing record; frame_iterator fallback fixed | — | alone |
+| CP4.B | D0 kinematics read real time (site #5) | A | alone |
+| CP4.C | Session timeline: anchored offsets + session-relative `timestamp_ms` (#9, #10); log `showinfo_offset_status` | A | **with D** |
+| CP4.D | D1/D2 read real time (#6, #7) | C | **with C** |
+| CP4.E | `attempt` boundaries as hard breaks | C, D | alone |
+| CP4.F | Retire the session fps scalar (#1) to one documented consumer | C, D, E | alone |
+
+**Why C and D are atomic.** `aggregate_session_bank` (`session_d_run.py:302-330`)
+offsets `frame_index`, `start_frame`, and `end_frame` but **not** `timestamp_ms`. D
+without C reads clip-relative `timestamp_ms` against globally-offset `frame_index`
+and produces a small or negative cross-clip `dt_s` with both endpoints present and
+nothing raised — the silently-plausible-wrong-number failure class.
+
+**Validation ceiling for CP4.C and CP4.E.** Both anchor on `pts_wallclock_offset_s`,
+for which legacy footage has no real value — the synthetic generator fabricates it.
+T2 on the 3-camera session corpus is a **smoke test** (the mechanism runs, output is
+plausible); it does **not** validate that the session timeline is correct. **T1 on a
+synthetic two-clip session with a known offset is the sole correctness evidence for
+session alignment until CP-R8 footage exists.** This is a deliberate choice: the
+alternative — deriving fixture offsets from filename timestamps — was considered and
+rejected to keep the rejected production anchor out of the test path entirely.
+
 ---
 
 ### Piece 5 — Cross-camera timing
-**Class:** DEL-CONV | **Site:** #8 | **Ships:** alone (after 3+4) | **Depends:** 0, 3, 4
+**Class:** DEL-CONV | **Site:** #8 | **Ships:** alone (after 4) | **Depends:** 0, 4
 **Status:** NOT STARTED
 
 **Scope.** Replace `temporal_window_s * fps` -> frame-count comparison (#8
@@ -275,7 +309,7 @@ downstream of D and unrelated to cross-camera identity. Candidate signal if
 ---
 
 ### Piece 6 — Stage F export timing (customer-visible)
-**Class:** DEL-CONV | **Sites:** #2, #3, #16 | **Ships:** alone | **Depends:** 0, 2, 3
+**Class:** DEL-CONV | **Sites:** #2, #3, #16 | **Ships:** alone | **Depends:** 0, 2
 **Status:** NOT STARTED
 
 **Scope.** Replace `start_sec = start_frame / fps` (#2 `ffmpeg.py:121-122`) — `pts_time_s`
@@ -425,11 +459,11 @@ parallel with Pieces 1-2, since it is manual work that blocks nothing upstream.
 | Group | Pieces | Constraint |
 |---|---|---|
 | **Complete** | 0, 1, 2, 11 | Implemented. 11 is T1+T2 PASS, T3 pending annotation. |
-| **Gated on join verdict** | 3, 4, 5, 6 | Re-plan required if (a)<->(c) is not 1:1 |
+| **Gated on join verdict** | 4, 5, 6 | Re-plan required if (a)<->(c) is not 1:1 |
 | **Gated on player VFR test** | 7 | Scope changes or dissolves depending on test outcome |
 | **Independent scalars** | 9 | Depends only on Piece 2 (8 dissolved into 11) |
 | **Scoping** | 10 | Parallel with 5-9 |
-| **Dissolved** | 8 | Absorbed into Piece 11 |
+| **Dissolved** | 3, 8 | 3: dissolved by Piece 0b (POS_MSEC = sidecar PTS). 8: absorbed into Piece 11 |
 
 **Ordering:** superseded by the six-objective execution plan in §5. The original sequence
 (`0 -> 1 -> 2 -> (3+4) -> 6 -> 5 -> 7 -> 9 -> 10 -> 11`) was written before the recorder
@@ -448,7 +482,9 @@ coverage gap was observed and before Piece 11 was implemented. §5 is the curren
    validation" (section 0.3).
 3. **Record that `timestamp_ms` is the DEL-CONV delivery vehicle** (section 0.2) — downstream
    stages read the parquet column, not the sidecar.
-4. **Record the int-ms precision decision** once Piece 3 settles it.
+4. **Record the int-ms precision decision** — closed (Piece 0b, §10 precision finding).
+   All `pts_time_s` values land on exact integer milliseconds; `int(timestamp_ms)` rounding
+   is lossless. Piece 11 reads `dt_s` from the sidecar directly. No float column added.
 5. **Record that the numeric eval metric is fps-free** (section 0.4), so #19's placement is
    not revisited later on a false assumption.
 
@@ -462,8 +498,9 @@ The original split conflated two problems: putting clips on one timeline (sessio
 and reconciling two cameras (cross-camera sync). The re-cut separated them:
 
 - **Piece 4** absorbed session alignment (sites #5, #6, #7, #9, #10) — "put clips on one
-  timeline." The original 3+4 atomic-pair constraint was dissolved (Piece 3 can land alone
-  with a config flag; Piece 4 follows immediately).
+  timeline." The original 3+4 atomic-pair constraint is moot — Piece 3 dissolved (Piece 0b
+  proved `POS_MSEC` delivers exact capture PTS, making sidecar-sourced `timestamp_ms`
+  unnecessary). Piece 4 depends on Pieces 0 and 2 only.
 - **Piece 5** became purely cross-camera: site #8 and Tier 2 enabling.
 
 The filename-anchor fallback for session alignment was rejected: `parse_clip_timestamp` has
@@ -516,7 +553,7 @@ The piece definitions in §1 describe scope of work. This plan describes executi
 and grouping. Pieces not listed in the plan (3, 5, 9, 10) are not cancelled — they are
 sequenced after the six objectives or folded into them:
 
-- **Piece 3** is a prerequisite for Piece 4 (objective 3). It can land independently.
+- **Piece 3** dissolved (Piece 0b). Not a prerequisite for Piece 4.
 - **Piece 5** (cross-camera) is downstream of objective 3 and not on the critical path.
 - **Piece 9** (A/B instrument fix) gates human review of preview video, not numeric
   measurement. Sequenced after objective 3.
