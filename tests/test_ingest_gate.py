@@ -17,6 +17,7 @@ from bjj_pipeline.stages.orchestration.pipeline import (
     PipelineError,
     _validate_sidecar_ingest,
 )
+from bjj_pipeline.contracts.f0_paths import resolve_sidecar_path
 from bjj_pipeline.contracts.f0_sidecar_testutil import generate_synthetic_sidecar
 from bjj_pipeline.core.frame_iterator import FrameIterator, FramePacket
 
@@ -43,7 +44,7 @@ class TestIngestGateValid:
         generate_synthetic_sidecar(
             tmp_path / "clip.timing.jsonl", frame_count=100,
         )
-        prov, path = _validate_sidecar_ingest(
+        _, prov, path = _validate_sidecar_ingest(
             ingest_path=mp4,
             clip_id="clip",
             resolved_config={},
@@ -63,7 +64,7 @@ class TestIngestGateValid:
         generate_synthetic_sidecar(
             syn_dir / "clip.timing.jsonl", frame_count=100,
         )
-        prov, path = _validate_sidecar_ingest(
+        _, prov, path = _validate_sidecar_ingest(
             ingest_path=mp4,
             clip_id="clip",
             resolved_config={"stages": {"ingest": {"allow_synthetic_sidecars": True}}},
@@ -148,6 +149,70 @@ class TestIngestGateInvalid:
 
 
 # ---------------------------------------------------------------------------
+# Resolver unit tests
+# ---------------------------------------------------------------------------
+
+class TestResolveSidecarPath:
+    def test_sibling_when_synthetic_disabled(self, tmp_path):
+        mp4 = _make_mp4_stub(tmp_path)
+        path, prov = resolve_sidecar_path(mp4, {}, tmp_path)
+        assert prov == "real"
+        assert path == tmp_path / "clip.timing.jsonl"
+
+    def test_synthetic_when_enabled_and_present(self, tmp_path):
+        mp4 = _make_mp4_stub(tmp_path / "raw")
+        syn_dir = tmp_path / "out" / "_synthetic_sidecars"
+        syn_dir.mkdir(parents=True)
+        generate_synthetic_sidecar(syn_dir / "clip.timing.jsonl", frame_count=10)
+        cfg = {"stages": {"ingest": {"allow_synthetic_sidecars": True}}}
+        path, prov = resolve_sidecar_path(mp4, cfg, tmp_path / "out")
+        assert prov == "synthetic"
+        assert path == syn_dir / "clip.timing.jsonl"
+
+    def test_sibling_fallback_when_enabled_but_absent(self, tmp_path):
+        mp4 = _make_mp4_stub(tmp_path)
+        cfg = {"stages": {"ingest": {"allow_synthetic_sidecars": True}}}
+        path, prov = resolve_sidecar_path(mp4, cfg, tmp_path / "out")
+        assert prov == "real"
+        assert path == tmp_path / "clip.timing.jsonl"
+
+    def test_provenance_correct_for_each_case(self, tmp_path):
+        """Provenance string is exactly 'real' or 'synthetic', never anything else."""
+        mp4 = _make_mp4_stub(tmp_path)
+        _, prov_real = resolve_sidecar_path(mp4, {}, tmp_path)
+        assert prov_real == "real"
+
+        syn_dir = tmp_path / "_synthetic_sidecars"
+        syn_dir.mkdir()
+        generate_synthetic_sidecar(syn_dir / "clip.timing.jsonl", frame_count=10)
+        cfg = {"stages": {"ingest": {"allow_synthetic_sidecars": True}}}
+        _, prov_syn = resolve_sidecar_path(mp4, cfg, tmp_path)
+        assert prov_syn == "synthetic"
+
+
+# ---------------------------------------------------------------------------
+# Audit fields round-trip (Step 3 — dropped fields restored)
+# ---------------------------------------------------------------------------
+
+class TestAuditFields:
+    def test_sidecar_data_returned_with_all_fields(self, tmp_path):
+        mp4 = _make_mp4_stub(tmp_path)
+        generate_synthetic_sidecar(
+            tmp_path / "clip.timing.jsonl", frame_count=100,
+        )
+        sc_data, prov, path = _validate_sidecar_ingest(
+            ingest_path=mp4,
+            clip_id="clip",
+            resolved_config={},
+            out_root=tmp_path,
+        )
+        assert sc_data.attempt is not None
+        assert sc_data.nominal_dt_s is not None
+        assert sc_data.pts_wallclock_offset_s is not None
+        assert sc_data.showinfo_offset_status is not None
+
+
+# ---------------------------------------------------------------------------
 # Provenance stamp round-trip
 # ---------------------------------------------------------------------------
 
@@ -158,7 +223,7 @@ class TestProvenanceStamp:
         generate_synthetic_sidecar(
             tmp_path / "clip.timing.jsonl", frame_count=100,
         )
-        prov, resolved_path = _validate_sidecar_ingest(
+        sc_data, prov, resolved_path = _validate_sidecar_ingest(
             ingest_path=mp4,
             clip_id="clip",
             resolved_config={},

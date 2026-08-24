@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Any, Dict, Literal, Optional, Tuple
 
 StageLetter = Literal["A", "B", "C", "D", "E", "F"]
 
@@ -276,3 +276,50 @@ class SessionOutputLayout:
 
     def ensure_dirs_for_stage(self, stage: StageLetter) -> None:
         self.stage_dir(stage).mkdir(parents=True, exist_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Shared utilities
+# ---------------------------------------------------------------------------
+
+def cfg_get(cfg: Any, path: str, default: Any = None) -> Any:
+    """Lightweight dot-path getter for nested config dicts.
+
+    Moved from pipeline.py so both orchestration/ and stitch/ can use the same
+    implementation without divergent config readers.
+    """
+    cur: Any = cfg
+    for part in path.split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            return default
+        cur = cur[part]
+    return cur
+
+
+def resolve_sidecar_path(
+    mp4_path: Path,
+    resolved_config: Dict[str, Any],
+    out_root: Optional[Path],
+) -> Tuple[Path, str]:
+    """Resolve the sidecar path for a clip, checking synthetic override.
+
+    Returns (sidecar_path, provenance) where provenance is ``"real"`` or
+    ``"synthetic"``.  Does NOT validate the sidecar — call
+    ``load_sidecar()`` on the returned path for policy enforcement.
+
+    The synthetic override is gated on config key
+    ``stages.ingest.allow_synthetic_sidecars`` (default false). When enabled,
+    checks ``{out_root}/_synthetic_sidecars/{clip_stem}.timing.jsonl`` before
+    the sibling path.
+    """
+    allow_synthetic = cfg_get(
+        resolved_config, "stages.ingest.allow_synthetic_sidecars", False,
+    )
+    if allow_synthetic:
+        base_output = out_root or Path("outputs")
+        synthetic_path = base_output / "_synthetic_sidecars" / (mp4_path.stem + ".timing.jsonl")
+        if synthetic_path.exists():
+            return synthetic_path, "synthetic"
+
+    sibling_path = mp4_path.parent / (mp4_path.stem + ".timing.jsonl")
+    return sibling_path, "real"

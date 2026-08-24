@@ -489,13 +489,9 @@ def ensure_manifest(layout: ClipOutputLayout, clip_id: str, camera_id: str, inpu
 
 
 def _cfg_get(cfg: Any, path: str, default: Any = None) -> Any:
-    """Lightweight dot-path getter used for validation-time config lookups."""
-    cur: Any = cfg
-    for part in path.split("."):
-        if not isinstance(cur, dict) or part not in cur:
-            return default
-        cur = cur[part]
-    return cur
+    """Lightweight dot-path getter — delegates to contracts.f0_paths.cfg_get."""
+    from bjj_pipeline.contracts.f0_paths import cfg_get
+    return cfg_get(cfg, path, default)
 
 
 def _validate_stage_outputs(
@@ -650,30 +646,23 @@ def _validate_sidecar_ingest(
     clip_id: str,
     resolved_config: Dict[str, Any],
     out_root: Optional[Path],
-) -> Tuple[str, str]:
+) -> Tuple[Any, str, str]:
     """Validate sidecar at ingest, before any stage runs.
 
-    Returns (provenance, resolved_sidecar_path) where provenance is "real" or
-    "synthetic".
+    Returns (sidecar_data, provenance, resolved_sidecar_path).
 
     Raises PipelineError with an actionable message if validation fails.
     """
     from bjj_pipeline.contracts.f0_sidecar import load_sidecar, SidecarError
+    from bjj_pipeline.contracts.f0_paths import resolve_sidecar_path
 
-    allow_synthetic = _cfg_get(resolved_config, "stages.ingest.allow_synthetic_sidecars", False)
-    base_output = out_root or Path("outputs")
-    synthetic_dir = base_output / "_synthetic_sidecars"
-    synthetic_path = synthetic_dir / (ingest_path.stem + ".timing.jsonl")
-
+    sidecar_path, provenance = resolve_sidecar_path(ingest_path, resolved_config, out_root)
     try:
-        if allow_synthetic and synthetic_path.exists():
-            load_sidecar(ingest_path, sidecar_path=synthetic_path)
-            return "synthetic", str(synthetic_path)
-        else:
-            sidecar_data = load_sidecar(ingest_path)
-            real_path = str(ingest_path.parent / (ingest_path.stem + ".timing.jsonl"))
-            return "real", real_path
+        sidecar_data = load_sidecar(ingest_path, sidecar_path=sidecar_path)
+        return sidecar_data, provenance, str(sidecar_path)
     except SidecarError as exc:
+        base_output = out_root or Path("outputs")
+        synthetic_dir = base_output / "_synthetic_sidecars"
         raise PipelineError(
             f"Sidecar ingest gate failed for {clip_id}: {exc}\n"
             f"  mp4: {ingest_path}\n"
@@ -739,8 +728,7 @@ def run_pipeline(ingest_path: Path, camera_id: str, config: Dict[str, Any], *,
     # Validates a usable sidecar exists before any stage runs. For legacy footage
     # without sidecars, stages.ingest.allow_synthetic_sidecars enables synthetic
     # sidecars from {out_root}/_synthetic_sidecars/.
-    from bjj_pipeline.contracts.f0_sidecar import load_sidecar, SidecarError
-    sidecar_provenance, resolved_sidecar_path = _validate_sidecar_ingest(
+    sidecar_data, sidecar_provenance, resolved_sidecar_path = _validate_sidecar_ingest(
         ingest_path=ingest_path,
         clip_id=clip_id,
         resolved_config=resolved_config,
@@ -753,7 +741,17 @@ def run_pipeline(ingest_path: Path, camera_id: str, config: Dict[str, Any], *,
         "camera_id": camera_id,
         "sidecar_provenance": sidecar_provenance,
         "sidecar_path": resolved_sidecar_path,
+        "attempt": sidecar_data.attempt,
+        "nominal_dt_s": sidecar_data.nominal_dt_s,
+        "pts_wallclock_offset_s": sidecar_data.pts_wallclock_offset_s,
+        "showinfo_offset_status": sidecar_data.showinfo_offset_status,
     })
+    from loguru import logger as _ingest_logger
+    _ingest_logger.info(
+        "ingest gate: {} sidecar for {} (attempt={}, nominal_dt_s={}, offset_status={})",
+        sidecar_provenance, clip_id, sidecar_data.attempt,
+        sidecar_data.nominal_dt_s, sidecar_data.showinfo_offset_status,
+    )
 
     try:
         stage_list = STAGES
