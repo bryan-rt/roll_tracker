@@ -11,8 +11,10 @@ Usage:
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
+from typing import Tuple
 
 import cv2
 import matplotlib
@@ -32,9 +34,17 @@ Y_LEVELS = list(range(34, 59))   # integer metre y contours
 X_BOUNDS = (41.0, 59.0)          # mask: discard projections outside these
 Y_BOUNDS = (33.0, 60.0)
 
-# Calibrated quad (from correspondences in current homography.json)
-QUAD_X = (51.0, 57.0)
-QUAD_Y = (42.0, 49.9)
+
+def _load_quad_from_h_file(h_path: Path) -> Tuple[Tuple[float, float], Tuple[float, float]]:
+    """Read calibrated quad extents from a specific homography file."""
+    with open(h_path) as f:
+        d = json.load(f)
+    mp = d.get("correspondences", {}).get("mat_points", [])
+    if not mp:
+        raise ValueError(f"No correspondences.mat_points in {h_path}")
+    xs = [pt[0] for pt in mp]
+    ys = [pt[1] for pt in mp]
+    return (min(xs), max(xs)), (min(ys), max(ys))
 
 
 def render_overlay(
@@ -42,6 +52,8 @@ def render_overlay(
     proj,
     out_path: Path,
     label: str,
+    quad_x: Tuple[float, float],
+    quad_y: Tuple[float, float],
     frame_index: int = 100,
     grid_step: int = 6,
 ) -> dict:
@@ -100,10 +112,8 @@ def render_overlay(
     ax.clabel(cs_y, inline=True, fontsize=6, fmt="y=%.0f")
 
     # Calibrated quad contours — thicker, distinct colour
-    quad_x_levels = [QUAD_X[0], QUAD_X[1]]
-    quad_y_levels = [QUAD_Y[0], QUAD_Y[1]]
-    ax.contour(us, vs, x_grid, levels=quad_x_levels, colors="red", linewidths=2.0)
-    ax.contour(us, vs, y_grid, levels=quad_y_levels, colors="red", linewidths=2.0)
+    ax.contour(us, vs, x_grid, levels=[quad_x[0], quad_x[1]], colors="red", linewidths=2.0)
+    ax.contour(us, vs, y_grid, levels=[quad_y[0], quad_y[1]], colors="red", linewidths=2.0)
 
     ax.set_title(f"{mp4_path.stem} — {label}\nframe_index={frame_index}, "
                  f"grid_step={grid_step}, masked={masked_count}/{total_samples}", fontsize=10)
@@ -119,15 +129,31 @@ def render_overlay(
 
 
 def main():
+    """Example: compare two H versions on Aug 22 footage.
+
+    The default H and a prior version are loaded through the production
+    resolver. Each version's calibrated quad is read from its own file.
+    """
     base = Path("data/raw/nest/00000000-0000-0000-0000-000000000003/FP7oJQ/2026-08-22/13")
     out_dir = Path("docs/evidence/homography_validate_1")
     segments = ["130229", "131129", "132650"]
+    camera_id = "FP7oJQ"
 
-    # Load both H versions through the production resolver
-    proj_current = _load_homography_matrix({}, "FP7oJQ")
-    proj_prior = _load_homography_matrix(
-        {"homography_path": "/tmp/homography_eba75ac.json"}, "FP7oJQ",
-    )
+    # Version (a): default resolution
+    default_h_path = Path("configs/cameras") / camera_id / "homography.json"
+    proj_default = _load_homography_matrix({}, camera_id)
+    quad_default = _load_quad_from_h_file(default_h_path)
+
+    # Version (b): prior H via homography_path override — caller must
+    # extract it to a scratch path first (e.g. git show <ref>:... > /tmp/...)
+    prior_h_path = Path("/tmp/homography_old_2edce38.json")
+    if prior_h_path.exists():
+        proj_prior = _load_homography_matrix({"homography_path": str(prior_h_path)}, camera_id)
+        quad_prior = _load_quad_from_h_file(prior_h_path)
+    else:
+        proj_prior = None
+        quad_prior = None
+        print(f"NOTE: {prior_h_path} not found — skipping prior-H overlays")
 
     for seg in segments:
         mp4 = base / f"FP7oJQ-20260822-{seg}.mp4"
@@ -135,21 +161,24 @@ def main():
             print(f"SKIP {seg}: {mp4} not found")
             continue
 
-        # Current H
+        # Default H
         stats_a = render_overlay(
-            mp4, proj_current,
-            out_dir / f"FP7oJQ-20260822-{seg}_current.png",
-            label="current (interactive_clicks, f=950, k1=-0.219)",
+            mp4, proj_default,
+            out_dir / f"FP7oJQ-20260822-{seg}_new.png",
+            label=f"default ({default_h_path.name})",
+            quad_x=quad_default[0], quad_y=quad_default[1],
         )
-        print(f"{seg} current: masked={stats_a['masked']}/{stats_a['total_samples']}")
+        print(f"{seg} default: masked={stats_a['masked']}/{stats_a['total_samples']}")
 
-        # Prior H (eba75ac)
-        stats_b = render_overlay(
-            mp4, proj_prior,
-            out_dir / f"FP7oJQ-20260822-{seg}_eba75ac.png",
-            label="prior eba75ac (overlay_rect, f=1281, k1=-0.380)",
-        )
-        print(f"{seg} eba75ac: masked={stats_b['masked']}/{stats_b['total_samples']}")
+        # Prior H
+        if proj_prior is not None:
+            stats_b = render_overlay(
+                mp4, proj_prior,
+                out_dir / f"FP7oJQ-20260822-{seg}_old.png",
+                label=f"prior ({prior_h_path.name})",
+                quad_x=quad_prior[0], quad_y=quad_prior[1],
+            )
+            print(f"{seg} prior: masked={stats_b['masked']}/{stats_b['total_samples']}")
 
 
 if __name__ == "__main__":

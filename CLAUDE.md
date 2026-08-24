@@ -621,6 +621,19 @@ test → Stage F format decision (gates Piece 7), (5) CP22 NAType Stage E fix,
 `NameError`, so the `config_resolved` audit event has **never been written** on any run.
 The event is missing entirely, not malformed. One-line fix: remove or define `mode`.
 
+**Known defect (calibration tool):** `homography_calibrate.py:1323-1326` calls
+`_load_lens_calibration(out_path)`, which reads K/D from the **existing** `homography.json`,
+and undistorts the display frame. `calibrate_camera.py:5` documents Step 1 as operating on
+the **raw** frame. Under `--force`, Step 1 clicks land in the old undistorted space while
+Step 2 solves a new one — three steps, potentially three pixel spaces. Observed 2026-08-24
+during FP7oJQ recalibration. At minimum the tool should print which space it is using;
+ideally `--force` should imply a raw Step 1.
+
+**Known defect (calibration tool):** `--force` overwrites the lens block (`camera_matrix`,
+`dist_coefficients`) in `homography.json` in place with no backup and no confirmation. An
+interrupted or abandoned run destroys the previous calibration. Observed 2026-08-24: a run
+replaced f=950.0 with f=735.0; recovery was only possible because the original was in git.
+
 **Deferred (lower priority):**
 - **Stage F export format (deferred until checkpoint-2 dt_s work lands).** Stage F currently
   re-encodes every clip to CFR. Passthrough plays smoothly on desktop; mobile player VFR
