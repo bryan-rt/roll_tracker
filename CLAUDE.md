@@ -634,6 +634,20 @@ ideally `--force` should imply a raw Step 1.
 interrupted or abandoned run destroys the previous calibration. Observed 2026-08-24: a run
 replaced f=950.0 with f=735.0; recovery was only possible because the original was in git.
 
+**Known defect (audit layer):** All pipeline JSONL artifacts append (`open("a")`); `--force`
+does not clear files before rerunning. `d05_split_audit.jsonl`, `orchestration_audit.jsonl`,
+per-stage `audit.jsonl`, `export_manifest.jsonl`, `projection_debug.jsonl`,
+`identity_hints.jsonl`, `tag_observations.jsonl` — all accumulate across reruns. Session
+aggregation reads all historical events. Observed 2026-08-24: 132650 held 66 D0.5 events from
+3 runs (expected 24). Parquet artifacts are unaffected (overwrite on write). **Workflow rule:**
+use per-run summary events for counts, or clear the output directory before rerunning.
+
+**Known defect (Stage E):** `timestamp_ms lookup miss for frame_index=315` on
+FP7oJQ-20260822-130229 and the session run. A frame present in the timestamp map but absent
+from `person_tracks` — Stage E's buzzer end-frame adjustment (`_try_adjust_end`) references a
+frame that D4 did not assign to any person. Distinct from CP22 NAType (null-`frame_index` at
+D2 on PPDmUg). Flagged as a CP4.C input (frame→time lookup).
+
 **Deferred (lower priority):**
 - **Stage F export format (deferred until checkpoint-2 dt_s work lands).** Stage F currently
   re-encodes every clip to CFR. Passthrough plays smoothly on desktop; mobile player VFR

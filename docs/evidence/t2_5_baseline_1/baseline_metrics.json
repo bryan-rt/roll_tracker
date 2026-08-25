@@ -133,10 +133,12 @@
     "tracklet_count": 303,
     "short_tracklet_lt30": 191,
     "short_ratio_lt30": 0.63,
-    "d05_tier1": 0,
-    "d05_tier2": 0,
-    "d05_tier3": 0,
+    "d05_tier1": 1,
+    "d05_tier2": 61,
+    "d05_tier3": 42,
     "d1_reconnect_edge_count": 1903,
-    "stage_e_status": "CRASHED: timestamp_ms lookup miss frame_index=315"
+    "stage_e_status": "CRASHED: timestamp_ms lookup miss frame_index=315",
+    "d05_total": 104,
+    "d05_source": "sum_of_per_clip_summaries"
   }
 ]
