@@ -29,7 +29,7 @@ see per-site subsections in Section 2 for the complete six-field record.*
 | 2 | `ffmpeg.py:121-122` | `start_sec = start_frame / fps` | Yes (FP7oJQ) | On FP7oJQ (8% gaps): error is ~8% of elapsed time, accumulating. Frame 1000: 5.7s offset. Frame 1800: 10.3s offset. On PPDmUg (0.45% gaps): near-correct. See §2.16. | P0 | DEL-CONV |
 | 3 | `manifest.py:60-68` | `start_seconds = frame / fps` written to Supabase | Yes (FP7oJQ) | Same as #2. Values persist in `clips` table (`numeric` columns). | P0 | DEL-CONV |
 | 4 | `tracker.py:63` | BoT-SORT `frame_rate` never passed; boxmot defaults to 30 | Yes | **RESOLVED (Piece 11).** `VariableDtBotSort._update_track_states` uses wall-time `max_lost_seconds` (default 2.0s = today's behavior). `frame_rate` eliminated. Piece 8 dissolved into Piece 11. | P1 | FIX-SCALAR |
-| 5 | `d0_bank.py:571` | `dt_s = df / fps` (scalar) | Yes | Every velocity/accel in `speed_mps_k`, `accel_mps2_k` wrong by fps ratio. D0.5 inherits. | P1 | DEL-CONV |
+| 5 | `d0_bank.py:571` | `dt_s = df / fps` (scalar) | Yes | **RESOLVED (CP4.B).** `dt_s` derived from `timestamp_ms` delta. `fps` parameter removed. `dt_ms <= 0` guard added (catches duplicate-PTS). Evidence: `docs/evidence/cp4b_results/`. | P1 | DEL-CONV |
 | 6 | `costs.py:413` | `dt_s = dt_frames / fps` | Yes | Cost-layer velocity/time wrong by fps ratio. | P1 | DEL-CONV |
 | 7 | `d1_graph_build.py:1408` | `dt_s = gap_frames / fps` | Yes | Reconnect speed gating wrong by fps ratio. | P1 | DEL-CONV |
 | 8 | `cross_camera_evidence.py:275` | `window_frames = temporal_window_s * fps` | Yes | Window/tolerance frame counts wrong by fps ratio. Inherits session-level fps (#1). | P1 | DEL-CONV |

@@ -457,16 +457,18 @@ def _get_d0_cfg(config: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any],
 
 
 def _apply_cp3_kinematics(
-	tf: pd.DataFrame, *, fps: float, kin_cfg: Dict[str, Any]
+	tf: pd.DataFrame, *, kin_cfg: Dict[str, Any]
 ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
 	"""Checkpoint 3 (CP3): recompute dt-aware velocities from *effective* world coords and flag implausible kinematics.
 
 	- Uses repaired coords where CP2 marked `is_repaired`; otherwise uses original x_m/y_m.
 	- Does NOT clamp or suppress; emits velocities + flags only.
 	- Tracklet-local; no cross-tracklet logic.
+	- dt_s derived from timestamp_ms (CP4.B, site #5). int-ms precision is lossless on
+	  post-R13a footage (frame_index_join_1/findings.md §10 precision finding).
 	"""
-	if not (fps > 0.0):
-		raise ValueError(f"D0 CP3 requires fps > 0, got {fps!r}")
+	if "timestamp_ms" not in tf.columns:
+		raise ValueError("D0 CP3 requires timestamp_ms column in tracklet_bank_frames")
 
 	enabled = bool(kin_cfg.get("enabled", True))
 	if not enabled:
@@ -494,6 +496,7 @@ def _apply_cp3_kinematics(
 			"n_speed_flagged": 0,
 			"n_accel_flagged": 0,
 			"n_bad_df_steps": 0,
+			"n_bad_dt_steps": 0,
 			"max_speed_mps_k": float("nan"),
 			"max_accel_mps2_k": float("nan"),
 		}
@@ -516,11 +519,13 @@ def _apply_cp3_kinematics(
 
 	# Pre-allocate counters.
 	n_bad_df_steps = 0
+	n_bad_dt_steps = 0
 
 	# Group indices per tracklet.
 	# We avoid pandas groupby-apply to keep types stable and runtime reasonable.
 	tids = tf["tracklet_id"].astype(str).to_numpy()
 	frames = tf["frame_index"].to_numpy()
+	timestamps = tf["timestamp_ms"].to_numpy()
 
 	# Effective coords per-row.
 	# Note: treat non-finite as missing; this will propagate to NaNs in velocities.
@@ -568,7 +573,11 @@ def _apply_cp3_kinematics(
 			if df <= 0:
 				n_bad_df_steps += 1
 				continue
-			dt_s = df / fps
+			dt_ms = int(timestamps[i] - timestamps[i - 1])
+			if dt_ms <= 0:
+				n_bad_dt_steps += 1
+				continue
+			dt_s = dt_ms / 1000.0
 			# Require finite endpoints.
 			if not (
 				np.isfinite(x_eff[i])
@@ -614,6 +623,7 @@ def _apply_cp3_kinematics(
 		"n_speed_flagged": int(np.sum(speed_flag)),
 		"n_accel_flagged": int(np.sum(accel_flag)),
 		"n_bad_df_steps": int(n_bad_df_steps),
+		"n_bad_dt_steps": int(n_bad_dt_steps),
 		"max_speed_mps_k": float(np.nanmax(speed)) if np.any(np.isfinite(speed)) else float("nan"),
 		"max_accel_mps2_k": float(np.nanmax(accel)) if np.any(np.isfinite(accel)) else float("nan"),
 	}
@@ -997,10 +1007,7 @@ def run_d0(*, config: Dict[str, Any], layout: Any, manifest: Any) -> None:
 
 		# drop helper columns from tf before writing (schema strict)
 		# CP3: dt-aware kinematics (velocity/accel) from effective world coords; flag-only (no clamping).
-		fps = float(getattr(manifest, "fps", 0.0) or 0.0)
-		if not (fps > 0.0):
-			raise ValueError(f"D0 CP3 requires manifest.fps > 0, got {fps!r}")
-		tf, kin_summary = _apply_cp3_kinematics(tf, fps=fps, kin_cfg=kin_cfg)
+		tf, kin_summary = _apply_cp3_kinematics(tf, kin_cfg=kin_cfg)
 
 		# drop helper columns from tf before writing (schema strict)
 		for c in ["y1", "y2", "bbox_top", "bbox_bottom", "bbox_h", "x_ctx", "y_ctx", "_occ_dy2_px"]:
