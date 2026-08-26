@@ -33,8 +33,6 @@ from bjj_pipeline.stages.export.manifest import (
 )
 from bjj_pipeline.stages.stitch.session_d_run import (
     SessionStageLayoutAdapter,
-    derive_clip_frame_offset,
-    parse_clip_timestamp,
     _get_clip_layout,
 )
 import json as _json
@@ -64,8 +62,7 @@ def _build_source_registry(
     """Build ordered registry of source clips for one camera.
 
     CP4.C: reads frame offsets from Stage D's persisted clip_offset_registry.json
-    (one source of truth — same offsets Stage D used). Falls back to legacy
-    derive_clip_frame_offset for pre-CP4.C sessions without the registry.
+    (one source of truth — same offsets Stage D used). Raises if missing.
     """
     cam_clips = [(mp4, cid) for mp4, cid in session_clips if cid == cam_id]
     if not cam_clips:
@@ -81,55 +78,23 @@ def _build_source_registry(
                 for entry in _json.load(f):
                     offset_map[entry["clip_id"]] = entry
 
-    if offset_map:
-        # Use Stage D's persisted offsets
-        registry: List[SourceClipInfo] = []
-        for mp4, cid in cam_clips:
-            clip_id = mp4.stem
-            entry = offset_map.get(clip_id)
-            if entry is None:
-                continue
-            registry.append(SourceClipInfo(
-                clip_id=clip_id, mp4_path=mp4, cam_id=cid,
-                frame_offset=entry["frame_offset"], fps=fps,
-                duration_frames=entry.get("clip_frame_count"),
-            ))
-        registry.sort(key=lambda s: s.frame_offset)
-        return registry
+    if not offset_map:
+        raise PipelineError(
+            f"session_f: clip_offset_registry.json missing for cam_id={cam_id}. "
+            f"Stage D must run before Stage F to produce the registry."
+        )
 
-    # Legacy fallback: derive from filename timestamp × fps
-    timestamps = []
-    for mp4, _ in cam_clips:
-        dt = parse_clip_timestamp(mp4)
-        if dt is not None:
-            timestamps.append((mp4, dt))
-
-    if not timestamps:
-        return [
-            SourceClipInfo(
-                clip_id=mp4.stem, mp4_path=mp4, cam_id=cid,
-                frame_offset=0, fps=fps,
-            )
-            for mp4, cid in cam_clips
-        ]
-
-    session_start_dt = min(dt for _, dt in timestamps)
-
-    registry = []
+    registry: List[SourceClipInfo] = []
     for mp4, cid in cam_clips:
-        offset = derive_clip_frame_offset(mp4, session_start_dt, fps)
-        dur_frames = None
-        try:
-            meta = probe_video_metadata(mp4)
-            if meta.duration_sec is not None and fps > 0:
-                dur_frames = int(round(meta.duration_sec * fps))
-        except Exception:
-            pass
+        clip_id = mp4.stem
+        entry = offset_map.get(clip_id)
+        if entry is None:
+            continue
         registry.append(SourceClipInfo(
-            clip_id=mp4.stem, mp4_path=mp4, cam_id=cid,
-            frame_offset=offset, fps=fps, duration_frames=dur_frames,
+            clip_id=clip_id, mp4_path=mp4, cam_id=cid,
+            frame_offset=entry["frame_offset"], fps=fps,
+            duration_frames=entry.get("clip_frame_count"),
         ))
-
     registry.sort(key=lambda s: s.frame_offset)
     return registry
 
