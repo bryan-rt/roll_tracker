@@ -72,6 +72,12 @@ touch D1 gating directly. The movement is likely indirect: D0.5 splits changed (
 candidates. The magnitude (4–7%) is proportional to the D0.5 change and confined to the
 higher-dispersion segments. This is plausibly an indirect effect, not a leak.
 
+### `speed_max` moved in both directions
+
+130229: 40.20 → 40.58 (+1%), 131129: 42.09 → 31.55 (−25%), 132650: 51.74 → 53.30 (+3%).
+No consistent direction — consistent with `speed_max` being a defect counter (baseline
+§12b) rather than a physical measurement.
+
 ### ✅ Detections/frame and tracklet counts unchanged
 
 All three segments: det/frame identical, tracklet count identical. No signal that the
@@ -86,17 +92,29 @@ shape.
 
 ### ✅ `n_bad_dt_steps` fires on all segments
 
-130229: 4, 131129: 1, 132650: 3. These are the duplicate-PTS frames (MUXER-PTS-1,
-pre-fix footage at frame index 2) plus any other zero-dt steps from the gap pattern.
-The guard prevented zero-division on every segment.
+130229: 4, 131129: 1, 132650: 3. Each segment has exactly one duplicate-PTS frame pair
+at frame index 2 (MUXER-PTS-1). The count equals the number of tracklets in the bank
+frames that span both frame 1 and frame 2 — each spanning tracklet produces one zero-dt
+step. Verified: 130229 has 4 tracklets spanning f1→f2 in bank_frames (4/4), 131129 has
+1 (1/1), 132650 has 3 (3/3). The guard prevented zero-division on every segment.
 
-### Stage E crashes
+### Stage E incidence change
 
-130229: CRASHED (frame_index=315, same as baseline). 131129: CRASHED (frame_index=1356,
-new — was OK at baseline). 132650: OK (19 sessions, baseline was 18). The 131129 crash
-is the same pre-existing Stage E buzzer end-frame defect on a different frame. The change
-in which segments crash is consistent with D0.5/D4 producing a slightly different person
-track set.
+| Segment | Baseline Stage E | CP4.B Stage E |
+|---------|------------------|---------------|
+| 130229 | CRASHED (frame_index=315) | CRASHED (frame_index=315) |
+| 131129 | OK (9 sessions) | **CRASHED (frame_index=1356)** |
+| 132650 | OK (18 sessions) | OK (19 sessions) |
+
+Incidence rose from 1/3 to 2/3. The defect (`timestamp_ms lookup miss` — a frame present
+in the timestamp map but absent from `person_tracks`) is unchanged; its incidence rose
+because D0.5 splits changed (36→35 on 131129), producing a different person track set
+that exposes the buzzer end-frame adjustment to a different untracked frame. 132650's
+match session count also moved (18→19) for the same reason.
+
+This is the defect already filed as a CP4.C input (CLAUDE.md backlog: "Stage E
+`timestamp_ms lookup miss`"). Its incidence rising under a timing change strengthens the
+case that CP4.C may resolve it. **Re-measure after CP4.C+CP4.D land.**
 
 ---
 
@@ -109,14 +127,3 @@ track set.
 | T1 — zero-dt | PASS (no raise, counter increments, no inf) |
 | T2 — regression suite | 184 passed, 10 skipped, 4 pre-existing failures |
 | T2.5 — per-segment comparison | Speed moved, D0.5 moved on dispersion segments, stable controls unchanged |
-
----
-
-## 5. Notes for later checkpoints
-
-- The CP4.B run does not include `--visualize`-only debug artifacts equivalent to the
-  baseline's `mat_view.mp4` because output directories were deleted for clean JSONL. The
-  `--visualize` flag was set and `stage_D_paths.png` was regenerated, but the comparison
-  is numeric, not visual.
-- 131129's Stage E crash moved from OK to CRASHED. This is the pre-existing buzzer
-  end-frame defect, not a CP4.B regression.
