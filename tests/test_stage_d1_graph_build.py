@@ -46,6 +46,10 @@ class _Layout:
 def _write_parquets(tmp_path: Path, tf: pd.DataFrame, ts: pd.DataFrame) -> _Layout:
 	stage_d = tmp_path / "stage_D"
 	stage_d.mkdir(parents=True, exist_ok=True)
+	# CP4.C/D: D1 requires timestamp_ms. Derive from frame_index if absent.
+	if "timestamp_ms" not in tf.columns and "frame_index" in tf.columns:
+		tf = tf.copy()
+		tf["timestamp_ms"] = (tf["frame_index"] * 67).astype(int)
 	tf.to_parquet(stage_d / "tracklet_bank_frames.parquet", index=False)
 	ts.to_parquet(stage_d / "tracklet_bank_summaries.parquet", index=False)
 	return _Layout(tmp_path)

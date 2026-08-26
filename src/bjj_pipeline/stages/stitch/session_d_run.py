@@ -426,7 +426,7 @@ def aggregate_session_bank(
     # D3 needs split lineage to bind tag pings to post-split product nodes.
     # Per-clip d05_split_audit.jsonl is namespaced with clip_id prefix.
     all_split_events: List[dict] = []
-    for mp4_path, _, _ in cam_clips_info:
+    for mp4_path, _, _, _ in cam_clips_info:
         clip_layout = _get_clip_layout(mp4_path, cam_id, output_root)
         if clip_layout is None:
             continue
