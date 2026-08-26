@@ -81,7 +81,6 @@ def compute_edge_costs(
 	d1_edges: pd.DataFrame,
 	d1_nodes: pd.DataFrame,
 	bank_frames: pd.DataFrame,
-	fps: float,
 	cfg: Dict[str, Any],
 	v_cost_scale_mps_resolved: float,
 	v_hinge_mps_resolved: float,
@@ -406,18 +405,22 @@ def compute_edge_costs(
 		contact_rel = None
 		endpoint_flagged = False
 
-		# dt gating (only if dt present); allow larger dt for reconnect edges
-		if not _is_nullish(dt_frames):
+		# dt gating (CP4.D: from dt_ms, real time, not dt_frames / fps)
+		dt_ms_val = e.get("dt_ms", None)
+		if not _is_nullish(dt_ms_val):
 			try:
-				dt_frames_i = int(dt_frames)
-				dt_s = float(dt_frames_i) / float(fps)
+				dt_ms_i = int(dt_ms_val)
+				dt_s = dt_ms_i / 1000.0
 				if dt_s > dt_max_s and not is_reconnect:
 					is_allowed = False
 					reasons.append("dt_too_large")
 			except Exception:
-				# malformed dt -> disallow
 				is_allowed = False
 				reasons.append("dt_invalid")
+		elif not _is_nullish(dt_frames):
+			# dt_ms unavailable but dt_frames exists — disallow
+			is_allowed = False
+			reasons.append("dt_unavailable")
 
 		# endpoint lookups for kinematic features (only when needed)
 		def _lookup_bank_row_near(*, tid: str, frame_i_req: int) -> Tuple[pd.Series | None, int | None, bool]:
@@ -757,6 +760,7 @@ def compute_edge_costs(
 				"is_allowed": bool(is_allowed),
 				"disallow_reasons_json": json.dumps(reasons_canon),
 				"dt_frames": dt_frames_out,
+				"dt_ms": int(dt_ms_val) if not _is_nullish(dt_ms_val) else None,
 				"dt_s": dt_s,
 				"dist_m": dist_m,
 				"v_req_mps": v_req_mps,
@@ -781,6 +785,8 @@ def compute_edge_costs(
 	if "dt_frames" in out_df.columns:
 		# Use nullable Int64 so schema family "int" is preserved while allowing NA.
 		out_df["dt_frames"] = out_df["dt_frames"].astype("Int64")
+	if "dt_ms" in out_df.columns:
+		out_df["dt_ms"] = out_df["dt_ms"].astype("Int64")
 	endpoint_stats: Dict[str, Any] = {
 		"endpoint_search_window_frames": int(endpoint_search_window_frames),
 		"endpoint_exact_hits": int(endpoint_exact_hits),

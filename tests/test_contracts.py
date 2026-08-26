@@ -116,6 +116,7 @@ def _make_min_d2_edge_costs_df() -> pd.DataFrame:
 				"is_allowed": True,
 				"disallow_reasons_json": "[]",
 				"dt_frames": 3,
+				"dt_ms": 300,
 				"dt_s": 0.1,
 				"dist_m": 0.2,
 				"v_req_mps": 2.0,

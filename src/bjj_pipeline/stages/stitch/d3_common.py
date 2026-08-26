@@ -324,6 +324,7 @@ def _write_solution_ledger_json(
 	term_cols = sorted(term_cols)
 	feature_allow = [
 		"dt_frames",
+		"dt_ms",
 		"dt_s",
 		"dist_m",
 		"v_req_mps",

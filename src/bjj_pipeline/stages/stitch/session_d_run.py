@@ -207,10 +207,11 @@ def parse_clip_timestamp(mp4_path: Path) -> Optional[datetime]:
 def derive_clip_frame_offset(
     mp4_path: Path, session_start_dt: datetime, fps: float
 ) -> int:
-    """Compute frame offset for a clip relative to session start.
+    """LEGACY: Compute frame offset from filename timestamp × fps.
 
-    Returns int: round((clip_start_dt - session_start_dt).total_seconds() * fps)
-    Returns 0 on any parse failure (conservative fallback).
+    Retained for Stage F source registry (site #10) until CP4.F removes it.
+    Session D aggregation uses cumulative frame count + sidecar-anchored
+    timestamp offset instead (CP4.C).
     """
     clip_dt = parse_clip_timestamp(mp4_path)
     if clip_dt is None or fps <= 0:
@@ -243,6 +244,7 @@ def aggregate_session_bank(
     cam_id: str,
     output_root: Path,
     fps: float,
+    resolved_config: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Path, Path, Path, Path]:
     """Aggregate per-clip D0 bank outputs for a single camera into session-level
     combined bank files.
@@ -252,27 +254,47 @@ def aggregate_session_bank(
     Tracklet ID namespacing: every tracklet_id is prefixed with
     "{clip_id}:{original_tracklet_id}" before concatenation.
 
-    Frame index offsetting (CP14e): per-clip 0-based frame indices are offset
-    by the clip's wall-clock offset relative to the earliest clip in the session.
-    This ensures D1 sees correct temporal ordering across clips.
+    Frame index offsetting: cumulative frame count (collision-free, fps-free).
+    Timestamp offsetting (CP4.C): pts_wallclock_offset_s from sidecar, so the
+    combined bank sits on one monotonic session clock.
     """
-    # --- Pre-scan: parse clip timestamps, find session start ---
-    cam_clips: List[Tuple[Path, Optional[datetime]]] = []
+    from bjj_pipeline.contracts.f0_sidecar import load_sidecar, SidecarError
+    from bjj_pipeline.contracts.f0_paths import resolve_sidecar_path
+
+    # --- Pre-scan: read sidecar offsets for timestamp alignment ---
+    cam_clips_info: List[Tuple[Path, Optional[float], Optional[str]]] = []
     for mp4_path, clip_cam_id in session_clips:
         if clip_cam_id != cam_id:
             continue
-        dt = parse_clip_timestamp(mp4_path)
-        cam_clips.append((mp4_path, dt))
+        # Read sidecar for pts_wallclock_offset_s
+        offset_s: Optional[float] = None
+        offset_status: Optional[str] = None
+        try:
+            sc_path, _prov = resolve_sidecar_path(
+                mp4_path, resolved_config or {}, output_root,
+            )
+            sc_data = load_sidecar(mp4_path, sidecar_path=sc_path)
+            offset_s = sc_data.pts_wallclock_offset_s
+            offset_status = sc_data.showinfo_offset_status
+            logger.info(
+                "session_bank: {} sidecar offset_s={}, offset_status={}",
+                mp4_path.stem, offset_s, offset_status,
+            )
+        except SidecarError as exc:
+            logger.warning("session_bank: sidecar unavailable for {}: {}", mp4_path.stem, exc)
+        cam_clips_info.append((mp4_path, offset_s, offset_status))
 
-    valid_dts = [dt for _, dt in cam_clips if dt is not None]
-    session_start_dt = min(valid_dts) if valid_dts else None
+    # Session-start anchor: smallest pts_wallclock_offset_s
+    valid_offsets = [o for _, o, _ in cam_clips_info if o is not None]
+    session_start_offset_s = min(valid_offsets) if valid_offsets else None
 
     all_frames: List[pd.DataFrame] = []
     all_summaries: List[pd.DataFrame] = []
     all_detections: List[pd.DataFrame] = []
     all_hints: List[dict] = []
+    cumulative_frame_count = 0  # CP4.C: fps-free frame offset
 
-    for mp4_path, clip_dt in cam_clips:
+    for mp4_path, clip_offset_s, clip_offset_status in cam_clips_info:
         layout = _get_clip_layout(mp4_path, cam_id, output_root)
         if layout is None:
             logger.warning("session_bank: cannot derive layout for {}", mp4_path.name)
@@ -280,14 +302,29 @@ def aggregate_session_bank(
 
         clip_id_prefix = mp4_path.stem
 
-        # Compute frame offset for this clip
-        frame_offset = 0
-        if session_start_dt is not None:
-            frame_offset = derive_clip_frame_offset(mp4_path, session_start_dt, fps)
-        if frame_offset > 0:
+        # Frame offset: cumulative frame count (CP4.C — fps-free, collision-free)
+        frame_offset = cumulative_frame_count
+
+        # Timestamp offset: sidecar-anchored (CP4.C)
+        ts_offset_ms = 0
+        if session_start_offset_s is not None and clip_offset_s is not None:
+            delta_s = clip_offset_s - session_start_offset_s
+            if delta_s < 0:
+                logger.error(
+                    "session_bank: negative time delta for {} ({:.3f}s before session start). "
+                    "Clips may be out of order or sidecar anchor is inconsistent.",
+                    clip_id_prefix, delta_s,
+                )
+                raise ValueError(
+                    f"Negative time delta for {clip_id_prefix}: {delta_s:.3f}s before session start. "
+                    f"clip_offset_s={clip_offset_s}, session_start_offset_s={session_start_offset_s}"
+                )
+            ts_offset_ms = round(delta_s * 1000)
+
+        if frame_offset > 0 or ts_offset_ms > 0:
             logger.info(
-                "session_bank: {} offset={} frames ({:.1f}s)",
-                clip_id_prefix, frame_offset, frame_offset / fps if fps > 0 else 0,
+                "session_bank: {} frame_offset={} ts_offset_ms={}",
+                clip_id_prefix, frame_offset, ts_offset_ms,
             )
 
         # --- Bank frames ---
@@ -299,9 +336,17 @@ def aggregate_session_bank(
         frames_df = pd.read_parquet(frames_path)
         if "tracklet_id" in frames_df.columns:
             frames_df["tracklet_id"] = clip_id_prefix + ":" + frames_df["tracklet_id"].astype(str)
-        # Apply frame offset (CP14e)
+        # Apply frame offset (cumulative frame count)
         if frame_offset > 0 and "frame_index" in frames_df.columns:
             frames_df["frame_index"] = frames_df["frame_index"] + frame_offset
+        # Apply timestamp offset (CP4.C — session-relative timeline)
+        if ts_offset_ms > 0 and "timestamp_ms" in frames_df.columns:
+            frames_df["timestamp_ms"] = frames_df["timestamp_ms"] + ts_offset_ms
+        # Update cumulative frame count for next clip
+        clip_frame_count = len(frames_df)
+        if "frame_index" in frames_df.columns and len(frames_df) > 0:
+            clip_frame_count = int(frames_df["frame_index"].max()) - frame_offset + 1
+        cumulative_frame_count += clip_frame_count
         all_frames.append(frames_df)
 
         # --- Bank summaries ---
@@ -310,7 +355,7 @@ def aggregate_session_bank(
             summ_df = pd.read_parquet(summ_path)
             if "tracklet_id" in summ_df.columns:
                 summ_df["tracklet_id"] = clip_id_prefix + ":" + summ_df["tracklet_id"].astype(str)
-            # Apply frame offset to summary frame ranges (CP14e)
+            # Apply frame offset to summary frame ranges
             if frame_offset > 0:
                 if "start_frame" in summ_df.columns:
                     summ_df["start_frame"] = summ_df["start_frame"] + frame_offset
@@ -324,9 +369,12 @@ def aggregate_session_bank(
         det_path = layout.detections_parquet()
         if det_path.exists():
             det_df = pd.read_parquet(det_path)
-            # Apply frame offset to detections (CP14e)
+            # Apply frame offset to detections
             if frame_offset > 0 and "frame_index" in det_df.columns:
                 det_df["frame_index"] = det_df["frame_index"] + frame_offset
+            # Apply timestamp offset (CP4.C)
+            if ts_offset_ms > 0 and "timestamp_ms" in det_df.columns:
+                det_df["timestamp_ms"] = det_df["timestamp_ms"] + ts_offset_ms
             all_detections.append(det_df)
         else:
             logger.warning("session_bank: missing detections for {}", clip_id_prefix)
@@ -512,6 +560,7 @@ def run_session_d(
         cam_id=cam_id,
         output_root=output_root,
         fps=fps,
+        resolved_config=config,
     )
 
     # --- Step 3: Build SessionManifest ---

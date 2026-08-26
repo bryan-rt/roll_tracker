@@ -330,6 +330,27 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 	tf = pd.read_parquet(frames_path)
 	ts = pd.read_parquet(summ_path)
 
+	# CP4.C/D: frame_index → timestamp_ms map for real-time dt computation.
+	# Built once, used at all edge creation sites and reconnect speed gating.
+	# Missing frame_index → skip the edge (data quality issue, not fatal).
+	# Duplicate frame_index at same timestamp (MUXER-PTS-1): last-write-wins,
+	# deterministic because all duplicates share the same timestamp_ms.
+	frame_ts_map: Dict[int, int] = {}
+	if "timestamp_ms" in tf.columns:
+		frame_ts_map = dict(zip(
+			tf["frame_index"].to_numpy(),
+			tf["timestamp_ms"].to_numpy(),
+		))
+
+	def _edge_dt_ms(end_frame: int, start_frame: int) -> Optional[int]:
+		"""Compute dt_ms between two frame endpoints via the shared map.
+		Returns None if either frame is missing from the map."""
+		ts_end = frame_ts_map.get(end_frame)
+		ts_start = frame_ts_map.get(start_frame)
+		if ts_end is None or ts_start is None:
+			return None
+		return int(ts_start - ts_end)
+
 	# required columns
 	for col in ("tracklet_id", "frame_index"):
 		if col not in tf.columns:
@@ -1249,7 +1270,10 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 						v=v,
 						type=EdgeType.CONTINUE,
 						capacity=1,
-						payload={"dt_frames": int(b["start_frame"]) - int(a["end_frame"])},
+						payload={
+							"dt_frames": int(b["start_frame"]) - int(a["end_frame"]),
+							"dt_ms": _edge_dt_ms(int(a["end_frame"]), int(b["start_frame"])),
+						},
 					)
 				)
 
@@ -1405,9 +1429,13 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 						if not _boundary_on_mat_ok(tm, "start"):
 							continue
 					dist = _dist_m(p_end[0], p_start[0])
-					dt_s = float(gap_frames) / float(fps)
-					if dt_s <= 0:
+					# CP4.D: dt from timestamp_ms instead of gap_frames / fps
+					recon_dt_ms = _edge_dt_ms(tn_end, tm_start)
+					if recon_dt_ms is None:
+						continue  # missing timestamp → skip edge
+					if recon_dt_ms <= 0:
 						continue
+					dt_s = recon_dt_ms / 1000.0
 					speed_mps = float(dist) / max(1e-6, dt_s)
 					if speed_mps > float(v_max_mps):
 						continue
@@ -1690,6 +1718,7 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 				edge_id = f"E:CONT_RECONNECT:{u_node}->{v_node}"
 				payload = {
 					"dt_frames": int(cand["gap_frames"]),
+					"dt_ms": _edge_dt_ms(int(cand["tn_end"]), int(cand["tm_start"])) if "tn_end" in cand and "tm_start" in cand else None,
 					"reconnect": True,
 					"dt_s": float(cand["dt_s"]),
 					"dist_m": float(cand["dist_m"]),
@@ -1808,8 +1837,9 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 			)
 		edges_rows: List[Dict[str, Any]] = []
 		for e in g.sorted_edges():
-			# Extract dt_frames, merge_end, split_start from payload if present, else None
+			# Extract dt_frames, dt_ms, merge_end, split_start from payload if present, else None
 			dt_frames = e.payload.get("dt_frames")
+			dt_ms = e.payload.get("dt_ms")
 			merge_end = e.payload.get("merge_end")
 			split_start = e.payload.get("split_start")
 			edges_rows.append(
@@ -1820,6 +1850,7 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 					"v": e.v,
 					"capacity": int(e.capacity),
 					"dt_frames": dt_frames if dt_frames is not None else None,
+					"dt_ms": dt_ms if dt_ms is not None else None,
 					"merge_end": merge_end if merge_end is not None else None,
 					"split_start": split_start if split_start is not None else None,
 					"payload_json": json.dumps(e.payload, sort_keys=True),
@@ -1856,12 +1887,13 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 				"v": pd.Series(dtype="str"),
 				"capacity": pd.Series(dtype="Int64"),
 				"dt_frames": pd.Series(dtype="Int64"),
+				"dt_ms": pd.Series(dtype="Int64"),
 				"merge_end": pd.Series(dtype="Int64"),
 				"split_start": pd.Series(dtype="Int64"),
 				"payload_json": pd.Series(dtype="str"),
 			})
-		# Coerce dt_frames, merge_end, split_start to Int64 (nullable int) if present
-		for col in ("dt_frames", "merge_end", "split_start"):
+		# Coerce dt_frames, dt_ms, merge_end, split_start to Int64 (nullable int) if present
+		for col in ("dt_frames", "dt_ms", "merge_end", "split_start"):
 			if col in edges_df.columns:
 				edges_df[col] = pd.to_numeric(edges_df[col], errors="coerce").astype('Int64')
 		# Diagnostics for debugging
@@ -1951,7 +1983,7 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 				"event_type": "d1_graph_built",
 				"stage": "D1",
 				"ts_ms": _now_ms(),
-				"manifest": {"fps": fps, "frame_count": frame_count, "duration_ms": duration_ms},
+				"manifest": {"fps": fps, "frame_count": frame_count, "duration_ms": duration_ms},  # fps: diagnostic only (CP4.D), not used for computation
 				"video": {
 					"input_video_path": _get_manifest_video_path(manifest),
 					"frame_wh": tuple(frame_wh) if frame_wh is not None else None,
@@ -2066,7 +2098,7 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 					v=v,
 					type=EdgeType.CONTINUE,
 					capacity=1,
-					payload={"dt_frames": dt},
+					payload={"dt_frames": dt, "dt_ms": _edge_dt_ms(ei, sj)},
 				)
 			)
 
@@ -2432,6 +2464,7 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 					"v": e.v,
 					"capacity": int(e.capacity),
 					"dt_frames": e.payload.get("dt_frames"),
+					"dt_ms": e.payload.get("dt_ms"),
 					"merge_end": e.payload.get("merge_end"),
 					"split_start": e.payload.get("split_start"),
 					"payload_json": json.dumps(e.payload, sort_keys=True),
@@ -2447,6 +2480,7 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 				"v": pd.Series(dtype="str"),
 				"capacity": pd.Series(dtype="Int64"),
 				"dt_frames": pd.Series(dtype="Int64"),
+				"dt_ms": pd.Series(dtype="Int64"),
 				"merge_end": pd.Series(dtype="Int64"),
 				"split_start": pd.Series(dtype="Int64"),
 				"payload_json": pd.Series(dtype="str"),

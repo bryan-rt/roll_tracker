@@ -52,7 +52,8 @@ D1_GRAPH_EDGES_SPECS: List[ColSpec] = [
     ColSpec("capacity", "int", nullable=False),
 
     # Common edge features for D2 pricing / debug.
-    ColSpec("dt_frames", "int", nullable=True),
+    ColSpec("dt_frames", "int", nullable=True),  # frame-index gap (diagnostic)
+    ColSpec("dt_ms", "int", nullable=True),       # timestamp_ms gap (CP4.C/D — real time)
     ColSpec("merge_end", "int", nullable=True),
     ColSpec("split_start", "int", nullable=True),
 
@@ -84,7 +85,8 @@ D2_EDGE_COSTS_SPECS: List[ColSpec] = [
     ColSpec("disallow_reasons_json", "string", nullable=False),
 
     # scalar features (nullable when not applicable)
-    ColSpec("dt_frames", "int", nullable=True),
+    ColSpec("dt_frames", "int", nullable=True),  # frame-index gap (diagnostic)
+    ColSpec("dt_ms", "int", nullable=True),       # timestamp_ms gap (CP4.C/D — real time)
     ColSpec("dt_s", "float", nullable=True),
     ColSpec("dist_m", "float", nullable=True),
     ColSpec("v_req_mps", "float", nullable=True),

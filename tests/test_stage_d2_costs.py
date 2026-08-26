@@ -16,7 +16,7 @@ def _tiny_tables():
 	)
 	d1_edges = pd.DataFrame(
 		[
-			{"edge_id": "e0", "edge_type": "EdgeType.CONTINUE", "u": "n0", "v": "n1", "capacity": 1, "dt_frames": 1},
+			{"edge_id": "e0", "edge_type": "EdgeType.CONTINUE", "u": "n0", "v": "n1", "capacity": 1, "dt_frames": 1, "dt_ms": 100},
 		]
 	)
 	bank_frames = pd.DataFrame(
@@ -58,8 +58,7 @@ def test_d2_missing_geom_disallow_logs_reason() -> None:
 			d1_edges=d1_edges,
 			d1_nodes=d1_nodes,
 			bank_frames=bank_frames,
-			fps=10.0,
-			cfg=cfg,
+				cfg=cfg,
 			v_cost_scale_mps_resolved=8.0,
 			v_hinge_mps_resolved=8.0,
 	)
@@ -86,8 +85,7 @@ def test_d2_cost_increases_with_distance() -> None:
 			d1_edges=d1_edges,
 			d1_nodes=d1_nodes,
 			bank_frames=bank_frames,
-			fps=10.0,
-			cfg=cfg,
+				cfg=cfg,
 			v_cost_scale_mps_resolved=8.0,
 			v_hinge_mps_resolved=0.5,  # make hinge active
 	)
@@ -100,8 +98,7 @@ def test_d2_cost_increases_with_distance() -> None:
 			d1_edges=d1_edges,
 			d1_nodes=d1_nodes,
 			bank_frames=bank_frames2,
-			fps=10.0,
-			cfg=cfg,
+				cfg=cfg,
 			v_cost_scale_mps_resolved=8.0,
 			v_hinge_mps_resolved=0.5,
 	)
@@ -128,8 +125,7 @@ def test_d2_contact_rel_gentle_scaling() -> None:
 			d1_edges=d1_edges,
 			d1_nodes=d1_nodes,
 			bank_frames=bank_frames,
-			fps=10.0,
-			cfg=cfg,
+				cfg=cfg,
 			v_cost_scale_mps_resolved=8.0,
 			v_hinge_mps_resolved=0.5,
 	)
@@ -141,8 +137,7 @@ def test_d2_contact_rel_gentle_scaling() -> None:
 			d1_edges=d1_edges,
 			d1_nodes=d1_nodes,
 			bank_frames=bank_low,
-			fps=10.0,
-			cfg=cfg,
+				cfg=cfg,
 			v_cost_scale_mps_resolved=8.0,
 			v_hinge_mps_resolved=0.5,
 	)
@@ -158,13 +153,13 @@ def test_d2_disallow_reasons_canonical_order() -> None:
 	# Make dt_s exceed dt_max_s (fps=10 => dt_s=2.0)
 	d1_edges = d1_edges.copy()
 	d1_edges.loc[0, "dt_frames"] = 20
+	d1_edges.loc[0, "dt_ms"] = 2000  # 2.0s > dt_max_s=1.0
 
 	cfg = {"dt_max_s": 1.0, "missing_geom_policy": "disallow", "endpoint_search_window_frames": 0}
 	out, _ = compute_edge_costs(
 		d1_edges=d1_edges,
 		d1_nodes=d1_nodes,
 		bank_frames=bank_frames,
-		fps=10.0,
 		cfg=cfg,
 		v_cost_scale_mps_resolved=8.0,
 		v_hinge_mps_resolved=8.0,

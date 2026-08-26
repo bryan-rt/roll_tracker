@@ -200,7 +200,7 @@ def run_d2(*, config: Dict[str, Any], inputs: Dict[str, Any]) -> None:
 	# Fail-fast required columns (evidence-based): only require what is needed
 	# based on the actual edge types present in this run.
 	_require_columns(d1_nodes, {"node_id", "base_tracklet_id", "segment_type"}, "d1_graph_nodes")
-	_require_columns(d1_edges, {"edge_id", "edge_type", "u", "v", "dt_frames"}, "d1_graph_edges")
+	_require_columns(d1_edges, {"edge_id", "edge_type", "u", "v", "dt_frames", "dt_ms"}, "d1_graph_edges")
 	_require_columns(
 		bank_frames,
 		{"tracklet_id", "frame_index", "contact_conf", "speed_is_implausible", "accel_is_implausible"},
@@ -254,7 +254,6 @@ def run_d2(*, config: Dict[str, Any], inputs: Dict[str, Any]) -> None:
 			d1_edges=d1_edges,
 			d1_nodes=d1_nodes,
 			bank_frames=bank_frames,
-			fps=fps,
 			cfg=d2_cfg,
 			v_cost_scale_mps_resolved=v_cost_scale_mps_resolved,
 			v_hinge_mps_resolved=v_hinge_mps_resolved,
