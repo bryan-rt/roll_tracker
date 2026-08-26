@@ -335,12 +335,12 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 	# Missing frame_index → skip the edge (data quality issue, not fatal).
 	# Duplicate frame_index at same timestamp (MUXER-PTS-1): last-write-wins,
 	# deterministic because all duplicates share the same timestamp_ms.
-	frame_ts_map: Dict[int, int] = {}
-	if "timestamp_ms" in tf.columns:
-		frame_ts_map = dict(zip(
-			tf["frame_index"].to_numpy(),
-			tf["timestamp_ms"].to_numpy(),
-		))
+	if "timestamp_ms" not in tf.columns:
+		raise ValueError(f"D1 requires timestamp_ms in bank frames: {frames_path}")
+	frame_ts_map: Dict[int, int] = dict(zip(
+		tf["frame_index"].to_numpy(),
+		tf["timestamp_ms"].to_numpy(),
+	))
 
 	def _edge_dt_ms(end_frame: int, start_frame: int) -> Optional[int]:
 		"""Compute dt_ms between two frame endpoints via the shared map.
@@ -1718,7 +1718,7 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 				edge_id = f"E:CONT_RECONNECT:{u_node}->{v_node}"
 				payload = {
 					"dt_frames": int(cand["gap_frames"]),
-					"dt_ms": _edge_dt_ms(int(cand["tn_end"]), int(cand["tm_start"])) if "tn_end" in cand and "tm_start" in cand else None,
+					"dt_ms": _edge_dt_ms(int(cand["tn_end"]), int(cand["tm_start"])),
 					"reconnect": True,
 					"dt_s": float(cand["dt_s"]),
 					"dist_m": float(cand["dist_m"]),
