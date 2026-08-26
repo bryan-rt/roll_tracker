@@ -642,6 +642,15 @@ aggregation reads all historical events. Observed 2026-08-24: 132650 held 66 D0.
 3 runs (expected 24). Parquet artifacts are unaffected (overwrite on write). **Workflow rule:**
 use per-run summary events for counts, or clear the output directory before rerunning.
 
+**Data contract change (CP4.C/D):** `dt_s` in `d2_edge_costs.parquet` and
+`d1_reconnect_edges.parquet` changed meaning at CP4.D — was `dt_frames / fps` (uniform-spacing
+approximation), now real elapsed time from container PTS. Same column name, same type, same
+ColSpec. Any pre-CP4.D `dt_s` figure is not comparable to a post-CP4.D one. `dt_ms` (Int64,
+nullable) added to D1 edge and D2 edge cost schemas (`f0_parquet.py`) as the real-time source.
+`dt_frames` retained as a diagnostic frame-gap count (not used for timing computation).
+`d1_reconnect_edges.parquet`'s `dt_s` became real-time incidentally (flows from site #7).
+Evidence: `docs/evidence/cp4cd_results/`.
+
 **Known defect (Stage E):** `timestamp_ms lookup miss for frame_index=315` on
 FP7oJQ-20260822-130229 and the session run. A frame present in the timestamp map but absent
 from `person_tracks` — Stage E's buzzer end-frame adjustment (`_try_adjust_end`) references a
