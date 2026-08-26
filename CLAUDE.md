@@ -651,6 +651,12 @@ nullable) added to D1 edge and D2 edge cost schemas (`f0_parquet.py`) as the rea
 `d1_reconnect_edges.parquet`'s `dt_s` became real-time incidentally (flows from site #7).
 Evidence: `docs/evidence/cp4cd_results/`.
 
+**Known cleanup (tools):** Three tools import `derive_clip_frame_offset` / `parse_clip_timestamp`
+from `session_d_run` (`cp_purity_3_oracle`, `cp_tag_3_evidence`, `analyze_recorder_timing`).
+The function is deprecated in the pipeline (CP4.C replaced it with `clip_offset_registry.json`).
+Migrate the tools to the registry or move the helper into `tools/`, then delete from
+`session_d_run`.
+
 **Known defect (Stage E):** `timestamp_ms lookup miss for frame_index=315` on
 FP7oJQ-20260822-130229 and the session run. A frame present in the timestamp map but absent
 from `person_tracks` — Stage E's buzzer end-frame adjustment (`_try_adjust_end`) references a

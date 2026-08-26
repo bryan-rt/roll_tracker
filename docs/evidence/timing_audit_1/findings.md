@@ -25,7 +25,7 @@ see per-site subsections in Section 2 for the complete six-field record.*
 
 | # | Location | Assumption | Wrong? | Error magnitude | Priority | Fix class |
 |---|----------|-----------|--------|----------------|----------|-----------|
-| 1 | `session_d_run.py:491` | First clip's fps applies to ALL clips and cameras | Yes | ~8% cross-camera (13.85 vs 15.00 in same session); up to 2x if a mode-switch block (15 vs 30 within one camera) sets the scalar | P0 | DEL-CONV (consequent) — depends on #8, #9 |
+| 1 | `session_d_run.py:491` | First clip's fps applies to ALL clips and cameras | Yes | **REDUCED (CP4.F).** fps parameter removed from `aggregate_session_bank`. `SessionManifest.fps` retained as Piece 5 residual — consumed ONLY by `cross_camera_evidence` (#8). Piece 5 eliminates it. Evidence: `docs/evidence/cp4f_results/`. | P0 | DEL-CONV (consequent) — depends on #8 |
 | 2 | `ffmpeg.py:121-122` | `start_sec = start_frame / fps` | Yes (FP7oJQ) | On FP7oJQ (8% gaps): error is ~8% of elapsed time, accumulating. Frame 1000: 5.7s offset. Frame 1800: 10.3s offset. On PPDmUg (0.45% gaps): near-correct. See §2.16. | P0 | DEL-CONV |
 | 3 | `manifest.py:60-68` | `start_seconds = frame / fps` written to Supabase | Yes (FP7oJQ) | Same as #2. Values persist in `clips` table (`numeric` columns). | P0 | DEL-CONV |
 | 4 | `tracker.py:63` | BoT-SORT `frame_rate` never passed; boxmot defaults to 30 | Yes | **RESOLVED (Piece 11).** `VariableDtBotSort._update_track_states` uses wall-time `max_lost_seconds` (default 2.0s = today's behavior). `frame_rate` eliminated. Piece 8 dissolved into Piece 11. | P1 | FIX-SCALAR |

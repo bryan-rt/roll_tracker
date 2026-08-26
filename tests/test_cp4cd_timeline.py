@@ -176,7 +176,6 @@ class TestSessionTimeline:
             session_clips=session_clips,
             cam_id=cam_id,
             output_root=out_root,
-            fps=15.0,
             resolved_config=cfg,
         )
 
@@ -262,7 +261,7 @@ class TestSessionTimeline:
         _, _, _, _, _ = aggregate_session_bank(
             session_layout=session_layout, adapter=adapter,
             session_clips=session_clips, cam_id=cam_id,
-            output_root=out_root, fps=15.0, resolved_config=cfg,
+            output_root=out_root, resolved_config=cfg,
         )
 
         combined = pd.read_parquet(adapter.tracklet_bank_frames_parquet())
@@ -336,7 +335,7 @@ class TestSessionTimeline:
         _, _, _, _, registry = aggregate_session_bank(
             session_layout=session_layout, adapter=adapter,
             session_clips=session_clips, cam_id=cam_id,
-            output_root=out_root, fps=15.0, resolved_config={},
+            output_root=out_root, resolved_config={},
         )
 
         # Read the persisted registry from disk
@@ -494,7 +493,7 @@ class TestBoundaryClassification:
         _, _, _, _, _ = aggregate_session_bank(
             session_layout=session_layout, adapter=adapter,
             session_clips=[(clip1_mp4, cam_id), (clip2_mp4, cam_id)],
-            cam_id=cam_id, output_root=out_root, fps=15.0, resolved_config={},
+            cam_id=cam_id, output_root=out_root, resolved_config={},
         )
 
         combined = pd.read_parquet(adapter.tracklet_bank_frames_parquet())
@@ -564,7 +563,7 @@ class TestBoundaryClassification:
         _, _, _, _, _ = aggregate_session_bank(
             session_layout=session_layout, adapter=adapter,
             session_clips=[(clip1_mp4, cam_id), (clip2_mp4, cam_id)],
-            cam_id=cam_id, output_root=out_root, fps=15.0, resolved_config={},
+            cam_id=cam_id, output_root=out_root, resolved_config={},
         )
 
         combined = pd.read_parquet(adapter.tracklet_bank_frames_parquet())

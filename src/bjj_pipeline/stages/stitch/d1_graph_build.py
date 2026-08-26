@@ -1288,7 +1288,7 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 				)
 
 		# ---- Occlusion reconnect edges between different base tracklets ----
-		if reconnect_enabled and fps is not None:
+		if reconnect_enabled:
 			def _count_nearby_births(
 				*,
 				dest_tid: str,

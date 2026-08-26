@@ -14,7 +14,7 @@ Policy (locked):
   - missing geometry => disallow (log reason)
   - must-link vs disallow conflict => fail loudly (enforced by D3; D2 does not override disallow)
   - contact reliability weighting ON by default (gentle scaling)
-  - fps source of truth: clip manifest
+  - fps: diagnostic only (CP4.F). Timing derived from timestamp_ms / dt_ms.
 """
 
 from __future__ import annotations
@@ -114,9 +114,11 @@ def run_d2(*, config: Dict[str, Any], inputs: Dict[str, Any]) -> None:
 		)
 		return
 
-	fps = float(getattr(manifest, "fps", None))
-	if fps <= 0:
-		raise ValueError(f"Manifest fps must be >0 (got {fps!r})")
+	fps_raw = getattr(manifest, "fps", None)
+	fps = float(fps_raw) if fps_raw is not None else None
+	# fps is diagnostic only (CP4.F) — no computation depends on it. Real timing
+	# preconditions are enforced by CP4.B (d0_bank: timestamp_ms) and CP4.D
+	# (d1_graph_build: timestamp_ms + dt_ms). None means "not recorded", not zero.
 
 	# Prefer true video frame bounds for entrance/exit heuristics when available.
 	frame_wh: Optional[Tuple[int, int]] = None

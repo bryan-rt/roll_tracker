@@ -47,7 +47,8 @@ class SessionManifest:
     clip_id: str            # session_id used as clip_id
     camera_id: str
     gym_id: str
-    fps: float
+    fps: float  # Piece 5 residual: consumed ONLY by cross_camera_evidence (#8).
+                # Not a timing source. Removed when Piece 5 lands.
     frame_count: int
     duration_ms: int
     pipeline_version: str = ""
@@ -207,12 +208,13 @@ def parse_clip_timestamp(mp4_path: Path) -> Optional[datetime]:
 def derive_clip_frame_offset(
     mp4_path: Path, session_start_dt: datetime, fps: float
 ) -> int:
-    """LEGACY: Compute frame offset from filename timestamp × fps.
-
-    Retained for Stage F source registry (site #10) until CP4.F removes it.
-    Session D aggregation uses cumulative frame count + sidecar-anchored
-    timestamp offset instead (CP4.C).
-    """
+    # DEPRECATED (CP4.C): not used by the pipeline. Session frame offsets come from
+    # clip_offset_registry.json (cumulative frame count, fps-free). Retained only for
+    # tools/ that predate CP4.C (cp_purity_3_oracle, cp_tag_3_evidence,
+    # analyze_recorder_timing). The filename anchor has 1-second resolution and was
+    # REJECTED for pipeline timing — it cannot resolve a ~67ms segment cut. Do not
+    # reintroduce it into the pipeline.
+    """Compute frame offset from filename timestamp × fps. DEPRECATED — see comment above."""
     clip_dt = parse_clip_timestamp(mp4_path)
     if clip_dt is None or fps <= 0:
         return 0
@@ -243,7 +245,6 @@ def aggregate_session_bank(
     session_clips: List[Tuple[Path, str]],
     cam_id: str,
     output_root: Path,
-    fps: float,
     resolved_config: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Path, Path, Path, Path, List[Dict[str, Any]]]:
     """Aggregate per-clip D0 bank outputs for a single camera into session-level
@@ -652,7 +653,6 @@ def run_session_d(
         session_clips=session_clips,
         cam_id=cam_id,
         output_root=output_root,
-        fps=fps,
         resolved_config=config,
     )
 
