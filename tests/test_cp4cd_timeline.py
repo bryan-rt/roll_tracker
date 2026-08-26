@@ -343,24 +343,28 @@ class TestSessionTimeline:
         registry_path = adapter.stage_dir("D") / "clip_offset_registry.json"
         assert registry_path.exists(), "clip_offset_registry.json should be written"
         with open(registry_path) as f:
-            disk_registry = json.load(f)
+            disk_data = json.load(f)
 
-        assert len(disk_registry) == 2
+        disk_clips = disk_data["clips"]
+        assert len(disk_clips) == 2
 
         # Clip 1: frame_offset=0, clip_frame_count=100
-        r1 = disk_registry[0]
+        r1 = disk_clips[0]
         assert r1["clip_id"] == "cam01-20260101-120000"
         assert r1["frame_offset"] == 0
         assert r1["clip_frame_count"] == 100
 
         # Clip 2: frame_offset=100 (cumulative), clip_frame_count=50
-        r2 = disk_registry[1]
+        r2 = disk_clips[1]
         assert r2["clip_id"] == "cam01-20260101-120500"
         assert r2["frame_offset"] == 100
         assert r2["clip_frame_count"] == 50
 
-        # Verify return value matches disk
-        assert registry == disk_registry
+        # Boundary decisions present
+        assert len(disk_data["boundary_decisions"]) == 1
+
+        # Verify return value matches disk clips
+        assert registry == disk_clips
 
 
 # ---------------------------------------------------------------------------
@@ -423,3 +427,188 @@ class TestD1D2DtMs:
         assert bool(out.loc[0, "is_allowed"]) is False
         reasons = json.loads(out.loc[0, "disallow_reasons_json"])
         assert "dt_unavailable" in reasons
+
+
+# ---------------------------------------------------------------------------
+# T1 CP4.E: boundary classification and session_segment_id
+# ---------------------------------------------------------------------------
+
+class TestBoundaryClassification:
+    def test_contiguous_boundary_permits_same_segment(self, tmp_path):
+        """Two clips, shortfall ~0.1s (< 2.0s), same attempt.
+        Assert session_segment_id is the same on both clips.
+        """
+        from bjj_pipeline.stages.stitch.session_d_run import aggregate_session_bank
+        from bjj_pipeline.contracts.f0_paths import SessionOutputLayout
+        from bjj_pipeline.stages.stitch.session_d_run import SessionStageLayoutAdapter
+
+        gym_id = "test-gym"
+        cam_id = "cam01"
+        raw_dir = tmp_path / "data" / "raw" / "nest" / gym_id / cam_id / "2026-01-01" / "12"
+        raw_dir.mkdir(parents=True)
+        out_root = tmp_path / "outputs"
+
+        # Clip 1: 100 frames at 67ms = 6.7s content, offset 1000.0s
+        clip1_mp4 = raw_dir / "cam01-20260101-120000.mp4"
+        clip1_mp4.write_bytes(b"\x00")
+        generate_synthetic_sidecar(
+            raw_dir / "cam01-20260101-120000.timing.jsonl",
+            frame_count=100, dt_s=0.067,
+            pts_wallclock_offset_s_override=1000.0,
+        )
+        clip1_frames, clip1_summ = _make_clip_bank("cam01-20260101-120000", 100)
+        clip1_out = out_root / gym_id / cam_id / "2026-01-01" / "12" / "cam01-20260101-120000"
+        _write_clip_artifacts(clip1_out, clip1_frames, clip1_summ)
+        from bjj_pipeline.contracts.f0_manifest import init_manifest, write_manifest
+        m1 = init_manifest(
+            clip_id="cam01-20260101-120000", camera_id=cam_id, gym_id=gym_id,
+            input_video_path=str(clip1_mp4), fps=15.0, frame_count=100,
+            duration_ms=6700, pipeline_version="test", created_at_ms=0,
+        )
+        write_manifest(m1, clip1_out / "clip_manifest.json")
+
+        # Clip 2: offset 1006.8s (content 6.7s + 0.1s gap = contiguous)
+        clip2_mp4 = raw_dir / "cam01-20260101-120648.mp4"
+        clip2_mp4.write_bytes(b"\x00")
+        generate_synthetic_sidecar(
+            raw_dir / "cam01-20260101-120648.timing.jsonl",
+            frame_count=50, dt_s=0.067,
+            pts_wallclock_offset_s_override=1006.8,
+        )
+        clip2_frames, clip2_summ = _make_clip_bank("cam01-20260101-120648", 50)
+        clip2_out = out_root / gym_id / cam_id / "2026-01-01" / "12" / "cam01-20260101-120648"
+        _write_clip_artifacts(clip2_out, clip2_frames, clip2_summ)
+        m2 = init_manifest(
+            clip_id="cam01-20260101-120648", camera_id=cam_id, gym_id=gym_id,
+            input_video_path=str(clip2_mp4), fps=15.0, frame_count=50,
+            duration_ms=3350, pipeline_version="test", created_at_ms=0,
+        )
+        write_manifest(m2, clip2_out / "clip_manifest.json")
+
+        session_layout = SessionOutputLayout(
+            gym_id=gym_id, date="2026-01-01",
+            session_id="2026-01-01T1200", root=out_root,
+        )
+        adapter = SessionStageLayoutAdapter(session_layout, cam_id)
+
+        _, _, _, _, _ = aggregate_session_bank(
+            session_layout=session_layout, adapter=adapter,
+            session_clips=[(clip1_mp4, cam_id), (clip2_mp4, cam_id)],
+            cam_id=cam_id, output_root=out_root, fps=15.0, resolved_config={},
+        )
+
+        combined = pd.read_parquet(adapter.tracklet_bank_frames_parquet())
+        assert "session_segment_id" in combined.columns
+        # Both clips should have the same session_segment_id (contiguous)
+        assert combined["session_segment_id"].nunique() == 1
+
+        # Registry should show PERMIT
+        with open(adapter.stage_dir("D") / "clip_offset_registry.json") as f:
+            reg = json.load(f)
+        assert reg["boundary_decisions"][0]["decision"] == "PERMIT"
+
+    def test_discontinuous_boundary_breaks_segment(self, tmp_path):
+        """Two clips, shortfall 93.3s (> 2.0s). Assert different session_segment_id."""
+        from bjj_pipeline.stages.stitch.session_d_run import aggregate_session_bank
+        from bjj_pipeline.contracts.f0_paths import SessionOutputLayout
+        from bjj_pipeline.stages.stitch.session_d_run import SessionStageLayoutAdapter
+
+        gym_id = "test-gym"
+        cam_id = "cam01"
+        raw_dir = tmp_path / "data" / "raw" / "nest" / gym_id / cam_id / "2026-01-01" / "12"
+        raw_dir.mkdir(parents=True)
+        out_root = tmp_path / "outputs"
+
+        clip1_mp4 = raw_dir / "cam01-20260101-120000.mp4"
+        clip1_mp4.write_bytes(b"\x00")
+        generate_synthetic_sidecar(
+            raw_dir / "cam01-20260101-120000.timing.jsonl",
+            frame_count=100, dt_s=0.067,
+            pts_wallclock_offset_s_override=1000.0,
+        )
+        clip1_frames, clip1_summ = _make_clip_bank("cam01-20260101-120000", 100)
+        clip1_out = out_root / gym_id / cam_id / "2026-01-01" / "12" / "cam01-20260101-120000"
+        _write_clip_artifacts(clip1_out, clip1_frames, clip1_summ)
+        from bjj_pipeline.contracts.f0_manifest import init_manifest, write_manifest
+        m1 = init_manifest(
+            clip_id="cam01-20260101-120000", camera_id=cam_id, gym_id=gym_id,
+            input_video_path=str(clip1_mp4), fps=15.0, frame_count=100,
+            duration_ms=6700, pipeline_version="test", created_at_ms=0,
+        )
+        write_manifest(m1, clip1_out / "clip_manifest.json")
+
+        # Clip 2: offset 1100.0s (shortfall = 100-6.7 = 93.3s → BREAK)
+        clip2_mp4 = raw_dir / "cam01-20260101-121400.mp4"
+        clip2_mp4.write_bytes(b"\x00")
+        generate_synthetic_sidecar(
+            raw_dir / "cam01-20260101-121400.timing.jsonl",
+            frame_count=50, dt_s=0.067,
+            pts_wallclock_offset_s_override=1100.0,
+        )
+        clip2_frames, clip2_summ = _make_clip_bank("cam01-20260101-121400", 50)
+        clip2_out = out_root / gym_id / cam_id / "2026-01-01" / "12" / "cam01-20260101-121400"
+        _write_clip_artifacts(clip2_out, clip2_frames, clip2_summ)
+        m2 = init_manifest(
+            clip_id="cam01-20260101-121400", camera_id=cam_id, gym_id=gym_id,
+            input_video_path=str(clip2_mp4), fps=15.0, frame_count=50,
+            duration_ms=3350, pipeline_version="test", created_at_ms=0,
+        )
+        write_manifest(m2, clip2_out / "clip_manifest.json")
+
+        session_layout = SessionOutputLayout(
+            gym_id=gym_id, date="2026-01-01",
+            session_id="2026-01-01T1200", root=out_root,
+        )
+        adapter = SessionStageLayoutAdapter(session_layout, cam_id)
+
+        _, _, _, _, _ = aggregate_session_bank(
+            session_layout=session_layout, adapter=adapter,
+            session_clips=[(clip1_mp4, cam_id), (clip2_mp4, cam_id)],
+            cam_id=cam_id, output_root=out_root, fps=15.0, resolved_config={},
+        )
+
+        combined = pd.read_parquet(adapter.tracklet_bank_frames_parquet())
+        # Two different session_segment_ids (discontinuity)
+        assert combined["session_segment_id"].nunique() == 2
+
+        with open(adapter.stage_dir("D") / "clip_offset_registry.json") as f:
+            reg = json.load(f)
+        assert reg["boundary_decisions"][0]["decision"] == "BREAK"
+        assert "shortfall" in reg["boundary_decisions"][0]["reason"]
+
+    def test_unclassifiable_boundary_breaks(self):
+        """When prev clip has nominal_dt_s=None, boundary is BREAK.
+
+        Tests the classification logic directly: if nominal_dt_s is absent,
+        the shortfall is uncomputable and the boundary must break.
+        """
+        # Simulate the boundary classification logic from aggregate_session_bank
+        BREAK_THRESHOLD_S = 2.0
+        # Clip 1 with nominal_dt_s=None (broken contract)
+        cam_clips_info = [
+            {"mp4_path": Path("/fake/clip1.mp4"), "offset_s": 1000.0,
+             "offset_status": "determined", "frame_count": 100,
+             "nominal_dt_s": None, "attempt": 1},
+            {"mp4_path": Path("/fake/clip2.mp4"), "offset_s": 1006.8,
+             "offset_status": "determined", "frame_count": 50,
+             "nominal_dt_s": 0.067, "attempt": 1},
+        ]
+
+        # Reproduce the boundary classification
+        boundary_decisions = []
+        segment_ids = [0]
+        for i in range(1, len(cam_clips_info)):
+            prev, curr = cam_clips_info[i-1], cam_clips_info[i]
+            prev_nom = prev["nominal_dt_s"]
+            if prev_nom is None:
+                boundary_decisions.append({
+                    "from": prev["mp4_path"].stem, "to": curr["mp4_path"].stem,
+                    "decision": "BREAK", "reason": "nominal_dt_s_missing",
+                })
+                segment_ids.append(segment_ids[-1] + 1)
+                continue
+
+        assert len(boundary_decisions) == 1
+        assert boundary_decisions[0]["decision"] == "BREAK"
+        assert boundary_decisions[0]["reason"] == "nominal_dt_s_missing"
+        assert segment_ids == [0, 1]

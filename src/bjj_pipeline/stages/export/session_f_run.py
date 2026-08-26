@@ -75,7 +75,10 @@ def _build_source_registry(
         registry_path = adapter.stage_dir("D") / "clip_offset_registry.json"
         if registry_path.exists():
             with open(registry_path, encoding="utf-8") as f:
-                for entry in _json.load(f):
+                reg_data = _json.load(f)
+                # CP4.E: registry is now {"clips": [...], "boundary_decisions": [...]}
+                clips_list = reg_data.get("clips", reg_data) if isinstance(reg_data, dict) else reg_data
+                for entry in clips_list:
                     offset_map[entry["clip_id"]] = entry
 
     if not offset_map:

@@ -215,7 +215,7 @@ Evidence: `docs/evidence/frame_index_join_1/findings.md` §10 A2 and precision f
 
 ### Piece 4 — Stage D reads real time (clip + session)
 **Class:** DEL-CONV | **Sites:** #5, #6, #7, #9, #10 | **Ships:** alone | **Depends:** 0, 2
-**Status:** IN PROGRESS — CP4.B (#5), CP4.C (#9, #10), CP4.D (#6, #7) complete; CP4.E–F pending
+**Status:** IN PROGRESS — CP4.B (#5), CP4.C (#9, #10), CP4.D (#6, #7), CP4.E complete; CP4.F pending
 
 **Scope.** Delete the `dt_s = frames / fps` conversions in `d0_bank.py:571`,
 `costs.py:413`, `d1_graph_build.py:1408` (#5, #6, #7). Read `timestamp_ms` from the
@@ -258,7 +258,7 @@ D0.5 speed/accel inputs verified to change consistently. Session alignment uses
 | CP4.B | D0 kinematics read real time (site #5) | A | alone | **DONE** |
 | CP4.C | Session timeline: anchored offsets + session-relative `timestamp_ms` (#9, #10); log `showinfo_offset_status` | A | **with D** | **DONE** |
 | CP4.D | D1/D2 read real time (#6, #7) | C | **with C** | **DONE** |
-| CP4.E | `attempt` boundaries as hard breaks | C, D | alone |
+| CP4.E | Clip-boundary discontinuity handling (shortfall + attempt OR) | C, D | alone | **DONE** |
 | CP4.F | Retire the session fps scalar (#1) to one documented consumer | C, D, E | alone |
 
 **Why C and D are atomic.** `aggregate_session_bank` (`session_d_run.py:302-330`)

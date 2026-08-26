@@ -262,30 +262,32 @@ def aggregate_session_bank(
     from bjj_pipeline.contracts.f0_paths import resolve_sidecar_path
 
     # --- Pre-scan: read sidecar offsets for timestamp alignment ---
-    cam_clips_info: List[Tuple[Path, Optional[float], Optional[str]]] = []
+    cam_clips_info: List[Dict[str, Any]] = []
     for mp4_path, clip_cam_id in session_clips:
         if clip_cam_id != cam_id:
             continue
-        # Read sidecar for pts_wallclock_offset_s
-        offset_s: Optional[float] = None
-        offset_status: Optional[str] = None
         # CP4.A ingest gate guarantees a valid sidecar for every clip that entered
         # the pipeline. A SidecarError here means something is genuinely wrong — raise.
         sc_path, _prov = resolve_sidecar_path(
             mp4_path, resolved_config or {}, output_root,
         )
         sc_data = load_sidecar(mp4_path, sidecar_path=sc_path)
-        offset_s = sc_data.pts_wallclock_offset_s
-        offset_status = sc_data.showinfo_offset_status
-        clip_frame_count = sc_data.frame_count  # sidecar row count = decoded frame count (a_eq_c)
         logger.info(
             "session_bank: {} sidecar offset_s={}, offset_status={}, frames={}",
-            mp4_path.stem, offset_s, offset_status, clip_frame_count,
+            mp4_path.stem, sc_data.pts_wallclock_offset_s,
+            sc_data.showinfo_offset_status, sc_data.frame_count,
         )
-        cam_clips_info.append((mp4_path, offset_s, offset_status, clip_frame_count))
+        cam_clips_info.append({
+            "mp4_path": mp4_path,
+            "offset_s": sc_data.pts_wallclock_offset_s,
+            "offset_status": sc_data.showinfo_offset_status,
+            "frame_count": sc_data.frame_count,
+            "nominal_dt_s": sc_data.nominal_dt_s,
+            "attempt": sc_data.attempt,
+        })
 
     # Session-start anchor: smallest pts_wallclock_offset_s
-    valid_offsets = [o for _, o, _, _ in cam_clips_info if o is not None]
+    valid_offsets = [c["offset_s"] for c in cam_clips_info if c["offset_s"] is not None]
     if not valid_offsets:
         raise ValueError(
             f"No valid pts_wallclock_offset_s for any clip on camera {cam_id}. "
@@ -293,16 +295,79 @@ def aggregate_session_bank(
         )
     session_start_offset_s = min(valid_offsets)
 
+    # --- CP4.E: classify boundaries and assign session_segment_id ---
+    # Shortfall is the discriminator; `attempt` is corroborating only. On the 2026-08-22
+    # corpus shortfall caught all 8 classifiable boundaries and attempt caught 7 — it missed
+    # the 422.7s window reset (attempt 1→1), because `attempt` is scoped to the recording
+    # window (sidecar_contract.md:85). Removing the shortfall check would silently stitch
+    # across that gap.
+    BREAK_THRESHOLD_S = 2.0
+    boundary_decisions: List[Dict[str, Any]] = []
+    segment_ids = [0]
+    for i in range(1, len(cam_clips_info)):
+        prev, curr = cam_clips_info[i - 1], cam_clips_info[i]
+        prev_nom = prev["nominal_dt_s"]
+        # nominal_dt_s is a required schema-5 field; absence means broken contract
+        if prev_nom is None:
+            boundary_decisions.append({
+                "from": prev["mp4_path"].stem, "to": curr["mp4_path"].stem,
+                "decision": "BREAK", "reason": "nominal_dt_s_missing",
+                "shortfall_s": None, "threshold_s": None, "attempt_changed": None,
+            })
+            segment_ids.append(segment_ids[-1] + 1)
+            continue
+
+        content_s = prev["frame_count"] * prev_nom
+        wall_gap = curr["offset_s"] - prev["offset_s"]
+        shortfall = wall_gap - content_s
+        attempt_changed = prev["attempt"] != curr["attempt"]
+        threshold = max(BREAK_THRESHOLD_S, 10 * prev_nom)
+
+        reasons: List[str] = []
+        if shortfall > threshold:
+            reasons.append("shortfall")
+        if attempt_changed:
+            reasons.append("attempt_change")
+
+        decision_rec = {
+            "from": prev["mp4_path"].stem, "to": curr["mp4_path"].stem,
+            "shortfall_s": round(shortfall, 3), "threshold_s": round(threshold, 3),
+            "attempt_changed": attempt_changed,
+        }
+
+        if reasons:
+            decision_rec["decision"] = "BREAK"
+            decision_rec["reason"] = "+".join(reasons)
+            segment_ids.append(segment_ids[-1] + 1)
+        else:
+            decision_rec["decision"] = "PERMIT"
+            decision_rec["reason"] = "contiguous"
+            segment_ids.append(segment_ids[-1])
+
+        boundary_decisions.append(decision_rec)
+
+    # Every boundary must be classified exactly once
+    assert len(boundary_decisions) == len(cam_clips_info) - 1, \
+        f"boundary_decisions ({len(boundary_decisions)}) != cam_clips_info-1 ({len(cam_clips_info) - 1})"
+
+    for bd in boundary_decisions:
+        logger.info(
+            "session_bank: boundary {} → {}: {} ({})",
+            bd["from"], bd["to"], bd["decision"], bd["reason"],
+        )
+
     all_frames: List[pd.DataFrame] = []
     all_summaries: List[pd.DataFrame] = []
     all_detections: List[pd.DataFrame] = []
     all_hints: List[dict] = []
-    cumulative_frame_count = 0  # CP4.C: fps-free frame offset
-
-    # Per-clip offset registry for Stage F (Fix 1: one source of truth)
+    cumulative_frame_count = 0
     clip_offset_registry: List[Dict[str, Any]] = []
 
-    for mp4_path, clip_offset_s, clip_offset_status, clip_sidecar_frames in cam_clips_info:
+    for clip_idx, clip_info in enumerate(cam_clips_info):
+        mp4_path = clip_info["mp4_path"]
+        clip_offset_s = clip_info["offset_s"]
+        clip_sidecar_frames = clip_info["frame_count"]
+        session_segment_id = segment_ids[clip_idx]
         layout = _get_clip_layout(mp4_path, cam_id, output_root)
         if layout is None:
             logger.warning("session_bank: cannot derive layout for {}", mp4_path.name)
@@ -350,6 +415,8 @@ def aggregate_session_bank(
         # Apply timestamp offset (CP4.C — session-relative timeline)
         if ts_offset_ms > 0 and "timestamp_ms" in frames_df.columns:
             frames_df["timestamp_ms"] = frames_df["timestamp_ms"] + ts_offset_ms
+        # CP4.E: tag each frame with its session segment
+        frames_df["session_segment_id"] = session_segment_id
         all_frames.append(frames_df)
 
         # Record offsets for Stage F and advance cumulative frame count
@@ -358,8 +425,8 @@ def aggregate_session_bank(
             "frame_offset": frame_offset,
             "ts_offset_ms": ts_offset_ms,
             "clip_frame_count": clip_sidecar_frames,
+            "session_segment_id": session_segment_id,
         })
-        # Cumulative frame count from sidecar (= decoded frame count, a_eq_c verified)
         cumulative_frame_count += clip_sidecar_frames
 
         # --- Bank summaries ---
@@ -426,7 +493,8 @@ def aggregate_session_bank(
     # D3 needs split lineage to bind tag pings to post-split product nodes.
     # Per-clip d05_split_audit.jsonl is namespaced with clip_id prefix.
     all_split_events: List[dict] = []
-    for mp4_path, _, _, _ in cam_clips_info:
+    for clip_info_d05 in cam_clips_info:
+        mp4_path = clip_info_d05["mp4_path"]
         clip_layout = _get_clip_layout(mp4_path, cam_id, output_root)
         if clip_layout is None:
             continue
@@ -452,11 +520,15 @@ def aggregate_session_bank(
     # --- Write aggregated outputs ---
     session_layout.ensure_dirs_for_stage("D")
 
-    # Persist clip offset registry (CP4.C — one source of truth for Stage F)
+    # Persist clip offset registry + boundary decisions (CP4.C/E)
     offset_registry_path = adapter.stage_dir("D") / "clip_offset_registry.json"
     offset_registry_path.parent.mkdir(parents=True, exist_ok=True)
+    registry_payload = {
+        "clips": clip_offset_registry,
+        "boundary_decisions": boundary_decisions,
+    }
     with open(offset_registry_path, "w", encoding="utf-8") as f:
-        json.dump(clip_offset_registry, f, indent=2)
+        json.dump(registry_payload, f, indent=2)
     logger.info("session_bank: wrote clip_offset_registry ({} clips) → {}",
                 len(clip_offset_registry), offset_registry_path.name)
 

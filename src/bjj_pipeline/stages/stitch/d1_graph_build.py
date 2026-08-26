@@ -342,6 +342,16 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 		tf["timestamp_ms"].to_numpy(),
 	))
 
+	# CP4.E: frame_index → session_segment_id map for cross-segment suppression.
+	# Empty when session_segment_id is absent (clip-level D1, which has no session
+	# segments — legitimate no-op, not a degradation).
+	frame_to_segment: Dict[int, int] = {}
+	if "session_segment_id" in tf.columns:
+		frame_to_segment = dict(zip(
+			tf["frame_index"].to_numpy(),
+			tf["session_segment_id"].to_numpy(),
+		))
+
 	def _edge_dt_ms(end_frame: int, start_frame: int) -> Optional[int]:
 		"""Compute dt_ms between two frame endpoints via the shared map.
 		Returns None if either frame is missing from the map."""
@@ -1429,6 +1439,12 @@ def run_d1(*, cfg: Dict[str, Any], layout: Any, manifest: Any) -> TrackletGraph:
 						if not _boundary_on_mat_ok(tm, "start"):
 							continue
 					dist = _dist_m(p_end[0], p_start[0])
+					# CP4.E: skip cross-segment reconnect (hard break)
+					if frame_to_segment:
+						seg_n = frame_to_segment.get(tn_end)
+						seg_m = frame_to_segment.get(tm_start)
+						if seg_n is not None and seg_m is not None and seg_n != seg_m:
+							continue
 					# CP4.D: dt from timestamp_ms instead of gap_frames / fps
 					recon_dt_ms = _edge_dt_ms(tn_end, tm_start)
 					if recon_dt_ms is None:
