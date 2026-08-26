@@ -245,7 +245,7 @@ def aggregate_session_bank(
     output_root: Path,
     fps: float,
     resolved_config: Optional[Dict[str, Any]] = None,
-) -> Tuple[Path, Path, Path, Path]:
+) -> Tuple[Path, Path, Path, Path, List[Dict[str, Any]]]:
     """Aggregate per-clip D0 bank outputs for a single camera into session-level
     combined bank files.
 
@@ -269,24 +269,29 @@ def aggregate_session_bank(
         # Read sidecar for pts_wallclock_offset_s
         offset_s: Optional[float] = None
         offset_status: Optional[str] = None
-        try:
-            sc_path, _prov = resolve_sidecar_path(
-                mp4_path, resolved_config or {}, output_root,
-            )
-            sc_data = load_sidecar(mp4_path, sidecar_path=sc_path)
-            offset_s = sc_data.pts_wallclock_offset_s
-            offset_status = sc_data.showinfo_offset_status
-            logger.info(
-                "session_bank: {} sidecar offset_s={}, offset_status={}",
-                mp4_path.stem, offset_s, offset_status,
-            )
-        except SidecarError as exc:
-            logger.warning("session_bank: sidecar unavailable for {}: {}", mp4_path.stem, exc)
-        cam_clips_info.append((mp4_path, offset_s, offset_status))
+        # CP4.A ingest gate guarantees a valid sidecar for every clip that entered
+        # the pipeline. A SidecarError here means something is genuinely wrong — raise.
+        sc_path, _prov = resolve_sidecar_path(
+            mp4_path, resolved_config or {}, output_root,
+        )
+        sc_data = load_sidecar(mp4_path, sidecar_path=sc_path)
+        offset_s = sc_data.pts_wallclock_offset_s
+        offset_status = sc_data.showinfo_offset_status
+        clip_frame_count = sc_data.frame_count  # sidecar row count = decoded frame count (a_eq_c)
+        logger.info(
+            "session_bank: {} sidecar offset_s={}, offset_status={}, frames={}",
+            mp4_path.stem, offset_s, offset_status, clip_frame_count,
+        )
+        cam_clips_info.append((mp4_path, offset_s, offset_status, clip_frame_count))
 
     # Session-start anchor: smallest pts_wallclock_offset_s
-    valid_offsets = [o for _, o, _ in cam_clips_info if o is not None]
-    session_start_offset_s = min(valid_offsets) if valid_offsets else None
+    valid_offsets = [o for _, o, _, _ in cam_clips_info if o is not None]
+    if not valid_offsets:
+        raise ValueError(
+            f"No valid pts_wallclock_offset_s for any clip on camera {cam_id}. "
+            f"Cannot construct session timeline."
+        )
+    session_start_offset_s = min(valid_offsets)
 
     all_frames: List[pd.DataFrame] = []
     all_summaries: List[pd.DataFrame] = []
@@ -294,7 +299,10 @@ def aggregate_session_bank(
     all_hints: List[dict] = []
     cumulative_frame_count = 0  # CP4.C: fps-free frame offset
 
-    for mp4_path, clip_offset_s, clip_offset_status in cam_clips_info:
+    # Per-clip offset registry for Stage F (Fix 1: one source of truth)
+    clip_offset_registry: List[Dict[str, Any]] = []
+
+    for mp4_path, clip_offset_s, clip_offset_status, clip_sidecar_frames in cam_clips_info:
         layout = _get_clip_layout(mp4_path, cam_id, output_root)
         if layout is None:
             logger.warning("session_bank: cannot derive layout for {}", mp4_path.name)
@@ -342,12 +350,17 @@ def aggregate_session_bank(
         # Apply timestamp offset (CP4.C — session-relative timeline)
         if ts_offset_ms > 0 and "timestamp_ms" in frames_df.columns:
             frames_df["timestamp_ms"] = frames_df["timestamp_ms"] + ts_offset_ms
-        # Update cumulative frame count for next clip
-        clip_frame_count = len(frames_df)
-        if "frame_index" in frames_df.columns and len(frames_df) > 0:
-            clip_frame_count = int(frames_df["frame_index"].max()) - frame_offset + 1
-        cumulative_frame_count += clip_frame_count
         all_frames.append(frames_df)
+
+        # Record offsets for Stage F and advance cumulative frame count
+        clip_offset_registry.append({
+            "clip_id": clip_id_prefix,
+            "frame_offset": frame_offset,
+            "ts_offset_ms": ts_offset_ms,
+            "clip_frame_count": clip_sidecar_frames,
+        })
+        # Cumulative frame count from sidecar (= decoded frame count, a_eq_c verified)
+        cumulative_frame_count += clip_sidecar_frames
 
         # --- Bank summaries ---
         summ_path = layout.tracklet_bank_summaries_parquet()
@@ -413,7 +426,7 @@ def aggregate_session_bank(
     # D3 needs split lineage to bind tag pings to post-split product nodes.
     # Per-clip d05_split_audit.jsonl is namespaced with clip_id prefix.
     all_split_events: List[dict] = []
-    for mp4_path, clip_dt in cam_clips:
+    for mp4_path, _, _ in cam_clips_info:
         clip_layout = _get_clip_layout(mp4_path, cam_id, output_root)
         if clip_layout is None:
             continue
@@ -438,6 +451,14 @@ def aggregate_session_bank(
 
     # --- Write aggregated outputs ---
     session_layout.ensure_dirs_for_stage("D")
+
+    # Persist clip offset registry (CP4.C — one source of truth for Stage F)
+    offset_registry_path = adapter.stage_dir("D") / "clip_offset_registry.json"
+    offset_registry_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(offset_registry_path, "w", encoding="utf-8") as f:
+        json.dump(clip_offset_registry, f, indent=2)
+    logger.info("session_bank: wrote clip_offset_registry ({} clips) → {}",
+                len(clip_offset_registry), offset_registry_path.name)
 
     # Frames
     combined_frames = pd.concat(all_frames, ignore_index=True)
@@ -475,7 +496,7 @@ def aggregate_session_bank(
     if all_split_events:
         logger.info("session_bank: wrote {} split events → {}", len(all_split_events), split_audit_out.name)
 
-    return frames_out, summaries_out, detections_out, hints_out
+    return frames_out, summaries_out, detections_out, hints_out, clip_offset_registry
 
 
 # ---------------------------------------------------------------------------
@@ -553,7 +574,7 @@ def run_session_d(
         )
 
     # --- Step 2: Aggregate with frame offsets ---
-    frames_out, summaries_out, detections_out, hints_out = aggregate_session_bank(
+    frames_out, summaries_out, detections_out, hints_out, clip_offset_registry = aggregate_session_bank(
         session_layout=session_layout,
         adapter=adapter,
         session_clips=session_clips,
