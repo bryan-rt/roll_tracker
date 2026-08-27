@@ -19,7 +19,7 @@ from .redact import RedactionRenderError, build_redaction_plan, render_redacted_
 from .manifest import (
 	build_supabase_clip_contract,
 	build_supabase_log_contracts,
-	compute_clip_seconds,
+	compute_clip_timing,
 	derive_storage_target,
 	get_file_stats,
 )
@@ -116,13 +116,15 @@ def _sha256_file(path: Path) -> str:
 	return h.hexdigest()
 
 
-def _infer_last_frame(video_meta: Any, fps: float, matches: List[Dict[str, Any]]) -> int:
-	duration_sec = getattr(video_meta, "duration_sec", None)
-	if duration_sec is not None and fps > 0.0:
-		try:
-			return max(0, int(math.floor(float(duration_sec) * float(fps))) - 1)
-		except Exception:
-			pass
+def _infer_last_frame(person_tracks_df: pd.DataFrame, matches: List[Dict[str, Any]]) -> int:
+	"""Infer the last valid frame index for export boundary capping.
+
+	#16 RESOLVED (Piece 6): uses person_tracks_df["frame_index"].max() — a direct
+	measurement of the data being exported, fps-free. No sidecar dependency, no
+	output_frame_count dependency. Both original objections (a) and (b) moot.
+	"""
+	if "frame_index" in person_tracks_df.columns and len(person_tracks_df) > 0:
+		return int(person_tracks_df["frame_index"].max())
 	if matches:
 		return max(int(match.get("end_frame", 0)) for match in matches)
 	return 0
@@ -327,11 +329,19 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 		}
 
 	person_tracks_df = _load_person_tracks_df(person_tracks_path)
+	# Piece 6: build frame_index → timestamp_ms map from person_tracks (Piece 4 carrier)
+	if "timestamp_ms" not in person_tracks_df.columns:
+		raise ValueError("Stage F requires timestamp_ms in person_tracks (Piece 4)")
+	frame_to_ts_ms: Dict[int, int] = dict(zip(
+		person_tracks_df["frame_index"].to_numpy(),
+		person_tracks_df["timestamp_ms"].to_numpy(),
+	))
 	video_meta = probe_video_metadata(input_video_path)
 	fps = float(video_meta.fps if video_meta.fps > 0 else getattr(manifest, "fps", 0.0))
+	# fps retained for buffer_frames computation and consolidation — Piece 7 may remove
 	if fps <= 0.0:
 		raise ValueError("Stage F requires a positive fps from ffprobe/OpenCV or clip manifest")
-	last_frame = _infer_last_frame(video_meta, fps, matches)
+	last_frame = _infer_last_frame(person_tracks_df, matches)
 	buffer_frames = int(round(float(consolidate_buffer_sec) * float(fps)))
 	export_sessions = consolidate_export_sessions(
 		matches,
@@ -414,6 +424,12 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 			n_bbox_targets_applied = 0
 
 			output_abs = layout.exports_dir() / f"{export_id}.mp4"
+			# Piece 6: compute timing once, used by both export paths and the manifest
+			timing = compute_clip_timing(
+				export_start_frame=int(export_session.export_start_frame),
+				export_end_frame=int(export_session.export_end_frame),
+				frame_to_ts_ms=frame_to_ts_ms,
+			)
 			if privacy_render_applied:
 				render_result = render_redacted_clip(
 					input_video_path=input_video_path,
@@ -433,9 +449,8 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 					input_video_path=input_video_path,
 					output_video_path=output_abs,
 					crop_plan=crop_plan,
-					fps=fps,
-					start_frame=int(export_session.export_start_frame),
-					end_frame=int(export_session.export_end_frame),
+					start_sec=timing["start_seconds"],
+					duration_sec=timing["duration_seconds"],
 				)
 				export_cmd = export_result.ffmpeg_cmd
 			file_hash = _sha256_file(output_abs)
@@ -449,11 +464,7 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 				export_id=export_session.export_id,
 				storage_bucket=storage_bucket,
 			)
-			seconds_payload = compute_clip_seconds(
-				fps=fps,
-				export_start_frame=int(export_session.export_start_frame),
-				export_end_frame=int(export_session.export_end_frame),
-			)
+			seconds_payload = timing
 			fighter_a_tag_id = export_session.april_tag_id_a
 			fighter_b_tag_id = export_session.april_tag_id_b
 			clip_row_payload = build_supabase_clip_contract(

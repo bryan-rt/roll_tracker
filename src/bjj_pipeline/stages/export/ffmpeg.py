@@ -111,15 +111,16 @@ def build_export_command(
 	input_video_path: Path,
 	output_video_path: Path,
 	crop_plan: FixedRoiCropPlan,
-	fps: float,
-	start_frame: int,
-	end_frame: int,
+	start_sec: float,
+	duration_sec: float,
 	video_codec: str = "libx264",
 	preset: str = "veryfast",
 	crf: int = 23,
 ) -> list[str]:
-	start_sec = float(start_frame) / float(fps)
-	duration_sec = max(1.0 / float(fps), float(end_frame - start_frame + 1) / float(fps))
+	# -ss before -i: input seeking (keyframe-snapped, fast). Worst-case snap
+	# error <=2.0s (source GOP interval, measured on FP7oJQ 2026-08-22).
+	# Accuracy improvement is in the seek TIME (real timestamp_ms vs frame/fps),
+	# not the seek MODE. Residual is the camera's encoder GOP, not pipeline arithmetic.
 	vf = f"crop={int(crop_plan.width)}:{int(crop_plan.height)}:{int(crop_plan.x)}:{int(crop_plan.y)}"
 	return [
 		"ffmpeg",
@@ -153,17 +154,15 @@ def export_clip(
 	input_video_path: Path,
 	output_video_path: Path,
 	crop_plan: FixedRoiCropPlan,
-	fps: float,
-	start_frame: int,
-	end_frame: int,
+	start_sec: float,
+	duration_sec: float,
 ) -> ExportResult:
 	argv = build_export_command(
 		input_video_path=input_video_path,
 		output_video_path=output_video_path,
 		crop_plan=crop_plan,
-		fps=fps,
-		start_frame=start_frame,
-		end_frame=end_frame,
+		start_sec=start_sec,
+		duration_sec=duration_sec,
 	)
 	output_video_path.parent.mkdir(parents=True, exist_ok=True)
 	proc = subprocess.run(argv, capture_output=True, text=True)

@@ -651,6 +651,14 @@ nullable) added to D1 edge and D2 edge cost schemas (`f0_parquet.py`) as the rea
 `d1_reconnect_edges.parquet`'s `dt_s` became real-time incidentally (flows from site #7).
 Evidence: `docs/evidence/cp4cd_results/`.
 
+**Known limitation (Stage F export):** After Piece 6, export seek times are derived from real
+`timestamp_ms` (pipeline arithmetic error ≈ 0ms). Residual customer-visible error is ≤2.0s
+from `-ss` input-seeking keyframe snap (source camera GOP = 2.0s, measured on FP7oJQ
+2026-08-22). Error character changed from unbounded-and-accumulating to bounded-by-GOP.
+Removing the residual requires output seeking (`-ss` after `-i`, slower) or a GOP change at
+the recorder. The output GOP is ours to choose (libx264 re-encode, no `-g` flag → x264
+default). Piece 7 neighbour.
+
 **Known cleanup (tools):** Three tools import `derive_clip_frame_offset` / `parse_clip_timestamp`
 from `session_d_run` (`cp_purity_3_oracle`, `cp_tag_3_evidence`, `analyze_recorder_timing`).
 The function is deprecated in the pipeline (CP4.C replaced it with `clip_offset_registry.json`).

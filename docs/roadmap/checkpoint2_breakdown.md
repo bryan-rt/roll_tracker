@@ -310,7 +310,7 @@ downstream of D and unrelated to cross-camera identity. Candidate signal if
 
 ### Piece 6 — Stage F export timing (customer-visible)
 **Class:** DEL-CONV | **Sites:** #2, #3, #16 | **Ships:** alone | **Depends:** 0, 2
-**Status:** NOT STARTED
+**Status:** COMPLETE
 
 **Scope.** Replace `start_sec = start_frame / fps` (#2 `ffmpeg.py:121-122`) — `pts_time_s`
 for that frame *is* the seek time. Same for `manifest.py:60-68` (#3), whose values persist to

@@ -8,6 +8,8 @@ CP14e: session-level clip export with multi-source video support.
 """
 from __future__ import annotations
 
+from typing import Any, Dict
+
 import hashlib
 import json
 import subprocess
@@ -27,7 +29,7 @@ from bjj_pipeline.stages.export.cropper import CropPlanError, FixedRoiCropPlan, 
 from bjj_pipeline.stages.export.ffmpeg import ExportClipError, export_clip, probe_video_metadata
 from bjj_pipeline.stages.export.manifest import (
     build_supabase_log_contracts,
-    compute_clip_seconds,
+    compute_clip_timing,
     derive_storage_target,
     get_file_stats,
 )
@@ -386,6 +388,14 @@ def run_session_f(
         ["frame_index", "person_id"], kind="mergesort"
     ).reset_index(drop=True)
 
+    # Piece 6: build frame_index → timestamp_ms map from session person_tracks
+    if "timestamp_ms" not in person_tracks_df.columns:
+        raise PipelineError("session_f: timestamp_ms missing in person_tracks (Piece 4)")
+    frame_to_ts_ms: Dict[int, int] = dict(zip(
+        person_tracks_df["frame_index"].to_numpy(),
+        person_tracks_df["timestamp_ms"].to_numpy(),
+    ))
+
     # --- Build source clip registry ---
     # Probe first clip for video metadata (all same camera = same resolution)
     first_clip = next((mp4 for mp4, cid in session_clips if cid == cam_id), None)
@@ -455,10 +465,10 @@ def run_session_f(
             file_hash = _sha256_file(output_abs)
             file_stats = get_file_stats(output_abs)
             file_size_bytes = file_stats.get("file_size_bytes")
-            seconds_payload = compute_clip_seconds(
-                fps=fps,
+            seconds_payload = compute_clip_timing(
                 export_start_frame=start_frame,
                 export_end_frame=end_frame,
+                frame_to_ts_ms=frame_to_ts_ms,
             )
             storage_target = derive_storage_target(
                 gym_id=gym_id or "unknown",

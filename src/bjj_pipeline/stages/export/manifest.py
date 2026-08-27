@@ -55,17 +55,34 @@ def derive_storage_target(
     )
 
 
-def compute_clip_seconds(
+def compute_clip_timing(
     *,
-    fps: float,
     export_start_frame: int,
     export_end_frame: int,
+    frame_to_ts_ms: Dict[int, int],
 ) -> Dict[str, float]:
-    fps_f = float(fps)
-    if fps_f <= 0.0:
-        raise ValueError("fps must be positive to compute clip seconds")
-    start_seconds = float(export_start_frame) / fps_f
-    end_seconds = float(export_end_frame + 1) / fps_f
+    """Compute clip timing from real per-frame timestamps (Piece 6).
+
+    Derives start/end/duration from timestamp_ms via the Piece 4 carrier
+    (person_tracks.parquet). Replaces the old frame/fps conversion that
+    accumulated ~5.7s error by frame 1000 on FP7oJQ.
+
+    Raises ValueError if either boundary frame is missing from the map.
+    """
+    start_ts = frame_to_ts_ms.get(export_start_frame)
+    end_ts = frame_to_ts_ms.get(export_end_frame)
+    if start_ts is None:
+        raise ValueError(
+            f"Piece 6: export_start_frame={export_start_frame} not in timestamp map. "
+            f"person_tracks must include this frame for export timing."
+        )
+    if end_ts is None:
+        raise ValueError(
+            f"Piece 6: export_end_frame={export_end_frame} not in timestamp map. "
+            f"person_tracks must include this frame for export timing."
+        )
+    start_seconds = start_ts / 1000.0
+    end_seconds = end_ts / 1000.0
     duration_seconds = max(0.0, end_seconds - start_seconds)
     return {
         "start_seconds": start_seconds,
