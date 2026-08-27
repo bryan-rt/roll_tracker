@@ -132,25 +132,25 @@ rejected-alternative rationale.
 | Site | Piece | Notes |
 |------|-------|-------|
 | #1 | 4 (reduced) / 5 (eliminated) | DEL-CONV consequent. Piece 4 removes #9's scalar demand, reducing #1 to a single consumer (#8, `cross_camera_evidence.py:252`). Piece 5 removes #8, eliminating #1 entirely. |
-| #2 | 6 | |
-| #3 | 6 | |
-| #4 | 8 | |
-| #5 | 4 | Originally Piece 4 (unchanged by re-cut) |
-| #6 | 4 | Originally Piece 4 (unchanged by re-cut) |
-| #7 | 4 | Originally Piece 4 (unchanged by re-cut) |
+| #2 | 6 | RESOLVED (Piece 6) |
+| #3 | 6 | RESOLVED (Piece 6) |
+| #4 | 11 | Piece 8 dissolved into 11; variable-dt Kalman implemented (T1+T2 PASS) |
+| #5 | 4 | RESOLVED (CP4.B) |
+| #6 | 4 | RESOLVED (CP4.D) |
+| #7 | 4 | RESOLVED (CP4.D) |
 | #8 | 5 | Cross-camera only; separated from session alignment by re-cut |
-| #9 | 4 | Moved from Piece 5 to Piece 4 by re-cut (session alignment, not cross-camera) |
-| #10 | 4 | Moved from Piece 5 to Piece 4 by re-cut (session alignment, not cross-camera) |
+| #9 | 4 | RESOLVED (CP4.C) |
+| #10 | 4 | RESOLVED (CP4.C) |
 | #11 | 1 | RESOLVED |
 | #12 | 7 | |
 | #13 | 7 | |
 | #14 | 7 | |
 | #15 | 7 | |
-| #16 | 6 | PROVISIONAL — contingent on Piece 0 clearing `output_frame_count` |
-| #17 | 6 | |
+| #16 | 6 | RESOLVED (Piece 6): dependency eliminated — `_infer_last_frame` now uses `person_tracks_df["frame_index"].max()`, fps-free. Both original objections (a) per-segment and (b) boundary residual are moot. See `run.py:122-124`. |
+| #17 | 6 | RESOLVED (Piece 6) |
 | #18 | — | AUDIT-ONLY, no fix needed |
 | #19 | 9 | |
-| #20 | 10 (scoping) / 11 (implementation) | |
+| #20 | 11 | RESOLVED (Piece 10 resolved by 11; subclass implemented, T1+T2 PASS) |
 | #21 | 1 | RESOLVED |
 | #22 | 1 | RESOLVED |
 | #23 | 1 | RESOLVED |

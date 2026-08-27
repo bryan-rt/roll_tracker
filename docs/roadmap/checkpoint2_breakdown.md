@@ -69,7 +69,7 @@ conversions and read the `timestamp_ms` column already present in the parquet.
 90kHz timebase resolves to ~11us. Rounding to ms is fine for Stage F seek arithmetic and
 Stage D velocities (+/-1ms on a 67ms interval = 1.5%). It is marginal for reconstructing
 `dt_s` by differencing for a Kalman step. **Recommended:** do not add a float column; have
-the fork (Piece 10/11) read `dt_s` from the sidecar directly. Keeps the parquet schema
+the fork (Piece 11) reads `dt_s` from the sidecar directly. Keeps the parquet schema
 untouched. **Decision closed (Piece 0b, §10 precision finding):** all `pts_time_s` values
 land on exact integer milliseconds (5940/90=66, 6030/90=67), so `int(timestamp_ms)`
 rounding is lossless on post-R13a footage. No float column needed; Piece 11 reads `dt_s`
@@ -332,11 +332,17 @@ work — it can ship before Piece 5 if that is preferred.
 
 ### Piece 7 — Stage F CFR output scalar
 **Class:** FIX-SCALAR | **Sites:** #12, #14, #15 | **Ships:** alone | **Depends:** 2
-**Status:** NOT STARTED — **gated on player VFR test (objective 4)**
+**Status:** GATE PARTIALLY PASSED. VFR-PLAYER-TEST-1 (`docs/evidence/vfr_player_test_1/`)
+shows ExoPlayer via `video_player` (AndroidXMedia3/1.4.1) handles a raw VFR segment
+correctly for LINEAR PLAYBACK on a Pixel 7 Pro. Two residuals remain untested and are
+inputs to Piece 7's scope, not blockers: seek accuracy (the app has no scrubbing, and VFR
+seek is a common divergence point — now more relevant since Piece 6 made Stage F seek to
+real timestamps) and cross-device decoding (one device, `c2.exynos.h264.decoder`).
 
-**Gate.** If Flutter's `video_player` handles VFR passthrough correctly, Stage F may not
-need CFR conversion at all — in which case Piece 7's scope changes (remove the conversion
-entirely) or dissolves. The player test (objective 4 in §5) determines which outcome.
+**Gate (partially resolved).** If Flutter's `video_player` handles VFR passthrough correctly,
+Stage F may not need CFR conversion at all — in which case Piece 7's scope changes (remove
+the conversion entirely) or dissolves. Linear playback confirmed; seek and cross-device
+remain open.
 
 **Scope (assuming CFR is still needed).** `cv2.VideoWriter` and the ffmpeg CFR re-encode
 require a scalar. Supply `1.0 / nominal_dt_s` from the sidecar. Remove the hardcoded `30.0`
@@ -348,6 +354,13 @@ manifest**, an independent fps source that would survive a manifest-only fix.
 divergence closed or documented as intentional.
 
 **Validation.** T1 + T2 + media inspection (playback rate correct, duration correct).
+
+**Piece 7 now inherits three concrete items:**
+1. `run.py:345` — `buffer_frames = consolidate_buffer_sec * fps` (frame↔time conversion)
+2. `redact.py:387` — `cv2.VideoWriter` fixed output rate (needs `1.0 / nominal_dt_s`)
+3. The 2.0s source GOP keyframe snap — residual customer-visible error from `-ss` input
+   seeking, bounded by GOP size. Removing it requires output seeking or a GOP change at
+   the recorder.
 
 ---
 
@@ -380,21 +393,25 @@ before the numbers are computed.
 
 ---
 
-### Piece 10 — boxmot subclass-vs-fork scoping
-**Class:** FORK (scoping only) | **Site:** #20 | **Ships:** alone | **Depends:** 0
-**Status:** NOT STARTED
+### Piece 10 — ~~boxmot subclass-vs-fork scoping~~ RESOLVED BY PIECE 11
+**Status:** RESOLVED
 
-**Scope.** Determine whether `boxmot==16.0.8` permits subclassing `BotSort` or injecting the
-`KalmanFilterXYWH` instance, versus requiring a hard fork. Read the installed source. Produce
-a recommendation with the maintenance cost of each option.
+Piece 10's question — subclass, inject, or fork? — was answered by Piece 11 doing it.
+The decision is **subclass, not fork**: `VariableDtBotSort(BotSort)` and
+`VariableDtKalmanFilterXYWH(KalmanFilterXYWH)` at `src/bjj_pipeline/tracking/`.
+Extension points (V1–V8) are documented in the class docstrings of both subclasses,
+which is where someone doing a boxmot version bump will be standing.
 
-**Done.** A written recommendation: subclass / inject / fork, with the specific extension
-point identified and the divergence-maintenance burden estimated.
+The formal maintenance-cost analysis called for in the original deliverable was
+deliberately NOT written. The V1–V8 dependency list and the "re-verify on version
+bump" caveat live in the code that depends on them; a standalone document would
+duplicate that in a place nobody reads at the moment of risk. The subclass is shipped
+and working (T1+T2 PASS).
 
-**Validation.** T1 — a scoping document, no code.
-
-**Note.** Explicitly open in the Decision Log. Cheap, and it de-risks Piece 11. Can run in
-parallel with Pieces 5-9.
+**Known trap for version bumps:** boxmot `__version__` lags the package version by one —
+the 16.0.8 wheel reports `__version__='16.0.7'`. trackers/ and motion/ are
+byte-identical between 16.0.7 and 16.0.8. Anyone verifying a bump against the V1–V8
+list must check the wheel version, not `__version__`.
 
 ---
 
@@ -462,8 +479,7 @@ parallel with Pieces 1-2, since it is manual work that blocks nothing upstream.
 | **Gated on join verdict** | 4, 5, 6 | Re-plan required if (a)<->(c) is not 1:1 |
 | **Gated on player VFR test** | 7 | Scope changes or dissolves depending on test outcome |
 | **Independent scalars** | 9 | Depends only on Piece 2 (8 dissolved into 11) |
-| **Scoping** | 10 | Parallel with 5-9 |
-| **Dissolved** | 3, 8 | 3: dissolved by Piece 0b (POS_MSEC = sidecar PTS). 8: absorbed into Piece 11 |
+| **Dissolved** | 3, 8, 10 | 3: dissolved by Piece 0b (POS_MSEC = sidecar PTS). 8: absorbed into Piece 11. 10: resolved by Piece 11 (scoping answered by implementation). |
 
 **Ordering:** superseded by the six-objective execution plan in §5. The original sequence
 (`0 -> 1 -> 2 -> (3+4) -> 6 -> 5 -> 7 -> 9 -> 10 -> 11`) was written before the recorder
@@ -551,11 +567,10 @@ produces results that run through Stage E.
 
 The piece definitions in §1 describe scope of work. This plan describes execution order
 and grouping. Pieces not listed in the plan (3, 5, 9, 10) are not cancelled — they are
-sequenced after the six objectives or folded into them:
+sequenced after the six objectives, folded into them, or resolved:
 
 - **Piece 3** dissolved (Piece 0b). Not a prerequisite for Piece 4.
 - **Piece 5** (cross-camera) is downstream of objective 3 and not on the critical path.
 - **Piece 9** (A/B instrument fix) gates human review of preview video, not numeric
   measurement. Sequenced after objective 3.
-- **Piece 10** (boxmot subclass-vs-fork scoping) is a housekeeping item, parallel with
-  anything.
+- **Piece 10** resolved by Piece 11 (see tombstone in §1).
