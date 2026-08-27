@@ -28,6 +28,15 @@ same `timing` dict — divergence is impossible.
 the dependency — no sidecar needed, no `output_frame_count` needed, a direct measurement of
 the data being exported.
 
+**PIECE6-FIX-1 correction (2026-08-27):** The session export path
+(`session_f_run.py:_extract_session_clip`) was left half-migrated in this commit. Piece 6
+added `frame_to_ts_ms` and `compute_clip_timing` to the session function but did not update
+the `export_clip` call sites in either the single-segment or multi-segment branches — they
+still passed the removed `fps`, `start_frame`, `end_frame` kwargs. Both branches would raise
+`TypeError` if exercised. Discovered during Piece 7 Pass 1; fixed in PIECE6-FIX-1. Piece 6's
+media inspection covered the clip-level path only; the session path has never run on
+production footage.
+
 ---
 
 ## 2. Correction magnitude (132650, 18 exported clips)

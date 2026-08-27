@@ -52,6 +52,7 @@ class SourceClipInfo:
     cam_id: str
     frame_offset: int
     fps: float
+    ts_offset_ms: int = 0
     duration_frames: Optional[int] = None
 
 
@@ -98,6 +99,7 @@ def _build_source_registry(
         registry.append(SourceClipInfo(
             clip_id=clip_id, mp4_path=mp4, cam_id=cid,
             frame_offset=entry["frame_offset"], fps=fps,
+            ts_offset_ms=entry.get("ts_offset_ms", 0),
             duration_frames=entry.get("clip_frame_count"),
         ))
     registry.sort(key=lambda s: s.frame_offset)
@@ -108,21 +110,60 @@ def _build_source_registry(
 # Multi-source extraction
 # ---------------------------------------------------------------------------
 
+
+def _segment_seek_times(
+    clip: SourceClipInfo,
+    local_start: int,
+    local_end: int,
+    frame_to_ts_ms: Dict[int, int],
+) -> Tuple[float, float]:
+    """Convert clip-local frame indices to clip-local seek times.
+
+    local_start / local_end are clip-local indices (0-based within the clip file).
+    frame_to_ts_ms is keyed on session-relative indices.
+
+    Returns (start_sec, duration_sec) for ffmpeg -ss / -t (relative to clip file start).
+    Uses ts_offset_ms from the clip_offset_registry (CP4.C) as the base:
+        session_ts = clip_local_ts + ts_offset_ms
+        => clip_local_ts = session_ts - ts_offset_ms
+    """
+    seg_start_session = clip.frame_offset + local_start
+    seg_end_session = clip.frame_offset + local_end
+
+    start_ts_ms = frame_to_ts_ms.get(seg_start_session)
+    if start_ts_ms is None:
+        raise ExportClipError(
+            f"session export: frame_to_ts_ms missing session-relative "
+            f"frame {seg_start_session} (clip={clip.clip_id}, local={local_start})"
+        )
+    end_ts_ms = frame_to_ts_ms.get(seg_end_session)
+    if end_ts_ms is None:
+        raise ExportClipError(
+            f"session export: frame_to_ts_ms missing session-relative "
+            f"frame {seg_end_session} (clip={clip.clip_id}, local={local_end})"
+        )
+
+    start_sec = (start_ts_ms - clip.ts_offset_ms) / 1000.0
+    duration_sec = (end_ts_ms - start_ts_ms) / 1000.0
+    return start_sec, duration_sec
+
+
 def _extract_session_clip(
     *,
     source_clips: List[SourceClipInfo],
     match_start_frame: int,
     match_end_frame: int,
     output_path: Path,
-    fps: float,
+    frame_to_ts_ms: Dict[int, int],
     crop_plan: FixedRoiCropPlan,
 ) -> str:
     """Extract frame ranges from source files and concatenate.
 
     For each source clip whose frame range overlaps [match_start, match_end]:
     1. Compute local frame range
-    2. Extract segment via ffmpeg with crop
-    3. Concatenate using ffmpeg concat demuxer
+    2. Convert to clip-local seek times via frame_to_ts_ms + ts_offset_ms
+    3. Extract segment via ffmpeg with crop
+    4. Concatenate using ffmpeg concat demuxer if multi-segment
 
     Returns ffmpeg command string for audit.
     """
@@ -158,13 +199,15 @@ def _extract_session_clip(
     # Single segment: extract directly to output
     if len(segments) == 1:
         clip, local_start, local_end = segments[0]
+        start_sec, duration_sec = _segment_seek_times(
+            clip, local_start, local_end, frame_to_ts_ms,
+        )
         result = export_clip(
             input_video_path=clip.mp4_path,
             output_video_path=output_path,
             crop_plan=crop_plan,
-            fps=fps,
-            start_frame=local_start,
-            end_frame=local_end,
+            start_sec=start_sec,
+            duration_sec=duration_sec,
         )
         return result.ffmpeg_cmd
 
@@ -176,13 +219,15 @@ def _extract_session_clip(
 
         for i, (clip, local_start, local_end) in enumerate(segments):
             seg_path = tmp / f"seg_{i:03d}.mp4"
+            start_sec, duration_sec = _segment_seek_times(
+                clip, local_start, local_end, frame_to_ts_ms,
+            )
             result = export_clip(
                 input_video_path=clip.mp4_path,
                 output_video_path=seg_path,
                 crop_plan=crop_plan,
-                fps=fps,
-                start_frame=local_start,
-                end_frame=local_end,
+                start_sec=start_sec,
+                duration_sec=duration_sec,
             )
             seg_paths.append(seg_path)
             cmds.append(result.ffmpeg_cmd)
@@ -457,7 +502,7 @@ def run_session_f(
                 match_start_frame=start_frame,
                 match_end_frame=end_frame,
                 output_path=output_abs,
-                fps=fps,
+                frame_to_ts_ms=frame_to_ts_ms,
                 crop_plan=crop_plan,
             )
 
