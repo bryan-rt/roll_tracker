@@ -155,6 +155,34 @@ rejected-alternative rationale.
 | #22 | 1 | RESOLVED |
 | #23 | 1 | RESOLVED |
 
+### Addendum: Piece 6 sweep — repo-wide frame↔time conversion inventory (2026-08-27)
+
+*Sweep after Piece 6 to check for conversions outside the 23-site table.*
+
+**One new live conversion found:**
+
+`run.py:345` — `buffer_frames = int(round(consolidate_buffer_sec * fps))`. Stage F export
+buffer: converts a time-based buffer (seconds) to a frame count for match boundary extension.
+Same class as #8 (time × fps → frames). Low severity: at 2.1% gap rate, error on a 2-second
+buffer is ~42ms (< one frame interval). Owned by Piece 7 or post-Piece 7.
+
+**All other hits are known:**
+
+| Location | Classification | In table? |
+|----------|---------------|-----------|
+| `cross_camera_evidence.py:275-276` | Computation (#8, Piece 5) | Yes |
+| `session_d_run.py:224` | DEPRECATED (CP4.C) | Yes (#9) |
+| `redact.py:395` | FIX-SCALAR (VideoWriter) | Yes (#12/#14) |
+| `pipeline.py:223,453` | Infrastructure (manifest backfill) | Yes (#17) |
+| `ffmpeg.py:68` | Infrastructure (cv2 probe fallback) | Not in table — infrastructure, not timing |
+| `d1_graph_build.py`, `d2_run.py` | Audit-only | Yes |
+
+**Verdict:** one new low-severity site. The 23-site table plus the two prior addenda
+(frame_iterator.py fallback, this sweep) now cover every live frame↔time conversion in
+`src/bjj_pipeline/`.
+
+---
+
 ### Addendum: `frame_iterator.py` fps fallback (discovered 2026-08-24, CP4 planning)
 
 *Not renumbered into the §0 table. Owned by CP4.A.*

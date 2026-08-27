@@ -44,12 +44,14 @@ the data being exported.
 The correction grows with frame number: 0s at frame 0, 0.6s at frame 631, 1.7s at frame
 847. The largest `export_start_frame` in these 18 exports is 847 (of 1764 total frames).
 
-**Reconciliation with the audit's 5.7-10.3s projection:** The audit computed error at
-FP7oJQ's **worst-case 8% gap rate**. Segment 132650 has a 2.1% gap rate, so accumulated
-error is proportionally smaller. At 2.1%, extrapolating to frame 1800 yields ~2.5s, not
-10.3s. The audit figures remain valid for 8%-gap footage; this measurement validates the
-mechanism at a lower rate. To demonstrate the full 5.7-10.3s correction, an 8%-gap
-segment would need to be exported with matches starting at frame 1000+.
+**Reconciliation with the audit's 5.7-10.3s projection:** The audit attached the 5.7s
+(frame 1000) and 10.3s (frame 1800) figures to **FP7oJQ-20260807-102006** at its **8%
+gap rate** (`timing_audit_1/findings.md:289`). Segment 132650 has a **2.1%** gap rate,
+so accumulated error is proportionally smaller. At 2.1%, extrapolating to frame 1800
+yields ~2.5s, not 10.3s. The audit figures remain valid for 8%-gap footage; this
+measurement validates the mechanism at a lower rate. To demonstrate the full 5.7-10.3s
+correction, an 8%-gap segment would need to be exported with matches starting at frame
+1000+.
 
 ---
 
@@ -91,6 +93,8 @@ footage (Piece 0b §10 A2: POS_MSEC = timestamp_ms at zero deviation).
 
 The Supabase payload carries the correct `start_seconds` / `duration_seconds` for both
 paths. The output rate scalar (`fps` in VideoWriter) remains a FIX-SCALAR site for Piece 7.
+Note: redacted clips are written at a FIXED output rate — this is precisely the CFR/VFR
+question Piece 7 decides.
 
 ---
 
