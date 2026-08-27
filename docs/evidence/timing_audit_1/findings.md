@@ -158,28 +158,35 @@ rejected-alternative rationale.
 ### Addendum: Piece 6 sweep — repo-wide frame↔time conversion inventory (2026-08-27)
 
 *Sweep after Piece 6 to check for conversions outside the 23-site table.*
+*Pattern: `grep -rnE '[/*] *(float\()?fps|fps *[/*]' + plain `\bfps\b` across all .py.*
+*Initial sweep missed two items (pipeline.py:223, ffmpeg.py:68) in the report despite*
+*finding them — the reporting was incomplete, not the pattern set. Redone 2026-08-27.*
 
-**One new live conversion found:**
+**Complete classified inventory of every `fps` arithmetic expression in `src/bjj_pipeline/`:**
 
-`run.py:345` — `buffer_frames = int(round(consolidate_buffer_sec * fps))`. Stage F export
-buffer: converts a time-based buffer (seconds) to a frame count for match boundary extension.
-Same class as #8 (time × fps → frames). Low severity: at 2.1% gap rate, error on a 2-second
-buffer is ~42ms (< one frame interval). Owned by Piece 7 or post-Piece 7.
+| # | Location | Expression | Classification | In 23-site table? | Consumers |
+|---|----------|-----------|---------------|-------------------|-----------|
+| A | `pipeline.py:223` | `duration_ms = 1000 * frame_count / fps` | **Infrastructure** (manifest backfill) | Yes (#17, P3) | `ClipManifest.duration_ms` → `SessionManifest.duration_ms`, D1 audit. NOT used for timing computation — D0/D1/D2 all read `timestamp_ms` (Piece 4). |
+| B | `pipeline.py:453` | `duration_ms = 1000 * mfc / mfps` | **Infrastructure** (same backfill, second path) | Part of #17 | Same as A — manifest field population. |
+| C | `ffmpeg.py:68` | `duration_sec = frame_count / fps` | **Infrastructure** (cv2 probe fallback) | No — not in table | `VideoMetadata.duration_sec` → was consumed by `_infer_last_frame` (#16, now resolved by Piece 6 via `person_tracks_df.frame_index.max()`). Post-Piece 6: no pipeline consumer reads this for timing. It populates metadata used for display/logging only. |
+| D | `run.py:345` | `buffer_frames = consolidate_buffer_sec * fps` | **Computation** (time→frames) | **No — NEW** | Export buffer width. Low severity: at 2.1% gap rate, error on a 2s buffer is ~42ms (<1 frame). Owned by Piece 7. |
+| E | `cross_camera_evidence.py:275-276` | `window_frames = temporal_window_s * fps` | **Computation** (#8, Piece 5) | Yes | Cross-camera evidence builder. |
+| F | `session_d_run.py:224` | `return round(delta_sec * fps)` | **DEPRECATED** (CP4.C) | Yes (#9) | `derive_clip_frame_offset` — retained for tools/ only. |
+| G | `redact.py:395` | `cv2.VideoWriter(..., float(fps), ...)` | **FIX-SCALAR** | Yes (#12/#14) | VideoWriter output rate. |
+| H | `mux_visualizer.py:33-34` | `VideoWriter(..., fps=self.fps, ...)` | **FIX-SCALAR** | Yes (Piece 9, #19) | Debug video output. |
+| I | `video_writer.py:21` | `cv2.VideoWriter(..., float(self.fps), ...)` | **FIX-SCALAR** | Yes (#14) | Base VideoWriter class. |
+| J | `d1_graph_build.py:2002` | `"fps": fps` in audit dict | **Audit-only** | Yes | Diagnostic metadata, CP4.D comment present. |
+| K | `d2_run.py:180,240` | `"fps": fps` in audit dict | **Audit-only** | Yes | Diagnostic metadata, nullable (CP4.F). |
 
-**All other hits are known:**
+**`run.py:342-343` fps precondition:** `raise ValueError` on `fps <= 0` remains. After
+Piece 6, `fps` is needed only for `buffer_frames` (:345) and for the privacy renderer's
+`cv2.VideoWriter` (:439). Both are legitimate uses — the precondition is warranted for
+these consumers, even though #2, #3, and #16 no longer need it.
 
-| Location | Classification | In table? |
-|----------|---------------|-----------|
-| `cross_camera_evidence.py:275-276` | Computation (#8, Piece 5) | Yes |
-| `session_d_run.py:224` | DEPRECATED (CP4.C) | Yes (#9) |
-| `redact.py:395` | FIX-SCALAR (VideoWriter) | Yes (#12/#14) |
-| `pipeline.py:223,453` | Infrastructure (manifest backfill) | Yes (#17) |
-| `ffmpeg.py:68` | Infrastructure (cv2 probe fallback) | Not in table — infrastructure, not timing |
-| `d1_graph_build.py`, `d2_run.py` | Audit-only | Yes |
-
-**Verdict:** one new low-severity site. The 23-site table plus the two prior addenda
-(frame_iterator.py fallback, this sweep) now cover every live frame↔time conversion in
-`src/bjj_pipeline/`.
+**Verdict:** one new computation site (D, buffer_frames). All infrastructure and audit-only
+sites were in the table or are non-timing. The 23-site table plus three addenda
+(frame_iterator.py fallback, this sweep, the sweep correction) now cover every live
+frame↔time conversion in `src/bjj_pipeline/`.
 
 ---
 
