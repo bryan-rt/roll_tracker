@@ -615,6 +615,12 @@ roadmap) supersedes the original piece ordering:
 reads time + Stage F export timing — parallel, independent of recorder), (4) player VFR
 test → Stage F format decision (gates Piece 7), (5) CP22 NAType Stage E fix,
 (6) annotate on clean footage. See the roadmap for piece definitions and rationale.
+**CP22 NAType now blocks more than annotation (PIECE6-FIX-1 finding):** CP22 crashes
+session Stage E → no session `match_sessions.jsonl` → session Stage F cannot run → the
+multi-segment concat branch and `ts_offset_ms` derivation (PIECE6-FIX-1) cannot be verified
+on real media → the cross-clip export path CP4.C enabled has never executed end-to-end.
+Objective 5 was scoped as "needed before annotation"; it is now also blocking verification
+of session export.
 
 **Known defect (small fix):** `pipeline.py:685` references undefined variable `mode` in the
 `config_resolved` audit event. The bare `except Exception: pass` at `:688` swallows the
