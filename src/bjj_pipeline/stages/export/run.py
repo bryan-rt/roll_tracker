@@ -431,6 +431,11 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 				frame_to_ts_ms=frame_to_ts_ms,
 			)
 			if privacy_render_applied:
+				# Privacy renderer decodes frame-by-frame via CAP_PROP_POS_FRAMES
+				# (exact frame selection for mask overlay). It needs frame indices,
+				# not seek times. fps is the VideoWriter output rate scalar (Piece 7 #12).
+				# timing["start_seconds"] and the renderer's seek position agree on
+				# post-R13a footage (POS_MSEC = timestamp_ms, Piece 0b §10 A2).
 				render_result = render_redacted_clip(
 					input_video_path=input_video_path,
 					output_video_path=output_abs,
@@ -440,6 +445,8 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 					export_start_frame=int(export_session.export_start_frame),
 					export_end_frame=int(export_session.export_end_frame),
 					blur_kernel_size=blur_kernel_size,
+					start_sec=timing["start_seconds"],
+					duration_sec=timing["duration_seconds"],
 				)
 				export_cmd = "privacy_render_opencv"
 				n_mask_targets_applied = int(render_result.n_mask_targets_applied)

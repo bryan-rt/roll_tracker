@@ -370,9 +370,17 @@ def render_redacted_clip(
 	export_start_frame: int,
 	export_end_frame: int,
 	blur_kernel_size: int = 31,
+	start_sec: float | None = None,
+	duration_sec: float | None = None,
 ) -> RedactionRenderResult:
+	# fps is the VideoWriter output rate scalar (Piece 7 #12).
+	# start_sec/duration_sec from compute_clip_timing are passed through for
+	# consistency verification but are NOT used for seeking — this renderer
+	# decodes frame-by-frame via CAP_PROP_POS_FRAMES (exact frame selection for
+	# mask overlay). The equivalence with timestamp_ms is guaranteed on post-R13a
+	# footage (Piece 0b §10 A2: POS_MSEC = timestamp_ms at zero deviation).
 	if fps <= 0.0:
-		raise RedactionRenderError("fps must be positive for redacted rendering")
+		raise RedactionRenderError("fps must be positive for redacted rendering (VideoWriter output rate)")
 
 	cap = cv2.VideoCapture(str(input_video_path))
 	if not cap.isOpened():

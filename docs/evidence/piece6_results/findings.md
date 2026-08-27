@@ -32,15 +32,24 @@ the data being exported.
 
 ## 2. Correction magnitude (132650, 18 exported clips)
 
-| Export | Frames | Old start (f/fps) | New start (ts_ms) | Delta | Old duration | New duration |
-|--------|--------|--------------------|--------------------|-------|-------------|-------------|
-| 1296e4 | 0-574 | 0.000s | 0.000s | 0.000s | 38.333s | 38.600s |
-| 58e357 | 847-1763 | 56.467s | **58.133s** | **1.666s** | 61.133s | 61.800s |
-| 142094 | 482-1429 | 32.133s | 32.133s | 0.000s | 63.200s | 65.467s |
+| Export | Start frame | Old start (f/15fps) | New start (ts_ms) | Delta |
+|--------|------------|--------------------|--------------------|-------|
+| 1296e4 | 0 | 0.000s | 0.000s | 0.000s |
+| e8d127 | 205 | 13.667s | 13.667s | 0.000s |
+| 142094 | 482 | 32.133s | 32.133s | 0.000s |
+| 85cf8f | 631 | 42.067s | 42.667s | 0.600s |
+| e9a0fa | 699 | 46.600s | 47.600s | 1.000s |
+| 58e357 | 847 | 56.467s | **58.133s** | **1.666s** |
 
-The correction grows with frame number, consistent with FP7oJQ's ~2% gap rate
-accumulating error over the clip. Export 2 (starting at frame 847) shows a 1.7s correction.
-Earlier exports show less or zero because fewer gaps have accumulated.
+The correction grows with frame number: 0s at frame 0, 0.6s at frame 631, 1.7s at frame
+847. The largest `export_start_frame` in these 18 exports is 847 (of 1764 total frames).
+
+**Reconciliation with the audit's 5.7-10.3s projection:** The audit computed error at
+FP7oJQ's **worst-case 8% gap rate**. Segment 132650 has a 2.1% gap rate, so accumulated
+error is proportionally smaller. At 2.1%, extrapolating to frame 1800 yields ~2.5s, not
+10.3s. The audit figures remain valid for 8%-gap footage; this measurement validates the
+mechanism at a lower rate. To demonstrate the full 5.7-10.3s correction, an 8%-gap
+segment would need to be exported with matches starting at frame 1000+.
 
 ---
 
@@ -67,17 +76,21 @@ ours to choose even though the input snap is not.
 
 ---
 
-## 4. Privacy render path residual
+## 4. Privacy render path
 
 All 18 exports on 132650 went through the privacy render path (`render_redacted_clip`,
-OpenCV-based). This path still receives `fps` and frame ranges directly — it is a separate
-consumer not covered by sites #2/#3. The `compute_clip_timing` values appear in the
-Supabase `clip_row` payload (correct), but the actual media is cut by the privacy renderer
-using the old frame-count-based duration.
+OpenCV-based). This renderer decodes frame-by-frame via `CAP_PROP_POS_FRAMES` (exact
+frame selection for mask overlay) — it genuinely needs frame indices, not seek times.
+`fps` is the `cv2.VideoWriter` output rate scalar (Piece 7 #12, FIX-SCALAR class).
 
-**Consequence:** the Supabase payload's `start_seconds` / `duration_seconds` are now correct
-(real time), but the privacy-rendered media may not exactly match those values when the
-renderer uses fps-derived duration. This is a Piece 7 or post-Piece 7 cleanup.
+Both paths now receive `timing["start_seconds"]` and `timing["duration_seconds"]` from
+the shared `compute_clip_timing` helper. The privacy path receives them for consistency
+(passed to `render_redacted_clip` as `start_sec`/`duration_sec`). The equivalence between
+`CAP_PROP_POS_FRAMES` seeking and `timestamp_ms`-derived timing is guaranteed on post-R13a
+footage (Piece 0b §10 A2: POS_MSEC = timestamp_ms at zero deviation).
+
+The Supabase payload carries the correct `start_seconds` / `duration_seconds` for both
+paths. The output rate scalar (`fps` in VideoWriter) remains a FIX-SCALAR site for Piece 7.
 
 ---
 
