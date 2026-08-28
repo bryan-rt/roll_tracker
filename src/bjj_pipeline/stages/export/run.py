@@ -144,6 +144,7 @@ def _build_export_record(
 	privacy_render_applied: bool,
 	n_mask_targets_applied: int,
 	n_bbox_targets_applied: int,
+	n_dup_pts_skipped: int,
 	redaction_plan: Any,
 	storage_target: Any,
 	seconds_payload: Dict[str, float],
@@ -191,6 +192,7 @@ def _build_export_record(
 			"privacy_render_applied": bool(privacy_render_applied),
 			"n_mask_targets_applied": int(n_mask_targets_applied),
 			"n_bbox_targets_applied": int(n_bbox_targets_applied),
+			"n_dup_pts_skipped": int(n_dup_pts_skipped),
 			"start_seconds": float(seconds_payload["start_seconds"]),
 			"end_seconds": float(seconds_payload["end_seconds"]),
 			"duration_seconds": float(seconds_payload["duration_seconds"]),
@@ -425,6 +427,7 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 			privacy_render_applied = bool(redaction_plan.enabled and redaction_plan.n_targets > 0)
 			n_mask_targets_applied = 0
 			n_bbox_targets_applied = 0
+			n_dup_pts_skipped = 0
 
 			output_abs = layout.exports_dir() / f"{export_id}.mp4"
 			# Piece 6: compute timing once, used by both export paths and the manifest
@@ -452,6 +455,7 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 				export_cmd = "privacy_render_opencv"
 				n_mask_targets_applied = int(render_result.n_mask_targets_applied)
 				n_bbox_targets_applied = int(render_result.n_bbox_targets_applied)
+				n_dup_pts_skipped = int(render_result.n_dup_pts_skipped)
 			else:
 				export_result = export_clip(
 					input_video_path=input_video_path,
@@ -509,6 +513,7 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 				privacy_render_applied=privacy_render_applied,
 				n_mask_targets_applied=n_mask_targets_applied,
 				n_bbox_targets_applied=n_bbox_targets_applied,
+				n_dup_pts_skipped=n_dup_pts_skipped,
 				redaction_plan=redaction_plan,
 				storage_target=storage_target,
 				seconds_payload=seconds_payload,
@@ -541,6 +546,7 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 					"privacy_render_applied": bool(privacy_render_applied),
 					"n_mask_targets_applied": int(n_mask_targets_applied),
 					"n_bbox_targets_applied": int(n_bbox_targets_applied),
+					"n_dup_pts_skipped": int(n_dup_pts_skipped),
 					"storage_bucket": str(storage_target.bucket),
 					"storage_object_path": str(storage_target.object_path),
 					"n_pair_frames": int(crop_plan.n_pair_frames),

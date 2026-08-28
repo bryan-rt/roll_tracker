@@ -61,7 +61,45 @@ Three layers protecting the 90000 constant:
 
 ---
 
-## 4. Media inspection
+## 4. H.264 codec change
+
+### Even-dimension constraint
+
+H.264 YUV420P requires even width and height. Some crop plans produce odd dimensions (e.g.
+545px height). The renderer rounds down (`& ~1`), trimming one pixel — not visible. The old
+mpeg4 codec accepted odd dimensions.
+
+### Duplicate-PTS condition (MUXER-PTS-1 in the export path)
+
+Piece 12's H.264 codec change surfaced a latent duplicate-PTS condition that mpeg4 tolerated
+by ignoring timestamps. The RTSP relay sends two H.264 frames at the same RTP timestamp on
+reconnect (MUXER-PTS-1). The MP4 muxer rejects duplicate PTS with EINVAL (returned 22). 6 of
+18 exports failed — all starting at or near frame 0, where the duplicate lives (frame index 2
+in the sidecar). The old mpeg4 writer was unaffected because it ignored timestamps entirely.
+
+**Fix (same task):** skip duplicate-PTS frames with `n_dup_pts_skipped` counted. The first
+frame of a duplicate pair is kept; the second is skipped. Both carry the same capture instant
+(MUXER-PTS-1). The two frames are pixel-identical in 6 of 11 measured segments and differ only
+in B-frame prediction residuals in the other 5 — the choice is genuinely arbitrary for decoded
+output. First is chosen because it is the frame the decoder emits at that PTS and requires no
+lookahead.
+
+**Result:** 18 of 18 exports succeeded after the fix.
+
+**n_dup_pts_skipped per export:** max 1, only on the 6 exports whose range includes frame 0
+(where the MUXER-PTS-1 duplicate lives at frame index 2). The 12 exports starting mid-file
+have 0 duplicates. This is exactly consistent with the sidecar data: one `dt_s==0` per segment,
+at the stream-start boundary.
+
+### Codec change
+
+mpeg4 → h264. File size decreased 35% (8326 KB → 5413 KB) at the same visual quality
+(libx264 crf=23). Visual spot-check: blur correctly applied to non-focus people, no color
+swap (format='bgr24' handles OpenCV BGR directly), no artifacts.
+
+---
+
+## 5. Media inspection
 
 ### Redacted export (Piece 12, VFR h264)
 
@@ -84,29 +122,26 @@ alternation plus 133/134ms periodic gaps — preserved exactly.
 
 **First PTS tick:** 0 (clip-relative). Matches plain path.
 
-### Duration gap analysis
+### Duration gap analysis (18 exports)
 
-The remaining 0.466s gap (94.466s DB vs 94.000s media) is **7 missing frames** — `cap.read()`
-returns False before reaching `export_end_frame`. This is pre-existing (same loop, same break
-condition as the old VideoWriter path). It is NOT a Piece 12 regression.
+The old 2.272s CFR rate divergence is **eliminated** across all 18 exports. A smaller residual
+remains in three categories:
 
-The old path masked this gap behind the larger CFR rate divergence (2.272s). With the rate
-divergence removed, the frame-count shortfall becomes visible.
+| Category | Count | Magnitude | Cause |
+|----------|-------|-----------|-------|
+| Effectively zero | 12 | ≤0.001s | No residual. |
+| B-frame reorder artifact | 5 | ~67ms (1 frame) | Container `format_dur` computed from max(DTS), not max(PTS). H.264 B-frame reordering puts max(DTS) below max(PTS). All frames present with correct PTS; playback uses PTS and is correct. |
+| cap.read() shortfall | 1 | 0.466s (7 frames) | Pre-existing: `cap.read()` returns False before reaching `export_end_frame`. Same loop, same break condition as the old path. |
 
-### Codec change
+**B-frame reorder detail:** The 5 gap clips have a PTS-DTS depth of 200ms (3 frame intervals)
+at the clip end, while the 12 no-gap clips have 133ms (2 frame intervals). The ~67ms gap is
+exactly one frame interval — the difference in B-frame reorder depth at the final GOP. This is
+a container metadata artifact; all frames are present, PTS are correct, playback duration is
+correct. The gap clips and the 6 dup-skip clips are completely disjoint sets (zero overlap).
 
-mpeg4 → h264. File size decreased 35% (8326 KB → 5413 KB) at the same visual quality
-(libx264 crf=23). Visual spot-check: blur correctly applied to non-focus people, no color
-swap (format='bgr24' handles OpenCV BGR directly), no artifacts.
-
-### H.264 even-dimension constraint
-
-H.264 YUV420P requires even width and height. Some crop plans produce odd dimensions (e.g.
-545px height). The renderer rounds down (`& ~1`), trimming one pixel — not visible. The old
-mpeg4 codec accepted odd dimensions. 12 of 18 exports succeeded; 6 failed with "Invalid
-argument returned 22" — these appear to be a pre-existing issue (crop plans producing
-unusable geometry), not a Piece 12 regression. The old path's exports for these same IDs
-were not preserved for comparison.
+**Dup-skip vs gap overlap:** Explicitly verified — zero overlap. The 6 dup-skip clips all start
+at frame 0 (MUXER-PTS-1 duplicate at frame 2). The 5 gap clips all start mid-file with 0
+duplicates. Different mechanisms, different clips.
 
 ### Session path
 
@@ -114,7 +149,7 @@ NOT TESTABLE on real media. CP22 blocks session Stage E.
 
 ---
 
-## 5. Remaining plain-vs-redacted differences
+## 6. Remaining plain-vs-redacted differences
 
 After Piece 12, both paths produce:
 - H.264 codec via libx264 (crf=23, preset=veryfast)
@@ -127,7 +162,7 @@ to what each path does, not a timing or format divergence.
 
 ---
 
-## 6. Dependencies
+## 7. Dependencies
 
 | Package | Version | NumPy requirement |
 |---------|---------|-------------------|
@@ -139,7 +174,7 @@ binary.
 
 ---
 
-## 7. Validation
+## 8. Validation
 
 | Tier | Result |
 |------|--------|
@@ -148,6 +183,9 @@ binary.
 | T1 — exact tick match | PASS: output ticks == input ticks |
 | T1 — first PTS = 0 | PASS |
 | T1 — last PTS = expected | PASS |
-| T2 — full suite | 201 passed (+5 new), 10 skipped, 4 pre-existing |
-| Media — redacted VFR | VFR confirmed, PTS intervals match source, duration gap 2.272s→0.466s |
+| T1 — duplicate-PTS skip | PASS: 2 dup-PTS frames in, 1 out; output ticks == input minus dup, elementwise; counter == 1 |
+| T2 — full suite | 201 passed (+6 new), 10 skipped, 4 pre-existing |
+| Media — redacted VFR | VFR confirmed, PTS intervals match source |
+| Media — duration gap | 2.272s CFR gap eliminated; residual: 12×≤0.001s, 5×~67ms (B-frame metadata), 1×0.466s (cap.read shortfall) |
+| Media — dup-PTS skip | 6 exports skipped 1 dup each (frame 0 start only); 12 exports: 0 dups |
 | Media — session path | NOT TESTABLE (CP22 blocks session Stage E) |

@@ -50,6 +50,7 @@ class RedactionRenderResult:
 	n_frames_written: int
 	n_mask_targets_applied: int
 	n_bbox_targets_applied: int
+	n_dup_pts_skipped: int
 
 
 class RedactionRenderError(RuntimeError):
@@ -426,7 +427,9 @@ def render_redacted_clip(
 		n_frames_written = 0
 		n_mask_targets_applied = 0
 		n_bbox_targets_applied = 0
+		n_dup_pts_skipped = 0
 		base_pts_ms: float | None = None
+		prev_pts_tick: int | None = None
 
 		for frame_index in range(int(export_start_frame), int(export_end_frame) + 1):
 			ok, frame = cap.read()
@@ -484,13 +487,34 @@ def render_redacted_clip(
 						)
 						n_bbox_targets_applied += 1
 
+			# Compute PTS tick and skip duplicate-PTS frames.
+			# MUXER-PTS-1: the RTSP relay sends two H.264 frames at the same RTP
+			# timestamp on reconnect. Both represent one capture moment — dropping
+			# one loses zero temporal coverage. MP4 muxer rejects duplicate PTS
+			# with EINVAL (returned 22). The recorder's select filter (diag_v6.sh)
+			# drops these at capture; legacy footage may still contain them.
+			#
+			# Keep the FIRST frame of a duplicate-PTS pair, skip the second. Both
+			# carry the same capture instant (MUXER-PTS-1), so temporal coverage is
+			# identical either way. The two frames are pixel-identical in 6 of 11
+			# measured segments and differ only in B-frame prediction residuals in
+			# the other 5 — the choice is genuinely arbitrary for decoded output.
+			# First is chosen because it is the frame the decoder emits at that PTS
+			# and requires no lookahead. If a future change reorders this loop, the
+			# choice must remain explicit rather than falling out of iteration order.
+			pts_tick = round((pts_ms - base_pts_ms) * 90)
+			if prev_pts_tick is not None and pts_tick == prev_pts_tick:
+				n_dup_pts_skipped += 1
+				continue
+			prev_pts_tick = pts_tick
+
 			# Trim to even dimensions for H.264 YUV420P if needed.
 			if crop_frame.shape[1] != enc_w or crop_frame.shape[0] != enc_h:
 				crop_frame = crop_frame[:enc_h, :enc_w]
 			# Encode with real PTS. Integer ms * 90 = exact 90kHz ticks
 			# (Piece 0b §10: all post-R13a PTS are exact integer ms).
 			video_frame = av.VideoFrame.from_ndarray(crop_frame, format="bgr24")
-			video_frame.pts = round((pts_ms - base_pts_ms) * 90)
+			video_frame.pts = pts_tick
 			for packet in stream.encode(video_frame):
 				container.mux(packet)
 			n_frames_written += 1
@@ -507,6 +531,7 @@ def render_redacted_clip(
 			n_frames_written=int(n_frames_written),
 			n_mask_targets_applied=int(n_mask_targets_applied),
 			n_bbox_targets_applied=int(n_bbox_targets_applied),
+			n_dup_pts_skipped=int(n_dup_pts_skipped),
 		)
 	finally:
 		cap.release()

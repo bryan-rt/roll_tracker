@@ -24,7 +24,11 @@ import cv2
 import numpy as np
 import pytest
 
-from bjj_pipeline.stages.export.redact import PTS_TIMEBASE_HZ
+from bjj_pipeline.stages.export.redact import (
+    PTS_TIMEBASE_HZ,
+    RedactionPlan,
+    render_redacted_clip,
+)
 
 
 def _encode_test_frames(
@@ -33,9 +37,17 @@ def _encode_test_frames(
     width: int = 64,
     height: int = 64,
     rate: int = PTS_TIMEBASE_HZ,
+    fmt: str | None = None,
 ) -> None:
-    """Encode solid-color test frames with specified PTS at the given rate."""
-    container = av.open(str(output_path), mode="w")
+    """Encode solid-color test frames with specified PTS at the given rate.
+
+    fmt: container format override (e.g. "matroska" for MKV). MP4 rejects
+    duplicate PTS; MKV does not. Default None = auto-detect from extension.
+    """
+    kwargs = {"mode": "w"}
+    if fmt is not None:
+        kwargs["format"] = fmt
+    container = av.open(str(output_path), **kwargs)
     stream = container.add_stream("libx264", rate=rate)
     stream.width = width
     stream.height = height
@@ -167,4 +179,103 @@ class TestPtsValueExact:
         expected_last = round((_TEST_PTS_MS[-1] - _TEST_PTS_MS[0]) * 90)
         assert ticks[-1] == expected_last, (
             f"last PTS tick {ticks[-1]} != expected {expected_last}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Duplicate-PTS skip (MUXER-PTS-1 in the export path)
+# ---------------------------------------------------------------------------
+
+# Input PTS with a duplicate at frame 2 (same as frame 1): simulates the RTSP
+# relay's duplicate IDR at segment start.  Frame 1 and frame 2 share PTS 67ms.
+_DUP_PTS_MS = [
+    0.0,     # frame 0
+    67.0,    # frame 1 — KEPT (first of duplicate pair)
+    67.0,    # frame 2 — SKIPPED (duplicate PTS)
+    134.0,   # frame 3
+    200.0,   # frame 4
+    267.0,   # frame 5
+    334.0,   # frame 6
+    400.0,   # frame 7
+]
+
+# Expected output: input sequence with the duplicate removed.
+# Ticks are clip-relative (first = 0).
+_DUP_EXPECTED_OUTPUT_TICKS = [
+    round(p * 90) for p in [0.0, 67.0, 134.0, 200.0, 267.0, 334.0, 400.0]
+]
+
+
+def _make_noop_redaction_plan() -> RedactionPlan:
+    """A redaction plan with redaction disabled (passthrough)."""
+    return RedactionPlan(
+        enabled=False,
+        mode="none",
+        export_id="test",
+        focus_person_ids=("p0001", "p0002"),
+        export_start_frame=0,
+        export_end_frame=999,
+        n_targets=0,
+        n_frames_with_targets=0,
+        n_mask_targets=0,
+        n_bbox_targets=0,
+        targets=tuple(),
+    )
+
+
+class TestDuplicatePtsSkip:
+    """T1: duplicate-PTS frames are skipped, output PTS sequence is exact.
+
+    Input uses MKV format because the MP4 muxer rejects duplicate PTS with
+    EINVAL — the exact same condition the production fix addresses. MKV
+    (Matroska) accepts duplicate timestamps, allowing us to create a test
+    input that reproduces the MUXER-PTS-1 relay duplicate.
+    """
+
+    def test_dup_pts_skip_output_ticks(self, tmp_path):
+        """Two frames with identical PTS in → one frame out, counter incremented.
+
+        Asserts the output PTS tick sequence elementwise equals the input
+        sequence with the duplicate removed. "No duplicates" alone would pass
+        if the skip logic dropped the wrong frame or shifted subsequent ticks.
+
+        The first frame of the duplicate pair is kept, the second is skipped.
+        Both carry the same capture instant (MUXER-PTS-1). The two frames are
+        pixel-identical in 6 of 11 measured segments and differ only in B-frame
+        prediction residuals in the other 5 — the choice is genuinely arbitrary
+        for decoded output. First is chosen because it is the frame the decoder
+        emits at that PTS and requires no lookahead.
+        """
+        # MKV input: MP4 rejects duplicate PTS (the condition we are testing).
+        src = tmp_path / "dup_input.mkv"
+        _encode_test_frames(src, _DUP_PTS_MS, rate=PTS_TIMEBASE_HZ, fmt="matroska")
+
+        out = tmp_path / "dup_output.mp4"
+        # Use a simple FixedRoiCropPlan-like object for the full frame
+        class _CropPlan:
+            x = 0; y = 0; width = 64; height = 64
+            padding_px = 0; envelope_method = "test"; n_pair_frames = 0
+
+        result = render_redacted_clip(
+            input_video_path=src,
+            output_video_path=out,
+            crop_plan=_CropPlan(),
+            redaction_plan=_make_noop_redaction_plan(),
+            export_start_frame=0,
+            export_end_frame=len(_DUP_PTS_MS) - 1,
+        )
+
+        # Counter
+        assert result.n_dup_pts_skipped == 1, (
+            f"expected 1 dup skip, got {result.n_dup_pts_skipped}"
+        )
+        # Frame count: N-1
+        assert result.n_frames_written == len(_DUP_PTS_MS) - 1, (
+            f"expected {len(_DUP_PTS_MS) - 1} frames, got {result.n_frames_written}"
+        )
+        # Output PTS ticks must equal the input sequence with the duplicate removed,
+        # elementwise — not just "no duplicates".
+        output_ticks = _read_pts_ticks(out)
+        assert output_ticks == _DUP_EXPECTED_OUTPUT_TICKS, (
+            f"output PTS ticks {output_ticks} != expected {_DUP_EXPECTED_OUTPUT_TICKS}"
         )
