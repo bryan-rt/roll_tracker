@@ -657,13 +657,21 @@ nullable) added to D1 edge and D2 edge cost schemas (`f0_parquet.py`) as the rea
 `d1_reconnect_edges.parquet`'s `dt_s` became real-time incidentally (flows from site #7).
 Evidence: `docs/evidence/cp4cd_results/`.
 
-**Known limitation (Stage F export):** After Pieces 6+7, export seek times are derived from
-real `timestamp_ms` (pipeline arithmetic error ≈ 0ms). Plain-path output is VFR (source PTS
-preserved through crop re-encode). Residual customer-visible error is ≤2.0s from `-ss`
-input-seeking keyframe snap (source camera GOP = 2.0s, measured on FP7oJQ 2026-08-22).
+**Known defect (Stage F redacted export — all athlete-facing clips):** Redacted output plays
+~2.3% fast and is ~2.7s short over a two-minute match. Cause: cv2.VideoWriter writes CFR at
+`nominal_fps` (14.925) while source content is VFR at avg ~14.582fps. The DB carries the
+correct `duration_seconds` (60.0s from `compute_clip_timing`); the file is 58.63s. **DB and
+media disagree by 2.3%.** Privacy mode is the production default — zero plain-path exports
+exist. Every clip an athlete sees has this defect. **Piece 12 (renderer swap to ffmpeg piped
+output) is the fix.** Same magnitude as the failure VFR-PLAYER-TEST-1 was built to detect;
+the player doesn't introduce it, the pipeline does.
+
+**Known limitation (Stage F export — GOP snap):** After Pieces 6+7, export seek times are
+derived from real `timestamp_ms` (pipeline arithmetic error ≈ 0ms). Plain-path output is VFR
+(source PTS preserved through crop re-encode). Residual customer-visible error is ≤2.0s from
+`-ss` input-seeking keyframe snap (source camera GOP = 2.0s, measured on FP7oJQ 2026-08-22).
 Removing the residual requires output seeking (`-ss` after `-i`, slower) or a GOP change at
-the recorder. **Redacted-path divergence:** CFR at `nominal_fps` (14.925) vs source avg
-(~14.582) — 1.37s/60s short (~2.3%). Forced by cv2.VideoWriter. Piece 12 removes it.
+the recorder.
 
 **Known cleanup (tools):** Three tools import `derive_clip_frame_offset` / `parse_clip_timestamp`
 from `session_d_run` (`cp_purity_3_oracle`, `cp_tag_3_evidence`, `analyze_recorder_timing`).
@@ -677,13 +685,16 @@ from `person_tracks` — Stage E's buzzer end-frame adjustment (`_try_adjust_end
 frame that D4 did not assign to any person. Distinct from CP22 NAType (null-`frame_index` at
 D2 on PPDmUg). Flagged as a CP4.C input (frame→time lookup).
 
+**Planned work (checkpoint-2 remaining):**
+- **Piece 12: redaction renderer swap (NEXT — fixes athlete-facing defect).** Replace
+  cv2.VideoWriter with ffmpeg piped output in `redact.py`. Eliminates the ~2.3% CFR
+  divergence on all athlete-facing clips and the DB/media duration disagreement. Not
+  optional polish — it is the change that fixes what athletes actually see.
+- **Piece 9: debug/eval visualization fps scalars.** Sites #13 (`multiplex_runner.py:406`),
+  #19 (`visualize.py:408`), `post_pipeline_annotator.py:217`. All debug VideoWriter rate.
+- **Piece 5: cross-camera timing.** Site #8 (`cross_camera_evidence.py:275`).
+
 **Deferred (lower priority):**
-- **Stage F export format: RESOLVED (Piece 7, Shape 3 hybrid).** Plain path: VFR-preserving
-  re-encode (`-fps_mode passthrough -enc_time_base -1`). Redacted path: CFR at
-  `1.0 / nominal_dt_s` (cv2.VideoWriter constraint). VFR-PLAYER-TEST-1 confirmed ExoPlayer
-  handles VFR linear playback (seek untested, one device). **Redacted-path CFR divergence
-  (quantified):** source VFR at avg ~14.582fps, output CFR at nominal 14.925fps — 1.37s short
-  over 60s (~2.3%). Known, forced by cv2.VideoWriter. Piece 12 (renderer swap) removes it.
 - CP23b remaining: empty frame injection, bbox size tier filtering, tracklet deduplication
 - CP23c: custom data flywheel (background subtraction, pseudo-labeling, active learning)
 - CP22c: ROI mask geometry fix (parked)
