@@ -42,7 +42,6 @@ def _make_clip(
         mp4_path=Path(f"/fake/{clip_id}.mp4"),
         cam_id="FP7oJQ",
         frame_offset=frame_offset,
-        fps=15.0,
         ts_offset_ms=ts_offset_ms,
         duration_frames=duration_frames,
     )

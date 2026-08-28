@@ -122,6 +122,11 @@ def build_export_command(
 	# Accuracy improvement is in the seek TIME (real timestamp_ms vs frame/fps),
 	# not the seek MODE. Residual is the camera's encoder GOP, not pipeline arithmetic.
 	vf = f"crop={int(crop_plan.width)}:{int(crop_plan.height)}:{int(crop_plan.x)}:{int(crop_plan.y)}"
+	# Piece 7: VFR-preserving re-encode. -fps_mode passthrough prevents frame
+	# duplication/dropping to hit a target rate. -enc_time_base -1 tells the
+	# encoder to use the demuxer timebase, preserving the source's real PTS.
+	# Verified on ffmpeg 7.1.1 with crop: PTS intervals match source (66-67ms
+	# normal + 133-134ms gaps on FP7oJQ), zero frame count change vs default.
 	return [
 		"ffmpeg",
 		"-y",
@@ -139,6 +144,10 @@ def build_export_command(
 		str(preset),
 		"-crf",
 		str(int(crf)),
+		"-fps_mode",
+		"passthrough",
+		"-enc_time_base",
+		"-1",
 		"-movflags",
 		"+faststart",
 		str(output_video_path),

@@ -330,37 +330,40 @@ work — it can ship before Piece 5 if that is preferred.
 
 ---
 
-### Piece 7 — Stage F CFR output scalar
-**Class:** FIX-SCALAR | **Sites:** #12, #14, #15 | **Ships:** alone | **Depends:** 2
-**Status:** GATE PARTIALLY PASSED. VFR-PLAYER-TEST-1 (`docs/evidence/vfr_player_test_1/`)
-shows ExoPlayer via `video_player` (AndroidXMedia3/1.4.1) handles a raw VFR segment
-correctly for LINEAR PLAYBACK on a Pixel 7 Pro. Two residuals remain untested and are
-inputs to Piece 7's scope, not blockers: seek accuracy (the app has no scrubbing, and VFR
-seek is a common divergence point — now more relevant since Piece 6 made Stage F seek to
-real timestamps) and cross-device decoding (one device, `c2.exynos.h264.decoder`).
+### Piece 7 — Stage F output format (Shape 3 hybrid)
+**Class:** FIX-SCALAR + VFR | **Sites:** #12, #14, #15 | **Ships:** alone | **Depends:** 2
+**Status:** COMPLETE
 
-**Gate (partially resolved).** If Flutter's `video_player` handles VFR passthrough correctly,
-Stage F may not need CFR conversion at all — in which case Piece 7's scope changes (remove
-the conversion entirely) or dissolves. Linear playback confirmed; seek and cross-device
-remain open.
+**Shape 3 (hybrid).** Plain path: VFR-preserving re-encode via `-fps_mode passthrough`
+and `-enc_time_base -1` (verified on ffmpeg 7.1.1 with crop). Redacted path: CFR at
+`1.0 / nominal_dt_s` from the sidecar (cv2.VideoWriter hard constraint — no per-frame
+timestamp API). Two paths produce different timing characteristics (VFR h264 vs CFR mpeg4),
+explicitly documented.
 
-**Scope (assuming CFR is still needed).** `cv2.VideoWriter` and the ffmpeg CFR re-encode
-require a scalar. Supply `1.0 / nominal_dt_s` from the sidecar. Remove the hardcoded `30.0`
-fallbacks (#12 `session_f_run.py:397`, #13 `multiplex_runner.py:406`) and reconcile #15
-(`run.py:331`) — Stage F currently **re-probes fps from `video_meta` rather than reading the
-manifest**, an independent fps source that would survive a manifest-only fix.
+**Sites closed:**
+- **#12** (`session_f_run.py`): DELETED — consumer chain was dead (`SourceClipInfo.fps`
+  never read). `SourceClipInfo.fps` field also deleted.
+- **#14** (`redact.py` VideoWriter rate): fixed — receives `nominal_fps` from sidecar.
+- **#15** (`run.py` independent probe-derived fps): closed — `probe_video_metadata` fps
+  extraction deleted, sidecar `nominal_fps` is sole source. Probe retained for width/height.
+- **#13** (`multiplex_runner.py` 30.0 fallback): DEFERRED to Piece 9 — consumer is debug
+  viz (`MuxVisualizer`) and `manifest.fps` backfill. Same class as `visualize.py:408` and
+  `post_pipeline_annotator.py:217`.
 
-**Done.** One resolution path for the output scalar; no hardcoded 30.0 remains; #15's
-divergence closed or documented as intentional.
+**buffer_frames:** `consolidate_buffer_sec * nominal_fps` (was `* probed fps`).
 
-**Validation.** T1 + T2 + media inspection (playback rate correct, duration correct).
+**CFR divergence (redacted path, quantified):** source is VFR at avg ~14.582fps; redacted
+output is CFR at nominal 14.925fps. Over 60s of content, redacted clip is 1.37s shorter
+(~2.3%). Scales linearly (~2.74s over 120s). Known, deliberate — forced by cv2.VideoWriter.
+Piece 12 removes it by replacing VideoWriter with ffmpeg piped output.
 
-**Piece 7 now inherits three concrete items:**
-1. `run.py:345` — `buffer_frames = consolidate_buffer_sec * fps` (frame↔time conversion)
-2. `redact.py:387` — `cv2.VideoWriter` fixed output rate (needs `1.0 / nominal_dt_s`)
-3. The 2.0s source GOP keyframe snap — residual customer-visible error from `-ss` input
-   seeking, bounded by GOP size. Removing it requires output seeking or a GOP change at
-   the recorder.
+**GOP snap:** unchanged. ≤2.0s residual from source camera GOP. Backlog item.
+
+**Validation:** T2 suite green (196 passed). Media inspection: plain path VFR confirmed
+(`r != avg`, h264); redacted path CFR confirmed (`r == avg` at nominal_fps, mpeg4).
+Session path NOT TESTABLE (CP22 blocks session Stage E).
+
+Evidence: `docs/evidence/piece7_results/findings.md`.
 
 ---
 
@@ -475,10 +478,8 @@ parallel with Pieces 1-2, since it is manual work that blocks nothing upstream.
 
 | Group | Pieces | Constraint |
 |---|---|---|
-| **Complete** | 0, 1, 2, 11 | Implemented. 11 is T1+T2 PASS, T3 pending annotation. |
-| **Gated on join verdict** | 4, 5, 6 | Re-plan required if (a)<->(c) is not 1:1 |
-| **Gated on player VFR test** | 7 | Scope changes or dissolves depending on test outcome |
-| **Independent scalars** | 9 | Depends only on Piece 2 (8 dissolved into 11) |
+| **Complete** | 0, 1, 2, 4, 6, 7, 11 | 0-2, 4, 6 implemented. 7: Shape 3 hybrid (VFR plain, CFR redacted). 11: T1+T2 PASS, T3 pending annotation. |
+| **Not started** | 5, 9 | 5: cross-camera (#8). 9: debug/eval viz fps scalars (#13, #19, post_pipeline_annotator). |
 | **Dissolved** | 3, 8, 10 | 3: dissolved by Piece 0b (POS_MSEC = sidecar PTS). 8: absorbed into Piece 11. 10: resolved by Piece 11 (scoping answered by implementation). |
 
 **Ordering:** superseded by the six-objective execution plan in §5. The original sequence

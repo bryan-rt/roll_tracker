@@ -23,6 +23,8 @@ from .manifest import (
 	derive_storage_target,
 	get_file_stats,
 )
+from bjj_pipeline.contracts.f0_sidecar import load_sidecar
+
 from .cropper import CropPlanError, FixedRoiCropPlan, plan_crop_fixed_roi
 from .ffmpeg import ExportClipError, export_clip, probe_video_metadata
 
@@ -337,12 +339,13 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 		person_tracks_df["timestamp_ms"].to_numpy(),
 	))
 	video_meta = probe_video_metadata(input_video_path)
-	fps = float(video_meta.fps if video_meta.fps > 0 else getattr(manifest, "fps", 0.0))
-	# fps retained for buffer_frames computation and consolidation — Piece 7 may remove
-	if fps <= 0.0:
-		raise ValueError("Stage F requires a positive fps from ffprobe/OpenCV or clip manifest")
+	# Piece 7: nominal_fps from sidecar (1.0 / nominal_dt_s). Single fps source —
+	# closes site #15 (independent probe-derived fps). probe_video_metadata retained
+	# for width/height only.
+	sidecar_data = load_sidecar(input_video_path)
+	nominal_fps = sidecar_data.nominal_fps
 	last_frame = _infer_last_frame(person_tracks_df, matches)
-	buffer_frames = int(round(float(consolidate_buffer_sec) * float(fps)))
+	buffer_frames = int(round(float(consolidate_buffer_sec) * float(nominal_fps)))
 	export_sessions = consolidate_export_sessions(
 		matches,
 		enabled=consolidate_sessions_enabled,
@@ -433,15 +436,19 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 			if privacy_render_applied:
 				# Privacy renderer decodes frame-by-frame via CAP_PROP_POS_FRAMES
 				# (exact frame selection for mask overlay). It needs frame indices,
-				# not seek times. fps is the VideoWriter output rate scalar (Piece 7 #12).
-				# timing["start_seconds"] and the renderer's seek position agree on
-				# post-R13a footage (POS_MSEC = timestamp_ms, Piece 0b §10 A2).
+				# not seek times.
+				# Piece 7: nominal_fps is a DELIBERATE CFR grid at 1/nominal_dt_s,
+				# not a measurement. The source is VFR at ~14.708 avg on FP7oJQ;
+				# writing CFR at nominal 15fps means redacted output is on a slightly
+				# different clock (~2% faster, ~2.4s short over 120s). This is a known
+				# divergence forced by cv2.VideoWriter (no per-frame timestamp API).
+				# Piece 12 removes it by replacing VideoWriter with ffmpeg piping.
 				render_result = render_redacted_clip(
 					input_video_path=input_video_path,
 					output_video_path=output_abs,
 					crop_plan=crop_plan,
 					redaction_plan=redaction_plan,
-					fps=fps,
+					fps=nominal_fps,
 					export_start_frame=int(export_session.export_start_frame),
 					export_end_frame=int(export_session.export_end_frame),
 					blur_kernel_size=blur_kernel_size,

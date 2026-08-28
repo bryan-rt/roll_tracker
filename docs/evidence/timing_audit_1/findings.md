@@ -142,10 +142,10 @@ rejected-alternative rationale.
 | #9 | 4 | RESOLVED (CP4.C) |
 | #10 | 4 | RESOLVED (CP4.C) |
 | #11 | 1 | RESOLVED |
-| #12 | 7 | |
-| #13 | 7 | |
-| #14 | 7 | |
-| #15 | 7 | |
+| #12 | 7 | RESOLVED (Piece 7): deleted — consumer chain dead (SourceClipInfo.fps never read) |
+| #13 | 9 | Deferred from Piece 7 to Piece 9: debug/eval viz fps scalar, same class as #19 and post_pipeline_annotator:217 |
+| #14 | 7 | RESOLVED (Piece 7): nominal_fps from sidecar |
+| #15 | 7 | RESOLVED (Piece 7): independent probe-derived fps deleted, sidecar is sole source |
 | #16 | 6 | RESOLVED (Piece 6): dependency eliminated — `_infer_last_frame` now uses `person_tracks_df["frame_index"].max()`, fps-free. Both original objections (a) per-segment and (b) boundary residual are moot. See `run.py:122-124`. |
 | #17 | 6 | RESOLVED (Piece 6) |
 | #18 | — | AUDIT-ONLY, no fix needed |

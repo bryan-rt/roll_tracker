@@ -51,7 +51,6 @@ class SourceClipInfo:
     mp4_path: Path
     cam_id: str
     frame_offset: int
-    fps: float
     ts_offset_ms: int = 0
     duration_frames: Optional[int] = None
 
@@ -59,7 +58,6 @@ class SourceClipInfo:
 def _build_source_registry(
     session_clips: List[Tuple[Path, str]],
     cam_id: str,
-    fps: float,
     session_layout: Any = None,
 ) -> List[SourceClipInfo]:
     """Build ordered registry of source clips for one camera.
@@ -98,7 +96,7 @@ def _build_source_registry(
             continue
         registry.append(SourceClipInfo(
             clip_id=clip_id, mp4_path=mp4, cam_id=cid,
-            frame_offset=entry["frame_offset"], fps=fps,
+            frame_offset=entry["frame_offset"],
             ts_offset_ms=entry.get("ts_offset_ms", 0),
             duration_frames=entry.get("clip_frame_count"),
         ))
@@ -448,9 +446,11 @@ def run_session_f(
         raise PipelineError(f"session_f: no source clips for cam_id={cam_id}")
 
     video_meta = probe_video_metadata(first_clip)
-    fps = float(video_meta.fps) if video_meta.fps > 0 else 30.0
+    # Piece 7: fps removed — was stored in SourceClipInfo.fps but never read.
+    # Site #12 (30.0 fallback) deleted, not fixed. probe_video_metadata retained
+    # for width/height only.
 
-    source_registry = _build_source_registry(session_clips, cam_id, fps, session_layout=session_layout)
+    source_registry = _build_source_registry(session_clips, cam_id, session_layout=session_layout)
     if not source_registry:
         raise PipelineError(f"session_f: empty source registry for cam_id={cam_id}")
 
