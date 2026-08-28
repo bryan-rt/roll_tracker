@@ -434,21 +434,15 @@ def run(config: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
 				frame_to_ts_ms=frame_to_ts_ms,
 			)
 			if privacy_render_applied:
-				# Privacy renderer decodes frame-by-frame via CAP_PROP_POS_FRAMES
-				# (exact frame selection for mask overlay). It needs frame indices,
-				# not seek times.
-				# Piece 7: nominal_fps is a DELIBERATE CFR grid at 1/nominal_dt_s,
-				# not a measurement. The source is VFR at ~14.708 avg on FP7oJQ;
-				# writing CFR at nominal 15fps means redacted output is on a slightly
-				# different clock (~2% faster, ~2.4s short over 120s). This is a known
-				# divergence forced by cv2.VideoWriter (no per-frame timestamp API).
-				# Piece 12 removes it by replacing VideoWriter with ffmpeg piping.
+				# Piece 12: privacy renderer writes VFR via PyAV with per-frame PTS
+				# from CAP_PROP_POS_MSEC. Output PTS are clip-relative (first frame = 0),
+				# matching the plain ffmpeg path's -ss behaviour. fps parameter removed —
+				# the renderer reads real timestamps, not a scalar rate.
 				render_result = render_redacted_clip(
 					input_video_path=input_video_path,
 					output_video_path=output_abs,
 					crop_plan=crop_plan,
 					redaction_plan=redaction_plan,
-					fps=nominal_fps,
 					export_start_frame=int(export_session.export_start_frame),
 					export_end_frame=int(export_session.export_end_frame),
 					blur_kernel_size=blur_kernel_size,

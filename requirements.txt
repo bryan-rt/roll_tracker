@@ -20,6 +20,7 @@ pandas==2.2.2
 pyarrow==15.0.2         # parquet via pandas (matches current .venv and pyproject pyarrow<16)
 # opencv-python-headless==4.11.0.86
 opencv-python==4.11.0.86
+av>=18.0                # PyAV — VFR video encoding in Stage F redaction (Piece 12)
 
 # Common runtime deps (explicit so we can install ultralytics/boxmot with --no-deps)
 requests==2.32.5

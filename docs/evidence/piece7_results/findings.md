@@ -122,24 +122,11 @@ This is the same magnitude as the failure VFR-PLAYER-TEST-1 was built to detect 
 over 120s). VFR-PLAYER-TEST-1 confirmed the player does not introduce that drift — but the
 export pipeline introduces ~2.7s of its own on every redacted clip.
 
-**This affects all athlete-facing clips today.** Privacy mode is the production default;
-zero plain-path exports exist. Every clip an athlete sees plays ~2.3% fast and is ~2.7s
-short over a two-minute match. Piece 12 (renderer swap to ffmpeg piped output) is the fix.
-
-### DB/media duration disagreement (confirmed)
-
-`compute_clip_timing` writes `duration_seconds = 60.0` to the clips table (correct — derived
-from real timestamps). The redacted file is 58.63s. **The database and the media disagree by
-1.37s (2.3%).** The app displays the DB value (`clip.durationSeconds`) which the file does
-not have.
-
-Verified from the export manifest:
-- `clip_row.duration_seconds`: 60.0 (DB payload)
-- `privacy_render_applied`: true
-- ffprobe duration: 58.626466s
-
-Piece 6 made the DB value correct; the redaction path makes the file wrong. Resolves when
-Piece 12 makes the media match the DB.
+**FIXED by Piece 12.** cv2.VideoWriter replaced by PyAV with `PTS_TIMEBASE_HZ=90000`.
+Redacted output is now VFR H.264 with source PTS preserved. DB/media duration gap reduced
+from 2.272s (2.4%) to 0.466s (0.5%). The remaining 0.466s is 7 missing frames from
+`cap.read()` ending early — pre-existing, same in both paths. File size reduced 35%
+(mpeg4→h264). See `docs/evidence/piece12_results/findings.md`.
 
 ### Session path
 

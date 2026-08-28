@@ -6,9 +6,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, Tuple
 
+import av
 import cv2  # type: ignore
 import numpy as np
 import pandas as pd
+
+
+# Encoder timebase MUST match the source's 90kHz PTS timebase. At a lower rate
+# (e.g. 15) the codec context quantizes PTS to that grid, collapsing the source's
+# 66/67ms alternation to a uniform 67ms — silently reintroducing the CFR defect
+# Piece 12 exists to remove. Verified: 66*90=5940, 67*90=6030 exactly.
+# Cite: Piece 0b §10 — all post-R13a PTS land on exact integer ms.
+PTS_TIMEBASE_HZ = 90_000
 
 
 @dataclass(frozen=True)
@@ -366,37 +375,44 @@ def render_redacted_clip(
 	output_video_path: Path,
 	crop_plan: Any,
 	redaction_plan: RedactionPlan,
-	fps: float,
 	export_start_frame: int,
 	export_end_frame: int,
 	blur_kernel_size: int = 31,
 	start_sec: float | None = None,
 	duration_sec: float | None = None,
 ) -> RedactionRenderResult:
-	# fps is the VideoWriter output rate scalar (Piece 7 #12).
-	# start_sec/duration_sec from compute_clip_timing are passed through for
-	# consistency verification but are NOT used for seeking — this renderer
-	# decodes frame-by-frame via CAP_PROP_POS_FRAMES (exact frame selection for
-	# mask overlay). The equivalence with timestamp_ms is guaranteed on post-R13a
-	# footage (Piece 0b §10 A2: POS_MSEC = timestamp_ms at zero deviation).
-	if fps <= 0.0:
-		raise RedactionRenderError("fps must be positive for redacted rendering (VideoWriter output rate)")
+	"""Render a redacted clip with VFR output preserving source PTS.
 
+	Output PTS ticks must equal input PTS ticks (90kHz timebase, from
+	CAP_PROP_POS_MSEC * 90). cv2.VideoWriter replaced by PyAV encoder with
+	rate=PTS_TIMEBASE_HZ to prevent codec-context PTS quantization.
+
+	Output PTS are clip-relative (first frame = 0). This matches the plain
+	ffmpeg path, which also produces clip-relative PTS via -ss.
+
+	Per-frame time from CAP_PROP_POS_MSEC (after cap.read()), matching
+	FrameIterator ordering (frame_iterator.py:52-59). POS_MSEC after read
+	reports the PTS of the frame just decoded on post-R13a H.264 containers.
+	"""
 	cap = cv2.VideoCapture(str(input_video_path))
 	if not cap.isOpened():
 		raise RedactionRenderError(f"unable to open input video: {input_video_path}")
 
 	try:
 		output_video_path.parent.mkdir(parents=True, exist_ok=True)
-		fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-		writer = cv2.VideoWriter(
-			str(output_video_path),
-			fourcc,
-			float(fps),
-			(int(crop_plan.width), int(crop_plan.height)),
+		container = av.open(
+			str(output_video_path), mode="w",
+			options={"movflags": "+faststart"},
 		)
-		if not writer.isOpened():
-			raise RedactionRenderError(f"unable to open video writer: {output_video_path}")
+		stream = container.add_stream("libx264", rate=PTS_TIMEBASE_HZ)
+		# H.264 YUV420P requires even dimensions. Crop may produce odd sizes
+		# (e.g. 545px height). Round down — one pixel lost, not visible.
+		enc_w = int(crop_plan.width) & ~1
+		enc_h = int(crop_plan.height) & ~1
+		stream.width = enc_w
+		stream.height = enc_h
+		stream.pix_fmt = "yuv420p"
+		stream.options = {"preset": "veryfast", "crf": "23"}
 
 		targets_by_frame = _targets_by_frame(redaction_plan.targets)
 		crop_xywh = (
@@ -410,11 +426,18 @@ def render_redacted_clip(
 		n_frames_written = 0
 		n_mask_targets_applied = 0
 		n_bbox_targets_applied = 0
+		base_pts_ms: float | None = None
 
 		for frame_index in range(int(export_start_frame), int(export_end_frame) + 1):
 			ok, frame = cap.read()
 			if not ok or frame is None:
 				break
+			# POS_MSEC after cap.read() = PTS of the frame just decoded
+			# (FrameIterator ordering, frame_iterator.py:52-59).
+			# Verified identical to timestamp_ms at zero deviation (Piece 0b §10 A2).
+			pts_ms = cap.get(cv2.CAP_PROP_POS_MSEC)
+			if base_pts_ms is None:
+				base_pts_ms = pts_ms
 			frame_h, frame_w = frame.shape[:2]
 
 			cx, cy, cw, ch = crop_xywh
@@ -461,10 +484,22 @@ def render_redacted_clip(
 						)
 						n_bbox_targets_applied += 1
 
-			writer.write(crop_frame)
+			# Trim to even dimensions for H.264 YUV420P if needed.
+			if crop_frame.shape[1] != enc_w or crop_frame.shape[0] != enc_h:
+				crop_frame = crop_frame[:enc_h, :enc_w]
+			# Encode with real PTS. Integer ms * 90 = exact 90kHz ticks
+			# (Piece 0b §10: all post-R13a PTS are exact integer ms).
+			video_frame = av.VideoFrame.from_ndarray(crop_frame, format="bgr24")
+			video_frame.pts = round((pts_ms - base_pts_ms) * 90)
+			for packet in stream.encode(video_frame):
+				container.mux(packet)
 			n_frames_written += 1
 
-		writer.release()
+		# Flush encoder
+		for packet in stream.encode():
+			container.mux(packet)
+		container.close()
+
 		if not output_video_path.exists():
 			raise RedactionRenderError(f"redacted output file was not created: {output_video_path}")
 		return RedactionRenderResult(
