@@ -379,10 +379,11 @@ direction that Piece 11 would then partly undo. One change, one measurement.
 
 ### Piece 9 — Fix the A/B instrument
 **Class:** DEL-CONV (timestamp) + FIX-SCALAR (writer) | **Site:** #19 | **Ships:** alone | **Depends:** 2
-**Status:** NOT STARTED
+**Status:** PARTIALLY COMPLETE (site #19 done, sites #13 + post_pipeline_annotator remaining)
 
 **Scope.** `visualize.py:408` — `timestamp_ms = fi * (1000/cap_fps)` -> read time directly.
 `:327,351` — `VideoWriter` scalar from the sidecar.
+Remaining sites: `multiplex_runner.py:406` (#13), `post_pipeline_annotator.py:217`.
 
 **Done.** Preview overlay timestamps match sidecar `pts_time_s`; preview playback rate correct.
 

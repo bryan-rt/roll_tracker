@@ -141,7 +141,63 @@ but may need parameter tuning or a different test corpus to show benefit.
 
 ---
 
-## 6. Non-comparability
+## 6. max_lost_seconds confound check
+
+The treatment changed two things: the Kalman dt and the track-lifetime mechanism
+(`max_lost_seconds` vs frame-count `max_time_lost`). If these are not equivalent, the result
+could be a parameter effect rather than a variable-dt effect.
+
+**Stock boxmot (control):** `max_time_lost = int(frame_rate / 30.0 * track_buffer)` =
+`int(30/30 * 30)` = 30 frames. `frame_rate=30` is the hardcoded default (never tuned for this
+camera). At this clip's nominal 0.067s/frame: 30 × 0.067 = **2.010s**.
+
+**Treatment:** `max_lost_seconds = 2.0s` (default).
+
+**Difference: 10ms (0.5%).** Effectively equivalent. The confound is ruled out. The -2.9pp is
+attributable to the variable-dt Kalman prediction change, not track lifetime.
+
+Detail: at the clip's mean dt (0.068s, including gaps), 30 frames = 2.041s. Still within 2%
+of the treatment's 2.0s. Gap frames (2.1% of clip, dt > 1.5× nominal) are too infrequent to
+create a meaningful lifetime divergence.
+
+---
+
+## 7. Scope limits
+
+This measurement has several scope limits that prevent treating it as a verdict:
+
+1. **One clip, one camera, ~2 minutes, 2.1% gap rate.** Variable-dt's benefit should scale
+   with dt dispersion — frames where the ratio deviates from 1.0 are the ones where the
+   prediction changes. At 2.1% gap rate, very few frames exercise the variable-dt path
+   meaningfully. A low-dispersion clip is close to the worst case for demonstrating benefit.
+
+2. **37.7% of frames have no detection.** The measurable identity population is the 62.3%
+   with detections (7,769 matched boxes). Within that, misattribution rose from 17.7% to
+   20.6% — a change on a subset of a subset.
+
+3. **This is the sixth inversion of the identity-corruption lever.** The five preceding
+   inversions are in CLAUDE.md "Overturned Conclusions." A negative first measurement deserves
+   the same skepticism a positive one would — it could be an artifact of clip geometry, gap
+   distribution, or the specific set of people and their movements.
+
+4. **The variable-dt KF is architecturally correct** (dt-scaled prediction is more physically
+   accurate than constant-dt) but "correct" does not guarantee "better on this metric." The
+   prediction change is small on uniform-cadence frames (ratio ≈ 1.0) and only substantive on
+   gap frames (~2.1%). The gap frames may not be the frames where misattribution occurs.
+
+---
+
+## 8. Non-comparability
 
 This A/B is internally valid (same clip, same GT, same model, same commit, same scoring).
 Neither arm is comparable to the canonical 33.9% (different footage, camera, pipeline version).
+
+---
+
+## 9. Piece 9 T1 — parquet timestamp verification
+
+Piece 9 (site #19) replaced the frame→time conversion in `visualize.py:408` with a lookup
+from `detections.parquet:timestamp_ms`. T1 verified that all 1,764 frames in the parquet
+match the sidecar's `pts_time_s × 1000` exactly (0 mismatches). This independently confirms
+that the parquet timestamp carrier agrees with the sidecar on real post-fix footage — the
+assertion Piece 4 established and this measures.
