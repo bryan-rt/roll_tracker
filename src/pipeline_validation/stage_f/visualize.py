@@ -310,6 +310,16 @@ def render_clip(
     tracklet_to_tags = _load_tag_observations(paths["identity_hints"])
     stage_f_cfg = _load_stage_f_config()
 
+    # Per-frame timestamp lookup from the parquet (TIMING-PRINCIPLE-1: read time,
+    # don't convert). Stage A writes timestamp_ms for every detection; we take the
+    # first value per frame (all detections on the same frame share the same PTS).
+    frame_to_ts_ms: dict[int, int] = {}
+    if "timestamp_ms" in det_df.columns:
+        for fi, ts in zip(det_df["frame_index"], det_df["timestamp_ms"]):
+            fi_int = int(fi)
+            if fi_int not in frame_to_ts_ms and pd.notna(ts):
+                frame_to_ts_ms[fi_int] = int(ts)
+
     # Pre-group detections by frame
     det_by_frame = _preload_detections(det_df)
 
@@ -324,9 +334,18 @@ def render_clip(
         return None
 
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    cap_fps = cap.get(cv2.CAP_PROP_FPS)
     frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    # Preview playback rate from sidecar nominal_dt_s. This is deliberately CFR
+    # via cv2.VideoWriter — acceptable for a diagnostic preview instrument, not
+    # athlete-facing output. See Piece 12 for the VFR fix on the export path.
+    try:
+        from bjj_pipeline.contracts.f0_sidecar import load_sidecar
+        sidecar = load_sidecar(source_video)
+        preview_fps = 1.0 / sidecar.nominal_dt_s
+    except Exception:
+        preview_fps = cap.get(cv2.CAP_PROP_FPS) or 15.0
 
     # Compute envelopes
     envelope_plans, n_envelope_failed = _compute_envelope_plans(
@@ -348,7 +367,7 @@ def render_clip(
 
     # Video writer
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    writer = cv2.VideoWriter(str(out_path), fourcc, cap_fps, (frame_width, frame_height))
+    writer = cv2.VideoWriter(str(out_path), fourcc, preview_fps, (frame_width, frame_height))
     if not writer.isOpened():
         logger.error("Cannot open video writer for %s", out_path)
         cap.release()
@@ -405,9 +424,10 @@ def render_clip(
 
         # Frame metadata overlay
         n_dropped = n_det - n_kept
-        timestamp_ms = int(fi * (1000.0 / cap_fps))
+        ts_ms = frame_to_ts_ms.get(fi)
+        ts_label = f"t={ts_ms}ms" if ts_ms is not None else "t=N/A"
         lines = [
-            f"{cam} | frame {fi}/{total_frames} | t={timestamp_ms}ms",
+            f"{cam} | frame {fi}/{total_frames} | {ts_label}",
             f"detections: {n_det} | accepted: {n_kept} | dropped: {n_dropped}",
             f"active matches: {active_matches}",
         ]

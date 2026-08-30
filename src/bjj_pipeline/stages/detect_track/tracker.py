@@ -177,15 +177,18 @@ class BotSortTracker(TrackerBackend):
 				self._tracker.set_dt(dt_s, is_first_frame=True)
 			else:
 				dt_s = self._sidecar.dt_s(frame_index)
-				if dt_s is None or dt_s <= 0:
+				if dt_s is None or dt_s < 0:
 					raise ValueError(
 						f"BotSortTracker: sidecar dt_s is {dt_s!r} at "
 						f"frame_index={frame_index}. Variable-dt tracker "
-						f"requires strictly positive per-frame intervals. "
-						f"dt_s=0.0 indicates a duplicate PTS in the mp4 "
-						f"(segment-start muxer artifact on attempt-first "
-						f"segments — see Piece 11 investigation)."
+						f"requires non-negative per-frame intervals."
 					)
+				# dt_s = 0.0 is valid: two frames sharing a PTS are one
+				# capture instant (MUXER-PTS-1 duplicate IDR at segment
+				# start). The Kalman filter treats ratio 0.0 as a position
+				# no-op — no position advance, velocity preserved.
+				# See CLAUDE.md:196 and the empirical verification in
+				# docs/evidence/piece11_t3/findings.md.
 				self._tracker.set_dt(dt_s, is_first_frame=False)
 
 		# Update tracker; common signature: update(dets, img, embs=None)
