@@ -1,0 +1,61 @@
+# EVALUATION-ONLY manifest — no model is trained from this file.
+#
+# The model fields (weights_path, base_model, training_config) describe the
+# detection model that generated the pipeline artifacts being scored:
+# bjj-detect-all-cameras-v2 (1352-frame domain-tuned yolo26n, conf 0.45).
+#
+# GT annotations are hand-labelled on post-recorder-fix footage (schema-5
+# sidecar, source PTS, homography recalibrated 2026-08-24). This is the
+# first GT in the project on clean footage.
+#
+# annotated_range covers all 1,764 frames including CVAT-interpolated ones.
+# gt_loader's interpolation warning targets training labels where box drift
+# matters. For identity evaluation at IoU 0.5, interpolated boxes carry the
+# same track_id as their keyframes — identity is exact on every frame, and
+# small position drift does not change which detection a box matches.
+#
+# All frames in val; train is trivial (required by schema, not used).
+
+model_id: gt-eval-fp7oJQ-132650
+weights_path: models/bjj-detect-all-cameras-v2.pt
+pipeline_gym_id: '00000000-0000-0000-0000-000000000003'
+base_model: yolo26n.pt
+trained_at: ''
+training_config:
+  epochs: 100
+  batch: 16
+  freeze: 10
+  imgsz: 640
+  lr0: 0.001
+  platform: kaggle-t4
+training_data:
+- export: ground_truth_FP7oJQ_20260822_132650.zip
+  source_video: FP7oJQ-20260822-132650.mp4
+  source_video_path: data/raw/nest/00000000-0000-0000-0000-000000000003/FP7oJQ/2026-08-22/13/FP7oJQ-20260822-132650.mp4
+  camera_id: FP7oJQ
+  resolution:
+  - 1920
+  - 1080
+  annotated_range:
+    start: 0
+    stop: 1763
+    stride: 1
+    count: 1764
+  splits:
+    train:
+      start: 0
+      stop: 0
+      stride: 1
+      count: 1
+    val:
+      start: 0
+      stop: 1763
+      stride: 1
+      count: 1764
+notes: >
+  Evaluation-only GT for FP7oJQ-20260822-132650. Hand-labelled in CVAT
+  (task gt_FP7oJQ_20260822_132650, id 2551869). 8 people annotated across
+  1,764 frames (12,468 boxes). 7 people present full clip, 1 present
+  frames 210-329. Dense stride-1, all frames in val split.
+  Not comparable to the canonical 33.9% correct_id (different footage,
+  different camera state, different pipeline code).

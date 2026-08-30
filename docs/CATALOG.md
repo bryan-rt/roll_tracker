@@ -110,6 +110,12 @@
 | `docs/evidence/cp_tag_4_post/README.md` | CP-TAG-4a post-fix verification | **HISTORICAL** |
 | `docs/evidence/cp_tag_4a_verify/findings.md` | CP-TAG-4a code verification | **HISTORICAL** |
 
+## Evidence — GT Evaluation
+
+| Path | Purpose | Status |
+|------|---------|--------|
+| `docs/evidence/gt_eval_1/findings.md` | GT-EVAL-1: First post-fix GT evaluation. FP7oJQ-20260822-132650, 8 people, 1,764 frames. correct_id 37.2%, recall@0.5 0.623. New baseline on clean footage — not comparable to the canonical 33.9%. | **CURRENT** |
+
 ## Evidence — Other
 
 | Path | Purpose | Status |
