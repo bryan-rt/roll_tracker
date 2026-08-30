@@ -115,6 +115,7 @@
 | Path | Purpose | Status |
 |------|---------|--------|
 | `docs/evidence/gt_eval_1/findings.md` | GT-EVAL-1: First post-fix GT evaluation. FP7oJQ-20260822-132650, 8 people, 1,764 frames. correct_id 37.2%, recall@0.5 0.623. New baseline on clean footage — not comparable to the canonical 33.9%. | **CURRENT** |
+| `docs/evidence/piece11_t3/findings.md` | Piece 11 T3: Variable-dt tracker A/B. Control 37.2%, treatment 34.3% (-2.9pp). Misattribution rose 17.7%→20.6%. Guard fix for dt_s=0.0 (MUXER-PTS-1). Both arms preserved at `outputs/_t3_arms/`. | **CURRENT** |
 
 ## Evidence — Other
 
