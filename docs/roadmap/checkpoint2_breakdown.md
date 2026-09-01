@@ -426,7 +426,7 @@ list must check the wheel version, not `__version__`.
 
 ### Piece 11 — Variable-dt Kalman step (absorbs Piece 8)
 **Class:** FORK (implementation) | **Sites:** #4, #20 | **Ships:** alone | **Depends:** 0, 2
-**Status:** IMPLEMENTED — T1+T2 PASS, blocked on muxer PTS fix for full corpus
+**Status:** T3 COMPLETE (2026-08-30) — result negative, held with caveats
 
 **Scope.** Subclass (not fork) boxmot's `KalmanFilterXYWH` and `BotSort`. The KF subclass
 rebuilds `_motion_mat` per step from a dt *ratio* (`dt_s / nominal_dt_s`), keeping velocity
@@ -445,15 +445,20 @@ exports); A→D on high-dispersion 201606 (1950 frames, 29.8% dispersion, 9 pers
 failure on 201606 is pre-existing CP22 NAType (confirmed: fails identically with
 variable_dt=false).
 
-**Blocked:** Duplicate-PTS muxer artifact at frame index 2 on attempt-first segments
-(RECORDER-MUXER-PTS-1). `dt_s=0.0` → raises under variable_dt=true. Second reproduction
-(Aug 23): FP7oJQ 3/17 segments affected (attempt-first only, attempts >1 deterministic);
-PPDmUg 5/5 (every segment is attempt-first). **Decision: fix the muxer and re-capture
-affected segments.** Do not annotate affected segments until fixed.
+**T3 result (2026-08-30):** A/B on FP7oJQ-20260822-132650 (8-person GT, 1,764 frames).
+correct_id 37.2% (control) → 34.3% (treatment), **-2.9pp**. All 2.9pp moved into
+present_misattributed (17.7% → 20.6%). Detection metrics unchanged (recall diff -0.0002).
+max_lost_seconds confound ruled out (30 frames × 0.067s = 2.010s vs 2.0s default, 0.5%
+difference). The MUXER-PTS-1 blocker was removed by relaxing the tracker guard (`dt_s <= 0`
+→ `dt_s < 0`); the Kalman filter handles dt_s=0.0 as a position no-op by design.
+Evidence: `docs/evidence/piece11_t3/findings.md`.
 
-**Note.** CP-R8 bimodal exposure (3/11 segments) is higher than CP-R11's 1/139 — the pre-fix
-requantization was erasing the signal. Variable dt is more urgent than the original exposure
-figures suggested.
+**Scope limits (do not treat as a verdict):** Single clip, single camera, 2.1% gap rate
+(near worst case for showing benefit — very few frames exercise the variable-dt path
+meaningfully). 37.7% of frames have no detection, so the measurable identity population
+is the 62.3% with detections. This is the sixth inversion of the identity-corruption lever
+(five preceding inversions in CLAUDE.md "Overturned Conclusions"). A negative first
+measurement on one clip deserves the same skepticism a positive one would.
 
 **T3 sanity check:** effect size should increase with per-segment dt dispersion (fraction
 of frames with `|dt_s/nominal_dt_s - 1| > 0.25`). A flat relationship across dispersion
