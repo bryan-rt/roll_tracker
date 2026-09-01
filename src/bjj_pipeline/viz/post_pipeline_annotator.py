@@ -210,11 +210,16 @@ def render_post_pipeline_annotation(
 
     match_intervals = _load_match_intervals(layout, clip_id=manifest.clip_id)
 
-    frame_iter, fps_src, frame_size = _iter_frames(video_path)
+    frame_iter, _fps_unused, frame_size = _iter_frames(video_path)
 
-    fps = float(manifest.fps or 0.0)
-    if fps <= 0.0:
-        fps = fps_src if fps_src > 0.0 else 30.0
+    # Visualization playback rate from sidecar nominal_dt_s — the camera's actual
+    # per-frame cadence. Deliberately CFR via cv2.VideoWriter — acceptable for
+    # diagnostic preview, not athlete-facing output. See Piece 12 for the VFR fix.
+    # Uses cadence (not clip-average) so per-frame pacing is correct; the resulting
+    # file is shorter than the source by the sum of gap intervals.
+    from bjj_pipeline.contracts.f0_sidecar import load_sidecar as _load_sidecar_ann
+    _sidecar_ann = _load_sidecar_ann(video_path)
+    fps = 1.0 / _sidecar_ann.nominal_dt_s
 
     if frame_size[0] <= 0 or frame_size[1] <= 0:
         # fallback to first frame size

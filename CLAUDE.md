@@ -608,7 +608,7 @@ First trained model had FP7oJQ false positives from background memorization.
 = cost/veto, never hard; distinctiveness-weighted; only one tier may be hard.
 
 **Checkpoint-2 timing work:** sequenced in `docs/roadmap/checkpoint2_breakdown.md`.
-Pieces 0–2 and 11 complete (implementation); Pieces 3 and 8 dissolved (3: Piece 0b proved
+Pieces 0–2, 9, and 11 complete (implementation); Pieces 3 and 8 dissolved (3: Piece 0b proved
 POS_MSEC = sidecar PTS; 8: absorbed into Piece 11). Six-objective execution plan (§5 of the
 roadmap) supersedes the original piece ordering:
 (1) recorder coverage investigation, (2) MUXER-PTS-1 fix, (3) Pieces 4+6 (Stage D
@@ -684,11 +684,21 @@ from `person_tracks` — Stage E's buzzer end-frame adjustment (`_try_adjust_end
 frame that D4 did not assign to any person. Distinct from CP22 NAType (null-`frame_index` at
 D2 on PPDmUg). Flagged as a CP4.C input (frame→time lookup).
 
+**Piece 9 (completed 2026-09-01):** Debug/eval visualization fps scalars. All three sites
+resolved — `visualize.py:408` (site #19), `multiplex_runner.py:406` (site #13), and
+`post_pipeline_annotator.py:217`. All now read `1.0/nominal_dt_s` from sidecar. No
+hardcoded `30.0` remains. `manifest.fps` write-back retained with sidecar-derived value.
+**Data contract change (Piece 9):** `manifest.fps` in `clip_manifest.json` changed meaning:
+was `CAP_PROP_FPS` (container average rate including gap time, e.g. 14.708), now
+`1.0/nominal_dt_s` (camera cadence from source PTS, e.g. 14.925). Same field, same type,
+different quantity. Pre-Piece-9 manifests carry the container value. This is the same
+pattern as `dt_s` at CP4.D. Consumers: `d2_run.py:117` (diagnostic only), visualization
+writers (annotated.mp4, mat_view.mp4, annotated_post_E.mp4). Nothing validates the value;
+a consumer comparing pre- and post-Piece-9 manifests would mix derivation methods.
+
 **Planned work (checkpoint-2 remaining):**
-- **Piece 9: debug/eval visualization fps scalars.** Site #19 (`visualize.py:408`) DONE —
-  timestamp from parquet `timestamp_ms`, VideoWriter rate from sidecar `nominal_dt_s`.
-  Remaining: sites #13 (`multiplex_runner.py:406`), `post_pipeline_annotator.py:217`.
-- **Piece 5: cross-camera timing.** Site #8 (`cross_camera_evidence.py:275`).
+- **Piece 5: cross-camera timing.** Site #8 (`cross_camera_evidence.py:275`). Blocked on
+  camera fleet, not on work.
 
 **Deferred (lower priority):**
 - CP23b remaining: empty frame injection, bbox size tier filtering, tracklet deduplication

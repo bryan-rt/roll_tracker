@@ -379,15 +379,20 @@ direction that Piece 11 would then partly undo. One change, one measurement.
 
 ### Piece 9 — Fix the A/B instrument
 **Class:** DEL-CONV (timestamp) + FIX-SCALAR (writer) | **Site:** #19 | **Ships:** alone | **Depends:** 2
-**Status:** PARTIALLY COMPLETE (site #19 done, sites #13 + post_pipeline_annotator remaining)
+**Status:** COMPLETE (2026-09-01)
 
 **Scope.** `visualize.py:408` — `timestamp_ms = fi * (1000/cap_fps)` -> read time directly.
 `:327,351` — `VideoWriter` scalar from the sidecar.
-Remaining sites: `multiplex_runner.py:406` (#13), `post_pipeline_annotator.py:217`.
+`multiplex_runner.py:406` (#13) and `post_pipeline_annotator.py:217` — `1.0/nominal_dt_s`
+from sidecar, replacing the `manifest.fps → it.fps → 30.0` fallback chain.
 
-**Done.** Preview overlay timestamps match sidecar `pts_time_s`; preview playback rate correct.
+**Done.** All three sites resolved. No hardcoded `30.0` remains. `annotated_post_E.mp4`
+verified at 118.2s (matches `1.0/nominal_dt_s` expectation; old `30.0` would produce 58.8s,
+`CAP_PROP_FPS` would produce 119.9s). `annotated.mp4` (MuxVisualizer) not regenerated — would
+require re-running Stage A, overwriting the preserved T3 control arm. Site #13's fix is
+verified by shared code path (both sites read `1.0/nominal_dt_s` from sidecar identically).
 
-**Validation.** T1 + visual inspection.
+**Validation.** T1 + visual inspection + duration measurement.
 
 **Placement rationale (section 0.4).** The numeric `correct_id` metric is frame-indexed and
 fps-free — confirmed, `gt2actuals/`, `stage_d/`, `common/` contain no fps or timestamp

@@ -37,7 +37,7 @@ see per-site subsections in Section 2 for the complete six-field record.*
 | 10 | `session_f_run.py:88` | `derive_clip_frame_offset` in export | Yes | **RESOLVED (CP4.C).** Stage F reads `clip_offset_registry.json` from Stage D instead of recomputing. Legacy `derive_clip_frame_offset` removed from Stage F imports. `dur_frames = duration_sec * fps` conversion eliminated (registry carries `clip_frame_count` from sidecar). | P1 | DEL-CONV |
 | 11 | `run.py:444-445` (Stage E) | `frame_index / fps * 1000` timestamp fallback | Dead code | **RESOLVED (Piece 1).** Fallback replaced with PipelineError raise. | P3 | DEAD-VESTIGIAL |
 | 12 | `session_f_run.py:397` | `fps = video_meta.fps if > 0 else 30.0` | Conditional | Hardcoded 30.0 fallback. On post-fix footage, probe returns correct value. | P2 | FIX-SCALAR |
-| 13 | `multiplex_runner.py:406` | `fps = 30.0` fallback | Conditional | Same pattern as #12. | P2 | FIX-SCALAR |
+| 13 | `multiplex_runner.py:406` | `fps = 30.0` fallback | Conditional | **RESOLVED (Piece 9).** Replaced with `1.0/nominal_dt_s` from sidecar. Manifest write-back retained with sidecar-derived value. | P2 | FIX-SCALAR |
 | 14 | `redact.py:387` | `cv2.VideoWriter(..., float(fps), ...)` | Conditional | Receives fps from caller. Correct if caller is correct. | P2 | FIX-SCALAR |
 | 15 | `run.py:331` (Stage F) | `fps = video_meta.fps if > 0 else manifest.fps` | Conditional | Re-probes from video. Diverges from manifest chain. | P2 | FIX-SCALAR |
 | 16 | `run.py:119-123` (Stage F) | `_infer_last_frame = floor(duration_sec * fps) - 1` | Conditional | **RESOLVED (Piece 6).** Uses `person_tracks_df["frame_index"].max()` — fps-free, direct measurement. Both objections (a) and (b) moot. Evidence: `docs/evidence/piece6_results/`. | P2 | DEL-CONV |
@@ -143,13 +143,13 @@ rejected-alternative rationale.
 | #10 | 4 | RESOLVED (CP4.C) |
 | #11 | 1 | RESOLVED |
 | #12 | 7 | RESOLVED (Piece 7): deleted — consumer chain dead (SourceClipInfo.fps never read) |
-| #13 | 9 | Deferred from Piece 7 to Piece 9: debug/eval viz fps scalar, same class as #19 and post_pipeline_annotator:217 |
+| #13 | 9 | RESOLVED (Piece 9): `1.0/nominal_dt_s` from sidecar, same fix at `post_pipeline_annotator.py:217` |
 | #14 | 7 | RESOLVED (Piece 7): nominal_fps from sidecar |
 | #15 | 7 | RESOLVED (Piece 7): independent probe-derived fps deleted, sidecar is sole source |
 | #16 | 6 | RESOLVED (Piece 6): dependency eliminated — `_infer_last_frame` now uses `person_tracks_df["frame_index"].max()`, fps-free. Both original objections (a) per-segment and (b) boundary residual are moot. See `run.py:122-124`. |
 | #17 | 6 | RESOLVED (Piece 6) |
 | #18 | — | AUDIT-ONLY, no fix needed |
-| #19 | 9 | |
+| #19 | 9 | RESOLVED (Piece 9): timestamp from parquet `timestamp_ms`, VideoWriter rate from sidecar `nominal_dt_s` |
 | #20 | 11 | RESOLVED (Piece 10 resolved by 11; subclass implemented, T1+T2 PASS) |
 | #21 | 1 | RESOLVED |
 | #22 | 1 | RESOLVED |
@@ -903,28 +903,11 @@ every downstream consumer.
 ### 2.22 Orchestration — multiplex_runner fps fallback
 
 **Location:** `src/bjj_pipeline/stages/orchestration/multiplex_runner.py:393-406`.
-```python
-fps = float(getattr(manifest, "fps", 0.0) or 0.0)
-if fps <= 0.0:
-    it_fps = float(it.fps or 0.0)
-    fps = it_fps if it_fps > 0.0 else 0.0
-    ...
-if fps <= 0.0:
-    fps = 30.0
-```
 
-**Assumption:** 30.0 hardcoded fallback.
-
-**Currently wrong?** Conditional. On passthrough footage, `manifest.fps` is correct
-(15.0). The 30.0 fallback fires only if both manifest and FrameIterator fail to
-provide fps.
-
-**Error magnitude:** If fallback fires: 2x error on 15fps footage.
-
-**Sidecar replacement:** Same as §2.21.
-
-**Blast radius:** Affects Stage A physics warnings and metadata. Low — the fallback
-path is defensive and rarely fires.
+**RESOLVED (Piece 9).** Three-level fallback chain (`manifest.fps` → `it.fps` → `30.0`)
+replaced with `1.0 / nominal_dt_s` from sidecar. Manifest write-back retained, now
+writing the sidecar-derived cadence value. `post_pipeline_annotator.py:217` received
+the same fix (sidecar-derived fps instead of manifest/fallback chain).
 
 ### 2.23 Orchestration — duration_ms computation
 

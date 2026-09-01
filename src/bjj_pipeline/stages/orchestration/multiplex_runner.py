@@ -388,22 +388,29 @@ def run_multiplex_AC(*,
 
     if need_frames:
         it = FrameIterator(ingest_path)
-        # Single source of truth: manifest.fps (backfilled in ensure_manifest).
-        # Belt-and-suspenders: if manifest fps is missing, fall back to iterator fps and persist it.
-        fps = float(getattr(manifest, "fps", 0.0) or 0.0)
-        if fps <= 0.0:
-            it_fps = float(it.fps or 0.0)
-            fps = it_fps if it_fps > 0.0 else 0.0
-            if fps > 0.0:
-                try:
-                    manifest.fps = float(fps)
-                    # Write back so downstream (e.g., Stage D0 CP3) sees canonical fps.
-                    write_manifest(manifest, layout.clip_manifest_path())
-                except Exception:
-                    # Non-fatal: visualization can still proceed; D0 will fail-fast if fps stays 0.
-                    pass
-        if fps <= 0.0:
-            fps = 30.0
+        # Visualization playback rate from sidecar nominal_dt_s — the camera's
+        # actual per-frame cadence (median interval from source PTS). Deliberately
+        # CFR via cv2.VideoWriter — acceptable for diagnostic preview (annotated.mp4,
+        # mat_view.mp4), not athlete-facing output. See Piece 12 for the VFR fix on
+        # the export path.
+        #
+        # nominal_dt_s is the cadence, not the average rate. The resulting CFR file
+        # is shorter than the source by the sum of gap intervals (gaps are real
+        # missing time that a uniform grid cannot represent). This is preferable to
+        # CAP_PROP_FPS (the clip-average rate including gaps), which smears gap time
+        # across every frame interval, making total duration match while making
+        # individual frame pacing slightly wrong. For a diagnostic instrument,
+        # correct per-frame pacing with a visible gap deficit is more honest than
+        # a smoothed-out duration match.
+        from bjj_pipeline.contracts.f0_sidecar import load_sidecar as _load_sidecar_fps
+        _sidecar_for_fps = _load_sidecar_fps(ingest_path)
+        fps = 1.0 / _sidecar_for_fps.nominal_dt_s
+        # Persist sidecar-derived fps to manifest. Semantic change (Piece 9): was
+        # CAP_PROP_FPS (container average including gaps); now 1.0/nominal_dt_s
+        # (camera cadence from source PTS). Pre-Piece-9 manifests carry the
+        # container value.
+        manifest.fps = float(fps)
+        write_manifest(manifest, layout.clip_manifest_path())
 
         if stage_a_enabled:
             # Lazy imports so unit tests do not require ultralytics/boxmot.
