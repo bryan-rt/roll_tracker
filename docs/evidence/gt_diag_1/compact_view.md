@@ -1542,7 +1542,7 @@ Edge populations: chosen_correct, chosen_wrong, available_not_chosen, no_edge_ex
 
 ---
 
-## GT 7  [ON MAT, 72/1764 frames, 4.1%, area=30456.9]
+## GT 7  [OFF MAT, 72/1764 frames, 4.1%, area=30456.9]
   Calibrated quad: 0.0% in-quad
 
   CORRECT path (tracklet + D1 node the GT boxes map to):

@@ -56,8 +56,7 @@ def render_timeline(
         gt_segs = seq_df[seq_df["gt_track_id"] == gt_id].sort_values("seg_index")
 
         meta = gt_segs.iloc[0]
-        on_mat_col = "on_mat_blueprint" if "on_mat_blueprint" in meta.index else "on_mat"
-        on_mat_str = "ON MAT" if meta[on_mat_col] else "OFF MAT"
+        on_mat_str = "ON MAT" if meta["on_mat"] else "OFF MAT"
         low_conf_str = " *" if meta["low_confidence"] else ""
         in_quad = meta.get("in_quad_pct")
         quad_str = f" [{in_quad}% quad]" if in_quad is not None else ""

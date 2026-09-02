@@ -44,15 +44,14 @@ detection recall alone.
 | 4 | 0.464 | ON MAT | 99.8% | Rolling — heavily under-detected |
 | 5 | 0.748 | ON MAT | 100.0% | On mat |
 | 6 | 0.039 | ON MAT | 100.0% | On mat — nearly invisible to detector |
-| 7 | 0.600 | ON MAT | 0.0% | Present 120 frames, outside quad (x 47.3–49.4), extrapolated |
+| 7 | 0.600 | **OFF MAT** | 0.0% | Present 120 frames, walks past mats (x 47.3–49.4) |
 
-**Mat classification (GT-VERIFY-1):** All 8 GT tracks are on the mat blueprint (x 42–58,
-y 34–58). Criterion: >= 50% of projected contact points within the blueprint bounds, using
-`contact_point_from_bbox` + `project_to_world()` with production H/K/D. In-quad % shows
-the fraction within the calibrated quad (x 51–57, y 34–56) — a strict subset of the mat.
-GT 1 and GT 7 fall outside the quad; their world positions are homography extrapolations
-(less reliable but not off-mat). All detections used `bbox_fallback` (zero masks), so GT
-and tracklets share identical contact-point code.
+**Mat classification (GT-VERIFY-2):** 7 of 8 GT tracks are on the mat. Criterion:
+point-in-any-mat-rectangle from `configs/mat_blueprint.json` — the individual mat surfaces,
+not the blueprint bounding box. GT 7 at x 47.3–49.4, y 51.4–55.9 falls in the gap between
+the left mats (y 34–41 at x<50) and the right mats (x≥50); no mat rectangle covers that
+region. Projection via `contact_point_from_bbox` + `project_to_world()` with production
+H/K/D. All detections used `bbox_fallback` (zero masks).
 
 Track 6 is essentially undetected (39 detections in 1,764 frames). Track 7 is brief
 (120 frames, 60% presence-relative coverage).
@@ -103,13 +102,13 @@ is the authoritative one (it is what the pipeline actually produced).
 | GT track | Canonical | Coverage | Purity | Switches | Mat | Correct_id |
 |----------|-----------|----------|--------|----------|-----|------------|
 | 0 | p0001 | 0.793 | 0.383 | 55 | ON | 67.2% |
-| 1 | p0013 | 0.777 | 0.767 | 48 | OFF | 59.6% |
+| 1 | p0013 | 0.777 | 0.767 | 48 | ON | 59.6% |
 | 2 | p0003 | 0.558 | 0.294 | 134 | ON | 42.7% |
 | 3 | p0010 | 0.657 | 0.544 | 104 | ON | 35.8% |
 | 4 | p0011 | 0.464 | 0.657 | 101 | ON | 30.5% |
 | 5 | p0013 | 0.561 | 0.399 | 70 | ON | 22.4% |
 | 6 | p0009 | 0.031 | 0.426 | 26 | ON | 1.3% |
-| 7 | p0014 | 0.600 | 0.819 | 5 | OFF | 49.2% |
+| 7 | p0014 | 0.600 | 0.819 | 5 | OFF MAT | 49.2% |
 
 **Merger:** p0013 is the canonical person_id for both GT track 1 and GT track 5. The pipeline
 merged two people that are never spatially close — minimum pixel distance 431px, zero IoU
@@ -136,19 +135,16 @@ on clean detections) account for 12%.
 
 ## 3. Observations
 
-### GT track composition — mat classification (GT-VERIFY-1, corrected)
+### GT track composition — mat classification (GT-VERIFY-2, corrected)
 
-All 8 GT tracks are on the mat blueprint (x 42–58, y 34–58). The original classification
-of GT 1 and GT 7 as "off-mat" was an undocumented eyeball judgement. GT-VERIFY-1 replaced it
-with a methodical classification: projected contact points (via `contact_point_from_bbox` +
-`project_to_world()`) checked against the mat blueprint bounds. Criterion: >= 50% in-bounds.
+7 of 8 GT tracks are on the mat; GT 7 is off-mat. Criterion: point-in-any-mat-rectangle
+from `configs/mat_blueprint.json` — the individual mat surfaces, not the blueprint bounding
+box. GT 7 at x 47.3–49.4, y 51.4–55.9 walks past the mats into another room; no mat
+rectangle covers that region (gap between left mats y 34–41 and right mats x≥50).
 
-GT 1 (x 50.1–51.8) and GT 7 (x 47.3–49.4) fall outside the calibrated quad (x 51–57) but
-inside the mat blueprint. Their world positions are homography extrapolations — less reliable
-than in-quad positions, but not off-mat.
-
-The previous 32.9% on-mat / 58.9% off-mat split and the conclusion that "off-mat people are
-easier to detect" are void — there is no off-mat population in this clip.
+GT 1 (x 50.1–51.8) falls outside the calibrated quad (x 51–57) but inside the right-side
+mat rectangles. Its world positions are homography extrapolations — less reliable than
+in-quad positions, but on-mat.
 
 ### Person count: pipeline 17 vs GT 8
 
@@ -182,3 +178,31 @@ correct_id at ~62.3% before identity is even considered. The per-track breakdown
 
 The true merge rate of 73.9% confirms the CP7 finding: most detection misses are
 under-segmentation (one detection covering two grappling people), not total absence.
+
+---
+
+## 5. Recall-gated engagement: the causal chain to product loss (GT-VERIFY-2)
+
+The 62.3% recall cap is not just a metric ceiling — it kills customer-facing output.
+Engagement detection (Stage E) requires BOTH athletes in a pair to be simultaneously
+detected for `engage_min_frames` (15) consecutive frames within `engage_dist_m` (0.75m).
+The pair co-detection rate is approximately the product of individual recalls.
+
+| GT pair | Individual recalls | Co-detection rate | Max consecutive <0.75m | Engagement |
+|---------|-------------------|-------------------|----------------------|------------|
+| gt0↔gt4 | 0.966 × 0.464 | 43.8% (772/1764) | 58 frames | SURVIVED (truncated f692-1735 vs f0-1763) |
+| gt2↔gt3 | 0.558 × 0.668 | 24.9% (440/1764) | 21 frames | SURVIVED (f814-1763) |
+| gt5↔gt6 | 0.749 × 0.039 | 0.2% (4/1764) | **2 frames** | **KILLED** (need 15) |
+
+**GT 5 and GT 6 wrestle for the entire clip. GT 6 has 3.9% recall. They are co-detected in
+4 frames out of 1,764 — never for more than 2 consecutive frames. The engagement state
+machine requires 15 consecutive close frames. No match session is ever created. GT 6 would
+receive no clip.**
+
+The mechanism is not a rate threshold — it is consecutive frames. A pair with 50%
+co-detection scattered as alternating frames would also fail; a pair with 5% in one solid
+90-frame run would succeed. The binding constraint is `engage_min_frames` applied to
+co-detection gaps, not aggregate co-detection rate.
+
+This is the first time the 62.3% recall figure has been connected to customer-facing output:
+low recall → no co-detection → no engagement → no match session → athlete receives nothing.

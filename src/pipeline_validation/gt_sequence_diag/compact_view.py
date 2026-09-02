@@ -81,7 +81,7 @@ def build_compact_view(
         gt_segs = seq_df[seq_df["gt_track_id"] == gt_id].sort_values("seg_index")
         meta = gt_segs.iloc[0]
 
-        on_mat = "ON MAT" if meta["on_mat_blueprint"] else "OFF MAT"
+        on_mat = "ON MAT" if meta["on_mat"] else "OFF MAT"
         low = " *LOW-CONF" if meta["low_confidence"] else ""
         quad_pct = meta.get("in_quad_pct", "?")
 

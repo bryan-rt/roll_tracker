@@ -181,8 +181,10 @@ def render_mat_view_gt(
     camera_id: str = "FP7oJQ",
     mat_blueprint_path: Path = Path("configs/mat_blueprint.json"),
     sidecar_path: Path | None = None,
+    gt_engagements: list | None = None,
+    stage_e_sessions: list | None = None,
 ) -> None:
-    """Render mat_view_gt.mp4 with pipeline points + GT hollow circles."""
+    """Render mat_view_gt.mp4 with pipeline points + GT hollow circles + engagement overlays."""
     sidecar = load_sidecar(sidecar_path or video_path)
     fps = 1.0 / sidecar.nominal_dt_s
     proj = _load_projection(camera_id)
@@ -278,6 +280,91 @@ def render_mat_view_gt(
                         cv2.putText(mat_img, f"GT{gt_id_int}",
                                     (px + 9, py - 2),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.35, gt_col, 1, cv2.LINE_AA)
+
+            # Engagement overlays
+            if gt_frame is not None and blueprint and rects:
+                # Collect GT world positions for this frame
+                gt_world: dict[str, tuple[float, float]] = {}
+                for _, r in gt_frame.iterrows():
+                    gt_id = r["gt_track_id"]
+                    if pd.isna(gt_id) or pd.isna(r.get("gt_x1")):
+                        continue
+                    u, v, _, _ = contact_point_from_bbox(
+                        (r["gt_x1"], r["gt_y1"], r["gt_x2"], r["gt_y2"])
+                    )
+                    x_m, y_m = project_to_world(
+                        (u, v), proj.H, proj.camera_matrix, proj.dist_coefficients
+                    )
+                    if not (np.isnan(x_m) or np.isnan(y_m)):
+                        gt_world[f"gt{int(gt_id)}"] = (x_m, y_m)
+
+                # Draw GT engagement rectangles (green)
+                if gt_engagements:
+                    for iv in gt_engagements:
+                        if iv.start_frame <= fi <= iv.end_frame:
+                            pa, pb = iv.person_id_a, iv.person_id_b
+                            if pa in gt_world and pb in gt_world:
+                                xa, ya = gt_world[pa]
+                                xb, yb = gt_world[pb]
+                                pad = 0.3
+                                rx1 = min(xa, xb) - pad
+                                ry1 = min(ya, yb) - pad
+                                rx2 = max(xa, xb) + pad
+                                ry2 = max(ya, yb) + pad
+                                px1, py1 = to_px(rx1, ry1)
+                                px2, py2 = to_px(rx2, ry2)
+                                overlay = mat_img.copy()
+                                cv2.rectangle(overlay, (px1, py1), (px2, py2),
+                                              (0, 200, 0), -1)
+                                cv2.addWeighted(overlay, 0.15, mat_img, 0.85, 0, mat_img)
+                                cv2.rectangle(mat_img, (px1, py1), (px2, py2),
+                                              (0, 200, 0), 2)
+                                label = f"{pa}<->{pb}"
+                                cv2.putText(mat_img, label,
+                                            (px1 + 2, py1 - 4),
+                                            cv2.FONT_HERSHEY_SIMPLEX, 0.3,
+                                            (0, 200, 0), 1, cv2.LINE_AA)
+
+                # Draw Stage E engagement rectangles (orange dashed)
+                if stage_e_sessions:
+                    # Map pipeline person_id -> GT world positions (approximate via trace)
+                    for sess in stage_e_sessions:
+                        sf, ef = sess["start_frame"], sess["end_frame"]
+                        if sf <= fi <= ef:
+                            dom_a = sess.get("dominant_gt_a")
+                            dom_b = sess.get("dominant_gt_b")
+                            if dom_a is not None and dom_b is not None:
+                                ka = f"gt{dom_a}"
+                                kb = f"gt{dom_b}"
+                                if ka in gt_world and kb in gt_world:
+                                    xa, ya = gt_world[ka]
+                                    xb, yb = gt_world[kb]
+                                    pad = 0.5
+                                    rx1 = min(xa, xb) - pad
+                                    ry1 = min(ya, yb) - pad
+                                    rx2 = max(xa, xb) + pad
+                                    ry2 = max(ya, yb) + pad
+                                    px1, py1 = to_px(rx1, ry1)
+                                    px2, py2 = to_px(rx2, ry2)
+                                    # Dashed effect via short segments
+                                    color = (0, 140, 255)  # orange
+                                    dash_len = 8
+                                    for edge in [
+                                        ((px1, py1), (px2, py1)),
+                                        ((px2, py1), (px2, py2)),
+                                        ((px2, py2), (px1, py2)),
+                                        ((px1, py2), (px1, py1)),
+                                    ]:
+                                        p1, p2 = edge
+                                        dx = p2[0] - p1[0]
+                                        dy = p2[1] - p1[1]
+                                        length = max(int(np.sqrt(dx ** 2 + dy ** 2)), 1)
+                                        for d in range(0, length, dash_len * 2):
+                                            s1 = d / length
+                                            s2 = min((d + dash_len) / length, 1.0)
+                                            sp1 = (int(p1[0] + dx * s1), int(p1[1] + dy * s1))
+                                            sp2 = (int(p1[0] + dx * s2), int(p1[1] + dy * s2))
+                                            cv2.line(mat_img, sp1, sp2, color, 1)
 
             vw.write(mat_img)
             fi += 1

@@ -17,14 +17,29 @@ import numpy as np
 import pandas as pd
 
 
-# Mat blueprint bounds (x=[42,58], y=[34,58]) — the actual mat.
+# Mat rectangles loaded from configs/mat_blueprint.json — individual mat surfaces.
+# Point-in-any-mat-rectangle is the on-mat predicate (GT-VERIFY-2).
+# Blueprint bounding box (x=[42,58], y=[34,58]) is the canvas extent — separate column.
 # Calibrated quad (x=[51.01,57.00], y=[33.96,56.02]) — the homography fit region.
-# Positions outside the quad are homography extrapolations — less reliable but not off-mat.
-MAT_BLUEPRINT_X = (42.0, 58.0)
-MAT_BLUEPRINT_Y = (34.0, 58.0)
+BLUEPRINT_BBOX_X = (42.0, 58.0)
+BLUEPRINT_BBOX_Y = (34.0, 58.0)
 CALIBRATED_QUAD_X = (51.01, 57.00)
 CALIBRATED_QUAD_Y = (33.96, 56.02)
 COVERAGE_FLOOR_PCT = 50.0
+
+
+def _load_mat_rectangles(
+    bp_path: Path = Path("configs/mat_blueprint.json"),
+) -> list[tuple[float, float, float, float]]:
+    """Load mat rectangles from blueprint as (x1, y1, x2, y2) tuples."""
+    bp = json.loads(bp_path.read_text())
+    return [(m["x"], m["y"], m["x"] + m["width"], m["y"] + m["height"]) for m in bp]
+
+
+def _in_any_mat_rectangle(
+    x: float, y: float, rects: list[tuple[float, float, float, float]],
+) -> bool:
+    return any(x1 <= x <= x2 and y1 <= y <= y2 for x1, y1, x2, y2 in rects)
 
 
 def _parse_node_id(val) -> str | None:
@@ -164,11 +179,14 @@ def _compute_on_mat_status(
 ) -> dict[int, dict]:
     """Compute on-mat classification for each GT track using production projection.
 
-    Returns per GT track: on_mat_blueprint, in_quad_pct.
+    Returns per GT track: on_mat (point-in-any-mat-rectangle, GT-VERIFY-2),
+    in_blueprint_pct (canvas bounding box), in_quad_pct (homography fit region).
     Uses contact_point_from_bbox + project_to_world — same path as Stage A.
     """
     from bjj_pipeline.stages.detect_track.quality import contact_point_from_bbox
     from bjj_pipeline.contracts.f0_projection import project_to_world
+
+    mat_rects = _load_mat_rectangles()
 
     pfm = pd.read_parquet(pfm_path)
     matched = pfm[pfm["match_status"] == "matched"].copy()
@@ -176,9 +194,11 @@ def _compute_on_mat_status(
     result = {}
     for gt_id in sorted(matched["gt_track_id"].unique()):
         gt = matched[matched["gt_track_id"] == gt_id]
+        in_rect = 0
         in_bp = 0
         in_quad = 0
         total = 0
+        rect_hits: dict[int, int] = {}
         for _, r in gt.iterrows():
             u, v, _, _ = contact_point_from_bbox(
                 (r["gt_x1"], r["gt_y1"], r["gt_x2"], r["gt_y2"])
@@ -190,18 +210,27 @@ def _compute_on_mat_status(
             if np.isnan(x_m) or np.isnan(y_m):
                 continue
             total += 1
-            if (MAT_BLUEPRINT_X[0] <= x_m <= MAT_BLUEPRINT_X[1]
-                    and MAT_BLUEPRINT_Y[0] <= y_m <= MAT_BLUEPRINT_Y[1]):
+            if _in_any_mat_rectangle(x_m, y_m, mat_rects):
+                in_rect += 1
+                for i, (x1, y1, x2, y2) in enumerate(mat_rects):
+                    if x1 <= x_m <= x2 and y1 <= y_m <= y2:
+                        rect_hits[i] = rect_hits.get(i, 0) + 1
+            if (BLUEPRINT_BBOX_X[0] <= x_m <= BLUEPRINT_BBOX_X[1]
+                    and BLUEPRINT_BBOX_Y[0] <= y_m <= BLUEPRINT_BBOX_Y[1]):
                 in_bp += 1
             if (CALIBRATED_QUAD_X[0] <= x_m <= CALIBRATED_QUAD_X[1]
                     and CALIBRATED_QUAD_Y[0] <= y_m <= CALIBRATED_QUAD_Y[1]):
                 in_quad += 1
 
+        pct_rect = 100.0 * in_rect / total if total > 0 else 0.0
         pct_bp = 100.0 * in_bp / total if total > 0 else 0.0
         pct_quad = 100.0 * in_quad / total if total > 0 else 0.0
         result[int(gt_id)] = {
-            "on_mat_blueprint": pct_bp >= 50.0,
+            "on_mat": pct_rect >= 50.0,
+            "on_mat_pct": round(pct_rect, 1),
+            "in_blueprint_pct": round(pct_bp, 1),
             "in_quad_pct": round(pct_quad, 1),
+            "mat_rectangles": sorted(rect_hits.items(), key=lambda x: -x[1])[:3],
         }
 
     return result
@@ -263,7 +292,9 @@ def build_sequence_table(
         on_mat_status = _compute_on_mat_status(pfm_path, projection)
     else:
         # Fallback: all on-mat (cannot classify without projection)
-        on_mat_status = {int(gt): {"on_mat_blueprint": True, "in_quad_pct": None}
+        on_mat_status = {int(gt): {"on_mat": True, "on_mat_pct": None,
+                                   "in_blueprint_pct": None, "in_quad_pct": None,
+                                   "mat_rectangles": []}
                          for gt in trace["gt_person_id"].unique()}
 
     # Canonical person_id per GT track
@@ -285,7 +316,9 @@ def build_sequence_table(
         low_conf = coverage_presence < COVERAGE_FLOOR_PCT
 
         canon_pid = canonical.get(gt_int)
-        mat_info = on_mat_status.get(gt_int, {"on_mat_blueprint": True, "in_quad_pct": None})
+        mat_info = on_mat_status.get(gt_int, {"on_mat": True, "on_mat_pct": None,
+                                                "in_blueprint_pct": None, "in_quad_pct": None,
+                                                "mat_rectangles": []})
 
         # RLE: group consecutive frames with same (tracklet_id, _node_id, final_person_id)
         seg_index = 0
@@ -371,10 +404,13 @@ def _make_segment_row(
     mode_counts = pd.Series(modes).value_counts()
     dominant_mode = mode_counts.index[0] if len(mode_counts) > 0 else None
 
-    mi = mat_info or {"on_mat_blueprint": True, "in_quad_pct": None}
+    mi = mat_info or {"on_mat": True, "on_mat_pct": None,
+                      "in_blueprint_pct": None, "in_quad_pct": None}
     return {
         "gt_track_id": gt_id,
-        "on_mat_blueprint": mi["on_mat_blueprint"],
+        "on_mat": mi["on_mat"],
+        "on_mat_pct": mi.get("on_mat_pct"),
+        "in_blueprint_pct": mi.get("in_blueprint_pct"),
         "in_quad_pct": mi["in_quad_pct"],
         "gt_matched_frames": matched_count,
         "coverage_clip_pct": round(coverage_clip, 1),

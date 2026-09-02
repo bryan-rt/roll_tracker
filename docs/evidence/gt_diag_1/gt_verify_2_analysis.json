@@ -1,0 +1,854 @@
+{
+  "engagement_config": {
+    "engage_dist_m": 0.75,
+    "disengage_dist_m": 2.0,
+    "engage_min_frames": 15,
+    "hysteresis_frames": 450,
+    "min_clip_duration_frames": 150
+  },
+  "gt_engagements": [
+    {
+      "person_id_a": "gt0",
+      "person_id_b": "gt4",
+      "start_frame": 0,
+      "end_frame": 1763,
+      "partial_start": true,
+      "partial_end": true
+    },
+    {
+      "person_id_a": "gt2",
+      "person_id_b": "gt3",
+      "start_frame": 812,
+      "end_frame": 1763,
+      "partial_start": false,
+      "partial_end": true
+    },
+    {
+      "person_id_a": "gt5",
+      "person_id_b": "gt6",
+      "start_frame": 0,
+      "end_frame": 1763,
+      "partial_start": true,
+      "partial_end": true
+    }
+  ],
+  "recall_gating": {
+    "per_pair": [
+      {
+        "pair": "gt0<->gt4",
+        "gt_frames": "0-1763",
+        "gt_duration": 1763,
+        "recall_a": 0.9659863945578231,
+        "recall_b": 0.4642857142857143,
+        "co_presence": 1764,
+        "co_detected": 772,
+        "co_detection_rate": 0.4376417233560091,
+        "product_recall": 0.4484936831875607,
+        "max_consecutive_below_engage": 58,
+        "engage_min_frames": 15,
+        "survived_matched_only": true,
+        "matched_frames": "692-1735"
+      },
+      {
+        "pair": "gt2<->gt3",
+        "gt_frames": "812-1763",
+        "gt_duration": 951,
+        "recall_a": 0.5578231292517006,
+        "recall_b": 0.6678004535147393,
+        "co_presence": 1764,
+        "co_detected": 440,
+        "co_detection_rate": 0.2494331065759637,
+        "product_recall": 0.3725145386952967,
+        "max_consecutive_below_engage": 21,
+        "engage_min_frames": 15,
+        "survived_matched_only": true,
+        "matched_frames": "814-1763"
+      },
+      {
+        "pair": "gt5<->gt6",
+        "gt_frames": "0-1763",
+        "gt_duration": 1763,
+        "recall_a": 0.7488662131519275,
+        "recall_b": 0.03854875283446712,
+        "co_presence": 1764,
+        "co_detected": 4,
+        "co_detection_rate": 0.0022675736961451248,
+        "product_recall": 0.028867858556877023,
+        "max_consecutive_below_engage": 2,
+        "engage_min_frames": 15,
+        "survived_matched_only": false,
+        "matched_frames": null
+      }
+    ],
+    "gt_recall": {
+      "0": {
+        "matched": 1704,
+        "total": 1764,
+        "recall": 0.9659863945578231
+      },
+      "1": {
+        "matched": 1623,
+        "total": 1764,
+        "recall": 0.9200680272108843
+      },
+      "2": {
+        "matched": 984,
+        "total": 1764,
+        "recall": 0.5578231292517006
+      },
+      "3": {
+        "matched": 1178,
+        "total": 1764,
+        "recall": 0.6678004535147393
+      },
+      "4": {
+        "matched": 819,
+        "total": 1764,
+        "recall": 0.4642857142857143
+      },
+      "5": {
+        "matched": 1321,
+        "total": 1764,
+        "recall": 0.7488662131519275
+      },
+      "6": {
+        "matched": 68,
+        "total": 1764,
+        "recall": 0.03854875283446712
+      },
+      "7": {
+        "matched": 72,
+        "total": 120,
+        "recall": 0.6
+      }
+    }
+  },
+  "threshold_flapping": [
+    {
+      "pair": "gt0<->gt4",
+      "n_frames": 1764,
+      "dist_mean": 0.542,
+      "dist_median": 0.514,
+      "dist_max": 1.299,
+      "below_engage": 1329,
+      "between": 435,
+      "above_disengage": 0,
+      "runs_above_disengage": 0,
+      "max_run_length": 0,
+      "would_emit_disengagement": false,
+      "runs_detail": []
+    },
+    {
+      "pair": "gt2<->gt3",
+      "n_frames": 1764,
+      "dist_mean": 1.834,
+      "dist_median": 0.926,
+      "dist_max": 4.703,
+      "below_engage": 762,
+      "between": 313,
+      "above_disengage": 689,
+      "runs_above_disengage": 1,
+      "max_run_length": 689,
+      "would_emit_disengagement": true,
+      "runs_detail": [
+        {
+          "start_frame": 0,
+          "length": 689
+        }
+      ]
+    },
+    {
+      "pair": "gt5<->gt6",
+      "n_frames": 1764,
+      "dist_mean": 0.362,
+      "dist_median": 0.347,
+      "dist_max": 1.131,
+      "below_engage": 1687,
+      "between": 77,
+      "above_disengage": 0,
+      "runs_above_disengage": 0,
+      "max_run_length": 0,
+      "would_emit_disengagement": false,
+      "runs_detail": []
+    }
+  ],
+  "stage_e_evaluation": {
+    "sessions": [
+      {
+        "person_id_a": "p0001",
+        "person_id_b": "p0002",
+        "start_frame": 0,
+        "end_frame": 424,
+        "duration": 424,
+        "dominant_gt_a": 0,
+        "dominant_gt_b": 4,
+        "category": "CORRECT_ENGAGED",
+        "engaged_weight": {
+          "GT0<->GT4": {
+            "frames": 11,
+            "total": 425,
+            "pct": 2.6
+          }
+        },
+        "composition_a": {
+          "0": 416,
+          "4": 1
+        },
+        "composition_b": {
+          "4": 11,
+          "0": 3
+        }
+      },
+      {
+        "person_id_a": "p0001",
+        "person_id_b": "p0003",
+        "start_frame": 849,
+        "end_frame": 1763,
+        "duration": 914,
+        "dominant_gt_a": 0,
+        "dominant_gt_b": 4,
+        "category": "CORRECT_ENGAGED",
+        "engaged_weight": {
+          "GT0<->GT4": {
+            "frames": 226,
+            "total": 915,
+            "pct": 24.7
+          }
+        },
+        "composition_a": {
+          "0": 489,
+          "4": 54
+        },
+        "composition_b": {
+          "4": 538,
+          "0": 4
+        }
+      },
+      {
+        "person_id_a": "p0001",
+        "person_id_b": "p0005",
+        "start_frame": 632,
+        "end_frame": 1763,
+        "duration": 1131,
+        "dominant_gt_a": 0,
+        "dominant_gt_b": 0,
+        "category": "CONTAMINATED",
+        "engaged_weight": {
+          "GT0<->GT4": {
+            "frames": 22,
+            "total": 1132,
+            "pct": 1.9
+          }
+        },
+        "composition_a": {
+          "0": 571,
+          "4": 171
+        },
+        "composition_b": {
+          "0": 200,
+          "4": 11,
+          "3": 2,
+          "2": 1,
+          "5": 1
+        }
+      },
+      {
+        "person_id_a": "p0001",
+        "person_id_b": "p0006",
+        "start_frame": 355,
+        "end_frame": 744,
+        "duration": 389,
+        "dominant_gt_a": 0,
+        "dominant_gt_b": 4,
+        "category": "CORRECT_ENGAGED",
+        "engaged_weight": {
+          "GT0<->GT4": {
+            "frames": 86,
+            "total": 390,
+            "pct": 22.1
+          }
+        },
+        "composition_a": {
+          "0": 349,
+          "4": 30
+        },
+        "composition_b": {
+          "4": 85,
+          "0": 5
+        }
+      },
+      {
+        "person_id_a": "p0001",
+        "person_id_b": "p0010",
+        "start_frame": 997,
+        "end_frame": 1279,
+        "duration": 282,
+        "dominant_gt_a": 0,
+        "dominant_gt_b": 0,
+        "category": "PHANTOM",
+        "engaged_weight": {},
+        "composition_a": {
+          "0": 43
+        },
+        "composition_b": {
+          "0": 1
+        }
+      },
+      {
+        "person_id_a": "p0003",
+        "person_id_b": "p0004",
+        "start_frame": 0,
+        "end_frame": 1125,
+        "duration": 1125,
+        "dominant_gt_a": 2,
+        "dominant_gt_b": 2,
+        "category": "CONTAMINATED",
+        "engaged_weight": {
+          "GT2<->GT3": {
+            "frames": 109,
+            "total": 1126,
+            "pct": 9.7
+          }
+        },
+        "composition_a": {
+          "2": 396,
+          "4": 214,
+          "3": 12
+        },
+        "composition_b": {
+          "2": 369,
+          "3": 271,
+          "5": 4
+        }
+      },
+      {
+        "person_id_a": "p0003",
+        "person_id_b": "p0005",
+        "start_frame": 997,
+        "end_frame": 1763,
+        "duration": 766,
+        "dominant_gt_a": 4,
+        "dominant_gt_b": 0,
+        "category": "CORRECT_ENGAGED",
+        "engaged_weight": {
+          "GT0<->GT4": {
+            "frames": 150,
+            "total": 767,
+            "pct": 19.6
+          }
+        },
+        "composition_a": {
+          "4": 439,
+          "0": 4
+        },
+        "composition_b": {
+          "0": 185,
+          "5": 1
+        }
+      },
+      {
+        "person_id_a": "p0003",
+        "person_id_b": "p0007",
+        "start_frame": 223,
+        "end_frame": 1426,
+        "duration": 1203,
+        "dominant_gt_a": 4,
+        "dominant_gt_b": 5,
+        "category": "CONTAMINATED",
+        "engaged_weight": {
+          "GT2<->GT3": {
+            "frames": 0,
+            "total": 1204,
+            "pct": 0.0
+          }
+        },
+        "composition_a": {
+          "4": 421,
+          "2": 390,
+          "3": 12
+        },
+        "composition_b": {
+          "5": 244,
+          "2": 33,
+          "6": 23
+        }
+      },
+      {
+        "person_id_a": "p0003",
+        "person_id_b": "p0010",
+        "start_frame": 997,
+        "end_frame": 1279,
+        "duration": 282,
+        "dominant_gt_a": 4,
+        "dominant_gt_b": 0,
+        "category": "CORRECT_ENGAGED",
+        "engaged_weight": {
+          "GT0<->GT4": {
+            "frames": 1,
+            "total": 283,
+            "pct": 0.4
+          }
+        },
+        "composition_a": {
+          "4": 194
+        },
+        "composition_b": {
+          "0": 1
+        }
+      },
+      {
+        "person_id_a": "p0003",
+        "person_id_b": "p0012",
+        "start_frame": 619,
+        "end_frame": 1763,
+        "duration": 1144,
+        "dominant_gt_a": 4,
+        "dominant_gt_b": 3,
+        "category": "CONTAMINATED",
+        "engaged_weight": {
+          "GT2<->GT3": {
+            "frames": 0,
+            "total": 1145,
+            "pct": 0.0
+          }
+        },
+        "composition_a": {
+          "4": 538,
+          "2": 78,
+          "3": 12,
+          "0": 4
+        },
+        "composition_b": {
+          "3": 505,
+          "2": 33,
+          "5": 10,
+          "6": 1
+        }
+      },
+      {
+        "person_id_a": "p0004",
+        "person_id_b": "p0005",
+        "start_frame": 704,
+        "end_frame": 1763,
+        "duration": 1059,
+        "dominant_gt_a": 2,
+        "dominant_gt_b": 0,
+        "category": "CONTAMINATED",
+        "engaged_weight": {
+          "GT2<->GT3": {
+            "frames": 2,
+            "total": 1060,
+            "pct": 0.2
+          }
+        },
+        "composition_a": {
+          "2": 290,
+          "3": 184,
+          "5": 4
+        },
+        "composition_b": {
+          "0": 200,
+          "3": 2,
+          "4": 1,
+          "2": 1,
+          "5": 1
+        }
+      },
+      {
+        "person_id_a": "p0004",
+        "person_id_b": "p0010",
+        "start_frame": 473,
+        "end_frame": 1279,
+        "duration": 806,
+        "dominant_gt_a": 3,
+        "dominant_gt_b": 3,
+        "category": "CONTAMINATED",
+        "engaged_weight": {
+          "GT2<->GT3": {
+            "frames": 0,
+            "total": 807,
+            "pct": 0.0
+          }
+        },
+        "composition_a": {
+          "3": 283,
+          "2": 170,
+          "5": 4
+        },
+        "composition_b": {
+          "3": 14,
+          "0": 1
+        }
+      },
+      {
+        "person_id_a": "p0004",
+        "person_id_b": "p0011",
+        "start_frame": 781,
+        "end_frame": 1255,
+        "duration": 474,
+        "dominant_gt_a": 3,
+        "dominant_gt_b": 3,
+        "category": "CONTAMINATED",
+        "engaged_weight": {
+          "GT2<->GT3": {
+            "frames": 54,
+            "total": 475,
+            "pct": 11.4
+          }
+        },
+        "composition_a": {
+          "3": 145,
+          "2": 121,
+          "5": 4
+        },
+        "composition_b": {
+          "3": 83,
+          "5": 80,
+          "2": 11
+        }
+      },
+      {
+        "person_id_a": "p0004",
+        "person_id_b": "p0012",
+        "start_frame": 701,
+        "end_frame": 1763,
+        "duration": 1062,
+        "dominant_gt_a": 2,
+        "dominant_gt_b": 3,
+        "category": "CORRECT_ENGAGED",
+        "engaged_weight": {
+          "GT5<->GT6": {
+            "frames": 0,
+            "total": 1063,
+            "pct": 0.0
+          },
+          "GT2<->GT3": {
+            "frames": 57,
+            "total": 1063,
+            "pct": 5.4
+          }
+        },
+        "composition_a": {
+          "2": 290,
+          "3": 187,
+          "5": 4
+        },
+        "composition_b": {
+          "3": 505,
+          "2": 33,
+          "5": 10,
+          "6": 1
+        }
+      },
+      {
+        "person_id_a": "p0005",
+        "person_id_b": "p0010",
+        "start_frame": 0,
+        "end_frame": 1279,
+        "duration": 1279,
+        "dominant_gt_a": 1,
+        "dominant_gt_b": 3,
+        "category": "CONTAMINATED",
+        "engaged_weight": {
+          "GT2<->GT3": {
+            "frames": 0,
+            "total": 1280,
+            "pct": 0.0
+          },
+          "GT0<->GT4": {
+            "frames": 0,
+            "total": 1280,
+            "pct": 0.0
+          }
+        },
+        "composition_a": {
+          "1": 269,
+          "0": 200,
+          "5": 118,
+          "4": 11,
+          "3": 2,
+          "2": 1
+        },
+        "composition_b": {
+          "3": 14,
+          "1": 2,
+          "0": 1
+        }
+      },
+      {
+        "person_id_a": "p0005",
+        "person_id_b": "p0011",
+        "start_frame": 781,
+        "end_frame": 1259,
+        "duration": 478,
+        "dominant_gt_a": 0,
+        "dominant_gt_b": 3,
+        "category": "CONTAMINATED",
+        "engaged_weight": {
+          "GT2<->GT3": {
+            "frames": 0,
+            "total": 479,
+            "pct": 0.0
+          }
+        },
+        "composition_a": {
+          "0": 185,
+          "3": 2
+        },
+        "composition_b": {
+          "3": 83,
+          "5": 80,
+          "2": 11
+        }
+      },
+      {
+        "person_id_a": "p0006",
+        "person_id_b": "p0009",
+        "start_frame": 0,
+        "end_frame": 744,
+        "duration": 744,
+        "dominant_gt_a": 4,
+        "dominant_gt_b": 1,
+        "category": "CONTAMINATED",
+        "engaged_weight": {
+          "GT5<->GT6": {
+            "frames": 1,
+            "total": 745,
+            "pct": 0.1
+          }
+        },
+        "composition_a": {
+          "4": 85,
+          "5": 35,
+          "3": 25,
+          "0": 5,
+          "6": 2
+        },
+        "composition_b": {
+          "1": 165,
+          "6": 27,
+          "5": 13
+        }
+      },
+      {
+        "person_id_a": "p0006",
+        "person_id_b": "p0011",
+        "start_frame": 40,
+        "end_frame": 744,
+        "duration": 704,
+        "dominant_gt_a": 4,
+        "dominant_gt_b": 5,
+        "category": "PHANTOM",
+        "engaged_weight": {},
+        "composition_a": {
+          "4": 85,
+          "3": 25,
+          "0": 5,
+          "5": 3
+        },
+        "composition_b": {
+          "5": 89,
+          "3": 63,
+          "1": 4
+        }
+      },
+      {
+        "person_id_a": "p0007",
+        "person_id_b": "p0008",
+        "start_frame": 0,
+        "end_frame": 1411,
+        "duration": 1411,
+        "dominant_gt_a": 5,
+        "dominant_gt_b": 3,
+        "category": "CONTAMINATED",
+        "engaged_weight": {
+          "GT2<->GT3": {
+            "frames": 0,
+            "total": 1412,
+            "pct": 0.0
+          }
+        },
+        "composition_a": {
+          "5": 244,
+          "2": 33,
+          "6": 23
+        },
+        "composition_b": {
+          "3": 129,
+          "1": 45
+        }
+      },
+      {
+        "person_id_a": "p0008",
+        "person_id_b": "p0009",
+        "start_frame": 531,
+        "end_frame": 1763,
+        "duration": 1232,
+        "dominant_gt_a": 1,
+        "dominant_gt_b": 1,
+        "category": "PHANTOM",
+        "engaged_weight": {},
+        "composition_a": {
+          "1": 45
+        },
+        "composition_b": {
+          "1": 1052
+        }
+      },
+      {
+        "person_id_a": "p0008",
+        "person_id_b": "p0011",
+        "start_frame": 487,
+        "end_frame": 1259,
+        "duration": 772,
+        "dominant_gt_a": 1,
+        "dominant_gt_b": 5,
+        "category": "PHANTOM",
+        "engaged_weight": {},
+        "composition_a": {
+          "1": 45
+        },
+        "composition_b": {
+          "5": 169,
+          "3": 83,
+          "2": 11,
+          "1": 4
+        }
+      },
+      {
+        "person_id_a": "p0009",
+        "person_id_b": "p0012",
+        "start_frame": 79,
+        "end_frame": 1190,
+        "duration": 1111,
+        "dominant_gt_a": 1,
+        "dominant_gt_b": 5,
+        "category": "CONTAMINATED",
+        "engaged_weight": {
+          "GT5<->GT6": {
+            "frames": 2,
+            "total": 1112,
+            "pct": 0.2
+          }
+        },
+        "composition_a": {
+          "1": 594,
+          "5": 12,
+          "6": 4
+        },
+        "composition_b": {
+          "5": 388,
+          "3": 100,
+          "2": 4,
+          "6": 1
+        }
+      },
+      {
+        "person_id_a": "p0011",
+        "person_id_b": "p0012",
+        "start_frame": 11,
+        "end_frame": 1259,
+        "duration": 1248,
+        "dominant_gt_a": 5,
+        "dominant_gt_b": 5,
+        "category": "CONTAMINATED",
+        "engaged_weight": {
+          "GT5<->GT6": {
+            "frames": 0,
+            "total": 1249,
+            "pct": 0.0
+          },
+          "GT2<->GT3": {
+            "frames": 1,
+            "total": 1249,
+            "pct": 0.1
+          }
+        },
+        "composition_a": {
+          "5": 169,
+          "3": 149,
+          "2": 11,
+          "1": 4
+        },
+        "composition_b": {
+          "5": 388,
+          "3": 150,
+          "2": 12,
+          "6": 1
+        }
+      }
+    ],
+    "summary": {
+      "total": 23,
+      "correct_engaged": 6,
+      "contaminated": 13,
+      "phantom": 4,
+      "gt_target": 3,
+      "gt_pairs_covered": 2,
+      "gt_pairs_missing": [
+        "GT5<->GT6"
+      ]
+    }
+  },
+  "partner_tolerant": {
+    "strict_correct_id": 4275,
+    "partner_tolerant_correct_id": 4665,
+    "total": 12475,
+    "strict_pct": 34.3,
+    "tolerant_pct": 37.4
+  },
+  "occlusion": {
+    "total_no_detection": 4703,
+    "overlapping": 4217,
+    "no_overlap": 486,
+    "per_gt": {
+      "0": {
+        "total_no_det": 60,
+        "overlapping": 60,
+        "no_overlap": 0
+      },
+      "1": {
+        "total_no_det": 141,
+        "overlapping": 2,
+        "no_overlap": 139
+      },
+      "2": {
+        "total_no_det": 780,
+        "overlapping": 770,
+        "no_overlap": 10
+      },
+      "3": {
+        "total_no_det": 587,
+        "overlapping": 284,
+        "no_overlap": 303
+      },
+      "4": {
+        "total_no_det": 946,
+        "overlapping": 946,
+        "no_overlap": 0
+      },
+      "5": {
+        "total_no_det": 444,
+        "overlapping": 444,
+        "no_overlap": 0
+      },
+      "6": {
+        "total_no_det": 1697,
+        "overlapping": 1697,
+        "no_overlap": 0
+      },
+      "7": {
+        "total_no_det": 48,
+        "overlapping": 14,
+        "no_overlap": 34
+      }
+    },
+    "no_overlap_flicker": 91,
+    "no_overlap_sustained": 395,
+    "no_overlap_area_median": 6813.5,
+    "no_overlap_area_mean": 28100.2,
+    "no_overlap_area_min": 3089.9,
+    "no_overlap_area_max": 100089.5
+  },
+  "frame_based_threshold_note": "hysteresis_frames=450 and min_clip_duration_frames=150 are frame-count-based. At ~15fps these are ~30s and ~10s; at 30fps they would be ~15s and ~5s. These should arguably be time-based (analogous to the variable-dt Kalman work) but are NOT changed here \u2014 one clip is not a basis, and the dominant cause of the 23-vs-3 session gap is upstream person_id fragmentation, not threshold tuning."
+}
