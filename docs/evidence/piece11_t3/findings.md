@@ -201,3 +201,22 @@ from `detections.parquet:timestamp_ms`. T1 verified that all 1,764 frames in the
 match the sidecar's `pts_time_s × 1000` exactly (0 mismatches). This independently confirms
 that the parquet timestamp carrier agrees with the sidecar on real post-fix footage — the
 assertion Piece 4 established and this measures.
+
+---
+
+## 10. SUPERSEDED BY CORRECTNESS DECISION (VDT-DEFAULT-1, 2026-09-01)
+
+**The T3 measurement stands as recorded.** correct_id 37.2% (control) → 34.3% (treatment),
+-2.9pp, on one clip at 2.1% gap rate. The number is not retracted.
+
+**The conclusion drawn from it — that variable_dt should remain off — is superseded.** A
+Kalman filter that assumes uniform frame spacing on genuinely variable footage is being fed a
+falsehood. When the real interval is 133ms and the filter predicts as though it were 67ms, the
+motion model is wrong regardless of what the aggregate score does on one clip. Correctness does
+not lose to a 2.9pp result at 2.1% dispersion — close to the worst case for demonstrating
+benefit (§7 scope limit 1).
+
+The default was flipped to `variable_dt: true` in `configs/default.yaml` on 2026-09-01.
+
+This is the sixth inversion of the identity-corruption lever (§7 scope limit 3). The five
+preceding inversions are in CLAUDE.md "Overturned Conclusions."

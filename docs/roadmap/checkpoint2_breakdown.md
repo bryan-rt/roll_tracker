@@ -436,7 +436,7 @@ replaces both KF sites (`self.kalman_filter` and `STrack.shared_kalman`) and ove
 eliminating `frame_rate` entirely. Piece 8 dissolved into this piece.
 
 Module: `src/bjj_pipeline/tracking/` (subclasses, not vendored copy).
-Toggle: `stages.stage_A.tracker.variable_dt: true/false` (default false).
+Toggle: `stages.stage_A.tracker.variable_dt` in `configs/default.yaml` (default **true** since VDT-DEFAULT-1).
 Config: `stages.stage_A.tracker.max_lost_seconds: 2.0`.
 
 **Done.** T1 PASS (constant-cadence segment matches stock bit-for-bit, 500 comparisons, 0

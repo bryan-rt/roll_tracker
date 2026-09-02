@@ -527,10 +527,10 @@ def run_multiplex_AC(*,
                     params = _botsort_params_with_defaults(resolved_config, params, with_reid=with_reid)
 
                     # Variable-dt tracker: load sidecar and pass to adapter.
+                    # Source of truth: configs/default.yaml stages.stage_A.tracker.
                     variable_dt = bool(_cfg_get(
                         resolved_config,
                         "stages.stage_A.tracker.variable_dt",
-                        _cfg_get(resolved_config, "tracker.variable_dt", False),
                     ))
                     sidecar_data = None
                     if variable_dt:
@@ -539,7 +539,6 @@ def run_multiplex_AC(*,
                     max_lost_seconds = float(_cfg_get(
                         resolved_config,
                         "stages.stage_A.tracker.max_lost_seconds",
-                        _cfg_get(resolved_config, "tracker.max_lost_seconds", 2.0),
                     ))
 
                     tracker = BotSortTracker(

@@ -75,6 +75,8 @@ stages:
       mode: botsort
       with_reid: false
       use_mask_bbox: true
+      variable_dt: true
+      max_lost_seconds: 2.0
       params: {}
       physics:
         audit_only: true
