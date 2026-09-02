@@ -1,0 +1,185 @@
+{
+  "clip_id": "FP7oJQ-20260822-132650",
+  "camera_id": "FP7oJQ",
+  "rule": "(c) >= 50% overlap fraction",
+  "merge_set": {
+    "tracklets_before": 66,
+    "tracklets_removed": 23,
+    "tracklets_after": 43,
+    "merge_groups": 6,
+    "excluded_by_rule_c": 2,
+    "excluded_details": {
+      "t137": {
+        "canonical": "t4",
+        "total_frames": 455,
+        "overlap_frames": 73,
+        "ratio": 0.16,
+        "gt": 5
+      },
+      "t90": {
+        "canonical": "t3",
+        "total_frames": 143,
+        "overlap_frames": 4,
+        "ratio": 0.028,
+        "gt": 2
+      }
+    }
+  },
+  "dropped_detections": {
+    "total": 972,
+    "gt_matched": 736
+  },
+  "metrics": {
+    "person_count": {
+      "dedup": 15,
+      "baseline": 17,
+      "gt": 8
+    },
+    "correct_id_strict": {
+      "dedup": 31.6,
+      "baseline": 34.3,
+      "delta": -2.7
+    },
+    "correct_id_tolerant": {
+      "dedup": 33.5,
+      "baseline": 37.4,
+      "delta": -3.9
+    },
+    "sessions": {
+      "dedup_total": 15,
+      "dedup_correct": 1,
+      "dedup_contaminated": 12,
+      "dedup_phantom": 2,
+      "baseline_total": 23,
+      "baseline_correct": 6,
+      "baseline_contaminated": 13,
+      "baseline_phantom": 4,
+      "gt_target": 3
+    }
+  },
+  "per_gt_residual": {
+    "0": {
+      "n_person_ids": 8,
+      "person_ids": [
+        "p0001",
+        "p0002",
+        "p0003",
+        "p0004",
+        "p0005",
+        "p0007",
+        "p0008",
+        "p0011"
+      ],
+      "correct_pct": 40.0,
+      "correct_frames": 705,
+      "total_frames": 1764,
+      "canonical_pid": "p0003"
+    },
+    "1": {
+      "n_person_ids": 3,
+      "person_ids": [
+        "p0005",
+        "p0006",
+        "p0009"
+      ],
+      "correct_pct": 59.9,
+      "correct_frames": 1057,
+      "total_frames": 1764,
+      "canonical_pid": "p0006"
+    },
+    "2": {
+      "n_person_ids": 8,
+      "person_ids": [
+        "p0001",
+        "p0002",
+        "p0003",
+        "p0007",
+        "p0008",
+        "p0010",
+        "p0011",
+        "p0015"
+      ],
+      "correct_pct": 44.8,
+      "correct_frames": 790,
+      "total_frames": 1764,
+      "canonical_pid": "p0001"
+    },
+    "3": {
+      "n_person_ids": 10,
+      "person_ids": [
+        "p0001",
+        "p0002",
+        "p0003",
+        "p0006",
+        "p0007",
+        "p0008",
+        "p0009",
+        "p0010",
+        "p0011",
+        "p0015"
+      ],
+      "correct_pct": 26.7,
+      "correct_frames": 471,
+      "total_frames": 1764,
+      "canonical_pid": "p0007"
+    },
+    "4": {
+      "n_person_ids": 8,
+      "person_ids": [
+        "p0001",
+        "p0002",
+        "p0003",
+        "p0004",
+        "p0005",
+        "p0007",
+        "p0008",
+        "p0011"
+      ],
+      "correct_pct": 16.2,
+      "correct_frames": 285,
+      "total_frames": 1764,
+      "canonical_pid": "p0002"
+    },
+    "5": {
+      "n_person_ids": 6,
+      "person_ids": [
+        "p0001",
+        "p0006",
+        "p0007",
+        "p0008",
+        "p0010",
+        "p0011"
+      ],
+      "correct_pct": 31.2,
+      "correct_frames": 550,
+      "total_frames": 1764,
+      "canonical_pid": "p0010"
+    },
+    "6": {
+      "n_person_ids": 4,
+      "person_ids": [
+        "p0006",
+        "p0007",
+        "p0010",
+        "p0011"
+      ],
+      "correct_pct": 1.4,
+      "correct_frames": 25,
+      "total_frames": 1764,
+      "canonical_pid": "p0006"
+    },
+    "7": {
+      "n_person_ids": 2,
+      "person_ids": [
+        "p0012",
+        "p0014"
+      ],
+      "correct_pct": 49.2,
+      "correct_frames": 59,
+      "total_frames": 120,
+      "canonical_pid": "p0012"
+    }
+  },
+  "identity_hints_cleared": true,
+  "ceiling_caveat": "GT-labelled ceiling \u2014 strictly better than any real deduplicator. DEDUP-MEASURE-1 found physically-motivated features do not separate (sep_m 0.616, motion_corr 0.704, containment 0.537, IoU 0.504). One clip; no base-rate claim."
+}
