@@ -1,10 +1,10 @@
-# DEDUP-CEILING-1: What would perfect deduplication actually buy?
+# DEDUP-CEILING-1/1a: What would perfect deduplication actually buy?
 
 **Date:** 2026-09-02
 **Clip:** FP7oJQ-20260822-132650 (1,764 frames, ~118s)
 **Method:** Approach (A) — full D0-D4 + Stage E re-run with merged tracklets
 **Rule:** (c) >= 50% overlap fraction — merge only tracklets that are >=50% concurrent
-with their canonical hub
+with their canonical hub. Reconciliation: higher-confidence-wins (sensitivity-tested in 1a).
 
 ---
 
@@ -22,8 +22,14 @@ discriminator) **worsens** every measured metric:
 | CORRECT_ENGAGED | 6 | 1 | -5 | - |
 | CONTAMINATED | 13 | 12 | -1 | - |
 | PHANTOM | 4 | 2 | -2 | - |
+| No-edge boundaries | 63 | 21 | -42 | - |
+| No-edge on GT 2 | 40 | 3 | -37 | - |
 
-**Perfect dedup buys nothing. It actively hurts.**
+**Perfect dedup buys nothing on identity or sessions. It actively hurts.** The only metric
+that improves is no-edge boundary count (-42), confirming that concurrent tracklets were the
+flicker mechanism — but eliminating flicker at the cost of -2.7pp correct_id is not a trade
+worth making, and the flicker was already diagnosed as an evaluation artifact (NOEDGE-1),
+not a pipeline defect.
 
 ---
 
@@ -102,24 +108,97 @@ the best-tracked person pre-dedup (isolated, outside the grappling core).
 
 ---
 
-## 3. correct_id: 34.3% -> 31.6% (-2.7pp strict), 37.4% -> 33.5% (-3.9pp tolerant)
+## 3. Why merging is intrinsically lossy (DEDUP-CEILING-1a)
 
-**Perfect dedup LOWERED correct_id.** The mechanism:
+The -2.7pp loss is **not** an artifact of the reconciliation rule. It is intrinsic to
+dropping one of two concurrent detections.
 
-- **972 detections dropped** (higher-confidence-wins on overlap frames). Of these,
-  **736 were GT-matched** (75.7%). Each dropped GT-matched detection is a frame where
-  the GT person was detected but the detection was discarded by dedup.
-- Only 63 new GT matches gained (the Hungarian matcher found better matches on some
-  frames after removing competitors).
-- Net: **-673 GT-matched detections**. This directly reduces the denominator's matched
-  fraction, lowering correct_id.
+### The irreducible floor
 
-The dedup is self-defeating: the "duplicate" detections were carrying GT signal. Removing
-them removes signal.
+Of the 972 conflict pairs (two detections on the same GT person at the same frame):
+
+| Population | Count | % |
+|---|---|---|
+| **Both GT-matched** | **664** | **68.3%** |
+| Exactly one GT-matched | 306 | 31.5% |
+| Neither GT-matched | 2 | 0.2% |
+
+**On 68.3% of conflict frames, both detections are GT-matched.** No reconciliation rule can
+avoid dropping a GT-matched detection on these frames — one of two valid boxes must go. This
+is the irreducible cost of merging concurrent detections.
+
+### Reconciliation rule sensitivity
+
+| Rule | GT-matched dropped | % of 972 | Margin over oracle |
+|---|---|---|---|
+| **(b) oracle (higher GT IoU)** | **664** | **68.3%** | **0 (floor)** |
+| (c) larger box | 699 | 71.9% | +35 |
+| **(a) higher confidence (used)** | **736** | **75.7%** | **+72** |
+| (d) smaller box | 935 | 96.2% | +271 |
+
+Rule (b) is an oracle — it uses GT IoU to choose and is not implementable. It establishes
+the floor: even the perfect reconciliation rule drops 664 GT-matched detections (68.3%).
+
+The practical spread between rules is 37 detections (larger-box vs higher-confidence), or
+**~0.3pp of correct_id**. Even the oracle recovers only 72 detections over higher-confidence,
+or **~0.6pp**. Neither changes the net-negative verdict.
+
+### Why larger-box aligns better with GT preference
+
+In the 306 exactly-one-matched cases, the canonical tracklet (longer) is:
+- **Larger** 86.6% of the time
+- **GT-matched** 84.3% of the time
+
+This is a structural relationship: the canonical tracklet tends to be tracking the person
+the GT matcher also tracks, and its detections are physically larger because it is the
+primary track on that person. Larger-box picks the canonical (and thus the GT-matched one)
+88.6% of the time vs higher-confidence's 76.5%.
+
+### Mechanism summary
+
+The loss decomposes as:
+
+| Component | GT-matched drops | correct_id impact |
+|---|---|---|
+| Irreducible (both matched) | 664 | ~-2.1pp |
+| Rule-specific (one matched, chose wrong) | 72 (conf) / 35 (larger) | ~-0.3 to -0.6pp |
+| **Total** | **736 (conf) / 699 (larger)** | **~-2.4 to -2.7pp** |
+
+**Merging is intrinsically lossy because the detector emits two valid-looking boxes for one
+body on 68.3% of concurrent frames, and the GT matcher accepts both.** The reconciliation
+rule is a rounding error on top of the structural cost.
 
 ---
 
-## 4. Sessions: 23 -> 15, CORRECT_ENGAGED 6 -> 1
+## 4. NOEDGE-1 measurement (previously unmeasured)
+
+GT-DIAG-1 run against the scratch pipeline-dir:
+
+| GT | No-edge (baseline) | No-edge (dedup) | Delta |
+|---|---|---|---|
+| 0 | 14 | 5 | -9 |
+| 1 | 1 | 0 | -1 |
+| **2** | **40** | **3** | **-37** |
+| 3 | 7 | 7 | 0 |
+| 4 | 1 | 4 | +3 |
+| 5 | 0 | 1 | +1 |
+| 6 | 0 | 1 | +1 |
+| 7 | 0 | 0 | 0 |
+| **Total** | **63** | **21** | **-42** |
+
+**GT 2's 40 no-edge boundaries collapsed to 3** (-37). The mechanism is confirmed: the
+concurrent tracklets (t3 x t47, 233 overlap frames) caused GT-matcher assignment flicker
+between them. Merging eliminates the flicker by construction.
+
+The total dropped from 63 to 21 (-42), confirming that the majority of baseline no-edge
+boundaries were concurrent-tracklet flicker, consistent with NOEDGE-1's diagnosis of them
+as evaluation artifacts rather than pipeline defects.
+
+GT 4 gained 3 no-edge boundaries — a second-order effect of the changed D1 graph structure.
+
+---
+
+## 5. Sessions: 23 -> 15, CORRECT_ENGAGED 6 -> 1
 
 Fewer sessions (closer to the GT target of 3), but the collapse is almost entirely in
 CORRECT_ENGAGED (-5) and PHANTOM (-2). CONTAMINATED barely moved (-1).
@@ -131,7 +210,7 @@ frames from the merged tracklets).
 
 ---
 
-## 5. What perfect dedup does NOT fix
+## 6. What perfect dedup does NOT fix
 
 **Everything that matters:**
 
@@ -157,25 +236,26 @@ frames from the merged tracklets).
 
 ---
 
-## 6. Dropped detection analysis
+## 7. Dual-box observation (detector-level)
 
-| Metric | Count |
-|---|---|
-| Total detections dropped | 972 |
-| GT-matched dropped | 736 (75.7%) |
-| Non-GT-matched dropped | 236 (24.3%) |
-| New GT matches gained | 63 |
-| Net GT-matched change | -673 |
+The 68.3% both-GT-matched rate reveals a detector-level phenomenon: **two valid-looking
+detection boxes for one physical person on the same frame.** The Hungarian matcher (IoU 0.5)
+accepts both as valid matches to the same GT person.
 
-The higher-confidence-wins reconciliation rule systematically drops the GT-matched
-detection in 75.7% of cases. This is because the "duplicate" detection often has a
-BETTER localization of the person (it was the one the Hungarian matcher preferred),
-while the canonical tracklet's detection on that same frame is the one tracking a
-different person through the pair-box area.
+This is the mirror image of the pair-box (under-segmentation) finding from CP7:
+- **Pair-box:** one box covers two people (23.1% of GT-person-frames in the pre-VFR decomposition)
+- **Dual-box:** two boxes cover one person (68.3% of concurrent-tracklet overlap frames)
+
+Both are detector-level observations, not Stage D problems. The dual-box phenomenon may
+contribute to tracker fragmentation (BoT-SORT spawns a second track on the spurious box)
+and to the concurrent-tracklet population itself. It connects to the existing detection-model
+work (CP23b) as a potential training signal: penalizing double-coverage of single bodies.
+
+**Observation only — do not investigate here.** Record for detection-model work.
 
 ---
 
-## 7. Ceiling framing
+## 8. Ceiling framing
 
 This is a **GT-labelled ceiling** — strictly better than any real deduplicator could
 achieve. No real system has access to the GT labels that define which tracklets are
@@ -189,7 +269,9 @@ NESTED from GENUINE:
 
 **Perfect dedup would buy X = nothing positive; no discriminator we have measured could
 deliver even that.** The finding is stronger than expected: not only is dedup
-unachievable, but even if achieved perfectly it would be harmful.
+unachievable, but even if achieved perfectly it would be harmful — and the harm is
+intrinsic to merging (68.3% irreducible), not a property of the reconciliation rule
+(0.3-0.6pp marginal).
 
 **One clip. No base-rate claim.** This is FP7oJQ-20260822-132650, a 2-minute clip with
 8 people in a challenging grappling scenario. Other clips with different concurrent-
@@ -197,7 +279,24 @@ overlap patterns could yield different results.
 
 ---
 
-## 8. Implication for the over-dedup strategy
+## 9. Dedup line: CLOSED
+
+Two independent legs:
+
+1. **DEDUP-MEASURE-1:** No physically-motivated discriminator separates NESTED from GENUINE
+   concurrent tracklets. The best-separating feature (`life_ratio` 0.950) was rejected for
+   having no mechanism and being uncomputable while tracklets are live.
+
+2. **DEDUP-CEILING-1/1a:** Even perfect GT-labelled dedup is net negative (-2.7pp correct_id),
+   and the loss is intrinsic (68.3% irreducible from both-GT-matched pairs), not rule-specific
+   (practical rules differ by 0.3pp). Merging concurrent detections destroys signal that the
+   pipeline uses for identity assignment.
+
+**Do not build deduplication.** The reasoning is recorded here so it is not re-proposed.
+
+---
+
+## 10. Implication for the over-dedup strategy
 
 The task brief considered an over-deduplication strategy: merge aggressively, rely on
 engagement/separation at session scale to recover wrongly-merged people.
@@ -215,8 +314,9 @@ prior CP-GT2ACTUALS-6 / CP7 investigations.
 
 ## Evidence artifacts
 
-- `docs/evidence/dedup_ceiling_1/findings.json` — structured results
-- `docs/evidence/dedup_ceiling_1/findings.md` — this document
+- `docs/evidence/dedup_ceiling_1/findings.json` — structured results (DEDUP-CEILING-1)
+- `docs/evidence/dedup_ceiling_1/findings.md` — this document (reconciled 1 + 1a)
 - `docs/evidence/dedup_ceiling_1/gt_matching/per_frame_matches.parquet` — re-run GT matching
+- `docs/evidence/dedup_ceiling_1/gt_diag/` — GT-DIAG-1 against scratch pipeline (NOEDGE measurement)
 - `outputs/_dedup_ceiling/FP7oJQ-20260822-132650/` — scratch pipeline artifacts (not committed)
 - `tools/dedup_ceiling_analysis.py` — self-contained analysis script

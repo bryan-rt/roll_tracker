@@ -1,0 +1,592 @@
+{
+  "engagement_config": {
+    "engage_dist_m": 0.75,
+    "disengage_dist_m": 2.0,
+    "engage_min_frames": 15,
+    "hysteresis_frames": 450,
+    "min_clip_duration_frames": 150
+  },
+  "gt_engagements": [
+    {
+      "person_id_a": "gt0",
+      "person_id_b": "gt4",
+      "start_frame": 0,
+      "end_frame": 1763,
+      "partial_start": true,
+      "partial_end": true
+    },
+    {
+      "person_id_a": "gt2",
+      "person_id_b": "gt3",
+      "start_frame": 812,
+      "end_frame": 1763,
+      "partial_start": false,
+      "partial_end": true
+    },
+    {
+      "person_id_a": "gt5",
+      "person_id_b": "gt6",
+      "start_frame": 0,
+      "end_frame": 1763,
+      "partial_start": true,
+      "partial_end": true
+    }
+  ],
+  "recall_gating": {
+    "per_pair": [
+      {
+        "pair": "gt0<->gt4",
+        "gt_frames": "0-1763",
+        "gt_duration": 1763,
+        "recall_a": 0.8645124716553289,
+        "recall_b": 0.3129251700680272,
+        "co_presence": 1764,
+        "co_detected": 331,
+        "co_detection_rate": 0.18764172335600907,
+        "product_recall": 0.27052771221867433,
+        "max_consecutive_below_engage": 33,
+        "engage_min_frames": 15,
+        "survived_matched_only": true,
+        "matched_frames": "1265-1648"
+      },
+      {
+        "pair": "gt2<->gt3",
+        "gt_frames": "812-1763",
+        "gt_duration": 951,
+        "recall_a": 0.5368480725623582,
+        "recall_b": 0.6462585034013606,
+        "co_presence": 1764,
+        "co_detected": 376,
+        "co_detection_rate": 0.21315192743764172,
+        "product_recall": 0.3469426319280547,
+        "max_consecutive_below_engage": 18,
+        "engage_min_frames": 15,
+        "survived_matched_only": true,
+        "matched_frames": "814-1381"
+      },
+      {
+        "pair": "gt5<->gt6",
+        "gt_frames": "0-1763",
+        "gt_duration": 1763,
+        "recall_a": 0.6626984126984127,
+        "recall_b": 0.03854875283446712,
+        "co_presence": 1764,
+        "co_detected": 3,
+        "co_detection_rate": 0.0017006802721088435,
+        "product_recall": 0.025546197314904796,
+        "max_consecutive_below_engage": 2,
+        "engage_min_frames": 15,
+        "survived_matched_only": false,
+        "matched_frames": null
+      }
+    ],
+    "gt_recall": {
+      "0": {
+        "matched": 1525,
+        "total": 1764,
+        "recall": 0.8645124716553289
+      },
+      "1": {
+        "matched": 1623,
+        "total": 1764,
+        "recall": 0.9200680272108843
+      },
+      "2": {
+        "matched": 947,
+        "total": 1764,
+        "recall": 0.5368480725623582
+      },
+      "3": {
+        "matched": 1140,
+        "total": 1764,
+        "recall": 0.6462585034013606
+      },
+      "4": {
+        "matched": 552,
+        "total": 1764,
+        "recall": 0.3129251700680272
+      },
+      "5": {
+        "matched": 1169,
+        "total": 1764,
+        "recall": 0.6626984126984127
+      },
+      "6": {
+        "matched": 68,
+        "total": 1764,
+        "recall": 0.03854875283446712
+      },
+      "7": {
+        "matched": 72,
+        "total": 120,
+        "recall": 0.6
+      }
+    }
+  },
+  "threshold_flapping": [
+    {
+      "pair": "gt0<->gt4",
+      "n_frames": 1764,
+      "dist_mean": 0.542,
+      "dist_median": 0.514,
+      "dist_max": 1.299,
+      "below_engage": 1329,
+      "between": 435,
+      "above_disengage": 0,
+      "runs_above_disengage": 0,
+      "max_run_length": 0,
+      "would_emit_disengagement": false,
+      "runs_detail": []
+    },
+    {
+      "pair": "gt2<->gt3",
+      "n_frames": 1764,
+      "dist_mean": 1.834,
+      "dist_median": 0.926,
+      "dist_max": 4.703,
+      "below_engage": 762,
+      "between": 313,
+      "above_disengage": 689,
+      "runs_above_disengage": 1,
+      "max_run_length": 689,
+      "would_emit_disengagement": true,
+      "runs_detail": [
+        {
+          "start_frame": 0,
+          "length": 689
+        }
+      ]
+    },
+    {
+      "pair": "gt5<->gt6",
+      "n_frames": 1764,
+      "dist_mean": 0.362,
+      "dist_median": 0.347,
+      "dist_max": 1.131,
+      "below_engage": 1687,
+      "between": 77,
+      "above_disengage": 0,
+      "runs_above_disengage": 0,
+      "max_run_length": 0,
+      "would_emit_disengagement": false,
+      "runs_detail": []
+    }
+  ],
+  "stage_e_evaluation": {
+    "sessions": [
+      {
+        "person_id_a": "p0001",
+        "person_id_b": "p0002",
+        "start_frame": 0,
+        "end_frame": 1763,
+        "duration": 1763,
+        "dominant_gt_a": 0,
+        "dominant_gt_b": 4,
+        "category": "CORRECT_ENGAGED",
+        "engaged_weight": {
+          "GT0<->GT4": {
+            "frames": 11,
+            "total": 1764,
+            "pct": 0.6
+          }
+        },
+        "composition_a": {
+          "0": 1187,
+          "4": 174
+        },
+        "composition_b": {
+          "4": 11,
+          "0": 3
+        }
+      },
+      {
+        "person_id_a": "p0001",
+        "person_id_b": "p0003",
+        "start_frame": 704,
+        "end_frame": 1194,
+        "duration": 490,
+        "dominant_gt_a": 4,
+        "dominant_gt_b": 4,
+        "category": "CONTAMINATED",
+        "engaged_weight": {
+          "GT0<->GT4": {
+            "frames": 0,
+            "total": 491,
+            "pct": 0.0
+          }
+        },
+        "composition_a": {
+          "4": 161,
+          "0": 13
+        },
+        "composition_b": {
+          "4": 273,
+          "3": 12
+        }
+      },
+      {
+        "person_id_a": "p0001",
+        "person_id_b": "p0007",
+        "start_frame": 781,
+        "end_frame": 1763,
+        "duration": 982,
+        "dominant_gt_a": 0,
+        "dominant_gt_b": 5,
+        "category": "PHANTOM",
+        "engaged_weight": {},
+        "composition_a": {
+          "0": 489,
+          "4": 110
+        },
+        "composition_b": {
+          "5": 208,
+          "6": 7
+        }
+      },
+      {
+        "person_id_a": "p0002",
+        "person_id_b": "p0003",
+        "start_frame": 704,
+        "end_frame": 1118,
+        "duration": 414,
+        "dominant_gt_a": null,
+        "dominant_gt_b": 4,
+        "category": "PHANTOM",
+        "engaged_weight": {},
+        "composition_a": {},
+        "composition_b": {
+          "4": 207,
+          "3": 12
+        }
+      },
+      {
+        "person_id_a": "p0003",
+        "person_id_b": "p0004",
+        "start_frame": 0,
+        "end_frame": 424,
+        "duration": 424,
+        "dominant_gt_a": 2,
+        "dominant_gt_b": 2,
+        "category": "CONTAMINATED",
+        "engaged_weight": {
+          "GT2<->GT3": {
+            "frames": 4,
+            "total": 425,
+            "pct": 0.9
+          }
+        },
+        "composition_a": {
+          "2": 150
+        },
+        "composition_b": {
+          "2": 219,
+          "3": 5
+        }
+      },
+      {
+        "person_id_a": "p0003",
+        "person_id_b": "p0005",
+        "start_frame": 355,
+        "end_frame": 744,
+        "duration": 389,
+        "dominant_gt_a": 2,
+        "dominant_gt_b": 5,
+        "category": "PHANTOM",
+        "engaged_weight": {},
+        "composition_a": {
+          "2": 310,
+          "3": 12
+        },
+        "composition_b": {
+          "5": 118,
+          "0": 15,
+          "4": 11
+        }
+      },
+      {
+        "person_id_a": "p0003",
+        "person_id_b": "p0007",
+        "start_frame": 781,
+        "end_frame": 1230,
+        "duration": 449,
+        "dominant_gt_a": 4,
+        "dominant_gt_b": 5,
+        "category": "PHANTOM",
+        "engaged_weight": {},
+        "composition_a": {
+          "4": 286
+        },
+        "composition_b": {
+          "5": 110,
+          "6": 7
+        }
+      },
+      {
+        "person_id_a": "p0003",
+        "person_id_b": "p0011",
+        "start_frame": 632,
+        "end_frame": 966,
+        "duration": 334,
+        "dominant_gt_a": 4,
+        "dominant_gt_b": 5,
+        "category": "CONTAMINATED",
+        "engaged_weight": {
+          "GT2<->GT3": {
+            "frames": 0,
+            "total": 335,
+            "pct": 0.0
+          }
+        },
+        "composition_a": {
+          "4": 69,
+          "2": 65,
+          "3": 12
+        },
+        "composition_b": {
+          "5": 87,
+          "3": 83,
+          "2": 7
+        }
+      },
+      {
+        "person_id_a": "p0005",
+        "person_id_b": "p0006",
+        "start_frame": 125,
+        "end_frame": 744,
+        "duration": 619,
+        "dominant_gt_a": 1,
+        "dominant_gt_b": 4,
+        "category": "CONTAMINATED",
+        "engaged_weight": {
+          "GT0<->GT4": {
+            "frames": 0,
+            "total": 620,
+            "pct": 0.0
+          }
+        },
+        "composition_a": {
+          "1": 145,
+          "5": 118,
+          "0": 15,
+          "4": 11
+        },
+        "composition_b": {
+          "4": 85,
+          "3": 12,
+          "0": 5
+        }
+      },
+      {
+        "person_id_a": "p0006",
+        "person_id_b": "p0009",
+        "start_frame": 40,
+        "end_frame": 1763,
+        "duration": 1723,
+        "dominant_gt_a": 4,
+        "dominant_gt_b": 1,
+        "category": "CONTAMINATED",
+        "engaged_weight": {
+          "GT5<->GT6": {
+            "frames": 0,
+            "total": 1724,
+            "pct": 0.0
+          }
+        },
+        "composition_a": {
+          "4": 85,
+          "3": 25,
+          "0": 5,
+          "5": 3
+        },
+        "composition_b": {
+          "1": 1052,
+          "6": 27,
+          "5": 12
+        }
+      },
+      {
+        "person_id_a": "p0007",
+        "person_id_b": "p0008",
+        "start_frame": 0,
+        "end_frame": 1763,
+        "duration": 1763,
+        "dominant_gt_a": 5,
+        "dominant_gt_b": 3,
+        "category": "CONTAMINATED",
+        "engaged_weight": {
+          "GT2<->GT3": {
+            "frames": 0,
+            "total": 1764,
+            "pct": 0.0
+          }
+        },
+        "composition_a": {
+          "5": 244,
+          "2": 33,
+          "6": 23
+        },
+        "composition_b": {
+          "3": 129,
+          "1": 45
+        }
+      },
+      {
+        "person_id_a": "p0007",
+        "person_id_b": "p0011",
+        "start_frame": 1165,
+        "end_frame": 1726,
+        "duration": 561,
+        "dominant_gt_a": 5,
+        "dominant_gt_b": 5,
+        "category": "PHANTOM",
+        "engaged_weight": {},
+        "composition_a": {
+          "5": 98
+        },
+        "composition_b": {
+          "5": 24,
+          "2": 4
+        }
+      },
+      {
+        "person_id_a": "p0008",
+        "person_id_b": "p0011",
+        "start_frame": 849,
+        "end_frame": 1426,
+        "duration": 577,
+        "dominant_gt_a": null,
+        "dominant_gt_b": 5,
+        "category": "PHANTOM",
+        "engaged_weight": {},
+        "composition_a": {},
+        "composition_b": {
+          "5": 80,
+          "3": 65,
+          "2": 6
+        }
+      },
+      {
+        "person_id_a": "p0009",
+        "person_id_b": "p0010",
+        "start_frame": 11,
+        "end_frame": 1245,
+        "duration": 1234,
+        "dominant_gt_a": 1,
+        "dominant_gt_b": 3,
+        "category": "PHANTOM",
+        "engaged_weight": {},
+        "composition_a": {
+          "1": 649,
+          "6": 27,
+          "5": 12
+        },
+        "composition_b": {
+          "3": 14,
+          "1": 1,
+          "0": 1
+        }
+      },
+      {
+        "person_id_a": "p0010",
+        "person_id_b": "p0011",
+        "start_frame": 79,
+        "end_frame": 1057,
+        "duration": 978,
+        "dominant_gt_a": 3,
+        "dominant_gt_b": 3,
+        "category": "CONTAMINATED",
+        "engaged_weight": {
+          "GT2<->GT3": {
+            "frames": 0,
+            "total": 979,
+            "pct": 0.0
+          }
+        },
+        "composition_a": {
+          "3": 14,
+          "1": 1,
+          "0": 1
+        },
+        "composition_b": {
+          "3": 108,
+          "5": 108,
+          "2": 7,
+          "1": 4
+        }
+      }
+    ],
+    "summary": {
+      "total": 15,
+      "correct_engaged": 1,
+      "contaminated": 7,
+      "phantom": 7,
+      "gt_target": 3,
+      "gt_pairs_covered": 1,
+      "gt_pairs_missing": [
+        "GT5<->GT6",
+        "GT2<->GT3"
+      ]
+    }
+  },
+  "partner_tolerant": {
+    "strict_correct_id": 4275,
+    "partner_tolerant_correct_id": 4665,
+    "total": 12475,
+    "strict_pct": 34.3,
+    "tolerant_pct": 37.4
+  },
+  "occlusion": {
+    "total_no_detection": 4703,
+    "overlapping": 4217,
+    "no_overlap": 486,
+    "per_gt": {
+      "0": {
+        "total_no_det": 60,
+        "overlapping": 60,
+        "no_overlap": 0
+      },
+      "1": {
+        "total_no_det": 141,
+        "overlapping": 2,
+        "no_overlap": 139
+      },
+      "2": {
+        "total_no_det": 780,
+        "overlapping": 770,
+        "no_overlap": 10
+      },
+      "3": {
+        "total_no_det": 587,
+        "overlapping": 284,
+        "no_overlap": 303
+      },
+      "4": {
+        "total_no_det": 946,
+        "overlapping": 946,
+        "no_overlap": 0
+      },
+      "5": {
+        "total_no_det": 444,
+        "overlapping": 444,
+        "no_overlap": 0
+      },
+      "6": {
+        "total_no_det": 1697,
+        "overlapping": 1697,
+        "no_overlap": 0
+      },
+      "7": {
+        "total_no_det": 48,
+        "overlapping": 14,
+        "no_overlap": 34
+      }
+    },
+    "no_overlap_flicker": 91,
+    "no_overlap_sustained": 395,
+    "no_overlap_area_median": 6813.5,
+    "no_overlap_area_mean": 28100.2,
+    "no_overlap_area_min": 3089.9,
+    "no_overlap_area_max": 100089.5
+  },
+  "frame_based_threshold_note": "hysteresis_frames=450 and min_clip_duration_frames=150 are frame-count-based. At ~15fps these are ~30s and ~10s; at 30fps they would be ~15s and ~5s. These should arguably be time-based (analogous to the variable-dt Kalman work) but are NOT changed here \u2014 one clip is not a basis, and the dominant cause of the 23-vs-3 session gap is upstream person_id fragmentation, not threshold tuning."
+}
