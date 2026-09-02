@@ -35,22 +35,27 @@ detection recall alone.
 
 ### Per-GT-track recall
 
-| GT track | Recall@0.5 | Mat position | Notes |
-|----------|-----------|--------------|-------|
-| 0 | 0.966 | ON MAT (97%) | Rolling — high recall |
-| 1 | 0.920 | OFF MAT (4%) | Spectator/coach near edge |
-| 2 | 0.558 | ON MAT (100%) | Rolling — under-detected |
-| 3 | 0.669 | ON MAT (74%) | On mat, partially near edge |
-| 4 | 0.464 | ON MAT (97%) | Rolling — heavily under-detected |
-| 5 | 0.748 | ON MAT (100%) | On mat |
-| 6 | 0.039 | ON MAT (100%) | On mat — nearly invisible to detector |
-| 7 | 0.600 | OFF MAT (0%) | Present frames 210–329 only, off mat |
+| GT track | Recall@0.5 | Mat position | In-quad % | Notes |
+|----------|-----------|--------------|-----------|-------|
+| 0 | 0.966 | ON MAT | 97.1% | Rolling — high recall |
+| 1 | 0.920 | ON MAT | 3.8% | Near quad edge (x 50.1–51.8), extrapolated |
+| 2 | 0.558 | ON MAT | 100.0% | Rolling — under-detected |
+| 3 | 0.669 | ON MAT | 80.7% | Partially near quad edge |
+| 4 | 0.464 | ON MAT | 99.8% | Rolling — heavily under-detected |
+| 5 | 0.748 | ON MAT | 100.0% | On mat |
+| 6 | 0.039 | ON MAT | 100.0% | On mat — nearly invisible to detector |
+| 7 | 0.600 | ON MAT | 0.0% | Present 120 frames, outside quad (x 47.3–49.4), extrapolated |
 
-**On-mat tracks (0, 2, 3, 4, 5, 6):** Recall ranges from 0.039 (track 6) to 0.966 (track 0).
-Track 6 is essentially undetected (39 detections in 1,764 frames).
+**Mat classification (GT-VERIFY-1):** All 8 GT tracks are on the mat blueprint (x 42–58,
+y 34–58). Criterion: >= 50% of projected contact points within the blueprint bounds, using
+`contact_point_from_bbox` + `project_to_world()` with production H/K/D. In-quad % shows
+the fraction within the calibrated quad (x 51–57, y 34–56) — a strict subset of the mat.
+GT 1 and GT 7 fall outside the quad; their world positions are homography extrapolations
+(less reliable but not off-mat). All detections used `bbox_fallback` (zero masks), so GT
+and tracklets share identical contact-point code.
 
-**Off-mat tracks (1, 7):** Track 1 (spectator/coach) has 0.920 recall — high visibility near
-the frame edge. Track 7 is brief (120 frames) and off-mat.
+Track 6 is essentially undetected (39 detections in 1,764 frames). Track 7 is brief
+(120 frames, 60% presence-relative coverage).
 
 ### Cross-validation gate
 
@@ -106,8 +111,10 @@ is the authoritative one (it is what the pipeline actually produced).
 | 6 | p0009 | 0.031 | 0.426 | 26 | ON | 1.3% |
 | 7 | p0014 | 0.600 | 0.819 | 5 | OFF | 49.2% |
 
-**Merger:** p0013 is the canonical person_id for both GT track 1 (off-mat spectator) and
-GT track 5 (on-mat athlete). The pipeline merged two distinct people into one identity.
+**Merger:** p0013 is the canonical person_id for both GT track 1 and GT track 5. The pipeline
+merged two people that are never spatially close — minimum pixel distance 431px, zero IoU
+overlap across all 1,191 co-occurring frames, metres apart in world space. A genuine solver
+failure merging spatially unrelated people (GT-VERIFY-1).
 
 **Track 6 (1.3% correct_id):** This person is effectively invisible to the detector
 (recall 0.039) and consequently to the identity pipeline. 54 frames matched out of 1,764.
@@ -129,21 +136,19 @@ on clean detections) account for 12%.
 
 ## 3. Observations
 
-### GT track composition — on-mat vs off-mat
+### GT track composition — mat classification (GT-VERIFY-1, corrected)
 
-6 of 8 GT tracks are on the mat (tracks 0, 2, 3, 4, 5, 6). 2 are off-mat (tracks 1, 7).
+All 8 GT tracks are on the mat blueprint (x 42–58, y 34–58). The original classification
+of GT 1 and GT 7 as "off-mat" was an undocumented eyeball judgement. GT-VERIFY-1 replaced it
+with a methodical classification: projected contact points (via `contact_point_from_bbox` +
+`project_to_world()`) checked against the mat blueprint bounds. Criterion: >= 50% in-bounds.
 
-If scored on-mat only (6 tracks, 10,710 GT-frames):
-- present: 3,526 / 10,710 = 32.9%
-- stage_a_no_detection: 4,512 / 10,710 = 42.1%
+GT 1 (x 50.1–51.8) and GT 7 (x 47.3–49.4) fall outside the calibrated quad (x 51–57) but
+inside the mat blueprint. Their world positions are homography extrapolations — less reliable
+than in-quad positions, but not off-mat.
 
-If scored off-mat only (2 tracks, 1,885 GT-frames):
-- present: 1,111 / 1,885 = 58.9%
-- stage_a_no_detection: 189 / 1,885 = 10.0%
-
-The on-mat correct_id (32.9%) is lower than the overall (37.2%). Detection recall is the
-dominant bottleneck on-mat; off-mat people are easier to detect (less occlusion from
-grappling).
+The previous 32.9% on-mat / 58.9% off-mat split and the conclusion that "off-mat people are
+easier to detect" are void — there is no off-mat population in this clip.
 
 ### Person count: pipeline 17 vs GT 8
 

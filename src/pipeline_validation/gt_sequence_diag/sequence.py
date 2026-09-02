@@ -17,8 +17,13 @@ import numpy as np
 import pandas as pd
 
 
-ON_MAT_TRACKS = {0, 2, 3, 4, 5, 6}
-OFF_MAT_TRACKS = {1, 7}
+# Mat blueprint bounds (x=[42,58], y=[34,58]) — the actual mat.
+# Calibrated quad (x=[51.01,57.00], y=[33.96,56.02]) — the homography fit region.
+# Positions outside the quad are homography extrapolations — less reliable but not off-mat.
+MAT_BLUEPRINT_X = (42.0, 58.0)
+MAT_BLUEPRINT_Y = (34.0, 58.0)
+CALIBRATED_QUAD_X = (51.01, 57.00)
+CALIBRATED_QUAD_Y = (33.96, 56.02)
 COVERAGE_FLOOR_PCT = 50.0
 
 
@@ -153,6 +158,55 @@ def _compute_gt_presence(trace: pd.DataFrame) -> dict[int, int]:
     return trace.groupby("gt_person_id").size().to_dict()
 
 
+def _compute_on_mat_status(
+    pfm_path: Path,
+    projection,
+) -> dict[int, dict]:
+    """Compute on-mat classification for each GT track using production projection.
+
+    Returns per GT track: on_mat_blueprint, in_quad_pct.
+    Uses contact_point_from_bbox + project_to_world — same path as Stage A.
+    """
+    from bjj_pipeline.stages.detect_track.quality import contact_point_from_bbox
+    from bjj_pipeline.contracts.f0_projection import project_to_world
+
+    pfm = pd.read_parquet(pfm_path)
+    matched = pfm[pfm["match_status"] == "matched"].copy()
+
+    result = {}
+    for gt_id in sorted(matched["gt_track_id"].unique()):
+        gt = matched[matched["gt_track_id"] == gt_id]
+        in_bp = 0
+        in_quad = 0
+        total = 0
+        for _, r in gt.iterrows():
+            u, v, _, _ = contact_point_from_bbox(
+                (r["gt_x1"], r["gt_y1"], r["gt_x2"], r["gt_y2"])
+            )
+            x_m, y_m = project_to_world(
+                (u, v), projection.H, projection.camera_matrix,
+                projection.dist_coefficients,
+            )
+            if np.isnan(x_m) or np.isnan(y_m):
+                continue
+            total += 1
+            if (MAT_BLUEPRINT_X[0] <= x_m <= MAT_BLUEPRINT_X[1]
+                    and MAT_BLUEPRINT_Y[0] <= y_m <= MAT_BLUEPRINT_Y[1]):
+                in_bp += 1
+            if (CALIBRATED_QUAD_X[0] <= x_m <= CALIBRATED_QUAD_X[1]
+                    and CALIBRATED_QUAD_Y[0] <= y_m <= CALIBRATED_QUAD_Y[1]):
+                in_quad += 1
+
+        pct_bp = 100.0 * in_bp / total if total > 0 else 0.0
+        pct_quad = 100.0 * in_quad / total if total > 0 else 0.0
+        result[int(gt_id)] = {
+            "on_mat_blueprint": pct_bp >= 50.0,
+            "in_quad_pct": round(pct_quad, 1),
+        }
+
+    return result
+
+
 def _compute_median_box_area(pfm_path: Path) -> dict[int, float]:
     """Median GT box area per GT track from per_frame_matches."""
     pfm = pd.read_parquet(pfm_path)
@@ -167,6 +221,7 @@ def build_sequence_table(
     detections_path: Path,
     pfm_path: Path,
     total_clip_frames: int = 1764,
+    projection=None,
 ) -> pd.DataFrame:
     """Build the contiguous-segment table from gt_person_trace.parquet.
 
@@ -203,6 +258,14 @@ def build_sequence_table(
     # Median box area
     median_area = _compute_median_box_area(pfm_path)
 
+    # On-mat classification via production projection
+    if projection is not None:
+        on_mat_status = _compute_on_mat_status(pfm_path, projection)
+    else:
+        # Fallback: all on-mat (cannot classify without projection)
+        on_mat_status = {int(gt): {"on_mat_blueprint": True, "in_quad_pct": None}
+                         for gt in trace["gt_person_id"].unique()}
+
     # Canonical person_id per GT track
     canonical = {}
     for gt_id in trace["gt_person_id"].unique():
@@ -222,6 +285,7 @@ def build_sequence_table(
         low_conf = coverage_presence < COVERAGE_FLOOR_PCT
 
         canon_pid = canonical.get(gt_int)
+        mat_info = on_mat_status.get(gt_int, {"on_mat_blueprint": True, "in_quad_pct": None})
 
         # RLE: group consecutive frames with same (tracklet_id, _node_id, final_person_id)
         seg_index = 0
@@ -242,7 +306,7 @@ def build_sequence_table(
                         purity_map, node_meta, group_iou_map,
                         canon_pid, matched_count, coverage_clip, coverage_presence,
                         low_conf, median_area.get(float(gt_int)),
-                        gt_sub,
+                        gt_sub, mat_info,
                     ))
                     seg_index += 1
                 seg_frames = [(fi, row)]
@@ -257,7 +321,7 @@ def build_sequence_table(
                 purity_map, node_meta, group_iou_map,
                 canon_pid, matched_count, coverage_clip, coverage_presence,
                 low_conf, median_area.get(float(gt_int)),
-                gt_sub,
+                gt_sub, mat_info,
             ))
 
     return pd.DataFrame(segments)
@@ -278,6 +342,7 @@ def _make_segment_row(
     low_conf: bool,
     median_area: float | None,
     gt_sub: pd.DataFrame,
+    mat_info: dict | None = None,
 ) -> dict:
     tid, nid, pid = key
     frame_start = seg_frames[0][0]
@@ -306,9 +371,11 @@ def _make_segment_row(
     mode_counts = pd.Series(modes).value_counts()
     dominant_mode = mode_counts.index[0] if len(mode_counts) > 0 else None
 
+    mi = mat_info or {"on_mat_blueprint": True, "in_quad_pct": None}
     return {
         "gt_track_id": gt_id,
-        "on_mat": gt_id in ON_MAT_TRACKS,
+        "on_mat_blueprint": mi["on_mat_blueprint"],
+        "in_quad_pct": mi["in_quad_pct"],
         "gt_matched_frames": matched_count,
         "coverage_clip_pct": round(coverage_clip, 1),
         "coverage_presence_pct": round(coverage_presence, 1),
