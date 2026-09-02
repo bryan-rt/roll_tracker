@@ -524,6 +524,7 @@ First trained model had FP7oJQ false positives from background memorization.
 | `python -m pipeline_validation signal-trace` | Greedy per-GT topology census (CP-TRACE-1) |
 | `python -m pipeline_validation signal-trace --stage tag` | Tag signal trace (CP-TAG-1) |
 | `python -m pipeline_validation gt2actuals --manifest-path <path>` | Dense GT-to-actuals error map (CP-GT2ACTUALS) |
+| `python -m pipeline_validation.gt_sequence_diag.run --trace <path> --pipeline-dir <path> --pfm <path> --output <path>` | GT-DIAG-1: three-layer sequence diagnostic (tracklet/node/person) with purity, group IoU, edge-cost analysis |
 | `tools/cp_gt2actuals_6_analysis.py` | Stage-attribution + signal-shape analysis (CP-6) |
 | `tools/tag_fullscan.py` | Full-frame AprilTag scan (CP-TAG-2 ceiling experiment) |
 | `tools/tag_experiment.py` | Dense GT + full-scan tag comparison (CP-TAG-2) |
