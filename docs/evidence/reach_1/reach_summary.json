@@ -1,0 +1,60 @@
+{
+  "production": {
+    "mode": "production",
+    "n_gt_people": 8,
+    "total_hops": 357,
+    "aggregate": {
+      "EDGE_EXISTS_SELECTED": 65,
+      "CONCURRENT_NODES": 267,
+      "EDGE_EXISTS_NOT_SELECTED": 15,
+      "UNREACHABLE_BY_WINDOW": 5,
+      "EDGE_ABSENT_IN_WINDOW": 5
+    },
+    "independent_reachability": {
+      "0": false,
+      "1": false,
+      "2": false,
+      "3": false,
+      "4": false,
+      "5": false,
+      "6": false,
+      "7": false
+    },
+    "n_independent_reachable": 0,
+    "joint_feasibility": {
+      "all_feasible": true,
+      "max_coexisting": 8
+    },
+    "shared_solo_nodes": 0,
+    "shared_group_ok": 1
+  },
+  "dedup_ceiling": {
+    "mode": "dedup-ceiling",
+    "n_gt_people": 8,
+    "total_hops": 68,
+    "aggregate": {
+      "EDGE_EXISTS_SELECTED": 28,
+      "CONCURRENT_NODES": 17,
+      "UNREACHABLE_BY_WINDOW": 6,
+      "EDGE_EXISTS_NOT_SELECTED": 13,
+      "EDGE_ABSENT_IN_WINDOW": 4
+    },
+    "independent_reachability": {
+      "0": false,
+      "1": true,
+      "2": false,
+      "3": false,
+      "4": false,
+      "5": false,
+      "6": false,
+      "7": true
+    },
+    "n_independent_reachable": 2,
+    "joint_feasibility": {
+      "all_feasible": false,
+      "max_coexisting": 5
+    },
+    "shared_solo_nodes": 6,
+    "shared_group_ok": 5
+  }
+}
