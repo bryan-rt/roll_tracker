@@ -716,6 +716,16 @@ a consumer comparing pre- and post-Piece-9 manifests would mix derivation method
 - CP22c: ROI mask geometry fix (parked)
 - Inter-tracklet swap detection (cross-tracklet position-continuation + masked-appearance)
 - Tracker-level cheap-HSV-ReID (low priority — tracker purity 0.9, low headroom)
+- **Stage E frame-based thresholds → time-based:** `engage_min_frames` (15), `hysteresis_frames`
+  (450), `min_clip_duration_frames` (150) are frame-count constants. At ~15fps these are ~1.0s,
+  ~30s, ~10s; at 30fps they would be ~0.5s, ~15s, ~5s. `engage_min_frames=15` was set assuming
+  30fps (0.5s engagement confirmation); at ~14.9fps it demands ~1.0s — twice the intended
+  requirement. Same class as the frame-count constants removed by the variable-dt work.
+  Should become time-based. Do not change mid-diagnosis — record and schedule.
+- **D1 frame-based parameters → time-based:** `reconnect_max_gap_frames` (250),
+  `split_search_horizon_frames` (2700), `min_group_duration_frames` (10),
+  `endpoint_search_window_frames` — same class. Physical units (`merge_dist_m`, `v_max_mps`)
+  are already correct. The frame-based ones represent different durations at different fps.
 
 **Metric-basis discipline (MANDATORY — this burned us 5 times, SWEEP-3b was the biggest):**
 No correct_id number is comparable without its basis stated: camera set (single vs

@@ -116,7 +116,7 @@ segments of a GT track).
 
 | Population | Count | Description |
 |------------|-------|-------------|
-| **no_edge_exists** | **63 (63%)** | No edge between the two nodes — graph-construction gap |
+| no_edge_exists | 63 (63%) | No edge between the two nodes |
 | chosen_wrong | 21 (21%) | Solver selected an edge GT disagrees with |
 | chosen_correct | 15 (15%) | Solver selected an edge GT agrees with |
 | available_not_chosen | 1 (1%) | Correct edge existed but lost on cost |
@@ -124,14 +124,31 @@ segments of a GT track).
 **Population sizes are small.** 100 boundaries with 8 GT tracks on one clip. Patterns below
 should be read as directional, not statistical.
 
-### Population 1: no_edge_exists (63) — graph construction
+### Population 1: no_edge_exists (63) — characterised (NOEDGE-1)
 
-The dominant failure mode. At 63 of 100 boundaries, no edge existed between the GT-correct
-source and destination nodes. This is a **D1 graph-construction** problem, not a cost-weight
-problem — the solver never had the right option.
+**NOEDGE-1 finding: the 63 is inflated by flicker and double-counting.** Full analysis at
+`docs/evidence/noedge_1/findings.md`.
 
-By GT track: GT 2 accounts for 40 (63%), GT 0 for 14, GT 3 for 7, GT 4 for 1, GT 1 for 1.
-GT 2 and GT 3 (moderate-area on-mat tracks) dominate.
+All 63 boundaries are on **temporally overlapping nodes** (mean overlap 209 frames). Zero
+detection gaps. The GT matcher (Hungarian IoU 0.5) briefly assigns the GT box to a different
+concurrent tracklet, creating two "boundaries" that look like graph gaps but are GT
+assignment flicker.
+
+| Dwell at destination | Boundaries | % | After dedup |
+|---------------------|-----------|---|-------------|
+| 1–2 frames (flicker) | 33 | 52% | 25 events |
+| 3–15 frames (brief) | 23 | 37% | 12 events |
+| >15 frames (genuine) | 7 | 11% | 1 event |
+| **Total** | **63** | | **38 events** |
+
+The 63 collapses to **38 deduplicated events** (25 paired out-and-back = 50 boundaries, 13
+unpaired). Of those 38, only 1 is a genuine long-dwell transition. GT 2 accounts for 63%
+of the count (40 boundaries, concentrated in the grappling core).
+
+**The "no-edge" is not a missing connection across a detection void — it is a measurement
+artifact from the GT matcher jumping between concurrent tracklets.** These nodes are not in
+a lifecycle relationship (no merge/split connects them). D1 should not need to create edges
+between arbitrary overlapping nodes to handle 1–2 frame GT assignment wobble.
 
 ### Population 2: chosen_wrong (21) — cost failures
 
@@ -148,19 +165,26 @@ All 21 are cost failures (`is_allowed=True`); zero gate failures.
 
 The costs are low — median total_cost is 0.02 for both chosen_correct and chosen_wrong. The
 solver is not being driven to wrong answers by high costs; the wrong edges simply have similar
-costs to the right ones, and the graph structure (missing edges) constrains the choice.
+costs to the right ones.
 
 ### Population 3: available_not_chosen (1) — the answer was there
 
 One boundary: the correct edge existed with total_cost 0.017, is_allowed=True, but was not
 selected. With N=1, this is not a pattern.
 
-### Population 4: no_edge_exists (63) — most actionable
+### Revised actionability (NOEDGE-1)
 
-This is the most actionable finding. 63% of node boundaries have no candidate edge connecting
-the GT-correct pair of nodes. The solver cannot pick the right answer if it does not exist.
-This points at D1 candidate generation (`d1_graph_build.py`) as the primary target for
-identity improvement on this clip, not D2 cost weights or D3 solver logic.
+With the flicker deflated, the actionable failures are:
+
+| Target | Count | Source |
+|--------|-------|--------|
+| D2 cost weights | 22 | 21 chosen_wrong + 1 available_not_chosen |
+| D1 candidate generation | 7 | Genuine (>15f dwell) no-edge boundaries |
+| Evaluation artifact | 56 | Flicker (33) + brief (23) no-edge boundaries |
+
+**D2 cost weights have more actionable failures (22) than D1 candidate generation (7) on
+this clip.** The prior conclusion that "D1 graph construction is the primary target" is not
+supported — the 63% no-edge count was inflated by GT matcher flicker on overlapping nodes.
 
 ---
 
