@@ -25,8 +25,9 @@
       "all_feasible": true,
       "max_coexisting": 8
     },
-    "shared_solo_nodes": 0,
-    "shared_group_ok": 1
+    "shared_structural": 0,
+    "shared_group_ok": 1,
+    "shared_sequential": 27
   },
   "dedup_ceiling": {
     "mode": "dedup-ceiling",
@@ -51,10 +52,11 @@
     },
     "n_independent_reachable": 2,
     "joint_feasibility": {
-      "all_feasible": false,
-      "max_coexisting": 5
+      "all_feasible": true,
+      "max_coexisting": 8
     },
-    "shared_solo_nodes": 6,
-    "shared_group_ok": 5
+    "shared_structural": 0,
+    "shared_group_ok": 0,
+    "shared_sequential": 14
   }
 }

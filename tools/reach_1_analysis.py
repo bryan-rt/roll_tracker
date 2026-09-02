@@ -140,6 +140,39 @@ def _get_endpoint_positions(
     return (float(x), float(y))
 
 
+# ── Node-frame occupancy (frame-level, for shared-node and joint checks) ──
+
+def _build_node_frame_occupancy_from_gpt(
+    gpt: pd.DataFrame,
+) -> dict[str, dict[int, set[int]]]:
+    """node_id -> {gt_person_id -> set of frame indices}."""
+    occ: dict[str, dict[int, set[int]]] = defaultdict(lambda: defaultdict(set))
+    for _, row in gpt.iterrows():
+        if pd.isna(row["d1_node_ids"]):
+            continue
+        nodes = json.loads(row["d1_node_ids"])
+        gid = int(row["gt_person_id"])
+        frame = int(row["frame_idx"])
+        for n in nodes:
+            occ[n][gid].add(frame)
+    return dict(occ)
+
+
+def _build_node_frame_occupancy_from_dedup(
+    matched: pd.DataFrame,
+) -> dict[str, dict[int, set[int]]]:
+    """node_id -> {gt_person_id -> set of frame indices} from dedup join."""
+    occ: dict[str, dict[int, set[int]]] = defaultdict(lambda: defaultdict(set))
+    for _, row in matched.iterrows():
+        node = row.get("node_id")
+        if node is None or (isinstance(node, float) and math.isnan(node)):
+            continue
+        gid = int(row["gt_track_id"])
+        frame = int(row["frame_index"])
+        occ[node][gid].add(frame)
+    return dict(occ)
+
+
 # ── Target path building ──────────────────────────────────────────────────
 
 def _build_target_paths_from_gpt(gpt: pd.DataFrame) -> dict[int, list[dict]]:
@@ -187,6 +220,16 @@ def _build_target_paths_from_gpt(gpt: pd.DataFrame) -> dict[int, list[dict]]:
 
         paths[gid] = runs
     return paths
+
+
+def _find_node_from_segs(
+    d1_segments: pd.DataFrame, tid: str, frame: int,
+) -> str | None:
+    """Look up D1 node_id for (tracklet_id, frame_index) from d1_segments."""
+    for _, s in d1_segments.iterrows():
+        if s["base_tracklet_id"] == tid and int(s["start_frame"]) <= frame <= int(s["end_frame"]):
+            return s["node_id"]
+    return None
 
 
 def _build_target_paths_from_dedup(
@@ -396,71 +439,72 @@ def _classify_hops(
 # ── Shared node analysis ──────────────────────────────────────────────────
 
 def _shared_node_analysis(
-    paths: dict[int, list[dict]],
+    node_frame_occ: dict[str, dict[int, set[int]]],
     node_map: dict[str, dict],
     d3_flow: dict[str, list[str]],
 ) -> list[dict]:
-    """Identify nodes needed by multiple GT people with overlapping frames."""
-    # Collect (node_id, gt_person_id, first_frame, last_frame) across all paths
-    node_usage: dict[str, list[dict]] = defaultdict(list)
-    for gid, runs in paths.items():
-        for run in runs:
-            node_usage[run["node_id"]].append({
-                "gt_person_id": gid,
-                "first_frame": run["first_frame"],
-                "last_frame": run["last_frame"],
-            })
+    """Identify nodes where multiple GT people co-occupy at the same frame.
 
+    Uses frame-level occupancy, not run-level range envelopes. Two GT people
+    on the same node at different frames is sequential use, not contention.
+    Contention only exists when two GT people need the same node at the same
+    frame AND the node's capacity cannot accommodate both.
+
+    With Hungarian matching (IoU 0.5), two GT people never match the same
+    detection at the same frame. On a SOLO (capacity-1) node representing
+    one detection box, the matcher assigns it to one GT person per frame.
+    Co-occupancy at the frame level requires two distinct detections both
+    mapping to the same node — possible only on GROUP nodes.
+    """
     shared_rows: list[dict] = []
-    for node_id, usages in sorted(node_usage.items()):
-        if len(set(u["gt_person_id"] for u in usages)) < 2:
-            continue
-
-        # Check for overlapping frame ranges between different GT people
-        # Group usages by gt_person_id, merge frame ranges per GT
-        by_gt: dict[int, list[tuple[int, int]]] = defaultdict(list)
-        for u in usages:
-            by_gt[u["gt_person_id"]].append((u["first_frame"], u["last_frame"]))
-
-        gt_ids = sorted(by_gt.keys())
+    for node_id, gt_frames in sorted(node_frame_occ.items()):
+        gt_ids = sorted(gt_frames.keys())
         if len(gt_ids) < 2:
             continue
 
-        # Check all pairs for overlap
-        for g1, g2 in combinations(gt_ids, 2):
-            ranges1 = by_gt[g1]
-            ranges2 = by_gt[g2]
-            # Check if any range from g1 overlaps any range from g2
-            overlaps = False
-            for s1, e1 in ranges1:
-                for s2, e2 in ranges2:
-                    if s1 <= e2 and s2 <= e1:
-                        overlaps = True
-                        break
-                if overlaps:
-                    break
+        info = node_map.get(node_id, {})
+        cap = info.get("capacity", 1)
+        seg_type = info.get("segment_type", "UNKNOWN")
+        d3_persons = d3_flow.get(node_id, [])
 
-            if not overlaps:
+        for g1, g2 in combinations(gt_ids, 2):
+            co_frames = gt_frames[g1] & gt_frames[g2]
+            if not co_frames:
+                # Both use this node but never at the same frame — sequential, not contention
+                shared_rows.append({
+                    "node_id": node_id,
+                    "gt_person_a": g1,
+                    "gt_person_b": g2,
+                    "co_occupied_frames": 0,
+                    "gt_a_frame_count": len(gt_frames[g1]),
+                    "gt_b_frame_count": len(gt_frames[g2]),
+                    "capacity": cap,
+                    "segment_type": seg_type,
+                    "d3_persons_routed": list(set(d3_persons)),
+                    "d3_flow_count": len(set(d3_persons)),
+                    "contention": "sequential",
+                })
                 continue
 
-            info = node_map.get(node_id, {})
-            cap = info.get("capacity", 1)
-            seg_type = info.get("segment_type", "UNKNOWN")
-
-            # How many D3 person_ids routed through this node
-            d3_persons = d3_flow.get(node_id, [])
+            # Co-occupied frames exist — check capacity
+            contention = "none"
+            if len(co_frames) > 0 and cap < 2:
+                contention = "structural_impossibility"
+            elif len(co_frames) > 0 and cap >= 2:
+                contention = "group_handles_it"
 
             shared_rows.append({
                 "node_id": node_id,
                 "gt_person_a": g1,
                 "gt_person_b": g2,
-                "gt_a_frames": by_gt[g1],
-                "gt_b_frames": by_gt[g2],
+                "co_occupied_frames": len(co_frames),
+                "gt_a_frame_count": len(gt_frames[g1]),
+                "gt_b_frame_count": len(gt_frames[g2]),
                 "capacity": cap,
                 "segment_type": seg_type,
                 "d3_persons_routed": list(set(d3_persons)),
                 "d3_flow_count": len(set(d3_persons)),
-                "can_coexist": len(set(d3_persons)) <= cap and cap >= 2,
+                "contention": contention,
             })
 
     return shared_rows
@@ -469,63 +513,42 @@ def _shared_node_analysis(
 # ── Joint feasibility ─────────────────────────────────────────────────────
 
 def _joint_feasibility(
-    paths: dict[int, list[dict]],
+    node_frame_occ: dict[str, dict[int, set[int]]],
     node_map: dict[str, dict],
+    gt_ids: list[int],
 ) -> dict:
     """Determine maximum number of GT people whose paths can coexist.
 
-    Method: exact search (2^8 = 256 subsets). For each subset, check whether
-    all shared nodes have enough capacity for the GT people who need them.
+    Uses frame-level occupancy: for each node, at each frame, count how many
+    GT people from the subset occupy it. If that count exceeds the node's
+    capacity at any frame, the subset is infeasible.
+
+    With Hungarian matching, two GT people never match the same detection at
+    the same frame. On SOLO nodes (one detection box), frame-level
+    co-occupancy is zero by construction. Contention at the frame level
+    requires two detections both mapping to the same node — only possible
+    on GROUP nodes where it is handled by capacity=2.
+
+    Method: exact search (2^8 = 256 subsets).
     """
-    gt_ids = sorted(paths.keys())
     n = len(gt_ids)
 
-    # Build per-node per-GT-person frame ranges
-    node_gt_frames: dict[str, dict[int, list[tuple[int, int]]]] = defaultdict(
-        lambda: defaultdict(list)
-    )
-    for gid, runs in paths.items():
-        for run in runs:
-            node_gt_frames[run["node_id"]][gid].append(
-                (run["first_frame"], run["last_frame"])
-            )
-
-    def _ranges_overlap(ranges1, ranges2):
-        for s1, e1 in ranges1:
-            for s2, e2 in ranges2:
-                if s1 <= e2 and s2 <= e1:
-                    return True
-        return False
-
     def _check_subset(subset: list[int]) -> bool:
-        """Check if this subset of GT people can coexist."""
-        for node_id, gt_frames in node_gt_frames.items():
-            # Which GT people in subset need this node?
-            relevant = [g for g in subset if g in gt_frames]
+        subset_set = set(subset)
+        for node_id, gt_frames in node_frame_occ.items():
+            relevant = {g: frames for g, frames in gt_frames.items() if g in subset_set}
             if len(relevant) <= 1:
                 continue
-
             cap = node_map.get(node_id, {}).get("capacity", 1)
-
-            # Count how many GT people need this node simultaneously
-            # (with overlapping frame ranges)
-            # Build overlap groups
-            simultaneous = 0
-            for i, g1 in enumerate(relevant):
-                overlapping_with_g1 = 1
-                for g2 in relevant[i + 1:]:
-                    if _ranges_overlap(gt_frames[g1], gt_frames[g2]):
-                        overlapping_with_g1 += 1
-                simultaneous = max(simultaneous, overlapping_with_g1)
-
-            if simultaneous > cap:
-                return False
+            # Find maximum simultaneous occupancy at any frame
+            all_frames: set[int] = set()
+            for frames in relevant.values():
+                all_frames |= frames
+            for frame in all_frames:
+                count = sum(1 for g, frames in relevant.items() if frame in frames)
+                if count > cap:
+                    return False
         return True
-
-    # Exhaustive search for maximum feasible subset
-    best_size = 0
-    best_subset = []
-    all_feasible = True
 
     # Check full set first
     if _check_subset(gt_ids):
@@ -536,10 +559,10 @@ def _joint_feasibility(
             "blocking_nodes": [],
         }
 
-    all_feasible = False
-
     # Find maximum feasible subset by decreasing size
     from itertools import combinations as combs
+    best_size = 0
+    best_subset: list[int] = []
     for size in range(n - 1, 0, -1):
         found = False
         for subset in combs(gt_ids, size):
@@ -551,32 +574,31 @@ def _joint_feasibility(
         if found:
             break
 
-    # Identify blocking nodes (nodes where full set fails)
+    # Identify blocking nodes (nodes where full set exceeds capacity)
     blocking = []
-    for node_id, gt_frames in node_gt_frames.items():
-        relevant = [g for g in gt_ids if g in gt_frames]
+    for node_id, gt_frames in node_frame_occ.items():
+        relevant = {g: frames for g, frames in gt_frames.items() if g in set(gt_ids)}
         if len(relevant) <= 1:
             continue
         cap = node_map.get(node_id, {}).get("capacity", 1)
-        # Count max simultaneous
+        all_frames: set[int] = set()
+        for frames in relevant.values():
+            all_frames |= frames
         max_sim = 0
-        for i, g1 in enumerate(relevant):
-            count = 1
-            for g2 in relevant[i + 1:]:
-                if _ranges_overlap(gt_frames[g1], gt_frames[g2]):
-                    count += 1
+        for frame in all_frames:
+            count = sum(1 for g, frames in relevant.items() if frame in frames)
             max_sim = max(max_sim, count)
         if max_sim > cap:
             blocking.append({
                 "node_id": node_id,
                 "capacity": cap,
                 "max_simultaneous_gt": max_sim,
-                "gt_people": relevant,
+                "gt_people": sorted(relevant.keys()),
                 "segment_type": node_map.get(node_id, {}).get("segment_type", "UNKNOWN"),
             })
 
     return {
-        "all_feasible": all_feasible,
+        "all_feasible": False,
         "max_coexisting": best_size,
         "best_subset": best_subset,
         "excluded": [g for g in gt_ids if g not in best_subset],
@@ -775,40 +797,50 @@ def _write_findings(
     if not shared_rows:
         w("No shared nodes found.")
     else:
-        # Summarize by type
-        solo_shared = [s for s in shared_rows if s["capacity"] == 1]
-        group_ok = [s for s in shared_rows if s["capacity"] >= 2 and s["can_coexist"]]
-        group_over = [s for s in shared_rows if s["capacity"] >= 2 and not s["can_coexist"]]
+        # Classify by contention type
+        structural = [s for s in shared_rows if s["contention"] == "structural_impossibility"]
+        group_ok = [s for s in shared_rows if s["contention"] == "group_handles_it"]
+        sequential = [s for s in shared_rows if s["contention"] == "sequential"]
 
-        w(f"**Shared SOLO (capacity=1) — structural impossibility:** {len(solo_shared)}")
-        w(f"**Shared GROUP (capacity>=2, can coexist):** {len(group_ok)}")
-        w(f"**Shared GROUP (capacity>=2, over-subscribed):** {len(group_over)}")
+        w(f"**Frame-level co-occupancy (structural impossibility):** {len(structural)}")
+        w(f"**Frame-level co-occupancy (GROUP handles it):** {len(group_ok)}")
+        w(f"**Sequential use (same node, different frames — no contention):** {len(sequential)}")
         w("")
 
-        if solo_shared:
-            w("### SOLO nodes shared by multiple GT people (DETECTION CEILING)")
+        if structural:
+            w("### Structural impossibility — co-occupied SOLO nodes")
             w("")
-            w("| Node | GT A | GT B | Capacity | Seg type | D3 routed |")
+            w("| Node | GT A | GT B | Co-frames | Capacity | Seg type |")
             w("|---|---|---|---|---|---|")
-            for s in solo_shared:
+            for s in structural:
                 w(f"| `{s['node_id'][:50]}` | {s['gt_person_a']} | {s['gt_person_b']} "
-                  f"| {s['capacity']} | {s['segment_type']} "
-                  f"| {s['d3_flow_count']} ({', '.join(s['d3_persons_routed'])}) |")
+                  f"| {s['co_occupied_frames']} | {s['capacity']} | {s['segment_type']} |")
             w("")
 
         if group_ok:
-            w("### GROUP nodes correctly serving multiple GT people")
+            w("### GROUP nodes correctly serving co-occupied GT people")
             w("")
-            w(f"{len(group_ok)} GROUP nodes with capacity >= 2 serving exactly 2 GT people.")
+            w(f"{len(group_ok)} GROUP nodes (capacity >= 2) where two GT people co-occupy at the same frame.")
             w("This is correct behavior — GROUP nodes exist to represent two people on one tracklet.")
             w("")
 
-        if group_over:
-            w("### GROUP nodes over-subscribed (capacity ceiling)")
+        if sequential:
+            w("### Sequential use — same node, interleaved frames, no capacity conflict")
             w("")
-            for s in group_over:
-                w(f"- `{s['node_id'][:50]}`: GT {s['gt_person_a']} + {s['gt_person_b']}, "
-                  f"cap={s['capacity']}, D3 routed {s['d3_flow_count']}")
+            w(f"{len(sequential)} node-pairs where two GT people use the same node at different frames.")
+            w("With Hungarian matching, two GT people never match the same detection at the same frame.")
+            w("A capacity-1 SOLO node can serve both people sequentially — one gets correct attribution")
+            w("per frame, the other gets misattribution. This is not a structural impossibility;")
+            w("it is the detection under-segmentation problem expressed as misattribution, not as")
+            w("a graph capacity limit.")
+            w("")
+            # Summary table
+            w("| Node | GT A (frames) | GT B (frames) | Capacity | Seg type |")
+            w("|---|---|---|---|---|")
+            for s in sequential:
+                w(f"| `{s['node_id'][:45]}` | {s['gt_person_a']} ({s['gt_a_frame_count']}f) "
+                  f"| {s['gt_person_b']} ({s['gt_b_frame_count']}f) "
+                  f"| {s['capacity']} | {s['segment_type']} |")
             w("")
 
     # Independent reachability
@@ -868,8 +900,10 @@ def _write_findings(
     w(f"| Detection (concurrent nodes) | CONCURRENT_NODES | {agg.get('CONCURRENT_NODES', 0)} |")
     w(f"| D1 candidate generation | EDGE_ABSENT_IN_WINDOW | {agg.get('EDGE_ABSENT_IN_WINDOW', 0)} |")
     w(f"| D1 parameters / detection | UNREACHABLE_BY_WINDOW | {agg.get('UNREACHABLE_BY_WINDOW', 0)} |")
-    solo_count = len([s for s in shared_rows if s["capacity"] == 1])
-    w(f"| Detection (shared SOLO nodes) | SHARED_NODE structural impossibility | {solo_count} node-pairs |")
+    structural_count = len([s for s in shared_rows if s["contention"] == "structural_impossibility"])
+    sequential_count = len([s for s in shared_rows if s["contention"] == "sequential"])
+    w(f"| Detection (co-occupied SOLO) | SHARED_NODE structural impossibility | {structural_count} node-pairs |")
+    w(f"| Detection (sequential use) | Same node, interleaved frames | {sequential_count} node-pairs |")
     w("")
 
     # Summary verdict
@@ -910,10 +944,12 @@ def run_production() -> tuple[str, dict]:
     node_map = _build_node_map(graph["nodes"])
     d3_flow = _build_d3_flow(graph["spans"])
 
+    node_frame_occ = _build_node_frame_occupancy_from_gpt(gpt)
+
     hop_rows = _classify_hops(paths, edge_lookup, selected_pairs, node_map, d3_flow, graph["tbf"])
-    shared_rows = _shared_node_analysis(paths, node_map, d3_flow)
+    shared_rows = _shared_node_analysis(node_frame_occ, node_map, d3_flow)
     indep = _independent_reachability(paths, hop_rows)
-    joint = _joint_feasibility(paths, node_map)
+    joint = _joint_feasibility(node_frame_occ, node_map, sorted(paths.keys()))
     agg = _aggregate_by_owner(hop_rows)
 
     md = _write_findings("production", paths, hop_rows, shared_rows, det_stats, indep, joint, agg)
@@ -929,8 +965,9 @@ def run_production() -> tuple[str, dict]:
             "all_feasible": joint["all_feasible"],
             "max_coexisting": int(joint["max_coexisting"]) if not joint["all_feasible"] else len(paths),
         },
-        "shared_solo_nodes": len([s for s in shared_rows if s["capacity"] == 1]),
-        "shared_group_ok": len([s for s in shared_rows if s["capacity"] >= 2 and s["can_coexist"]]),
+        "shared_structural": len([s for s in shared_rows if s["contention"] == "structural_impossibility"]),
+        "shared_group_ok": len([s for s in shared_rows if s["contention"] == "group_handles_it"]),
+        "shared_sequential": len([s for s in shared_rows if s["contention"] == "sequential"]),
     }
 
     return md, summary
@@ -965,10 +1002,22 @@ def run_dedup() -> tuple[str, dict]:
     node_map = _build_node_map(graph["nodes"])
     d3_flow = _build_d3_flow(graph["spans"])
 
+    # Build node-frame occupancy from the matched join (before path builder drops frame info)
+    # Re-join to get node_id per matched row
+    matched = pfm[pfm["match_status"] == "matched"].copy()
+    det_tid = det[["detection_id", "tracklet_id"]].drop_duplicates()
+    matched = matched.merge(det_tid, left_on="pred_detection_id", right_on="detection_id", how="left")
+    matched["node_id"] = matched.apply(
+        lambda r: _find_node_from_segs(d1_segs, r["tracklet_id"], r["frame_index"])
+        if pd.notna(r["tracklet_id"]) else None,
+        axis=1,
+    )
+    node_frame_occ = _build_node_frame_occupancy_from_dedup(matched)
+
     hop_rows = _classify_hops(paths, edge_lookup, selected_pairs, node_map, d3_flow, graph["tbf"])
-    shared_rows = _shared_node_analysis(paths, node_map, d3_flow)
+    shared_rows = _shared_node_analysis(node_frame_occ, node_map, d3_flow)
     indep = _independent_reachability(paths, hop_rows)
-    joint = _joint_feasibility(paths, node_map)
+    joint = _joint_feasibility(node_frame_occ, node_map, sorted(paths.keys()))
     agg = _aggregate_by_owner(hop_rows)
 
     md = _write_findings("dedup-ceiling", paths, hop_rows, shared_rows, det_stats, indep, joint, agg)
@@ -982,10 +1031,11 @@ def run_dedup() -> tuple[str, dict]:
         "n_independent_reachable": sum(1 for v in indep.values() if v["reachable"]),
         "joint_feasibility": {
             "all_feasible": joint["all_feasible"],
-            "max_coexisting": joint["max_coexisting"] if not joint["all_feasible"] else len(paths),
+            "max_coexisting": int(joint["max_coexisting"]) if not joint["all_feasible"] else len(paths),
         },
-        "shared_solo_nodes": len([s for s in shared_rows if s["capacity"] == 1]),
-        "shared_group_ok": len([s for s in shared_rows if s["capacity"] >= 2 and s["can_coexist"]]),
+        "shared_structural": len([s for s in shared_rows if s["contention"] == "structural_impossibility"]),
+        "shared_group_ok": len([s for s in shared_rows if s["contention"] == "group_handles_it"]),
+        "shared_sequential": len([s for s in shared_rows if s["contention"] == "sequential"]),
     }
 
     return md, summary
@@ -1017,8 +1067,9 @@ def main():
                  f"| {dedup_summary['n_independent_reachable']}/8 |\n")
     combined += (f"| Joint feasibility | {prod_summary['joint_feasibility']['max_coexisting']}/8 "
                  f"| {dedup_summary['joint_feasibility']['max_coexisting']}/8 |\n")
-    combined += f"| Shared SOLO nodes | {prod_summary['shared_solo_nodes']} | {dedup_summary['shared_solo_nodes']} |\n"
-    combined += f"| Shared GROUP (ok) | {prod_summary['shared_group_ok']} | {dedup_summary['shared_group_ok']} |\n"
+    combined += f"| Shared: structural impossibility | {prod_summary.get('shared_structural', 0)} | {dedup_summary.get('shared_structural', 0)} |\n"
+    combined += f"| Shared: GROUP handles it | {prod_summary.get('shared_group_ok', 0)} | {dedup_summary.get('shared_group_ok', 0)} |\n"
+    combined += f"| Shared: sequential (no contention) | {prod_summary.get('shared_sequential', 0)} | {dedup_summary.get('shared_sequential', 0)} |\n"
 
     # Write outputs
     (OUT_DIR / "findings.md").write_text(combined)

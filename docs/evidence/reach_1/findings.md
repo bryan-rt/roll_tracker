@@ -101,14 +101,53 @@ This is the NOEDGE-1 finding: concurrent-node flicker from detection under-segme
 
 ## 3. Shared Node Analysis
 
-**Shared SOLO (capacity=1) — structural impossibility:** 0
-**Shared GROUP (capacity>=2, can coexist):** 1
-**Shared GROUP (capacity>=2, over-subscribed):** 0
+**Frame-level co-occupancy (structural impossibility):** 0
+**Frame-level co-occupancy (GROUP handles it):** 1
+**Sequential use (same node, different frames — no contention):** 27
 
-### GROUP nodes correctly serving multiple GT people
+### GROUP nodes correctly serving co-occupied GT people
 
-1 GROUP nodes with capacity >= 2 serving exactly 2 GT people.
+1 GROUP nodes (capacity >= 2) where two GT people co-occupy at the same frame.
 This is correct behavior — GROUP nodes exist to represent two people on one tracklet.
+
+### Sequential use — same node, interleaved frames, no capacity conflict
+
+27 node-pairs where two GT people use the same node at different frames.
+With Hungarian matching, two GT people never match the same detection at the same frame.
+A capacity-1 SOLO node can serve both people sequentially — one gets correct attribution
+per frame, the other gets misattribution. This is not a structural impossibility;
+it is the detection under-segmentation problem expressed as misattribution, not as
+a graph capacity limit.
+
+| Node | GT A (frames) | GT B (frames) | Capacity | Seg type |
+|---|---|---|---|---|
+| `G:1386-1558:carrier=t147:d=t152:n=t158` | 2 (1f) | 3 (171f) | 2 | GROUP |
+| `G:1561-1649:carrier=t147:d=t158:n=t163` | 2 (1f) | 3 (87f) | 2 | GROUP |
+| `G:1649-1716:carrier=t2:d=t161:n=t165` | 0 (66f) | 4 (1f) | 2 | GROUP |
+| `G:1736-1763:carrier=t2:d=t165:n=none` | 0 (9f) | 4 (19f) | 2 | GROUP |
+| `G:4-76:carrier=t4:d=t6:n=none` | 5 (35f) | 6 (23f) | 2 | GROUP |
+| `G:404-488:carrier=t2:d=t51:n=t62` | 0 (82f) | 4 (2f) | 2 | GROUP |
+| `G:683-711:carrier=t2:d=t81_s1:n=t86` | 0 (28f) | 4 (1f) | 2 | GROUP |
+| `G:750-820:carrier=t90:d=t67_s2:n=t94` | 2 (54f) | 3 (14f) | 2 | GROUP |
+| `G:823-921:carrier=t90:d=t94:n=none` | 2 (54f) | 3 (2f) | 2 | GROUP |
+| `G:895-1264:carrier=t2:d=t102:n=t135` | 0 (31f) | 4 (285f) | 2 | GROUP |
+| `T:t120` | 2 (4f) | 5 (56f) | 1 | SOLO |
+| `T:t126` | 2 (8f) | 3 (9f) | 1 | SOLO |
+| `T:t135` | 0 (1f) | 4 (213f) | 1 | SOLO |
+| `T:t147:s6:1650-1754` | 2 (66f) | 3 (4f) | 1 | SOLO |
+| `T:t152` | 2 (2f) | 3 (2f) | 1 | SOLO |
+| `T:t163` | 2 (14f) | 3 (42f) | 1 | SOLO |
+| `T:t165` | 0 (3f) | 4 (1f) | 1 | SOLO |
+| `T:t166` | 2 (2f) | 3 (22f) | 1 | SOLO |
+| `T:t23` | 5 (1f) | 6 (2f) | 1 | SOLO |
+| `T:t2:s12:712-894` | 0 (3f) | 4 (161f) | 1 | SOLO |
+| `T:t2:s14:1265-1577` | 0 (304f) | 4 (1f) | 1 | SOLO |
+| `T:t2:s16:1588-1648` | 0 (54f) | 4 (5f) | 1 | SOLO |
+| `T:t2:s18:1717-1735` | 0 (16f) | 4 (3f) | 1 | SOLO |
+| `T:t2:s5:363-403` | 0 (38f) | 4 (1f) | 1 | SOLO |
+| `T:t49` | 0 (1f) | 4 (11f) | 1 | SOLO |
+| `T:t62` | 0 (4f) | 4 (30f) | 1 | SOLO |
+| `T:t86` | 0 (15f) | 4 (1f) | 1 | SOLO |
 
 ## 4a. Independent Reachability (ignoring contention)
 
@@ -143,7 +182,8 @@ For each subset, verify that every shared node has capacity >= number of GT peop
 | Detection (concurrent nodes) | CONCURRENT_NODES | 267 |
 | D1 candidate generation | EDGE_ABSENT_IN_WINDOW | 5 |
 | D1 parameters / detection | UNREACHABLE_BY_WINDOW | 5 |
-| Detection (shared SOLO nodes) | SHARED_NODE structural impossibility | 0 node-pairs |
+| Detection (co-occupied SOLO) | SHARED_NODE structural impossibility | 0 node-pairs |
+| Detection (sequential use) | Same node, interleaved frames | 27 node-pairs |
 
 ## Summary Verdict
 
@@ -253,25 +293,35 @@ This is the NOEDGE-1 finding: concurrent-node flicker from detection under-segme
 
 ## 3. Shared Node Analysis
 
-**Shared SOLO (capacity=1) — structural impossibility:** 6
-**Shared GROUP (capacity>=2, can coexist):** 5
-**Shared GROUP (capacity>=2, over-subscribed):** 0
+**Frame-level co-occupancy (structural impossibility):** 0
+**Frame-level co-occupancy (GROUP handles it):** 0
+**Sequential use (same node, different frames — no contention):** 14
 
-### SOLO nodes shared by multiple GT people (DETECTION CEILING)
+### Sequential use — same node, interleaved frames, no capacity conflict
 
-| Node | GT A | GT B | Capacity | Seg type | D3 routed |
-|---|---|---|---|---|---|
-| `T:t126` | 2 | 3 | 1 | SOLO | 1 (p0007) |
-| `T:t152` | 2 | 3 | 1 | SOLO | 1 (p0011) |
-| `T:t23` | 5 | 6 | 1 | SOLO | 1 (p0011) |
-| `T:t2:s1:363-403` | 0 | 4 | 1 | SOLO | 1 (p0003) |
-| `T:t4` | 5 | 6 | 1 | SOLO | 1 (p0006) |
-| `T:t62` | 0 | 4 | 1 | SOLO | 1 (p0005) |
+14 node-pairs where two GT people use the same node at different frames.
+With Hungarian matching, two GT people never match the same detection at the same frame.
+A capacity-1 SOLO node can serve both people sequentially — one gets correct attribution
+per frame, the other gets misattribution. This is not a structural impossibility;
+it is the detection under-segmentation problem expressed as misattribution, not as
+a graph capacity limit.
 
-### GROUP nodes correctly serving multiple GT people
-
-5 GROUP nodes with capacity >= 2 serving exactly 2 GT people.
-This is correct behavior — GROUP nodes exist to represent two people on one tracklet.
+| Node | GT A (frames) | GT B (frames) | Capacity | Seg type |
+|---|---|---|---|---|
+| `G:1386-1681:carrier=t147:d=t152:n=none` | 2 (31f) | 3 (263f) | 2 | GROUP |
+| `G:404-488:carrier=t2:d=t51:n=t62` | 0 (82f) | 4 (2f) | 2 | GROUP |
+| `G:683-719:carrier=t2:d=t81_s1:n=none` | 0 (36f) | 4 (1f) | 2 | GROUP |
+| `G:750-820:carrier=t90:d=t67_s2:n=t94` | 2 (54f) | 3 (14f) | 2 | GROUP |
+| `G:823-921:carrier=t90:d=t94:n=none` | 2 (54f) | 3 (2f) | 2 | GROUP |
+| `T:t124` | 2 (1f) | 3 (1f) | 1 | SOLO |
+| `T:t126` | 2 (8f) | 3 (9f) | 1 | SOLO |
+| `T:t135` | 0 (1f) | 4 (213f) | 1 | SOLO |
+| `T:t152` | 2 (2f) | 3 (2f) | 1 | SOLO |
+| `T:t23` | 5 (1f) | 6 (2f) | 1 | SOLO |
+| `T:t2:s1:363-403` | 0 (38f) | 4 (1f) | 1 | SOLO |
+| `T:t4` | 5 (35f) | 6 (25f) | 1 | SOLO |
+| `T:t49` | 0 (1f) | 4 (11f) | 1 | SOLO |
+| `T:t62` | 0 (4f) | 4 (30f) | 1 | SOLO |
 
 ## 4a. Independent Reachability (ignoring contention)
 
@@ -293,21 +343,7 @@ This is correct behavior — GROUP nodes exist to represent two people on one tr
 **Method:** Exhaustive search over all 2^8 = 256 subsets.
 For each subset, verify that every shared node has capacity >= number of GT people needing it simultaneously.
 
-**Result: Maximum 5 of 8 GT people can coexist.**
-- Best feasible subset: GT [0, 1, 2, 5, 7]
-- Excluded: GT [3, 4, 6]
-
-**Blocking nodes (capacity < simultaneous GT demand):**
-
-| Node | Capacity | Seg type | Max simultaneous GT | GT people |
-|---|---|---|---|---|
-| `T:t2:s1:363-403` | 1 | SOLO | 2 | [0, 4] |
-| `T:t62` | 1 | SOLO | 2 | [0, 4] |
-| `T:t126` | 1 | SOLO | 2 | [2, 3] |
-| `T:t152` | 1 | SOLO | 2 | [2, 3] |
-| `T:t4` | 1 | SOLO | 2 | [5, 6] |
-| `T:t23` | 1 | SOLO | 2 | [5, 6] |
-
+**Result: ALL 8 GT people can coexist.** No capacity contention.
 
 ## 5. Aggregate by Owner
 
@@ -320,18 +356,16 @@ For each subset, verify that every shared node has capacity >= number of GT peop
 | Detection (concurrent nodes) | CONCURRENT_NODES | 17 |
 | D1 candidate generation | EDGE_ABSENT_IN_WINDOW | 4 |
 | D1 parameters / detection | UNREACHABLE_BY_WINDOW | 6 |
-| Detection (shared SOLO nodes) | SHARED_NODE structural impossibility | 6 node-pairs |
+| Detection (co-occupied SOLO) | SHARED_NODE structural impossibility | 0 node-pairs |
+| Detection (sequential use) | Same node, interleaved frames | 14 node-pairs |
 
 ## Summary Verdict
 
 - **Independent reachability (a):** 2 / 8 GT people have a connected path
-- **Joint feasibility (b):** 5 / 8 GT people can coexist given capacity
+- **Joint feasibility (b):** 8 / 8 GT people can coexist given capacity
 
 **Finding:** 6 GT people lack connected paths.
 The ceiling includes connectivity (edge generation), not just solver decisions.
-**Finding:** Contention limits joint feasibility to 5.
-Under-segmentation propagates into the graph — one detection covering two grapplers
-becomes one SOLO node covering two people. No stitching or cost work can fix this.
 
 
 ---
@@ -347,6 +381,7 @@ becomes one SOLO node covering two people. No stitching or cost work can fix thi
 | EDGE_ABSENT_IN_WINDOW | 5 | 4 |
 | UNREACHABLE_BY_WINDOW | 5 | 6 |
 | Independent reachability | 0/8 | 2/8 |
-| Joint feasibility | 8/8 | 5/8 |
-| Shared SOLO nodes | 0 | 6 |
-| Shared GROUP (ok) | 1 | 5 |
+| Joint feasibility | 8/8 | 8/8 |
+| Shared: structural impossibility | 0 | 0 |
+| Shared: GROUP handles it | 1 | 0 |
+| Shared: sequential (no contention) | 27 | 14 |
