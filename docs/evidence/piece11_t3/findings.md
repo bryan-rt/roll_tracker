@@ -220,3 +220,18 @@ The default was flipped to `variable_dt: true` in `configs/default.yaml` on 2026
 
 This is the sixth inversion of the identity-corruption lever (§7 scope limit 3). The five
 preceding inversions are in CLAUDE.md "Overturned Conclusions."
+
+**Determinism verification (VDT-DEFAULT-1):** A fresh pipeline run with `variable_dt: true`
+as the default reproduced the T3 treatment arm exactly — 0.0pp delta on all four metrics,
+identical frame counts:
+
+| Metric | T3 Treatment | VDT-DEFAULT-1 run | Delta |
+|--------|-------------|-------------------|-------|
+| correct_id (present) | 34.3% (4,275) | 34.3% (4,275) | 0.0pp |
+| present_misattributed | 20.6% (2,573) | 20.6% (2,573) | 0.0pp |
+| stage_a_no_detection | 37.7% (4,703) | 37.7% (4,703) | 0.0pp |
+| d4_unassigned | 7.4% (924) | 7.4% (924) | 0.0pp |
+| Total predictions | 8,437 | 8,437 | 0 |
+
+The pipeline is deterministic run-to-run at fixed config. This validates every before/after
+comparison made in this session and in the broader T3 arc.

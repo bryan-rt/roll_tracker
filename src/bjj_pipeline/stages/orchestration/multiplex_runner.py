@@ -528,18 +528,26 @@ def run_multiplex_AC(*,
 
                     # Variable-dt tracker: load sidecar and pass to adapter.
                     # Source of truth: configs/default.yaml stages.stage_A.tracker.
-                    variable_dt = bool(_cfg_get(
-                        resolved_config,
-                        "stages.stage_A.tracker.variable_dt",
-                    ))
+                    _vdt_path = "stages.stage_A.tracker.variable_dt"
+                    _vdt = _cfg_get(resolved_config, _vdt_path)
+                    if _vdt is None:
+                        raise ValueError(
+                            f"Missing required config {_vdt_path}. "
+                            "Source of truth is configs/default.yaml stages.stage_A.tracker."
+                        )
+                    variable_dt = bool(_vdt)
                     sidecar_data = None
                     if variable_dt:
                         from bjj_pipeline.contracts.f0_sidecar import load_sidecar
                         sidecar_data = load_sidecar(ingest_path)
-                    max_lost_seconds = float(_cfg_get(
-                        resolved_config,
-                        "stages.stage_A.tracker.max_lost_seconds",
-                    ))
+                    _mls_path = "stages.stage_A.tracker.max_lost_seconds"
+                    _mls = _cfg_get(resolved_config, _mls_path)
+                    if _mls is None:
+                        raise ValueError(
+                            f"Missing required config {_mls_path}. "
+                            "Source of truth is configs/default.yaml stages.stage_A.tracker."
+                        )
+                    max_lost_seconds = float(_mls)
 
                     tracker = BotSortTracker(
                         with_reid=with_reid,

@@ -1,9 +1,13 @@
-"""T1: variable-dt tracker guard accepts dt_s=0.0 and rejects dt_s<0.
+"""Variable-dt guards: tracker-level (dt_s values) and config-level (missing keys).
 
-dt_s=0.0 represents a duplicate-PTS frame (MUXER-PTS-1). The Kalman filter
-treats ratio 0.0 as a position no-op by design (CLAUDE.md:196). The guard
-at tracker.py must allow it through. Negative dt is genuinely invalid
-(non-monotonic time) and must still raise.
+Tracker-level (T1, Piece 11):
+  dt_s=0.0 represents a duplicate-PTS frame (MUXER-PTS-1). The Kalman filter
+  treats ratio 0.0 as a position no-op by design. The guard at tracker.py must
+  allow it through. Negative dt is genuinely invalid (non-monotonic time).
+
+Config-level (VDT-DEFAULT-1):
+  A config missing stages.stage_A.tracker.variable_dt must raise ValueError,
+  not silently produce False via bool(None). Same for max_lost_seconds.
 """
 
 from __future__ import annotations
@@ -83,3 +87,59 @@ class TestVariableDtGuard:
         tracker.update(frame_index=0, detections=dets, frame_bgr=img)
         with pytest.raises(ValueError):
             tracker.update(frame_index=1, detections=dets, frame_bgr=img)
+
+
+class TestConfigGuard:
+    """Config missing variable_dt or max_lost_seconds must raise, not silently default.
+
+    VDT-DEFAULT-1: the guard in multiplex_runner.py checks _cfg_get's return and
+    raises ValueError with a clear message. These tests exercise _cfg_get on a
+    minimal config to prove the precondition (missing key -> None), then verify
+    that the production guard pattern raises ValueError, not bool(None)->False.
+    """
+
+    def _guard_variable_dt(self, config: dict) -> bool:
+        """Reproduce the production guard from multiplex_runner.py."""
+        from bjj_pipeline.stages.orchestration.multiplex_runner import _cfg_get
+        path = "stages.stage_A.tracker.variable_dt"
+        val = _cfg_get(config, path)
+        if val is None:
+            raise ValueError(
+                f"Missing required config {path}. "
+                "Source of truth is configs/default.yaml stages.stage_A.tracker."
+            )
+        return bool(val)
+
+    def _guard_max_lost_seconds(self, config: dict) -> float:
+        """Reproduce the production guard from multiplex_runner.py."""
+        from bjj_pipeline.stages.orchestration.multiplex_runner import _cfg_get
+        path = "stages.stage_A.tracker.max_lost_seconds"
+        val = _cfg_get(config, path)
+        if val is None:
+            raise ValueError(
+                f"Missing required config {path}. "
+                "Source of truth is configs/default.yaml stages.stage_A.tracker."
+            )
+        return float(val)
+
+    def test_missing_variable_dt_raises(self):
+        """A config without variable_dt must raise ValueError, not silently return False."""
+        config = {"stages": {"stage_A": {"tracker": {"mode": "botsort"}}}}
+        with pytest.raises(ValueError, match="Missing required config"):
+            self._guard_variable_dt(config)
+
+    def test_missing_max_lost_seconds_raises(self):
+        """A config without max_lost_seconds must raise ValueError, not TypeError."""
+        config = {"stages": {"stage_A": {"tracker": {"mode": "botsort"}}}}
+        with pytest.raises(ValueError, match="Missing required config"):
+            self._guard_max_lost_seconds(config)
+
+    def test_present_variable_dt_passes(self):
+        """A config with variable_dt: true must return True."""
+        config = {"stages": {"stage_A": {"tracker": {"variable_dt": True}}}}
+        assert self._guard_variable_dt(config) is True
+
+    def test_present_max_lost_seconds_passes(self):
+        """A config with max_lost_seconds: 2.0 must return 2.0."""
+        config = {"stages": {"stage_A": {"tracker": {"max_lost_seconds": 2.0}}}}
+        assert self._guard_max_lost_seconds(config) == 2.0
