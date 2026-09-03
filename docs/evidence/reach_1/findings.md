@@ -385,3 +385,112 @@ The ceiling includes connectivity (edge generation), not just solver decisions.
 | Shared: structural impossibility | 0 | 0 |
 | Shared: GROUP handles it | 1 | 0 |
 | Shared: sequential (no contention) | 27 | 14 |
+
+---
+
+# Follow-up Verification
+
+## A. Capacity-blocked re-verification (frame-level)
+
+The 15 production not-selected edges (and 13 dedup) were originally classified as
+capacity-blocked using the same code path. After the range-envelope bug was found in the
+shared-node analysis, the capacity check was re-verified at frame-level: for each not-selected
+edge A→B, check the actual D3 flow (from `person_spans`) at the specific transition frame
+(node A's end_frame and node B's start_frame) against each node's capacity.
+
+**Result: all 15 confirmed capacity-blocked at frame-level.** Every endpoint node had
+`flow >= capacity` at the transition frame. 0 cost-beaten.
+
+The capacity-blocked check in the hop classifier uses `person_spans` flow counts per node (total
+person_ids routed through), which is node-lifetime-level rather than per-frame. This is
+conservative — if a node has 1 person routed through it across its lifetime and capacity is 1,
+it is saturated at every frame. The frame-level re-verification confirms the node-lifetime check
+did not inflate: every endpoint was genuinely saturated at the specific frame that matters.
+
+**The "0 cost-beaten" finding holds with the corrected method.**
+
+## B. CONCURRENT_NODES decomposition — flicker vs genuine transitions
+
+267 concurrent hops is the raw count. As NOEDGE-1 established, many of these are GT-matcher
+flicker — the matcher alternating between valid overlapping detections frame by frame.
+
+**Decomposition:**
+
+| Category | Hops | % of 267 | Distinct events |
+|---|---|---|---|
+| Self-loop (A→gap→A, same node) | 191 | 71.5% | 53 |
+| Out-and-back (A→B→A) | 46 | 17.2% | ~23 round-trips |
+| One-way concurrent transition | 30 | 11.2% | 27 |
+| **Total** | **267** | | **80** |
+
+- **191 self-loops (71.5%):** The GT person is on node A, undetected for some frames, then
+  re-detected on the same node A. This is a detection gap within a single node's span, not a
+  transition between different nodes. The path builder creates two separate runs on the same
+  node. These are pure measurement artifacts — the person never left the node.
+
+- **46 out-and-back (17.2%):** A→B→A patterns where the matcher alternates between two
+  overlapping nodes. Each round trip is one flicker event, not two transitions. ~23 distinct
+  round-trip events.
+
+- **30 one-way (11.2%):** Genuine transitions between concurrent nodes (one direction only
+  within the local context). 27 distinct events.
+
+**Deduplicated event count: 80** (53 self-loop + 27 between-node). The 267 hops inflate the
+true concurrent-transition picture by **3.3×** (267/80).
+
+**Interpretation:** The evaluation framework (Hungarian matching, IoU 0.5) cannot distinguish
+one person's two concurrent detections from two different people's detections. When a GT
+person's box overlaps two pipeline detections, the matcher picks one per frame — sometimes A,
+sometimes B — creating the flicker pattern. This is a measurement limitation as much as a
+pipeline one. The 27 between-node concurrent events are the genuine graph-level expression of
+detection under-segmentation for this clip; the other 53 events (self-loops) are detection
+gaps within single nodes.
+
+## C. GROUP trigger mechanism
+
+GROUP formation in `d1_graph_build.py` is triggered by tracklet lifecycle events:
+
+1. **Merge trigger** (line 805): tracklet `disappear` ends while tracklet `carrier` continues,
+   within `merge_dist_m`. Requires two concurrent tracklets.
+2. **Split trigger** (line 853): tracklet `new` starts while tracklet `carrier` exists,
+   within `split_dist_m`. Requires two concurrent tracklets.
+
+Both triggers depend on a second concurrent tracklet existing. The dedup merge collapsed
+concurrent tracklets, removing the evidence D1 uses to form groups. This explains the
+GROUP count drop (47→36, -23%). Of the 6 nodes originally flagged as "shared SOLOs" in
+the dedup arm, only 1 (`T:t4`) was GROUP in production and became SOLO after dedup;
+the other 5 were already SOLO in both graphs.
+
+## D. Methodological note
+
+The range-envelope bug produced a plausible, mechanistically-explainable false finding
+("shared SOLO nodes = detection ceiling") that survived one review. Two hypotheses were
+offered for the production-vs-dedup discrepancy (GROUP trigger removal; artifact of dedup
+simulation), and both were partially wrong. The actual cause — range-envelope inflation
+over sparse frame occupancy — was found only by checking frame-level co-occupancy directly.
+
+The false finding was coherent with the project's prior understanding (under-segmentation is
+the dominant lever) and had a clean causal story (one box, two people, capacity 1). This made
+it resistant to challenge. The lesson: a finding that confirms expectations and has a plausible
+mechanism is not thereby verified. Checking the specific data (frame-level occupancy) rather
+than a derived summary (range envelopes) would have caught it immediately.
+
+---
+
+# Corrected Conclusion
+
+The graph **CAN** represent all 8 GT people correctly. 8/8 jointly feasible, 0 structural
+impossibility, in both the production and dedup-ceiling arms. GROUP nodes work as designed.
+
+**What prevents correct identity is connectivity, not capacity or cost:**
+
+- **0/8 independently reachable** (production) — every GT person's target path includes
+  hops between nodes that no temporal edge can connect (concurrent nodes) or that D1
+  did not generate edges for.
+- **0 cost-beaten edges** — the solver has never chosen a wrong edge when the correct one
+  was available and capacity existed. Every declined edge (15 production, 13 dedup) was
+  at a node already saturated by another person's flow.
+- **267 concurrent hops → 80 distinct events → 27 between-node concurrent events** —
+  the headline number is dominated by matcher flicker (self-loops and out-and-back).
+  The genuine graph-level expression of under-segmentation on this clip is 27 events
+  where the GT person transitions between two concurrent nodes.
